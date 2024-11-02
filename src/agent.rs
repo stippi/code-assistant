@@ -26,7 +26,7 @@ impl Agent {
         self.working_memory.current_task = task;
 
         // Main agent loop
-        while !self.task_completed().await? {
+        loop {
             let action = self.get_next_action().await?;
             info!("Reasoning: {}", action.reasoning);
             info!("Executing next action: {:?}", action.tool);
@@ -37,8 +37,6 @@ impl Agent {
             if action.task_completed {
                 break;
             }
-
-            self.manage_memory()?;
         }
 
         info!("Task completed");
@@ -107,14 +105,14 @@ impl Agent {
             )),
         };
 
-        info!("Preparing LLM request with {} messages", messages.len());
-        debug!(
-            "System prompt: {}",
-            request
-                .system_prompt
-                .as_ref()
-                .unwrap_or(&"none".to_string())
-        );
+        //info!("Preparing LLM request with {} messages", messages.len());
+        // debug!(
+        //     "System prompt: {}",
+        //     request
+        //         .system_prompt
+        //         .as_ref()
+        //         .unwrap_or(&"none".to_string())
+        // );
 
         let response = self.llm_provider.send_message(request).await?;
 
@@ -128,20 +126,28 @@ impl Agent {
     fn prepare_messages(&self) -> Vec<Message> {
         let mut messages = vec![Message {
             role: MessageRole::User,
-            content: MessageContent::Text(format!(
-                "Task: {}\n\nCurrent working memory state:\n{:?}",
-                self.working_memory.current_task, self.working_memory
-            )),
+            content: MessageContent::Text(
+                format!(
+                    "Task: {}\n\nCurrent working memory state:\n{:?}",
+                    self.working_memory.current_task, self.working_memory
+                )
+                .trim()
+                .to_string(),
+            ),
         }];
 
         // Add relevant history from previous actions
         for action in &self.working_memory.action_history {
             messages.push(Message {
                 role: MessageRole::Assistant,
-                content: MessageContent::Text(format!(
-                    "Executed action: {:?}\nResult: {}",
-                    action.tool, action.result
-                )),
+                content: MessageContent::Text(
+                    format!(
+                        "Executed action: {:?}\nResult: {}",
+                        action.tool, action.result
+                    )
+                    .trim()
+                    .to_string(),
+                ),
             });
         }
 
@@ -268,22 +274,6 @@ impl Agent {
 
         Ok(result)
     }
-
-    /// Determines if the current task is completed
-    async fn task_completed(&self) -> Result<bool> {
-        // Implementation
-        todo!()
-    }
-
-    /// Manages working memory size
-    fn manage_memory(&mut self) -> Result<()> {
-        // Implementation for memory management
-        // Could implement strategies like:
-        // - Removing old file contents
-        // - Converting detailed content to summaries
-        // - Limiting action history
-        todo!()
-    }
 }
 
 // Helper function to parse LLM response into a Tool
@@ -294,15 +284,38 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
         .iter()
         .find_map(|block| {
             if let crate::llm::ContentBlock::Text { text } = block {
-                Some(text)
+                Some(text.trim().trim_start_matches(|c| c != '{'))
             } else {
                 None
             }
         })
         .ok_or_else(|| anyhow::anyhow!("No text content in response"))?;
 
+    info!("Raw JSON response: {}", content);
+
+    // Escape newlines in the content, but only withing strings
+    let mut escaped = String::with_capacity(content.len());
+    let mut in_string = false;
+    let mut prev_char = None;
+
+    for c in content.chars() {
+        match c {
+            '"' if prev_char != Some('\\') => {
+                in_string = !in_string;
+                escaped.push('"');
+            }
+            '\n' if in_string => escaped.push_str("\\n"),
+            '\r' if in_string => escaped.push_str("\\r"),
+            '\t' if in_string => escaped.push_str("\\t"),
+            _ => escaped.push(c),
+        }
+        prev_char = Some(c);
+    }
+
+    info!("Escaped JSON response: {}", escaped);
+
     // Parse the JSON response
-    let value: serde_json::Value = serde_json::from_str(content)
+    let value: serde_json::Value = serde_json::from_str(&escaped)
         .map_err(|e| anyhow::anyhow!("Failed to parse JSON response: {}", e))?;
 
     // Extract the components

@@ -48,7 +48,7 @@ impl LLMProvider for AnthropicClient {
             .client
             .post(&self.base_url)
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2024-01-01") // We might want to make this configurable
+            .header("anthropic-version", "2023-06-01") // We might want to make this configurable
             .json(&anthropic_request)
             .send()
             .await?;
