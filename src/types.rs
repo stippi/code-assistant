@@ -18,7 +18,7 @@ pub struct WorkingMemory {
 }
 
 /// Available tools the agent can use
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "tool", content = "params")]
 pub enum Tool {
     /// List files in a directory
@@ -76,4 +76,17 @@ pub struct AgentAction {
     pub tool: Tool,
     pub reasoning: String,
     pub task_completed: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FileSystemEntry {
+    pub path: PathBuf,
+    pub name: String,
+    pub entry_type: FileSystemEntryType,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum FileSystemEntryType {
+    File,
+    Directory,
 }

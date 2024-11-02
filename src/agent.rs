@@ -2,7 +2,6 @@ use crate::explorer::CodeExplorer;
 use crate::llm::{LLMProvider, LLMRequest, Message, MessageContent, MessageRole};
 use crate::types::*;
 use anyhow::Result;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
@@ -25,10 +24,6 @@ impl Agent {
     pub async fn start(&mut self, task: String) -> Result<()> {
         info!("Starting agent with task: {}", task);
         self.working_memory.current_task = task;
-
-        // Initial context building
-        let files = self.explorer.list_files()?;
-        info!("Found {} files in repository", files.len());
 
         // Main agent loop
         while !self.task_completed().await? {
@@ -54,22 +49,62 @@ impl Agent {
     async fn get_next_action(&self) -> Result<AgentAction> {
         let messages = self.prepare_messages();
 
+        let tools_description = r#"
+    Available tools:
+    1. ListFiles
+       - Lists contents of a directory (non-recursive)
+       - Parameters: {"path": "relative/or/absolute/path"}
+       - Returns: List of files and directories with their types
+
+    2. ReadFile
+       - Reads the content of a file
+       - Parameters: {"path": "path/to/file"}
+       - Returns: Content of the file
+
+    3. WriteFile
+       - Creates or overwrites a file
+       - Parameters: {
+           "path": "path/to/file",
+           "content": "content to write"
+         }
+       - Returns: Confirmation message
+
+    4. UnloadFile
+       - Removes a file from working memory to free up space
+       - Parameters: {"path": "path/to/file"}
+       - Returns: Confirmation message
+
+    5. AddSummary
+       - Adds or updates a file summary in working memory
+       - Parameters: {
+           "path": "path/to/file",
+           "summary": "your summary of the file"
+         }
+       - Returns: Confirmation message"#;
+
         let request = LLMRequest {
             messages,
             max_tokens: 1000,
             temperature: 0.7,
-            system_prompt: Some(
-                "You are a code exploration agent. Analyze the current state and decide on the next action. \
-                ALWAYS respond in the following JSON format:\
-                {\
+            system_prompt: Some(format!(
+                "You are a code exploration agent. Your task is to analyze codebases and complete specific tasks.\n\n\
+                {}\n\n\
+                When exploring directories, remember:\n\
+                - Directory listings are non-recursive and show files (FILE) and directories (DIR)\n\
+                - You need to explicitly navigate into subdirectories to see their contents\n\
+                - Always start with the root directory and navigate step by step\n\n\
+                ALWAYS respond in the following JSON format:\n\
+                {{\
                   'reasoning': 'your step-by-step reasoning',\
                   'task_completed': true/false,\
-                  'tool': {\
+                  'tool': {{\
                     'name': 'ToolName',\
-                    'params': { tool specific parameters }\
-                  }\
-                }".to_string()
-            ),
+                    'params': {{ tool specific parameters }}\
+                  }}\
+                }}\n\n\
+                Always explain your reasoning before choosing a tool. Think step by step.",
+                tools_description
+            )),
         };
 
         let response = self.llm_provider.send_message(request).await?;
@@ -101,44 +136,128 @@ impl Agent {
     }
 
     /// Executes a tool and returns the result
-    async fn execute_tool(&self, tool: Tool) -> Result<ActionResult> {
-        match tool {
+    async fn execute_tool(&mut self, tool: Tool) -> Result<ActionResult> {
+        let result = match &tool {
             Tool::ListFiles { path } => {
-                // Implementation
-                todo!()
+                let entries = self.explorer.list_directory(path)?;
+
+                // Format the directory listing
+                let mut listing = format!("Contents of {}:\n", path.display());
+                for entry in entries {
+                    let entry_type = match entry.entry_type {
+                        FileSystemEntryType::File => "FILE",
+                        FileSystemEntryType::Directory => "DIR ",
+                    };
+                    listing.push_str(&format!("{} {}\n", entry_type, entry.name));
+                }
+
+                ActionResult {
+                    tool: tool.clone(),
+                    success: true,
+                    result: listing,
+                    error: None,
+                }
             }
+
             Tool::ReadFile { path } => {
-                // Implementation
-                todo!()
+                let full_path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    self.explorer.root_dir.join(path)
+                };
+
+                match self.explorer.read_file(&full_path) {
+                    Ok(content) => ActionResult {
+                        tool: tool.clone(),
+                        success: true,
+                        result: content,
+                        error: None,
+                    },
+                    Err(e) => ActionResult {
+                        tool: tool.clone(),
+                        success: false,
+                        result: String::new(),
+                        error: Some(e.to_string()),
+                    },
+                }
             }
-            // Other tool implementations...
-            _ => todo!(),
+
+            Tool::WriteFile { path, content } => {
+                let full_path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    self.explorer.root_dir.join(path)
+                };
+
+                // Ensure the parent directory exists
+                if let Some(parent) = full_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                match std::fs::write(&full_path, content) {
+                    Ok(_) => ActionResult {
+                        tool: tool.clone(),
+                        success: true,
+                        result: format!("Successfully wrote to {}", full_path.display()),
+                        error: None,
+                    },
+                    Err(e) => ActionResult {
+                        tool: tool.clone(),
+                        success: false,
+                        result: String::new(),
+                        error: Some(e.to_string()),
+                    },
+                }
+            }
+
+            Tool::UnloadFile { path } => {
+                if self.working_memory.loaded_files.remove(path).is_some() {
+                    ActionResult {
+                        tool: tool.clone(),
+                        success: true,
+                        result: format!("Unloaded file {}", path.display()),
+                        error: None,
+                    }
+                } else {
+                    ActionResult {
+                        tool: tool.clone(),
+                        success: false,
+                        result: String::new(),
+                        error: Some(format!("File {} was not loaded", path.display())),
+                    }
+                }
+            }
+
+            Tool::AddSummary { path, summary } => {
+                self.working_memory
+                    .file_summaries
+                    .insert(path.clone(), summary.clone());
+                ActionResult {
+                    tool: tool.clone(),
+                    success: true,
+                    result: format!("Added summary for {}", path.display()),
+                    error: None,
+                }
+            }
+        };
+
+        // Log the result
+        if result.success {
+            info!("Tool execution successful: {:?}", tool);
+        } else {
+            warn!(
+                "Tool execution failed: {:?}, error: {:?}",
+                tool, result.error
+            );
         }
+
+        Ok(result)
     }
 
     /// Determines if the current task is completed
     async fn task_completed(&self) -> Result<bool> {
         // Implementation
         todo!()
-    }
-
-    /// Returns descriptions of available tools
-    fn get_tool_descriptions(&self) -> Vec<ToolDescription> {
-        vec![
-            ToolDescription {
-                name: "ListFiles".to_string(),
-                description: "Lists all files in a specified directory".to_string(),
-                parameters: {
-                    let mut map = HashMap::new();
-                    map.insert(
-                        "path".to_string(),
-                        "Path to the directory to list".to_string(),
-                    );
-                    map
-                },
-            },
-            // Other tool descriptions...
-        ]
     }
 
     /// Manages working memory size

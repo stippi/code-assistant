@@ -6,7 +6,6 @@ pub use types::*; // Alle öffentlichen Typen verfügbar machen
 
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 
 /// Trait for different LLM provider implementations
 #[async_trait]

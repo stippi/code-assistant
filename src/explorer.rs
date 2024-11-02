@@ -1,11 +1,11 @@
+use crate::types::FileSystemEntry;
+use crate::types::FileSystemEntryType;
 use anyhow::Result;
 use std::path::PathBuf;
-use tracing::info;
-use walkdir::WalkDir;
 
 /// Handles file system operations for code exploration
 pub struct CodeExplorer {
-    root_dir: PathBuf,
+    pub root_dir: PathBuf,
 }
 
 impl CodeExplorer {
@@ -17,25 +17,42 @@ impl CodeExplorer {
         Self { root_dir }
     }
 
-    /// Lists all files in the repository recursively
-    ///
-    /// # Returns
-    /// * `Result<Vec<PathBuf>>` - List of file paths or an error
-    pub fn list_files(&self) -> Result<Vec<PathBuf>> {
-        let mut files = Vec::new();
+    /// Lists entries in a specific directory (non-recursive)
+    pub fn list_directory(&self, dir_path: &PathBuf) -> Result<Vec<FileSystemEntry>> {
+        let full_path = if dir_path.is_absolute() {
+            dir_path.clone()
+        } else {
+            self.root_dir.join(dir_path)
+        };
 
-        for entry in WalkDir::new(&self.root_dir)
-            .follow_links(true)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            if entry.file_type().is_file() {
-                files.push(entry.path().to_owned());
-            }
+        // Ensure the path is within root directory
+        if !full_path.starts_with(&self.root_dir) {
+            anyhow::bail!("Path is outside of root directory");
         }
 
-        info!("Found {} files", files.len());
-        Ok(files)
+        let mut entries = Vec::new();
+
+        for entry in std::fs::read_dir(full_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+
+            entries.push(FileSystemEntry {
+                path: path.clone(),
+                name: path
+                    .file_name()
+                    .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?
+                    .to_string_lossy()
+                    .into_owned(),
+                entry_type: if file_type.is_dir() {
+                    FileSystemEntryType::Directory
+                } else {
+                    FileSystemEntryType::File
+                },
+            });
+        }
+
+        Ok(entries)
     }
 
     /// Reads the content of a file
