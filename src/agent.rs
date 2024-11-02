@@ -3,7 +3,7 @@ use crate::llm::{LLMProvider, LLMRequest, Message, MessageContent, MessageRole};
 use crate::types::*;
 use anyhow::Result;
 use std::path::PathBuf;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub struct Agent {
     working_memory: WorkingMemory,
@@ -107,7 +107,20 @@ impl Agent {
             )),
         };
 
+        info!("Preparing LLM request with {} messages", messages.len());
+        debug!(
+            "System prompt: {}",
+            request
+                .system_prompt
+                .as_ref()
+                .unwrap_or(&"none".to_string())
+        );
+
         let response = self.llm_provider.send_message(request).await?;
+
+        info!("Received response from LLM");
+        debug!("Raw LLM response: {:?}", response);
+
         parse_llm_response(&response)
     }
 
@@ -137,6 +150,8 @@ impl Agent {
 
     /// Executes a tool and returns the result
     async fn execute_tool(&mut self, tool: Tool) -> Result<ActionResult> {
+        info!("Executing tool: {:?}", tool);
+
         let result = match &tool {
             Tool::ListFiles { path } => {
                 let entries = self.explorer.list_directory(path)?;
@@ -353,6 +368,12 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
         },
         _ => anyhow::bail!("Unknown tool: {}", tool_name),
     };
+
+    info!(
+        "Parsed agent action: tool={:?}, task_completed={}",
+        tool, task_completed
+    );
+    debug!("Agent reasoning: {}", reasoning);
 
     Ok(AgentAction {
         tool,

@@ -8,11 +8,20 @@ use crate::agent::Agent;
 use crate::llm::AnthropicClient;
 use anyhow::Result;
 use std::path::PathBuf;
+use tracing::Level;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+    // Initialize detailed logging
+    tracing_subscriber::fmt()
+        .with_max_level(Level::DEBUG)
+        .with_target(false) // Removes module path from output
+        .with_thread_ids(false)
+        .with_file(true)
+        .with_line_number(true)
+        .with_level(true)
+        .pretty()
+        .init();
 
     // Setup LLM client
     let llm_client = AnthropicClient::new(
@@ -21,7 +30,7 @@ async fn main() -> Result<()> {
     );
 
     // Initialize agent
-    let root_dir = PathBuf::from("./test-repo");
+    let root_dir = PathBuf::from("./");
     let mut agent = Agent::new(Box::new(llm_client), root_dir);
 
     // Start agent with a task

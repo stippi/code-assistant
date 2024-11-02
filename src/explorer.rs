@@ -2,6 +2,7 @@ use crate::types::FileSystemEntry;
 use crate::types::FileSystemEntryType;
 use anyhow::Result;
 use std::path::PathBuf;
+use tracing::{debug, info};
 
 /// Handles file system operations for code exploration
 pub struct CodeExplorer {
@@ -52,6 +53,9 @@ impl CodeExplorer {
             });
         }
 
+        info!("Listing directory: {}", dir_path.display());
+        debug!("Found {} entries", entries.len());
+
         Ok(entries)
     }
 
@@ -63,6 +67,7 @@ impl CodeExplorer {
     /// # Returns
     /// * `Result<String>` - File content or an error
     pub fn read_file(&self, path: &PathBuf) -> Result<String> {
+        info!("Reading file: {}", path.display());
         Ok(std::fs::read_to_string(path)?)
     }
 }
