@@ -69,3 +69,11 @@ pub struct ToolDescription {
     pub description: String,
     pub parameters: HashMap<String, String>,
 }
+
+/// Represents the parsed response from the LLM
+#[derive(Debug)]
+pub struct AgentAction {
+    pub tool: Tool,
+    pub reasoning: String,
+    pub task_completed: bool,
+}

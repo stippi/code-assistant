@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
     // Setup LLM client
     let llm_client = AnthropicClient::new(
         std::env::var("ANTHROPIC_API_KEY")?,
-        "claude-3-sonnet-20240229".to_string(),
+        "claude-3-5-sonnet-20241022".to_string(),
     );
 
     // Initialize agent
