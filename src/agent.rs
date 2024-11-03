@@ -4,7 +4,7 @@ use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
 use anyhow::Result;
 use std::path::PathBuf;
-use tracing::{debug, info, warn};
+use tracing::{debug, trace, warn};
 
 pub struct Agent {
     working_memory: WorkingMemory,
@@ -29,14 +29,12 @@ impl Agent {
 
     /// Start the agent with a specific task
     pub async fn start(&mut self, task: String) -> Result<()> {
-        info!("Starting agent with task: {}", task);
+        debug!("Starting agent with task: {}", task);
         self.working_memory.current_task = task;
 
         // Main agent loop
         loop {
             let action = self.get_next_action().await?;
-            info!("Reasoning: {}", action.reasoning);
-            info!("Executing next action: {:?}", action.tool);
 
             let result = self.execute_tool(action.tool).await?;
             self.working_memory.action_history.push(result);
@@ -46,7 +44,7 @@ impl Agent {
             }
         }
 
-        info!("Task completed");
+        debug!("Task completed");
         Ok(())
     }
 
@@ -128,7 +126,6 @@ impl Agent {
 
         let response = self.llm_provider.send_message(request).await?;
 
-        info!("Received response from LLM");
         debug!("Raw LLM response: {:?}", response);
 
         parse_llm_response(&response)
@@ -168,7 +165,7 @@ impl Agent {
 
     /// Executes a tool and returns the result
     async fn execute_tool(&mut self, tool: Tool) -> Result<ActionResult> {
-        info!("Executing tool: {:?}", tool);
+        debug!("Executing tool: {:?}", tool);
 
         let result = match &tool {
             Tool::ListFiles { path } => {
@@ -311,7 +308,7 @@ impl Agent {
 
         // Log the result
         if result.success {
-            info!("Tool execution successful: {:?}", tool);
+            debug!("Tool execution successful: {:?}", tool);
         } else {
             warn!(
                 "Tool execution failed: {:?}, error: {:?}",
@@ -338,7 +335,7 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
         })
         .ok_or_else(|| anyhow::anyhow!("No text content in response"))?;
 
-    info!("Raw JSON response: {}", content);
+    trace!("Raw JSON response: {}", content);
 
     // Escape newlines in the content, but only withing strings
     let mut escaped = String::with_capacity(content.len());
@@ -359,7 +356,7 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
         prev_char = Some(c);
     }
 
-    info!("Escaped JSON response: {}", escaped);
+    trace!("Escaped JSON response: {}", escaped);
 
     // Parse the JSON response
     let value: serde_json::Value = serde_json::from_str(&escaped)
@@ -429,7 +426,7 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
         _ => anyhow::bail!("Unknown tool: {}", tool_name),
     };
 
-    info!(
+    debug!(
         "Parsed agent action: tool={:?}, task_completed={}",
         tool, task_completed
     );
