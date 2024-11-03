@@ -4,8 +4,11 @@ A powerful CLI tool built in Rust for assisting with code-related tasks.
 
 ## Features ✨
 
-- **Autonomous Exploration**: The agent can explore code bases and build up working memory.
-- **Reading/Writing Files**: The agent can make changes to files.
+- **Autonomous Exploration**: The agent can intelligently explore codebases and build up working memory of the project structure.
+- **Reading/Writing Files**: The agent can read file contents and make changes to files as needed.
+- **Working Memory Management**: Efficient handling of file contents with the ability to load and unload files from memory.
+- **File Summarization**: Capability to create and store file summaries for quick reference and better understanding of the codebase.
+- **Interactive Communication**: Built-in ability to ask users questions and get responses for better decision-making.
 
 ## Installation 🚀
 

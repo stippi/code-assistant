@@ -31,6 +31,8 @@ pub enum Tool {
     UnloadFile { path: PathBuf },
     /// Add a summary to working memory
     AddSummary { path: PathBuf, summary: String },
+    /// Ask user a question and wait for response
+    AskUser { question: String },
 }
 
 /// Result of a tool execution

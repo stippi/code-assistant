@@ -83,7 +83,13 @@ impl Agent {
            "path": "path/to/file",
            "summary": "your summary of the file"
          }
-       - Returns: Confirmation message"#;
+       - Returns: Confirmation message
+
+    6. AskUser
+       - Asks the user a question and waits for their response
+       - Parameters: {"question": "your question here?"}
+       - Returns: The user's response as a string
+       - Use this when you need clarification or a decision from the user"#;
 
         let request = LLMRequest {
             messages,
@@ -304,6 +310,29 @@ impl Agent {
                     error: None,
                 }
             }
+
+            Tool::AskUser { question } => {
+                // Display the question
+                self.ui
+                    .display(UIMessage::Question(question.clone()))
+                    .await?;
+
+                // Get the response
+                match self.ui.get_input("> ").await {
+                    Ok(response) => ActionResult {
+                        tool: tool.clone(),
+                        success: true,
+                        result: response,
+                        error: None,
+                    },
+                    Err(e) => ActionResult {
+                        tool: tool.clone(),
+                        success: false,
+                        result: String::new(),
+                        error: Some(e.to_string()),
+                    },
+                }
+            }
         };
 
         // Log the result
@@ -421,6 +450,12 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
             summary: tool_params["summary"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing summary parameter"))?
+                .to_string(),
+        },
+        "AskUser" => Tool::AskUser {
+            question: tool_params["question"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing question parameter"))?
                 .to_string(),
         },
         _ => anyhow::bail!("Unknown tool: {}", tool_name),
