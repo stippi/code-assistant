@@ -105,7 +105,6 @@ impl Agent {
             )),
         };
 
-        //info!("Preparing LLM request with {} messages", messages.len());
         // debug!(
         //     "System prompt: {}",
         //     request
@@ -113,6 +112,12 @@ impl Agent {
         //         .as_ref()
         //         .unwrap_or(&"none".to_string())
         // );
+        for (i, message) in request.messages.iter().enumerate() {
+            debug!(
+                "Message {}: Role={:?}, Content={:?}",
+                i, message.role, message.content
+            );
+        }
 
         let response = self.llm_provider.send_message(request).await?;
 
