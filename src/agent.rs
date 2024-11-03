@@ -32,11 +32,20 @@ impl Agent {
         debug!("Starting agent with task: {}", task);
         self.working_memory.current_task = task;
 
+        // Create initial file tree
+        self.ui
+            .display(UIMessage::Action(
+                "Creating repository file tree...".to_string(),
+            ))
+            .await?;
+
+        self.working_memory.file_tree = Some(self.explorer.create_file_tree()?);
+
         // Main agent loop
         loop {
             let action = self.get_next_action().await?;
 
-            let result = self.execute_tool(action.tool).await?;
+            let result = self.execute_action(&action).await?;
             self.working_memory.action_history.push(result);
 
             if action.task_completed {
@@ -54,17 +63,12 @@ impl Agent {
 
         let tools_description = r#"
     Available tools:
-    1. ListFiles
-       - Lists contents of a directory (non-recursive)
-       - Parameters: {"path": "relative/or/absolute/path"}
-       - Returns: List of files and directories with their types
-
-    2. ReadFile
+    1. ReadFile
        - Reads the content of a file
        - Parameters: {"path": "path/to/file"}
        - Returns: Content of the file
 
-    3. WriteFile
+    2. WriteFile
        - Creates or overwrites a file
        - Parameters: {
            "path": "path/to/file",
@@ -72,20 +76,16 @@ impl Agent {
          }
        - Returns: Confirmation message
 
-    4. UnloadFile
-       - Removes a file from working memory to free up space
-       - Parameters: {"path": "path/to/file"}
-       - Returns: Confirmation message
-
-    5. AddSummary
-       - Adds or updates a file summary in working memory
+    3. Summarize
+       - Replaces file content with a summary in working memory
        - Parameters: {
            "path": "path/to/file",
-           "summary": "your summary of the file"
+           "summary": "your summary of the file",
          }
        - Returns: Confirmation message
+       - Use this to maintain a high-level understanding while managing memory usage
 
-    6. AskUser
+    4. AskUser
        - Asks the user a question and waits for their response
        - Parameters: {"question": "your question here?"}
        - Returns: The user's response as a string
@@ -143,8 +143,19 @@ impl Agent {
             role: MessageRole::User,
             content: MessageContent::Text(
                 format!(
-                    "Task: {}\n\nCurrent working memory state:\n{:?}",
-                    self.working_memory.current_task, self.working_memory
+                    "Task: {}\n\nRepository structure:\n{}\n\nCurrent working memory state:\n- Loaded files: {}\n- File summaries: {}\n",
+                    self.working_memory.current_task,
+                    self.working_memory.file_tree.as_ref()
+                        .map(|tree| tree.to_string())
+                        .unwrap_or_else(|| "No file tree available".to_string()),
+                    self.working_memory.loaded_files.keys()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    self.working_memory.file_summaries.keys()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
                 .trim()
                 .to_string(),
@@ -157,8 +168,8 @@ impl Agent {
                 role: MessageRole::Assistant,
                 content: MessageContent::Text(
                     format!(
-                        "Executed action: {:?}\nResult: {}",
-                        action.tool, action.result
+                        "Reasoning: {}\nExecuted action: {:?}\nResult: {}",
+                        action.reasoning, action.tool, action.result
                     )
                     .trim()
                     .to_string(),
@@ -169,39 +180,11 @@ impl Agent {
         messages
     }
 
-    /// Executes a tool and returns the result
-    async fn execute_tool(&mut self, tool: Tool) -> Result<ActionResult> {
-        debug!("Executing tool: {:?}", tool);
+    /// Executes an action and returns the result
+    async fn execute_action(&mut self, action: &AgentAction) -> Result<ActionResult> {
+        debug!("Executing action: {:?}", action.tool);
 
-        let result = match &tool {
-            Tool::ListFiles { path } => {
-                self.ui
-                    .display(UIMessage::Action(format!(
-                        "Listing directory `{}`",
-                        path.display()
-                    )))
-                    .await?;
-
-                let entries = self.explorer.list_directory(path)?;
-
-                // Format the directory listing
-                let mut listing = format!("Contents of {}:\n", path.display());
-                for entry in entries {
-                    let entry_type = match entry.entry_type {
-                        FileSystemEntryType::File => "FILE",
-                        FileSystemEntryType::Directory => "DIR ",
-                    };
-                    listing.push_str(&format!("{} {}\n", entry_type, entry.name));
-                }
-
-                ActionResult {
-                    tool: tool.clone(),
-                    success: true,
-                    result: listing,
-                    error: None,
-                }
-            }
-
+        let result = match &action.tool {
             Tool::ReadFile { path } => {
                 self.ui
                     .display(UIMessage::Action(format!(
@@ -218,16 +201,18 @@ impl Agent {
 
                 match self.explorer.read_file(&full_path) {
                     Ok(content) => ActionResult {
-                        tool: tool.clone(),
+                        tool: action.tool.clone(),
                         success: true,
                         result: content,
                         error: None,
+                        reasoning: action.reasoning.clone(),
                     },
                     Err(e) => ActionResult {
-                        tool: tool.clone(),
+                        tool: action.tool.clone(),
                         success: false,
                         result: String::new(),
                         error: Some(e.to_string()),
+                        reasoning: action.reasoning.clone(),
                     },
                 }
             }
@@ -253,61 +238,43 @@ impl Agent {
 
                 match std::fs::write(&full_path, content) {
                     Ok(_) => ActionResult {
-                        tool: tool.clone(),
+                        tool: action.tool.clone(),
                         success: true,
                         result: format!("Successfully wrote to {}", full_path.display()),
                         error: None,
+                        reasoning: action.reasoning.clone(),
                     },
                     Err(e) => ActionResult {
-                        tool: tool.clone(),
+                        tool: action.tool.clone(),
                         success: false,
                         result: String::new(),
                         error: Some(e.to_string()),
+                        reasoning: action.reasoning.clone(),
                     },
                 }
             }
 
-            Tool::UnloadFile { path } => {
+            Tool::Summarize { path, summary } => {
                 self.ui
                     .display(UIMessage::Action(format!(
-                        "Unloading file `{}`",
+                        "Summarizing file `{}`",
                         path.display()
                     )))
                     .await?;
 
-                if self.working_memory.loaded_files.remove(path).is_some() {
-                    ActionResult {
-                        tool: tool.clone(),
-                        success: true,
-                        result: format!("Unloaded file {}", path.display()),
-                        error: None,
-                    }
-                } else {
-                    ActionResult {
-                        tool: tool.clone(),
-                        success: false,
-                        result: String::new(),
-                        error: Some(format!("File {} was not loaded", path.display())),
-                    }
-                }
-            }
+                self.working_memory.loaded_files.remove(path);
 
-            Tool::AddSummary { path, summary } => {
-                self.ui
-                    .display(UIMessage::Action(format!(
-                        "Summarizing file `{}`; {}",
-                        path.display(),
-                        summary
-                    )))
-                    .await?;
+                // Add the summary
                 self.working_memory
                     .file_summaries
                     .insert(path.clone(), summary.clone());
+
                 ActionResult {
-                    tool: tool.clone(),
+                    tool: action.tool.clone(),
                     success: true,
-                    result: format!("Added summary for {}", path.display()),
+                    result: format!("Summarized {} and updated working memory", path.display()),
                     error: None,
+                    reasoning: action.reasoning.clone(),
                 }
             }
 
@@ -320,16 +287,18 @@ impl Agent {
                 // Get the response
                 match self.ui.get_input("> ").await {
                     Ok(response) => ActionResult {
-                        tool: tool.clone(),
+                        tool: action.tool.clone(),
                         success: true,
                         result: response,
                         error: None,
+                        reasoning: action.reasoning.clone(),
                     },
                     Err(e) => ActionResult {
-                        tool: tool.clone(),
+                        tool: action.tool.clone(),
                         success: false,
                         result: String::new(),
                         error: Some(e.to_string()),
+                        reasoning: action.reasoning.clone(),
                     },
                 }
             }
@@ -337,11 +306,11 @@ impl Agent {
 
         // Log the result
         if result.success {
-            debug!("Tool execution successful: {:?}", tool);
+            debug!("Action execution successful: {:?}", result.tool);
         } else {
             warn!(
-                "Tool execution failed: {:?}, error: {:?}",
-                tool, result.error
+                "Action execution failed: {:?}, error: {:?}",
+                result.tool, result.error
             );
         }
 
@@ -409,13 +378,6 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
 
     // Convert the tool JSON into our Tool enum
     let tool = match tool_name {
-        "ListFiles" => Tool::ListFiles {
-            path: PathBuf::from(
-                tool_params["path"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
-            ),
-        },
         "ReadFile" => Tool::ReadFile {
             path: PathBuf::from(
                 tool_params["path"]
@@ -434,14 +396,7 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
                 .ok_or_else(|| anyhow::anyhow!("Missing content parameter"))?
                 .to_string(),
         },
-        "UnloadFile" => Tool::UnloadFile {
-            path: PathBuf::from(
-                tool_params["path"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
-            ),
-        },
-        "AddSummary" => Tool::AddSummary {
+        "Summarize" => Tool::Summarize {
             path: PathBuf::from(
                 tool_params["path"]
                     .as_str()

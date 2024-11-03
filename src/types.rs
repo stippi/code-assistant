@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FileTreeEntry {
+    pub name: String,
+    pub entry_type: FileSystemEntryType,
+    pub children: HashMap<String, FileTreeEntry>,
+}
+
 /// Represents the agent's working memory during execution
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct WorkingMemory {
@@ -9,6 +16,8 @@ pub struct WorkingMemory {
     pub loaded_files: HashMap<PathBuf, String>,
     /// Summaries of previously seen files
     pub file_summaries: HashMap<PathBuf, String>,
+    /// Complete file tree of the repository
+    pub file_tree: Option<FileTreeEntry>,
     /// Current task description
     pub current_task: String,
     /// Memory of previous actions and their results
@@ -21,16 +30,12 @@ pub struct WorkingMemory {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "tool", content = "params")]
 pub enum Tool {
-    /// List files in a directory
-    ListFiles { path: PathBuf },
     /// Read content of a specific file
     ReadFile { path: PathBuf },
     /// Write content to a file
     WriteFile { path: PathBuf, content: String },
-    /// Remove content from working memory to free up space
-    UnloadFile { path: PathBuf },
-    /// Add a summary to working memory
-    AddSummary { path: PathBuf, summary: String },
+    /// Replace file content with a summary in working memory
+    Summarize { path: PathBuf, summary: String },
     /// Ask user a question and wait for response
     AskUser { question: String },
 }
@@ -42,6 +47,7 @@ pub struct ActionResult {
     pub success: bool,
     pub result: String,
     pub error: Option<String>,
+    pub reasoning: String,
 }
 
 /// Agent's response after processing
