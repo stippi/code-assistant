@@ -4,25 +4,27 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Dateisystem-Operationen
-walkdir = "2.4"                                   # Rekursives Verzeichnis-Traversieren
-tokio = { version = "1.36", features = ["full"] } # Async Runtime
+walkdir = "2.4"
+tokio = { version = "1.36", features = ["full"] }
 
 # HTTP Requests
-reqwest = { version = "0.11", features = ["json"] } # HTTP Client
-futures = "0.3"                                     # Async Tools
+reqwest = { version = "0.11", features = ["json"] }
+futures = "0.3"
 
-# JSON Verarbeitung
-serde = { version = "1.0", features = ["derive"] } # Serialisierung Framework
-serde_json = "1.0"                                 # JSON Implementierung
+# JSON (de)serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
-# Error Handling
-anyhow = "1.0"    # Error Handling Vereinfachung
-thiserror = "1.0" # Error Type Definitionen
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
 
 # Logging
-tracing = "0.1"            # Logging Framework
-tracing-subscriber = "0.3" # Logging Implementation
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
 
 async-trait = "0.1"
 dotenv = "0.15"

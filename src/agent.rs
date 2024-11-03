@@ -1,6 +1,7 @@
 use crate::explorer::CodeExplorer;
 use crate::llm::{LLMProvider, LLMRequest, Message, MessageContent, MessageRole};
 use crate::types::*;
+use crate::ui::{UIMessage, UserInterface};
 use anyhow::Result;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
@@ -9,14 +10,20 @@ pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
     explorer: CodeExplorer,
+    ui: Box<dyn UserInterface>,
 }
 
 impl Agent {
-    pub fn new(llm_provider: Box<dyn LLMProvider>, root_dir: PathBuf) -> Self {
+    pub fn new(
+        llm_provider: Box<dyn LLMProvider>,
+        root_dir: PathBuf,
+        ui: Box<dyn UserInterface>,
+    ) -> Self {
         Self {
             working_memory: WorkingMemory::default(),
             llm_provider,
             explorer: CodeExplorer::new(root_dir),
+            ui,
         }
     }
 
@@ -165,6 +172,13 @@ impl Agent {
 
         let result = match &tool {
             Tool::ListFiles { path } => {
+                self.ui
+                    .display(UIMessage::Action(format!(
+                        "Listing directory `{}`",
+                        path.display()
+                    )))
+                    .await?;
+
                 let entries = self.explorer.list_directory(path)?;
 
                 // Format the directory listing
@@ -186,6 +200,13 @@ impl Agent {
             }
 
             Tool::ReadFile { path } => {
+                self.ui
+                    .display(UIMessage::Action(format!(
+                        "Reading file `{}`",
+                        path.display()
+                    )))
+                    .await?;
+
                 let full_path = if path.is_absolute() {
                     path.clone()
                 } else {
@@ -209,6 +230,13 @@ impl Agent {
             }
 
             Tool::WriteFile { path, content } => {
+                self.ui
+                    .display(UIMessage::Action(format!(
+                        "Writing file `{}`",
+                        path.display()
+                    )))
+                    .await?;
+
                 let full_path = if path.is_absolute() {
                     path.clone()
                 } else {
@@ -237,6 +265,13 @@ impl Agent {
             }
 
             Tool::UnloadFile { path } => {
+                self.ui
+                    .display(UIMessage::Action(format!(
+                        "Unloading file `{}`",
+                        path.display()
+                    )))
+                    .await?;
+
                 if self.working_memory.loaded_files.remove(path).is_some() {
                     ActionResult {
                         tool: tool.clone(),
@@ -255,6 +290,13 @@ impl Agent {
             }
 
             Tool::AddSummary { path, summary } => {
+                self.ui
+                    .display(UIMessage::Action(format!(
+                        "Summarizing file `{}`; {}",
+                        path.display(),
+                        summary
+                    )))
+                    .await?;
                 self.working_memory
                     .file_summaries
                     .insert(path.clone(), summary.clone());
