@@ -91,7 +91,13 @@ impl Agent {
            - Asks the user a question and waits for their response
            - Parameters: {"question": "your question here?"}
            - Returns: The user's response as a string
-           - Use this when you need clarification or a decision from the user"#;
+           - Use this when you need clarification or a decision from the user
+
+        5. MessageUser
+           - Provide a message to the user
+           - Parameters: {"message": "your message here"}
+           - Returns: Confirmation message
+           - Use this when you need to inform the user"#;
 
         let request = LLMRequest {
             messages,
@@ -338,6 +344,20 @@ impl Agent {
                     },
                 }
             }
+
+            Tool::MessageUser { message } => {
+                self.ui
+                    .display(UIMessage::Action(format!("Message: {}", message)))
+                    .await?;
+
+                ActionResult {
+                    tool: action.tool.clone(),
+                    success: true,
+                    result: format!("Message delivered"),
+                    error: None,
+                    reasoning: action.reasoning.clone(),
+                }
+            }
         };
 
         // Log the result
@@ -462,6 +482,12 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
             question: tool_params["question"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing question parameter"))?
+                .to_string(),
+        },
+        "MessageUser" => Tool::MessageUser {
+            message: tool_params["message"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing message parameter"))?
                 .to_string(),
         },
         _ => anyhow::bail!("Unknown tool: {}", tool_name),

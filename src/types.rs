@@ -38,6 +38,8 @@ pub enum Tool {
     Summarize { files: Vec<(PathBuf, String)> },
     /// Ask user a question and wait for response
     AskUser { question: String },
+    /// Message the user
+    MessageUser { message: String },
 }
 
 /// Result of a tool execution
