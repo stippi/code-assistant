@@ -13,18 +13,25 @@ pub struct CodeExplorer {
 impl FileTreeEntry {
     /// Converts the file tree to a readable string representation
     pub fn to_string(&self) -> String {
-        self.to_string_with_indent(0)
+        self.to_string_with_indent(0, "")
     }
 
-    fn to_string_with_indent(&self, indent: usize) -> String {
+    fn to_string_with_indent(&self, level: usize, prefix: &str) -> String {
         let mut result = String::new();
-        let indent_str = "│   ".repeat(indent);
-        let prefix = if indent == 0 { "" } else { "├── " };
 
-        // Add current entry
-        result.push_str(&format!("{}{}{}/\n", indent_str, prefix, self.name));
+        // Root level doesn't get a prefix
+        if level == 0 {
+            result.push_str(&format!("{}/\n", self.name));
+        } else {
+            result.push_str(prefix);
+            result.push_str(&self.name);
+            if matches!(self.entry_type, FileSystemEntryType::Directory) {
+                result.push('/');
+            }
+            result.push('\n');
+        }
 
-        // Sort children by directories first, then files, both alphabetically
+        // Sort children: directories first, then files, both alphabetically
         let mut sorted_children: Vec<_> = self.children.values().collect();
         sorted_children.sort_by_key(|entry| {
             (
@@ -34,19 +41,26 @@ impl FileTreeEntry {
         });
 
         // Add children
+        let child_count = sorted_children.len();
         for (i, child) in sorted_children.iter().enumerate() {
-            let is_last = i == sorted_children.len() - 1;
-            let child_indent = if indent == 0 { 0 } else { indent + 1 };
+            let is_last = i == child_count - 1;
 
-            if is_last {
-                // Replace the last ├── with └── for the last item
-                let child_str = child
-                    .to_string_with_indent(child_indent)
-                    .replace("├──", "└──");
-                result.push_str(&child_str);
+            // Construct the prefix for this child
+            let child_prefix = if level == 0 {
+                if is_last {
+                    format!("└─ ")
+                } else {
+                    format!("├─ ")
+                }
             } else {
-                result.push_str(&child.to_string_with_indent(child_indent));
-            }
+                if is_last {
+                    format!("{}└─ ", prefix.replace("├─ ", "│  ").replace("└─ ", "   "))
+                } else {
+                    format!("{}├─ ", prefix.replace("├─ ", "│  ").replace("└─ ", "   "))
+                }
+            };
+
+            result.push_str(&child.to_string_with_indent(level + 1, &child_prefix));
         }
 
         result
@@ -93,6 +107,7 @@ impl CodeExplorer {
             "node_modules",
             "build",
             "dist",
+            ".git",
             ".idea",
             ".vscode",
             "*.pyc",
@@ -128,28 +143,33 @@ impl CodeExplorer {
 
             let relative_path = path.strip_prefix(&self.root_dir)?;
 
-            // Build the tree structure
-            let mut current = &mut root;
-            for component in relative_path.parent().unwrap_or(relative_path).components() {
-                let name = component.as_os_str().to_string_lossy().to_string();
-                current = current.children.entry(name).or_insert(FileTreeEntry {
-                    name: component.as_os_str().to_string_lossy().to_string(),
-                    entry_type: FileSystemEntryType::Directory,
-                    children: HashMap::new(),
-                });
-            }
+            // Build path components
+            let components: Vec<_> = relative_path.components().collect();
 
-            // Add file entry
-            if path.is_file() {
-                let name = path.file_name().unwrap().to_string_lossy().to_string();
-                current.children.insert(
-                    name.clone(),
-                    FileTreeEntry {
+            // Start from root and traverse/build the tree structure
+            let mut current = &mut root;
+            for (i, component) in components.iter().enumerate() {
+                let name = component.as_os_str().to_string_lossy().to_string();
+                let is_last = i == components.len() - 1;
+
+                // If this is not the last component, it must be a directory
+                // If it is the last component, use the actual file type
+                let entry_type = if !is_last {
+                    FileSystemEntryType::Directory
+                } else if path.is_file() {
+                    FileSystemEntryType::File
+                } else {
+                    FileSystemEntryType::Directory
+                };
+
+                current = current
+                    .children
+                    .entry(name.clone())
+                    .or_insert(FileTreeEntry {
                         name,
-                        entry_type: FileSystemEntryType::File,
+                        entry_type,
                         children: HashMap::new(),
-                    },
-                );
+                    });
             }
         }
 
