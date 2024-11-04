@@ -30,12 +30,12 @@ pub struct WorkingMemory {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "tool", content = "params")]
 pub enum Tool {
-    /// Read content of a specific file
-    ReadFile { path: PathBuf },
+    /// Read content of one or multiple files
+    ReadFile { paths: Vec<PathBuf> },
     /// Write content to a file
     WriteFile { path: PathBuf, content: String },
-    /// Replace file content with a summary in working memory
-    Summarize { path: PathBuf, summary: String },
+    /// Replace file content with summaries in working memory
+    Summarize { files: Vec<(PathBuf, String)> },
     /// Ask user a question and wait for response
     AskUser { question: String },
 }

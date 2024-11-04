@@ -4,7 +4,7 @@ use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
 use anyhow::Result;
 use std::path::PathBuf;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 pub struct Agent {
     working_memory: WorkingMemory,
@@ -62,69 +62,67 @@ impl Agent {
         let messages = self.prepare_messages();
 
         let tools_description = r#"
-    Available tools:
-    1. ReadFile
-       - Reads the content of a file
-       - Parameters: {"path": "path/to/file"}
-       - Returns: Content of the file
+        Available tools:
+        1. ReadFile
+           - Reads the content of one or multiple files
+           - Parameters: {"paths": ["path/to/file1", "path/to/file2", ...]}
+           - Returns: Confirmation of which files were loaded into working memory
 
-    2. WriteFile
-       - Creates or overwrites a file
-       - Parameters: {
-           "path": "path/to/file",
-           "content": "content to write"
-         }
-       - Returns: Confirmation message
+        2. WriteFile
+           - Creates or overwrites a file
+           - Parameters: {
+               "path": "path/to/file",
+               "content": "content to write"
+             }
+           - Returns: Confirmation message
 
-    3. Summarize
-       - Replaces file content with a summary in working memory
-       - Parameters: {
-           "path": "path/to/file",
-           "summary": "your summary of the file",
-         }
-       - Returns: Confirmation message
-       - Use this to maintain a high-level understanding while managing memory usage
+        3. Summarize
+           - Replaces file contents with summaries in working memory
+           - Parameters: {
+               "files": [
+                   {"path": "path/to/file1", "summary": "your summary of the file1"},
+                   {"path": "path/to/file2", "summary": "your summary of the file2"}
+               ]
+             }
+           - Returns: Confirmation message
+           - Use this to maintain a high-level understanding while managing memory usage
 
-    4. AskUser
-       - Asks the user a question and waits for their response
-       - Parameters: {"question": "your question here?"}
-       - Returns: The user's response as a string
-       - Use this when you need clarification or a decision from the user"#;
+        4. AskUser
+           - Asks the user a question and waits for their response
+           - Parameters: {"question": "your question here?"}
+           - Returns: The user's response as a string
+           - Use this when you need clarification or a decision from the user"#;
 
         let request = LLMRequest {
             messages,
             max_tokens: 1000,
             temperature: 0.7,
             system_prompt: Some(format!(
-                "You are a code exploration agent. Your task is to analyze codebases and complete specific tasks.\n\n\
+                "You are an agent assisting the user in programming tasks. Your task is to analyze codebases and complete specific tasks.\n\n\
+                Your goal is to either gather relevant information in the working memory, \
+                or complete the task(s) if you have all necessary information.\n\n\
+                Working Memory Management:\n\
+                - Use ReadFile to load important files into working memory\n\
+                - Use Summarize to remove files that turned out to be less relevant\n\
+                - Keep only information that's necessary for the current task\n\
+                - Use WriteFile to create new files or replace existing files. Always provide the complete content when writing files\n\n\
                 {}\n\n\
-                When exploring directories, remember:\n\
-                - Directory listings are non-recursive and show files (FILE) and directories (DIR)\n\
-                - You need to explicitly navigate into subdirectories to see their contents\n\
-                - Always start with the root directory and navigate step by step\n\n\
                 ALWAYS respond in the following JSON format:\n\
                 {{\
-                  'reasoning': 'your step-by-step reasoning',\
-                  'task_completed': true/false,\
-                  'tool': {{\
-                    'name': 'ToolName',\
-                    'params': {{ tool specific parameters }}\
-                  }}\
+                    \"reasoning\": <explain your thought process>,\
+                    \"task_completed\": <true/false>,\
+                    \"tool\": {{\
+                        \"name\": <ToolName>,\
+                        \"params\": <tool-specific parameters>\
+                    }}\
                 }}\n\n\
                 Always explain your reasoning before choosing a tool. Think step by step.",
                 tools_description
             )),
         };
 
-        // debug!(
-        //     "System prompt: {}",
-        //     request
-        //         .system_prompt
-        //         .as_ref()
-        //         .unwrap_or(&"none".to_string())
-        // );
         for (i, message) in request.messages.iter().enumerate() {
-            debug!(
+            info!(
                 "Message {}: Role={:?}, Content={:?}",
                 i, message.role, message.content
             );
@@ -137,47 +135,56 @@ impl Agent {
         parse_llm_response(&response)
     }
 
-    /// Prepare messages for LLM request
+    /// Prepare messages for LLM request - currently returns a single user message
+    /// but kept as Vec<Message> for flexibility to change the format later
     fn prepare_messages(&self) -> Vec<Message> {
-        let mut messages = vec![Message {
+        vec![Message {
             role: MessageRole::User,
-            content: MessageContent::Text(
-                format!(
-                    "Task: {}\n\nRepository structure:\n{}\n\nCurrent working memory state:\n- Loaded files: {}\n- File summaries: {}\n",
-                    self.working_memory.current_task,
-                    self.working_memory.file_tree.as_ref()
-                        .map(|tree| tree.to_string())
-                        .unwrap_or_else(|| "No file tree available".to_string()),
-                    self.working_memory.loaded_files.keys()
-                        .map(|p| p.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    self.working_memory.file_summaries.keys()
-                        .map(|p| p.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-                .trim()
-                .to_string(),
-            ),
-        }];
-
-        // Add relevant history from previous actions
-        for action in &self.working_memory.action_history {
-            messages.push(Message {
-                role: MessageRole::Assistant,
-                content: MessageContent::Text(
-                    format!(
-                        "Reasoning: {}\nExecuted action: {:?}\nResult: {}",
-                        action.reasoning, action.tool, action.result
-                    )
-                    .trim()
-                    .to_string(),
-                ),
-            });
-        }
-
-        messages
+            content: MessageContent::Text(format!(
+                "Task: {}\n\n\
+                Repository structure:\n\
+                {}\n\n\
+                Current Working Memory:\n\
+                - Loaded files and their contents:\n{}\n\
+                - File summaries:\n{}\n\n\
+                Previous actions:\n{}\n",
+                self.working_memory.current_task,
+                // File tree structure
+                self.working_memory
+                    .file_tree
+                    .as_ref()
+                    .map(|tree| tree.to_string())
+                    .unwrap_or_else(|| "No file tree available".to_string()),
+                // Format loaded files with their contents
+                self.working_memory
+                    .loaded_files
+                    .iter()
+                    .map(|(path, content)| format!("  -----{}:\n{}", path.display(), content))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                // Format file summaries
+                self.working_memory
+                    .file_summaries
+                    .iter()
+                    .map(|(path, summary)| format!("  {}: {}", path.display(), summary))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                // Format action history
+                self.working_memory
+                    .action_history
+                    .iter()
+                    .enumerate()
+                    .map(|(i, action)| format!(
+                        "{}. Tool: {:?}\n   Reasoning: {}\n   Result: {}",
+                        i + 1,
+                        action.tool,
+                        action.reasoning,
+                        action.result
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            )),
+        }]
     }
 
     /// Executes an action and returns the result
@@ -185,35 +192,61 @@ impl Agent {
         debug!("Executing action: {:?}", action.tool);
 
         let result = match &action.tool {
-            Tool::ReadFile { path } => {
-                self.ui
-                    .display(UIMessage::Action(format!(
-                        "Reading file `{}`",
-                        path.display()
-                    )))
-                    .await?;
+            Tool::ReadFile { paths } => {
+                let mut loaded_files = Vec::new();
+                let mut failed_files = Vec::new();
 
-                let full_path = if path.is_absolute() {
-                    path.clone()
+                for path in paths {
+                    self.ui
+                        .display(UIMessage::Action(format!(
+                            "Reading file `{}`",
+                            path.display()
+                        )))
+                        .await?;
+
+                    let full_path = if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        self.explorer.root_dir.join(path)
+                    };
+
+                    match self.explorer.read_file(&full_path) {
+                        Ok(content) => {
+                            self.working_memory
+                                .loaded_files
+                                .insert(full_path.clone(), content);
+                            loaded_files.push(path.display().to_string());
+                        }
+                        Err(e) => {
+                            failed_files.push((path.display().to_string(), e.to_string()));
+                        }
+                    }
+                }
+
+                let result_message = if !loaded_files.is_empty() {
+                    format!("Successfully loaded files: {}", loaded_files.join(", "))
                 } else {
-                    self.explorer.root_dir.join(path)
+                    String::new()
                 };
 
-                match self.explorer.read_file(&full_path) {
-                    Ok(content) => ActionResult {
-                        tool: action.tool.clone(),
-                        success: true,
-                        result: content,
-                        error: None,
-                        reasoning: action.reasoning.clone(),
-                    },
-                    Err(e) => ActionResult {
-                        tool: action.tool.clone(),
-                        success: false,
-                        result: String::new(),
-                        error: Some(e.to_string()),
-                        reasoning: action.reasoning.clone(),
-                    },
+                let error_message = if !failed_files.is_empty() {
+                    Some(
+                        failed_files
+                            .iter()
+                            .map(|(path, err)| format!("{}: {}", path, err))
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    )
+                } else {
+                    None
+                };
+
+                ActionResult {
+                    tool: action.tool.clone(),
+                    success: !loaded_files.is_empty(),
+                    result: result_message,
+                    error: error_message,
+                    reasoning: action.reasoning.clone(),
                 }
             }
 
@@ -254,25 +287,28 @@ impl Agent {
                 }
             }
 
-            Tool::Summarize { path, summary } => {
+            Tool::Summarize { files } => {
                 self.ui
                     .display(UIMessage::Action(format!(
-                        "Summarizing file `{}`",
-                        path.display()
+                        "Summarizing {} files",
+                        files.len()
                     )))
                     .await?;
 
-                self.working_memory.loaded_files.remove(path);
-
-                // Add the summary
-                self.working_memory
-                    .file_summaries
-                    .insert(path.clone(), summary.clone());
+                for (path, summary) in files {
+                    self.working_memory.loaded_files.remove(path);
+                    self.working_memory
+                        .file_summaries
+                        .insert(path.clone(), summary.clone());
+                }
 
                 ActionResult {
                     tool: action.tool.clone(),
                     success: true,
-                    result: format!("Summarized {} and updated working memory", path.display()),
+                    result: format!(
+                        "Summarized {} files and updated working memory",
+                        files.len()
+                    ),
                     error: None,
                     reasoning: action.reasoning.clone(),
                 }
@@ -335,7 +371,7 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
 
     trace!("Raw JSON response: {}", content);
 
-    // Escape newlines in the content, but only withing strings
+    // Escape newlines in the content, but only within strings
     let mut escaped = String::with_capacity(content.len());
     let mut in_string = false;
     let mut prev_char = None;
@@ -379,11 +415,17 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
     // Convert the tool JSON into our Tool enum
     let tool = match tool_name {
         "ReadFile" => Tool::ReadFile {
-            path: PathBuf::from(
-                tool_params["path"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
-            ),
+            paths: tool_params["paths"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Missing or invalid paths array"))?
+                .iter()
+                .map(|p| {
+                    Ok(PathBuf::from(
+                        p.as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Invalid path in array"))?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
         },
         "WriteFile" => Tool::WriteFile {
             path: PathBuf::from(
@@ -397,15 +439,24 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
                 .to_string(),
         },
         "Summarize" => Tool::Summarize {
-            path: PathBuf::from(
-                tool_params["path"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
-            ),
-            summary: tool_params["summary"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing summary parameter"))?
-                .to_string(),
+            files: tool_params["files"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Missing or invalid files array"))?
+                .iter()
+                .map(|f| {
+                    Ok((
+                        PathBuf::from(
+                            f["path"]
+                                .as_str()
+                                .ok_or_else(|| anyhow::anyhow!("Missing path in file entry"))?,
+                        ),
+                        f["summary"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Missing summary in file entry"))?
+                            .to_string(),
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
         },
         "AskUser" => Tool::AskUser {
             question: tool_params["question"]
