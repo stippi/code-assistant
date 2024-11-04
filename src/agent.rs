@@ -140,6 +140,8 @@ impl Agent {
                 - Use UpdateFile to make changes to existing files\n\
                 - Use WriteFile to create new files or replace existing (small) files. Always provide the complete content when writing files\n\n\
                 {}\n\n\
+                Before making changes to files, unless you already know the used libraries/dependencies,\n\
+                always confirm that methods exist on the respective types by inspecting dependencies within the code-base!\n\n\
                 ALWAYS respond in the following JSON format:\n\
                 {{\
                     \"reasoning\": <explain your thought process>,\
