@@ -74,14 +74,34 @@ impl Agent {
            - Returns: Confirmation of which files were loaded into working memory
 
         3. WriteFile
-           - Creates or overwrites a file
+           - Creates or overwrites a file. Use for new files only or when files are short. Prefer to use "UpdateFile".
            - Parameters: {
                "path": "path/to/file",
                "content": "content to write"
              }
            - Returns: Confirmation message
 
-        4. Summarize
+        4. UpdateFile
+            - Applies updates to a file. Make sure the updates apply cleanly.
+            - Parameters: {
+                "path": "path/to/file",
+                "updates": [
+                  {
+                    "start_line": <first line number of the replaced section>,
+                    "end_line": <last line number of the section>,
+                    "new_content": "the new content without leading line numbers, can have more or fewer lines"
+                  },
+                  {
+                    "start_line": <first line number of another replaced section>,
+                    "end_line": <last line number of the section>,
+                    "new_content": "the new content"
+                  },
+                  ...
+                ]
+            }
+            - Returns: Confirmation message
+
+        5. Summarize
            - Replaces file contents with summaries in working memory
            - Parameters: {
                "files": [
@@ -92,13 +112,13 @@ impl Agent {
            - Returns: Confirmation message
            - Use this to maintain a high-level understanding while managing memory usage
 
-        5. AskUser
+        6. AskUser
            - Asks the user a question and provides their response
            - Parameters: {"question": "your question here?"}
            - Returns: The user's response as a string
            - Use this when you need clarification or a decision from the user
 
-        6. MessageUser
+        7. MessageUser
            - Provide a message to the user. Use the "AskUser" tool instead if you need a response.
            - Parameters: {"message": "your message here"}
            - Returns: Confirmation message
@@ -117,7 +137,8 @@ impl Agent {
                 - Use ReadFiles to load important files into working memory\n\
                 - Use Summarize to remove files that turned out to be less relevant\n\
                 - Keep only information that's necessary for the current task\n\
-                - Use WriteFile to create new files or replace existing files. Always provide the complete content when writing files\n\n\
+                - Use UpdateFile to make changes to existing files\n\
+                - Use WriteFile to create new files or replace existing (small) files. Always provide the complete content when writing files\n\n\
                 {}\n\n\
                 ALWAYS respond in the following JSON format:\n\
                 {{\
@@ -167,11 +188,15 @@ impl Agent {
                     .as_ref()
                     .map(|tree| tree.to_string())
                     .unwrap_or_else(|| "No file tree available".to_string()),
-                // Format loaded files with their contents
+                // Format loaded files with their contents and line numbers
                 self.working_memory
                     .loaded_files
                     .iter()
-                    .map(|(path, content)| format!("  -----{}:\n{}", path.display(), content))
+                    .map(|(path, content)| format!(
+                        "  -----{}:\n{}",
+                        path.display(),
+                        CodeExplorer::format_with_line_numbers(content)
+                    ))
                     .collect::<Vec<_>>()
                     .join("\n"),
                 // Format file summaries
@@ -361,6 +386,53 @@ impl Agent {
                 }
             }
 
+            Tool::UpdateFile { path, updates } => {
+                self.ui
+                    .display(UIMessage::Action(format!(
+                        "Updating {} sections in `{}`",
+                        updates.len(),
+                        path.display()
+                    )))
+                    .await?;
+
+                let full_path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    self.explorer.root_dir.join(path)
+                };
+
+                match self.explorer.apply_updates(&full_path, updates) {
+                    Ok(new_content) => {
+                        // Write the updated file
+                        std::fs::write(&full_path, new_content.clone())?;
+
+                        // Also update the working memory in case it is currently loaded there
+                        if let Some(old_content) = self.working_memory.loaded_files.get_mut(path) {
+                            *old_content = new_content;
+                        }
+
+                        ActionResult {
+                            tool: action.tool.clone(),
+                            success: true,
+                            result: format!(
+                                "Successfully applied {} updates to {}",
+                                updates.len(),
+                                path.display()
+                            ),
+                            error: None,
+                            reasoning: action.reasoning.clone(),
+                        }
+                    }
+                    Err(e) => ActionResult {
+                        tool: action.tool.clone(),
+                        success: false,
+                        result: String::new(),
+                        error: Some(e.to_string()),
+                        reasoning: action.reasoning.clone(),
+                    },
+                }
+            }
+
             Tool::Summarize { files } => {
                 self.ui
                     .display(UIMessage::Action(format!(
@@ -539,6 +611,34 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing content parameter"))?
                 .to_string(),
+        },
+        "UpdateFile" => Tool::UpdateFile {
+            path: PathBuf::from(
+                tool_params["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
+            ),
+            updates: tool_params["updates"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Missing or invalid updates array"))?
+                .iter()
+                .map(|update| {
+                    Ok(FileUpdate {
+                        start_line: update["start_line"]
+                            .as_u64()
+                            .ok_or_else(|| anyhow::anyhow!("Invalid or missing start_line"))?
+                            as usize,
+                        end_line: update["end_line"]
+                            .as_u64()
+                            .ok_or_else(|| anyhow::anyhow!("Invalid or missing end_line"))?
+                            as usize,
+                        new_content: update["new_content"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Missing new_content"))?
+                            .to_string(),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
         },
         "Summarize" => Tool::Summarize {
             files: tool_params["files"]

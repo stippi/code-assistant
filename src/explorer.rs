@@ -1,4 +1,4 @@
-use crate::types::{FileSystemEntryType, FileTreeEntry};
+use crate::types::{FileSystemEntryType, FileTreeEntry, FileUpdate};
 use anyhow::Result;
 use ignore::WalkBuilder;
 use std::collections::HashMap;
@@ -227,5 +227,78 @@ impl CodeExplorer {
         }
 
         Ok(entry)
+    }
+
+    pub fn format_with_line_numbers(content: &str) -> String {
+        content
+            .lines()
+            .enumerate()
+            .map(|(i, line)| format!("{:>4} | {}", i + 1, line))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Applies FuleUpdates to a file
+    pub fn apply_updates(&self, path: &Path, updates: &[FileUpdate]) -> Result<String> {
+        let content = std::fs::read_to_string(path)?;
+        let lines: Vec<&str> = content.lines().collect();
+
+        // Validate the updates
+        for update in updates {
+            if update.start_line == 0 || update.end_line == 0 {
+                anyhow::bail!("Line numbers must start at 1");
+            }
+            if update.start_line > update.end_line {
+                anyhow::bail!("Start line must not be greater than end line");
+            }
+            if update.end_line > lines.len() {
+                anyhow::bail!(
+                    "End line {} exceeds file length {}",
+                    update.end_line,
+                    lines.len()
+                );
+            }
+        }
+
+        // Sort the updates by start_line in reverse order
+        let mut sorted_updates = updates.to_vec();
+        sorted_updates.sort_by(|a, b| b.start_line.cmp(&a.start_line));
+
+        // Check if there are any overlapping updates
+        for updates in sorted_updates.windows(2) {
+            if updates[1].end_line >= updates[0].start_line {
+                anyhow::bail!(
+                    "Overlapping updates: lines {}-{} and {}-{}",
+                    updates[1].start_line,
+                    updates[1].end_line,
+                    updates[0].start_line,
+                    updates[0].end_line
+                );
+            }
+        }
+
+        // Apply the updates from bottom to top
+        let mut result = lines.join("\n");
+        for update in sorted_updates {
+            let prefix = if update.start_line > 1 {
+                // Take everything until the start line (including the line-break before the start line)
+                let prefix_end = lines[..update.start_line - 1].join("\n").len();
+                &result[..=prefix_end]
+            } else {
+                ""
+            };
+
+            let suffix = if update.end_line < lines.len() {
+                // Take everything after the end line (including the line-break after the end line)
+                let suffix_start = lines[..update.end_line].join("\n").len() + 1;
+                &result[suffix_start..]
+            } else {
+                ""
+            };
+
+            result = format!("{}{}{}", prefix, update.new_content, suffix);
+        }
+
+        Ok(result)
     }
 }

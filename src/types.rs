@@ -27,6 +27,13 @@ pub struct WorkingMemory {
     pub notes: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FileUpdate {
+    pub start_line: usize,
+    pub end_line: usize,
+    pub new_content: String,
+}
+
 /// Available tools the agent can use
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "tool", content = "params")]
@@ -41,6 +48,11 @@ pub enum Tool {
     ReadFiles { paths: Vec<PathBuf> },
     /// Write content to a file
     WriteFile { path: PathBuf, content: String },
+    /// Update parts of a file
+    UpdateFile {
+        path: PathBuf,
+        updates: Vec<FileUpdate>,
+    },
     /// Replace file content with summaries in working memory
     Summarize { files: Vec<(PathBuf, String)> },
     /// Ask user a question and wait for response
