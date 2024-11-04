@@ -4,7 +4,7 @@ use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
 use anyhow::Result;
 use std::path::PathBuf;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 pub struct Agent {
     working_memory: WorkingMemory,
@@ -106,7 +106,7 @@ impl Agent {
 
         let request = LLMRequest {
             messages,
-            max_tokens: 1000,
+            max_tokens: 8192,
             temperature: 0.7,
             system_prompt: Some(format!(
                 "You are an agent assisting the user in programming tasks. Your task is to analyze codebases and complete specific tasks.\n\n\
@@ -134,7 +134,7 @@ impl Agent {
         };
 
         for (i, message) in request.messages.iter().enumerate() {
-            info!(
+            debug!(
                 "Message {}: Role={:?}, Content={:?}",
                 i, message.role, message.content
             );
@@ -482,7 +482,7 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
 
     // Parse the JSON response
     let value: serde_json::Value = serde_json::from_str(&escaped)
-        .map_err(|e| anyhow::anyhow!("Failed to parse JSON response: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to parse JSON response: {} JSON:\n{}", e, &escaped))?;
 
     // Extract the components
     let reasoning = value["reasoning"]
