@@ -2,7 +2,7 @@ use crate::types::{FileSystemEntryType, FileTreeEntry};
 use anyhow::Result;
 use ignore::WalkBuilder;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::debug;
 
 /// Handles file system operations for code exploration
@@ -25,42 +25,53 @@ impl FileTreeEntry {
         } else {
             result.push_str(prefix);
             result.push_str(&self.name);
-            if matches!(self.entry_type, FileSystemEntryType::Directory) {
-                result.push('/');
+
+            match self.entry_type {
+                FileSystemEntryType::Directory => {
+                    result.push('/');
+                    // Add [...] for unexpanded directories that aren't empty
+                    if !self.is_expanded {
+                        result.push_str(" [...]");
+                    }
+                }
+                FileSystemEntryType::File => {}
             }
             result.push('\n');
         }
 
-        // Sort children: directories first, then files, both alphabetically
-        let mut sorted_children: Vec<_> = self.children.values().collect();
-        sorted_children.sort_by_key(|entry| {
-            (
-                matches!(entry.entry_type, FileSystemEntryType::File),
-                &entry.name,
-            )
-        });
+        // Only show children if this directory is expanded
+        if matches!(self.entry_type, FileSystemEntryType::Directory) && self.is_expanded {
+            // Sort children: directories first, then files, both alphabetically
+            let mut sorted_children: Vec<_> = self.children.values().collect();
+            sorted_children.sort_by_key(|entry| {
+                (
+                    matches!(entry.entry_type, FileSystemEntryType::File),
+                    &entry.name,
+                )
+            });
 
-        // Add children
-        let child_count = sorted_children.len();
-        for (i, child) in sorted_children.iter().enumerate() {
-            let is_last = i == child_count - 1;
+            // Add children
+            let child_count = sorted_children.len();
+            for (i, child) in sorted_children.iter().enumerate() {
+                let is_last = i == child_count - 1;
 
-            // Construct the prefix for this child
-            let child_prefix = if level == 0 {
-                if is_last {
-                    format!("└─ ")
+                // Construct the prefix for this child
+                let child_prefix = if level == 0 {
+                    if is_last {
+                        format!("└─ ")
+                    } else {
+                        format!("├─ ")
+                    }
                 } else {
-                    format!("├─ ")
-                }
-            } else {
-                if is_last {
-                    format!("{}└─ ", prefix.replace("├─ ", "│  ").replace("└─ ", "   "))
-                } else {
-                    format!("{}├─ ", prefix.replace("├─ ", "│  ").replace("└─ ", "   "))
-                }
-            };
+                    if is_last {
+                        format!("{}└─ ", prefix.replace("├─ ", "│  ").replace("└─ ", "   "))
+                    } else {
+                        format!("{}├─ ", prefix.replace("├─ ", "│  ").replace("└─ ", "   "))
+                    }
+                };
 
-            result.push_str(&child.to_string_with_indent(level + 1, &child_prefix));
+                result.push_str(&child.to_string_with_indent(level + 1, &child_prefix));
+            }
         }
 
         result
@@ -88,20 +99,18 @@ impl CodeExplorer {
         Ok(std::fs::read_to_string(path)?)
     }
 
-    /// Creates a complete file tree of the repository
-    pub fn create_file_tree(&self) -> Result<FileTreeEntry> {
-        let mut root = FileTreeEntry {
-            name: self
-                .root_dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("root")
-                .to_string(),
-            entry_type: FileSystemEntryType::Directory,
-            children: HashMap::new(),
-        };
+    fn expand_directory(
+        &self,
+        path: &Path,
+        entry: &mut FileTreeEntry,
+        current_depth: usize,
+        max_depth: usize,
+    ) -> Result<()> {
+        if current_depth >= max_depth {
+            entry.is_expanded = false;
+            return Ok(());
+        }
 
-        // Always ignore some common directories
         let default_ignore = [
             "target",
             "node_modules",
@@ -117,12 +126,12 @@ impl CodeExplorer {
             "Thumbs.db",
         ];
 
-        // Create walker that respects .gitignore
-        let walker = WalkBuilder::new(&self.root_dir)
-            .hidden(false) // Show hidden files unless ignored
-            .git_ignore(true) // Use .gitignore if present
-            .filter_entry(move |entry| {
-                let file_name = entry.file_name().to_string_lossy();
+        let walker = WalkBuilder::new(path)
+            .max_depth(Some(1)) // Only immediate children
+            .hidden(false)
+            .git_ignore(true)
+            .filter_entry(move |e| {
+                let file_name = e.file_name().to_string_lossy();
                 !default_ignore
                     .iter()
                     .any(|pattern| match glob::Pattern::new(pattern) {
@@ -133,46 +142,90 @@ impl CodeExplorer {
             .build();
 
         for result in walker {
-            let entry = result?;
-            let path = entry.path();
+            let dir_entry = result?;
+            let entry_path = dir_entry.path();
 
-            // Skip the root directory itself
-            if path == self.root_dir {
+            // Skip the directory itself
+            if entry_path == path {
                 continue;
             }
 
-            let relative_path = path.strip_prefix(&self.root_dir)?;
+            let name = entry_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
 
-            // Build path components
-            let components: Vec<_> = relative_path.components().collect();
-
-            // Start from root and traverse/build the tree structure
-            let mut current = &mut root;
-            for (i, component) in components.iter().enumerate() {
-                let name = component.as_os_str().to_string_lossy().to_string();
-                let is_last = i == components.len() - 1;
-
-                // If this is not the last component, it must be a directory
-                // If it is the last component, use the actual file type
-                let entry_type = if !is_last {
+            let is_dir = entry_path.is_dir();
+            let mut child_entry = FileTreeEntry {
+                name,
+                entry_type: if is_dir {
                     FileSystemEntryType::Directory
-                } else if path.is_file() {
-                    FileSystemEntryType::File
                 } else {
-                    FileSystemEntryType::Directory
-                };
+                    FileSystemEntryType::File
+                },
+                children: HashMap::new(),
+                is_expanded: false,
+            };
 
-                current = current
-                    .children
-                    .entry(name.clone())
-                    .or_insert(FileTreeEntry {
-                        name,
-                        entry_type,
-                        children: HashMap::new(),
-                    });
+            if is_dir {
+                self.expand_directory(
+                    entry_path, // Path ist jetzt schon ein &Path
+                    &mut child_entry,
+                    current_depth + 1,
+                    max_depth,
+                )?;
             }
+
+            entry.children.insert(child_entry.name.clone(), child_entry);
         }
 
+        entry.is_expanded = true;
+        Ok(())
+    }
+
+    pub fn create_initial_tree(&self, max_depth: usize) -> Result<FileTreeEntry> {
+        let mut root = FileTreeEntry {
+            name: self
+                .root_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("root")
+                .to_string(),
+            entry_type: FileSystemEntryType::Directory,
+            children: HashMap::new(),
+            is_expanded: true, // Root is always expanded
+        };
+
+        self.expand_directory(&self.root_dir, &mut root, 0, max_depth)?;
         Ok(root)
+    }
+
+    pub fn list_files(&self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry> {
+        let mut entry = FileTreeEntry {
+            name: path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string(),
+            entry_type: if path.is_dir() {
+                FileSystemEntryType::Directory
+            } else {
+                FileSystemEntryType::File
+            },
+            children: HashMap::new(),
+            is_expanded: true,
+        };
+
+        if path.is_dir() {
+            self.expand_directory(
+                path.as_path(), // Konvertierung zu &Path
+                &mut entry,
+                0,
+                max_depth.unwrap_or(usize::MAX),
+            )?;
+        }
+
+        Ok(entry)
     }
 }

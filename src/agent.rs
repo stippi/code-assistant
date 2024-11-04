@@ -32,14 +32,14 @@ impl Agent {
         debug!("Starting agent with task: {}", task);
         self.working_memory.current_task = task;
 
-        // Create initial file tree
+        // Create initial file tree with limited depth
         self.ui
             .display(UIMessage::Action(
-                "Creating repository file tree...".to_string(),
+                "Creating initial repository structure...".to_string(),
             ))
             .await?;
 
-        self.working_memory.file_tree = Some(self.explorer.create_file_tree()?);
+        self.working_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
 
         // Main agent loop
         loop {
@@ -63,12 +63,17 @@ impl Agent {
 
         let tools_description = r#"
         Available tools:
-        1. ReadFile
+        1. ListFiles
+           - Expands the contents of directories marked with " [...]" in the repository structure
+           - Parameters: {"paths": ["path/to/dir1", "path/to/dir2", ...]}
+           - Returns: Confirmation of which directories were expanded
+
+        2. ReadFiles
            - Reads the content of one or multiple files
            - Parameters: {"paths": ["path/to/file1", "path/to/file2", ...]}
            - Returns: Confirmation of which files were loaded into working memory
 
-        2. WriteFile
+        3. WriteFile
            - Creates or overwrites a file
            - Parameters: {
                "path": "path/to/file",
@@ -76,7 +81,7 @@ impl Agent {
              }
            - Returns: Confirmation message
 
-        3. Summarize
+        4. Summarize
            - Replaces file contents with summaries in working memory
            - Parameters: {
                "files": [
@@ -87,14 +92,14 @@ impl Agent {
            - Returns: Confirmation message
            - Use this to maintain a high-level understanding while managing memory usage
 
-        4. AskUser
-           - Asks the user a question and waits for their response
+        5. AskUser
+           - Asks the user a question and provides their response
            - Parameters: {"question": "your question here?"}
            - Returns: The user's response as a string
            - Use this when you need clarification or a decision from the user
 
-        5. MessageUser
-           - Provide a message to the user
+        6. MessageUser
+           - Provide a message to the user. Use the "AskUser" tool instead if you need a response.
            - Parameters: {"message": "your message here"}
            - Returns: Confirmation message
            - Use this when you need to inform the user"#;
@@ -108,7 +113,8 @@ impl Agent {
                 Your goal is to either gather relevant information in the working memory, \
                 or complete the task(s) if you have all necessary information.\n\n\
                 Working Memory Management:\n\
-                - Use ReadFile to load important files into working memory\n\
+                - Use ListFiles to expand collapsed directories (marked with ' [...]') in the repository structure\n\
+                - Use ReadFiles to load important files into working memory\n\
                 - Use Summarize to remove files that turned out to be less relevant\n\
                 - Keep only information that's necessary for the current task\n\
                 - Use WriteFile to create new files or replace existing files. Always provide the complete content when writing files\n\n\
@@ -198,7 +204,69 @@ impl Agent {
         debug!("Executing action: {:?}", action.tool);
 
         let result = match &action.tool {
-            Tool::ReadFile { paths } => {
+            Tool::ListFiles { paths, max_depth } => {
+                let mut expanded_paths = Vec::new();
+                let mut failed_paths = Vec::new();
+
+                for path in paths {
+                    self.ui
+                        .display(UIMessage::Action(format!(
+                            "Listing contents of `{}`",
+                            path.display()
+                        )))
+                        .await?;
+
+                    let full_path = if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        self.explorer.root_dir.join(path)
+                    };
+
+                    match self.explorer.list_files(&full_path, *max_depth) {
+                        Ok(tree_entry) => {
+                            // Update the file tree with the new expanded entry
+                            if let Some(ref mut file_tree) = self.working_memory.file_tree {
+                                update_tree_entry(file_tree, path, tree_entry)?;
+                            }
+                            expanded_paths.push(path.display().to_string());
+                        }
+                        Err(e) => {
+                            failed_paths.push((path.display().to_string(), e.to_string()));
+                        }
+                    }
+                }
+
+                let result_message = if !expanded_paths.is_empty() {
+                    format!(
+                        "Successfully listed contents of: {}",
+                        expanded_paths.join(", ")
+                    )
+                } else {
+                    String::new()
+                };
+
+                let error_message = if !failed_paths.is_empty() {
+                    Some(
+                        failed_paths
+                            .iter()
+                            .map(|(path, err)| format!("{}: {}", path, err))
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    )
+                } else {
+                    None
+                };
+
+                ActionResult {
+                    tool: action.tool.clone(),
+                    success: !expanded_paths.is_empty(),
+                    result: result_message,
+                    error: error_message,
+                    reasoning: action.reasoning.clone(),
+                }
+            }
+
+            Tool::ReadFiles { paths } => {
                 let mut loaded_files = Vec::new();
                 let mut failed_files = Vec::new();
 
@@ -434,7 +502,21 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
 
     // Convert the tool JSON into our Tool enum
     let tool = match tool_name {
-        "ReadFile" => Tool::ReadFile {
+        "ListFiles" => Tool::ListFiles {
+            paths: tool_params["paths"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Missing or invalid paths array"))?
+                .iter()
+                .map(|p| {
+                    Ok(PathBuf::from(
+                        p.as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Invalid path in array"))?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+            max_depth: tool_params["max_depth"].as_u64().map(|d| d as usize),
+        },
+        "ReadFiles" => Tool::ReadFiles {
             paths: tool_params["paths"]
                 .as_array()
                 .ok_or_else(|| anyhow::anyhow!("Missing or invalid paths array"))?
@@ -504,4 +586,30 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
         reasoning,
         task_completed,
     })
+}
+
+fn update_tree_entry(
+    tree: &mut FileTreeEntry,
+    path: &PathBuf,
+    new_entry: FileTreeEntry,
+) -> Result<()> {
+    let components: Vec<_> = path.components().collect();
+    let mut current = tree;
+
+    for (i, component) in components.iter().enumerate() {
+        let name = component.as_os_str().to_string_lossy().to_string();
+        let is_last = i == components.len() - 1;
+
+        if is_last {
+            current.children.insert(name, new_entry.clone());
+            break;
+        }
+
+        current = current
+            .children
+            .get_mut(&name)
+            .ok_or_else(|| anyhow::anyhow!("Path component not found: {}", name))?;
+    }
+
+    Ok(())
 }

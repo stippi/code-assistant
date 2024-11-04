@@ -7,6 +7,7 @@ pub struct FileTreeEntry {
     pub name: String,
     pub entry_type: FileSystemEntryType,
     pub children: HashMap<String, FileTreeEntry>,
+    pub is_expanded: bool,
 }
 
 /// Represents the agent's working memory during execution
@@ -30,8 +31,14 @@ pub struct WorkingMemory {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "tool", content = "params")]
 pub enum Tool {
+    /// List contents of directories
+    ListFiles {
+        paths: Vec<PathBuf>,
+        // Optional depth limit, None means unlimited
+        max_depth: Option<usize>,
+    },
     /// Read content of one or multiple files
-    ReadFile { paths: Vec<PathBuf> },
+    ReadFiles { paths: Vec<PathBuf> },
     /// Write content to a file
     WriteFile { path: PathBuf, content: String },
     /// Replace file content with summaries in working memory
