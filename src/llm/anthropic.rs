@@ -1,8 +1,8 @@
 use crate::llm::{types::*, LLMProvider};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reqwest::{Client, Response};
+use reqwest::{Client, Response, StatusCode};
 use serde::Serialize;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -13,11 +13,11 @@ use tracing::{debug, warn};
 struct AnthropicErrorResponse {
     #[serde(rename = "type")]
     error_type: String,
-    error: AnthropicError,
+    error: AnthropicErrorPayload,
 }
 
 #[derive(Debug, Serialize, serde::Deserialize)]
-struct AnthropicError {
+struct AnthropicErrorPayload {
     #[serde(rename = "type")]
     error_type: String,
     message: String,
@@ -124,6 +124,36 @@ impl RateLimitInfo {
     }
 }
 
+/// Error types specific to the Anthropic API
+#[derive(Debug, thiserror::Error)]
+pub enum ApiError {
+    #[error("Rate limit exceeded: {0}")]
+    RateLimit(String),
+
+    #[error("Authentication failed: {0}")]
+    Authentication(String),
+
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+
+    #[error("Service error: {0}")]
+    ServiceError(String),
+
+    #[error("Network error: {0}")]
+    NetworkError(String),
+
+    #[error("Unknown error: {0}")]
+    Unknown(String),
+}
+
+/// Context wrapper for API errors that includes rate limit information
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+struct ApiErrorContext {
+    error: ApiError,
+    rate_limits: Option<RateLimitInfo>,
+}
+
 /// Anthropic-specific request structure
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
@@ -158,7 +188,6 @@ impl AnthropicClient {
         max_retries: u32,
     ) -> Result<LLMResponse> {
         let mut attempts = 0;
-        let last_rate_limit_info: Option<RateLimitInfo> = None;
 
         loop {
             match self.try_send_request(request).await {
@@ -168,19 +197,71 @@ impl AnthropicClient {
                     return Ok(response);
                 }
                 Err(e) => {
-                    if let Some(rate_limits) = &last_rate_limit_info {
-                        if attempts < max_retries {
-                            attempts += 1;
-                            let delay = rate_limits.get_retry_delay();
-                            warn!(
-                                "Rate limit hit (attempt {}/{}), waiting {} seconds before retry",
-                                attempts,
-                                max_retries,
-                                delay.as_secs()
-                            );
-                            sleep(delay).await;
-                            continue;
+                    // Extract rate limit info if available in the error context
+                    let rate_limits = e
+                        .downcast_ref::<ApiErrorContext>()
+                        .and_then(|ctx| ctx.rate_limits.as_ref());
+
+                    match e.downcast_ref::<ApiError>() {
+                        Some(ApiError::RateLimit(_)) => {
+                            if let Some(rate_limits) = rate_limits {
+                                if attempts < max_retries {
+                                    attempts += 1;
+                                    let delay = rate_limits.get_retry_delay();
+                                    warn!(
+                                            "Rate limit hit (attempt {}/{}), waiting {} seconds before retry",
+                                            attempts,
+                                            max_retries,
+                                            delay.as_secs()
+                                        );
+                                    sleep(delay).await;
+                                    continue;
+                                }
+                            } else {
+                                // Fallback if no rate limit info available
+                                if attempts < max_retries {
+                                    attempts += 1;
+                                    let delay = Duration::from_secs(2u64.pow(attempts - 1));
+                                    warn!(
+                                            "Rate limit hit but no timing info available (attempt {}/{}), using exponential backoff: {} seconds",
+                                            attempts,
+                                            max_retries,
+                                            delay.as_secs()
+                                        );
+                                    sleep(delay).await;
+                                    continue;
+                                }
+                            }
                         }
+                        Some(ApiError::ServiceError(_)) => {
+                            if attempts < max_retries {
+                                attempts += 1;
+                                let delay = Duration::from_secs(2u64.pow(attempts - 1));
+                                warn!(
+                                    "Service error (attempt {}/{}), retrying in {} seconds",
+                                    attempts,
+                                    max_retries,
+                                    delay.as_secs()
+                                );
+                                sleep(delay).await;
+                                continue;
+                            }
+                        }
+                        Some(ApiError::NetworkError(_)) => {
+                            if attempts < max_retries {
+                                attempts += 1;
+                                let delay = Duration::from_secs(2u64.pow(attempts - 1));
+                                warn!(
+                                    "Network error (attempt {}/{}), retrying in {} seconds",
+                                    attempts,
+                                    max_retries,
+                                    delay.as_secs()
+                                );
+                                sleep(delay).await;
+                                continue;
+                            }
+                        }
+                        _ => {} // Don't retry other types of errors
                     }
                     return Err(e);
                 }
@@ -200,40 +281,51 @@ impl AnthropicClient {
             .json(request)
             .send()
             .await
-            .context("Failed to send request to Anthropic API")?;
+            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
-        // Extract rate limit information
+        // Extract rate limit information from response headers
         let rate_limits = RateLimitInfo::from_response(&response);
 
         let status = response.status();
         let response_text = response
             .text()
             .await
-            .context("Failed to get response text")?;
+            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
         if !status.is_success() {
             // Try to parse the error response
-            if let Ok(error_response) =
+            let error = if let Ok(error_response) =
                 serde_json::from_str::<AnthropicErrorResponse>(&response_text)
             {
-                debug!(
-                    "Received error response: type={}, error_type={}, message={}",
-                    error_response.error_type,
-                    error_response.error.error_type,
-                    error_response.error.message
-                );
-                anyhow::bail!(
-                    "Anthropic API error: {} - {}",
-                    error_response.error.error_type,
-                    error_response.error.message
-                );
+                match (status, error_response.error.error_type.as_str()) {
+                    (StatusCode::TOO_MANY_REQUESTS, _) | (_, "rate_limit_error") => {
+                        ApiError::RateLimit(error_response.error.message)
+                    }
+                    (StatusCode::UNAUTHORIZED, _) => {
+                        ApiError::Authentication(error_response.error.message)
+                    }
+                    (StatusCode::BAD_REQUEST, _) => {
+                        ApiError::InvalidRequest(error_response.error.message)
+                    }
+                    (status, _) if status.is_server_error() => {
+                        ApiError::ServiceError(error_response.error.message)
+                    }
+                    _ => ApiError::Unknown(error_response.error.message),
+                }
             } else {
-                anyhow::bail!("Anthropic API error (status {}): {}", status, response_text);
+                ApiError::Unknown(format!("Status {}: {}", status, response_text))
+            };
+
+            // Wrap the error with rate limit context
+            return Err(ApiErrorContext {
+                error: error,
+                rate_limits: Some(rate_limits),
             }
+            .into());
         }
 
-        let llm_response =
-            serde_json::from_str(&response_text).context("Failed to parse successful response")?;
+        let llm_response = serde_json::from_str(&response_text)
+            .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
 
         Ok((llm_response, rate_limits))
     }
