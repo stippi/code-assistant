@@ -318,7 +318,7 @@ impl AnthropicClient {
 
             // Wrap the error with rate limit context
             return Err(ApiErrorContext {
-                error: error,
+                error,
                 rate_limits: Some(rate_limits),
             }
             .into());
