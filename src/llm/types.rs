@@ -1,4 +1,6 @@
+use reqwest::Response;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// Generic request structure that can be mapped to different providers
 #[derive(Debug, Serialize)]
@@ -52,4 +54,46 @@ pub enum ContentBlock {
 pub struct LLMResponse {
     pub id: String,
     pub content: Vec<ContentBlock>,
+}
+
+/// Common error types for all LLM providers
+#[derive(Debug, thiserror::Error)]
+pub enum ApiError {
+    #[error("Rate limit exceeded: {0}")]
+    RateLimit(String),
+
+    #[error("Authentication failed: {0}")]
+    Authentication(String),
+
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+
+    #[error("Service error: {0}")]
+    ServiceError(String),
+
+    #[error("Network error: {0}")]
+    NetworkError(String),
+
+    #[error("Unknown error: {0}")]
+    Unknown(String),
+}
+
+/// Context wrapper for API errors that includes rate limit information
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub struct ApiErrorContext<T> {
+    pub error: ApiError,
+    pub rate_limits: Option<T>,
+}
+
+/// Base trait for rate limit information
+pub trait RateLimitHandler: Sized {
+    /// Create a new instance from response headers
+    fn from_response(response: &Response) -> Self;
+
+    /// Get the delay duration before the next retry
+    fn get_retry_delay(&self) -> Duration;
+
+    /// Log the current rate limit status
+    fn log_status(&self);
 }

@@ -5,14 +5,14 @@ mod types;
 mod ui;
 
 use crate::agent::Agent;
-use crate::llm::AnthropicClient;
+use crate::llm::{AnthropicClient, LLMProvider, OpenAIClient};
 use crate::ui::terminal::TerminalUI;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use tracing::Level;
 
-/// AI-powered code analysis assistant
+/// AI-powered coding assistant
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -27,6 +27,30 @@ struct Args {
     /// Enable verbose logging
     #[arg(short, long)]
     verbose: bool,
+}
+
+fn create_llm_client() -> Result<Box<dyn LLMProvider>> {
+    // Try Anthropic first
+    if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+        return Ok(Box::new(AnthropicClient::new(
+            api_key,
+            "claude-3-5-sonnet-20241022".to_string(),
+        )));
+    }
+
+    // Try OpenAI as fallback
+    if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
+        return Ok(Box::new(OpenAIClient::new(
+            api_key,
+            "gpt-4o-latest".to_string(),
+        )));
+    }
+
+    // No API keys available
+    anyhow::bail!(
+        "Neither ANTHROPIC_API_KEY nor OPENAI_API_KEY environment variables are set. \
+                  Please set at least one of them to use the code assistant."
+    )
 }
 
 #[tokio::main]
@@ -56,19 +80,15 @@ async fn main() -> Result<()> {
         anyhow::bail!("Path '{}' is not a directory", args.path.display());
     }
 
-    // Setup LLM client
-    let llm_client = AnthropicClient::new(
-        std::env::var("ANTHROPIC_API_KEY")
-            .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY environment variable not set"))?,
-        "claude-3-5-sonnet-20241022".to_string(),
-    );
+    // Setup LLM client - try providers in order of preference
+    let llm_client = create_llm_client().context("Failed to initialize LLM client")?;
 
     // Initialize terminal UI
     let terminal_ui = Box::new(TerminalUI::new());
 
     // Initialize agent
     let mut agent = Agent::new(
-        Box::new(llm_client),
+        llm_client,
         args.path.canonicalize()?, // Convert to absolute path
         terminal_ui,
     );

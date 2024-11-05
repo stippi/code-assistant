@@ -1,8 +1,10 @@
 pub mod anthropic;
+pub mod openai;
 pub mod types;
 
-pub use anthropic::AnthropicClient; // Den Client direkt verfügbar machen
-pub use types::*; // Alle öffentlichen Typen verfügbar machen
+pub use anthropic::AnthropicClient;
+pub use openai::OpenAIClient;
+pub use types::*;
 
 use anyhow::Result;
 use async_trait::async_trait;

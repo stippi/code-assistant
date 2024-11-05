@@ -1,4 +1,4 @@
-use crate::llm::{types::*, LLMProvider};
+use crate::llm::{types::*, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -25,7 +25,7 @@ struct AnthropicErrorPayload {
 
 /// Rate limit information extracted from response headers
 #[derive(Debug)]
-struct RateLimitInfo {
+struct AnthropicRateLimitInfo {
     requests_limit: Option<u32>,
     requests_remaining: Option<u32>,
     requests_reset: Option<DateTime<Utc>>,
@@ -35,7 +35,7 @@ struct RateLimitInfo {
     retry_after: Option<Duration>,
 }
 
-impl RateLimitInfo {
+impl RateLimitHandler for AnthropicRateLimitInfo {
     /// Extract rate limit information from response headers
     fn from_response(response: &Response) -> Self {
         let headers = response.headers();
@@ -124,36 +124,6 @@ impl RateLimitInfo {
     }
 }
 
-/// Error types specific to the Anthropic API
-#[derive(Debug, thiserror::Error)]
-pub enum ApiError {
-    #[error("Rate limit exceeded: {0}")]
-    RateLimit(String),
-
-    #[error("Authentication failed: {0}")]
-    Authentication(String),
-
-    #[error("Invalid request: {0}")]
-    InvalidRequest(String),
-
-    #[error("Service error: {0}")]
-    ServiceError(String),
-
-    #[error("Network error: {0}")]
-    NetworkError(String),
-
-    #[error("Unknown error: {0}")]
-    Unknown(String),
-}
-
-/// Context wrapper for API errors that includes rate limit information
-#[derive(Debug, thiserror::Error)]
-#[error("{error}")]
-struct ApiErrorContext {
-    error: ApiError,
-    rate_limits: Option<RateLimitInfo>,
-}
-
 /// Anthropic-specific request structure
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
@@ -199,7 +169,7 @@ impl AnthropicClient {
                 Err(e) => {
                     // Extract rate limit info if available in the error context
                     let rate_limits = e
-                        .downcast_ref::<ApiErrorContext>()
+                        .downcast_ref::<ApiErrorContext<AnthropicRateLimitInfo>>()
                         .and_then(|ctx| ctx.rate_limits.as_ref());
 
                     match e.downcast_ref::<ApiError>() {
@@ -272,7 +242,7 @@ impl AnthropicClient {
     async fn try_send_request(
         &self,
         request: &AnthropicRequest,
-    ) -> Result<(LLMResponse, RateLimitInfo)> {
+    ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
         let response = self
             .client
             .post(&self.base_url)
@@ -284,7 +254,7 @@ impl AnthropicClient {
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
         // Extract rate limit information from response headers
-        let rate_limits = RateLimitInfo::from_response(&response);
+        let rate_limits = AnthropicRateLimitInfo::from_response(&response);
 
         let status = response.status();
         let response_text = response
