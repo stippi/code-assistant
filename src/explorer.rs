@@ -238,7 +238,7 @@ impl CodeExplorer {
             .join("\n")
     }
 
-    /// Applies FuleUpdates to a file
+    /// Applies FileUpdates to a file
     pub fn apply_updates(&self, path: &Path, updates: &[FileUpdate]) -> Result<String> {
         let content = std::fs::read_to_string(path)?;
         let lines: Vec<&str> = content.lines().collect();
