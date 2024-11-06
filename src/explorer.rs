@@ -278,27 +278,191 @@ impl CodeExplorer {
         }
 
         // Apply the updates from bottom to top
-        let mut result = lines.join("\n");
+        let mut result = content.clone(); // Keep the original line breaks
         for update in sorted_updates {
-            let prefix = if update.start_line > 1 {
-                // Take everything until the start line (including the line-break before the start line)
-                let prefix_end = lines[..update.start_line - 1].join("\n").len();
-                &result[..=prefix_end]
+            let start_index = if update.start_line > 1 {
+                // Find the position after the previous line's newline
+                result
+                    .split('\n')
+                    .take(update.start_line - 1)
+                    .map(|line| line.len() + 1) // +1 for the newline
+                    .sum()
             } else {
-                ""
+                0
             };
 
-            let suffix = if update.end_line < lines.len() {
-                // Take everything after the end line (including the line-break after the end line)
-                let suffix_start = lines[..update.end_line].join("\n").len() + 1;
-                &result[suffix_start..]
-            } else {
-                ""
-            };
+            let end_index = result
+                .split('\n')
+                .take(update.end_line)
+                .map(|line| line.len() + 1)
+                .sum::<usize>()
+                - if update.end_line == lines.len() { 1 } else { 0 };
 
-            result = format!("{}{}{}", prefix, update.new_content, suffix);
+            // Make sure the new content ends in a line break unless it is at the end of the file
+            let mut new_content = update.new_content.clone();
+            if update.end_line < lines.len() && !new_content.ends_with('\n') {
+                new_content.push('\n');
+            }
+
+            result.replace_range(start_index..end_index, &new_content);
         }
 
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // Helper function to setup temporary test environment
+    fn setup_test_directory() -> Result<(TempDir, CodeExplorer)> {
+        let temp_dir = TempDir::new()?;
+        let explorer = CodeExplorer::new(temp_dir.path().to_path_buf());
+        Ok((temp_dir, explorer))
+    }
+
+    // Helper function to create a test file with content
+    fn create_test_file(dir: &Path, name: &str, content: &str) -> Result<PathBuf> {
+        let file_path = dir.join(name);
+        fs::write(&file_path, content)?;
+        Ok(file_path)
+    }
+
+    #[test]
+    fn test_read_file() -> Result<()> {
+        let (temp_dir, explorer) = setup_test_directory()?;
+        let test_content = "Hello, World!";
+        let file_path = create_test_file(temp_dir.path(), "test.txt", test_content)?;
+
+        let result = explorer.read_file(&file_path)?;
+        assert_eq!(result, test_content);
+        Ok(())
+    }
+
+    #[test]
+    fn test_format_with_line_numbers() {
+        let input = "First line\nSecond line\nThird line";
+        let expected = "   1 | First line\n   2 | Second line\n   3 | Third line";
+
+        assert_eq!(CodeExplorer::format_with_line_numbers(input), expected);
+    }
+
+    #[test]
+    fn test_apply_updates_single() -> Result<()> {
+        let (temp_dir, explorer) = setup_test_directory()?;
+        let initial_content = "Line 1\nLine 2\nLine 3\nLine 4\n";
+        let file_path = create_test_file(temp_dir.path(), "test.txt", initial_content)?;
+
+        let updates = vec![FileUpdate {
+            start_line: 2,
+            end_line: 3,
+            new_content: "Updated Line 2\nUpdated Line 3".to_string(),
+        }];
+
+        let result = explorer.apply_updates(&file_path, &updates)?;
+        assert_eq!(result, "Line 1\nUpdated Line 2\nUpdated Line 3\nLine 4\n");
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_updates_multiple() -> Result<()> {
+        let (temp_dir, explorer) = setup_test_directory()?;
+        let initial_content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
+        let file_path = create_test_file(temp_dir.path(), "test.txt", initial_content)?;
+
+        let updates = vec![
+            FileUpdate {
+                start_line: 1,
+                end_line: 2,
+                new_content: "Updated Line 1\nUpdated Line 2".to_string(),
+            },
+            FileUpdate {
+                start_line: 4,
+                end_line: 5,
+                new_content: "Updated Line 4\nUpdated Line 5".to_string(),
+            },
+        ];
+
+        let result = explorer.apply_updates(&file_path, &updates)?;
+        assert_eq!(
+            result,
+            "Updated Line 1\nUpdated Line 2\nLine 3\nUpdated Line 4\nUpdated Line 5\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_initial_tree() -> Result<()> {
+        let (temp_dir, explorer) = setup_test_directory()?;
+
+        // Create a simple file system structure
+        fs::create_dir(temp_dir.path().join("dir1"))?;
+        fs::create_dir(temp_dir.path().join("dir2"))?;
+        create_test_file(temp_dir.path(), "file1.txt", "content")?;
+        create_test_file(&temp_dir.path().join("dir1"), "file2.txt", "content")?;
+
+        let tree = explorer.create_initial_tree(2)?;
+
+        // Assert basic structure
+        assert!(tree.is_expanded);
+        assert_eq!(tree.entry_type, FileSystemEntryType::Directory);
+
+        // Assert the children
+        let children_names: Vec<String> = tree.children.keys().cloned().collect();
+        assert!(children_names.contains(&"dir1".to_string()));
+        assert!(children_names.contains(&"dir2".to_string()));
+        assert!(children_names.contains(&"file1.txt".to_string()));
+
+        // Assert dir1
+        let dir1 = tree.children.get("dir1").unwrap();
+        assert_eq!(dir1.entry_type, FileSystemEntryType::Directory);
+        assert!(dir1.is_expanded);
+        assert!(dir1.children.contains_key("file2.txt"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_updates_invalid_line_number() -> Result<()> {
+        let (temp_dir, explorer) = setup_test_directory()?;
+        let file_path = create_test_file(temp_dir.path(), "test.txt", "content")?;
+
+        let updates = vec![FileUpdate {
+            start_line: 0, // Invalid line number
+            end_line: 1,
+            new_content: "new content".to_string(),
+        }];
+
+        let result = explorer.apply_updates(&file_path, &updates);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Line numbers must start at 1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_updates_out_of_bounds() -> Result<()> {
+        let (temp_dir, explorer) = setup_test_directory()?;
+        let file_path = create_test_file(temp_dir.path(), "test.txt", "single line")?;
+
+        let updates = vec![FileUpdate {
+            start_line: 1,
+            end_line: 10, // The file only has 1 line
+            new_content: "new content".to_string(),
+        }];
+
+        let result = explorer.apply_updates(&file_path, &updates);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "End line 10 exceeds file length 1"
+        );
+        Ok(())
     }
 }

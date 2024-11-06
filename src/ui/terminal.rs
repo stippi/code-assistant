@@ -23,12 +23,6 @@ impl UserInterface for TerminalUI {
         match message {
             UIMessage::Action(msg) => self.write_line(&msg).await?,
             UIMessage::Question(msg) => self.write_line(&format!("{}\n> ", msg)).await?,
-            UIMessage::Result(msg) => self.write_line(&format!("Result: {}", msg)).await?,
-            UIMessage::Debug(msg) => {
-                if std::env::var("DEBUG").is_ok() {
-                    self.write_line(&format!("Debug: {}", msg)).await?
-                }
-            }
         }
         Ok(())
     }

@@ -25,7 +25,6 @@ struct OpenAIChatMessage {
 
 #[derive(Debug, Deserialize)]
 struct OpenAIResponse {
-    id: String,
     choices: Vec<OpenAIChoice>,
 }
 
@@ -294,7 +293,6 @@ impl OpenAIClient {
 
         // Convert to our generic LLMResponse format
         let response = LLMResponse {
-            id: openai_response.id,
             content: vec![ContentBlock::Text {
                 text: openai_response.choices[0].message.content.clone(),
             }],

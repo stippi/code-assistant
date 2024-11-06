@@ -114,7 +114,7 @@ pub struct FileSystemEntry {
     pub entry_type: FileSystemEntryType,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum FileSystemEntryType {
     File,
     Directory,

@@ -52,7 +52,6 @@ pub enum ContentBlock {
 /// Generic response structure
 #[derive(Debug, Deserialize)]
 pub struct LLMResponse {
-    pub id: String,
     pub content: Vec<ContentBlock>,
 }
 
