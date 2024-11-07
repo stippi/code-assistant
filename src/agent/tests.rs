@@ -4,19 +4,20 @@ use crate::types::*;
 use crate::ui::{UIError, UIMessage, UserInterface};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tempfile;
 
 // Mock LLM Provider
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct MockLLMProvider {
+    requests: Arc<Mutex<Vec<LLMRequest>>>,
     responses: Arc<Mutex<Vec<Result<LLMResponse, anyhow::Error>>>>,
 }
 
 impl MockLLMProvider {
     fn new(responses: Vec<Result<LLMResponse, anyhow::Error>>) -> Self {
         Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(responses)),
         }
     }
@@ -24,7 +25,8 @@ impl MockLLMProvider {
 
 #[async_trait]
 impl LLMProvider for MockLLMProvider {
-    async fn send_message(&self, _request: LLMRequest) -> Result<LLMResponse, anyhow::Error> {
+    async fn send_message(&self, request: LLMRequest) -> Result<LLMResponse, anyhow::Error> {
+        self.requests.lock().unwrap().push(request);
         self.responses
             .lock()
             .unwrap()
@@ -80,11 +82,104 @@ struct MockExplorer {
 }
 
 impl MockExplorer {
-    fn new(files: HashMap<PathBuf, String>, file_tree: Option<FileTreeEntry>) -> Self {
+    pub fn new(files: HashMap<PathBuf, String>, file_tree: Option<FileTreeEntry>) -> Self {
         Self {
             files: Arc::new(Mutex::new(files)),
             file_tree: Arc::new(Mutex::new(file_tree)),
         }
+    }
+}
+
+impl CodeExplorer for MockExplorer {
+    fn root_dir(&self) -> PathBuf {
+        PathBuf::from("root")
+    }
+
+    fn read_file(&self, path: &PathBuf) -> Result<String, anyhow::Error> {
+        self.files
+            .lock()
+            .unwrap()
+            .get(path)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))
+    }
+
+    fn create_initial_tree(&self, _max_depth: usize) -> Result<FileTreeEntry, anyhow::Error> {
+        self.file_tree
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No file tree configured"))
+    }
+
+    fn list_files(
+        &self,
+        path: &PathBuf,
+        _max_depth: Option<usize>,
+    ) -> Result<FileTreeEntry, anyhow::Error> {
+        // Return just an error for now
+        Err(anyhow::anyhow!("Path not found: {}", path.display()))
+    }
+
+    fn apply_updates(&self, path: &Path, updates: &[FileUpdate]) -> Result<String, anyhow::Error> {
+        let mut files = self.files.lock().unwrap();
+
+        let content = files
+            .get(path)
+            .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))?;
+
+        let lines: Vec<&str> = content.lines().collect();
+        let mut result = String::new();
+
+        // Validate updates
+        for update in updates {
+            if update.start_line == 0 || update.end_line == 0 {
+                return Err(anyhow::anyhow!("Line numbers must start at 1"));
+            }
+            if update.start_line > update.end_line {
+                return Err(anyhow::anyhow!(
+                    "Start line must not be greater than end line"
+                ));
+            }
+            if update.end_line > lines.len() {
+                return Err(anyhow::anyhow!(
+                    "End line {} exceeds file length {}",
+                    update.end_line,
+                    lines.len()
+                ));
+            }
+        }
+
+        // Apply updates
+        let mut current_line = 1;
+        for update in updates {
+            // Add lines before the update
+            while current_line < update.start_line {
+                result.push_str(lines[current_line - 1]);
+                result.push('\n');
+                current_line += 1;
+            }
+
+            // Add the update
+            result.push_str(&update.new_content);
+            if !update.new_content.ends_with('\n') {
+                result.push('\n');
+            }
+
+            current_line = update.end_line + 1;
+        }
+
+        // Add remaining lines
+        while current_line <= lines.len() {
+            result.push_str(lines[current_line - 1]);
+            result.push('\n');
+            current_line += 1;
+        }
+
+        // Update the stored content
+        files.insert(path.to_path_buf(), result.clone());
+
+        Ok(result)
     }
 }
 
@@ -148,6 +243,23 @@ fn create_test_response(tool: Tool, reasoning: &str, task_completed: bool) -> LL
     }
 }
 
+fn create_explorer_mock() -> MockExplorer {
+    let mut files = HashMap::new();
+    files.insert(
+        PathBuf::from("test.txt"),
+        "line 1\nline 2\nline 3\n".to_string(),
+    );
+
+    let file_tree = Some(FileTreeEntry {
+        name: "root".to_string(),
+        entry_type: FileSystemEntryType::Directory,
+        children: HashMap::new(),
+        is_expanded: true,
+    });
+
+    MockExplorer::new(files, file_tree)
+}
+
 #[tokio::test]
 async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
     // Prepare test data
@@ -163,11 +275,10 @@ async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
     ))]);
 
     let mock_ui = MockUI::default();
-    let test_dir = tempfile::tempdir()?;
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
-        test_dir.path().to_path_buf(),
+        Box::new(create_explorer_mock()),
         Box::new(mock_ui.clone()),
     );
 
@@ -194,22 +305,19 @@ async fn test_agent_ask_user() -> Result<(), anyhow::Error> {
     let test_question = "Test question?";
     let test_answer = "Test answer";
 
-    let tool = Tool::AskUser {
-        question: test_question.to_string(),
-    };
-
     let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
-        tool,
+        Tool::AskUser {
+            question: test_question.to_string(),
+        },
         "Need to ask user a question",
         true,
     ))]);
 
     let mock_ui = MockUI::new(vec![Ok(test_answer.to_string())]);
-    let test_dir = tempfile::tempdir()?;
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
-        test_dir.path().to_path_buf(),
+        Box::new(create_explorer_mock()),
         Box::new(mock_ui.clone()),
     );
 
@@ -222,6 +330,51 @@ async fn test_agent_ask_user() -> Result<(), anyhow::Error> {
         UIMessage::Question(q) => q == test_question,
         _ => false,
     }));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_agent_read_files() -> Result<(), anyhow::Error> {
+    // Test success case
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response(
+            Tool::ReadFiles {
+                paths: vec![PathBuf::from("test.txt")],
+            },
+            "Reading test file",
+            false,
+        )),
+        Ok(create_test_response(
+            Tool::MessageUser {
+                message: (String::from("Done")),
+            },
+            "Dummy reason",
+            true,
+        )),
+    ]);
+    // Obtain a reference to the mock_llm before handing ownership to the agent
+    let mock_llm_ref = mock_llm.clone();
+
+    let mut agent = Agent::new(
+        Box::new(mock_llm),
+        Box::new(create_explorer_mock()),
+        Box::new(MockUI::default()),
+    );
+
+    // Run the agent
+    agent.start("Test task".to_string()).await?;
+
+    // Verify the file is displayed in the working memory
+    let locked_requests = mock_llm_ref.requests.lock().unwrap();
+    for request in locked_requests.iter() {
+        println!("Request: {:#?}", request);
+    }
+
+    // if let LLMRequest(req) = &locked_requests[1] {
+    //     // First message is about creating repository structure
+    //     println!("Request: {:#?}", req);
+    // }
 
     Ok(())
 }

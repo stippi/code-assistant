@@ -3,8 +3,10 @@ mod explorer;
 mod llm;
 mod types;
 mod ui;
+mod utils;
 
 use crate::agent::Agent;
+use crate::explorer::Explorer;
 use crate::llm::{AnthropicClient, LLMProvider, OpenAIClient};
 use crate::ui::terminal::TerminalUI;
 use anyhow::{Context, Result};
@@ -83,15 +85,15 @@ async fn main() -> Result<()> {
     // Setup LLM client - try providers in order of preference
     let llm_client = create_llm_client().context("Failed to initialize LLM client")?;
 
+    // Setup CodeExplorer
+    let root_path = args.path.canonicalize()?;
+    let explorer = Box::new(Explorer::new(root_path));
+
     // Initialize terminal UI
     let terminal_ui = Box::new(TerminalUI::new());
 
     // Initialize agent
-    let mut agent = Agent::new(
-        llm_client,
-        args.path.canonicalize()?, // Convert to absolute path
-        terminal_ui,
-    );
+    let mut agent = Agent::new(llm_client, explorer, terminal_ui);
 
     // Start agent with the specified task
     agent.start(args.task).await?;

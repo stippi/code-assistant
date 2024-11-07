@@ -1,6 +1,7 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileTreeEntry {
@@ -118,4 +119,14 @@ pub struct FileSystemEntry {
 pub enum FileSystemEntryType {
     File,
     Directory,
+}
+
+pub trait CodeExplorer {
+    fn root_dir(&self) -> PathBuf;
+    /// Reads the content of a file
+    fn read_file(&self, path: &PathBuf) -> Result<String>;
+    fn create_initial_tree(&self, max_depth: usize) -> Result<FileTreeEntry>;
+    fn list_files(&self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry>;
+    /// Applies FileUpdates to a file
+    fn apply_updates(&self, path: &Path, updates: &[FileUpdate]) -> Result<String>;
 }

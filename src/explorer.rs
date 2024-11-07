@@ -1,4 +1,4 @@
-use crate::types::{FileSystemEntryType, FileTreeEntry, FileUpdate};
+use crate::types::{CodeExplorer, FileSystemEntryType, FileTreeEntry, FileUpdate};
 use anyhow::Result;
 use ignore::WalkBuilder;
 use std::collections::HashMap;
@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use tracing::debug;
 
 /// Handles file system operations for code exploration
-pub struct CodeExplorer {
-    pub root_dir: PathBuf,
+pub struct Explorer {
+    root_dir: PathBuf,
 }
 
 impl FileTreeEntry {
@@ -78,25 +78,13 @@ impl FileTreeEntry {
     }
 }
 
-impl CodeExplorer {
-    /// Creates a new CodeExplorer instance
+impl Explorer {
+    /// Creates a new Explorer instance
     ///
     /// # Arguments
     /// * `root_dir` - The root directory to explore
     pub fn new(root_dir: PathBuf) -> Self {
         Self { root_dir }
-    }
-
-    /// Reads the content of a file
-    ///
-    /// # Arguments
-    /// * `path` - Path to the file to read
-    ///
-    /// # Returns
-    /// * `Result<String>` - File content or an error
-    pub fn read_file(&self, path: &PathBuf) -> Result<String> {
-        debug!("Reading file: {}", path.display());
-        Ok(std::fs::read_to_string(path)?)
     }
 
     fn expand_directory(
@@ -183,8 +171,14 @@ impl CodeExplorer {
         entry.is_expanded = true;
         Ok(())
     }
+}
 
-    pub fn create_initial_tree(&self, max_depth: usize) -> Result<FileTreeEntry> {
+impl CodeExplorer for Explorer {
+    fn root_dir(&self) -> PathBuf {
+        self.root_dir.clone()
+    }
+
+    fn create_initial_tree(&self, max_depth: usize) -> Result<FileTreeEntry> {
         let mut root = FileTreeEntry {
             name: self
                 .root_dir
@@ -201,7 +195,12 @@ impl CodeExplorer {
         Ok(root)
     }
 
-    pub fn list_files(&self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry> {
+    fn read_file(&self, path: &PathBuf) -> Result<String> {
+        debug!("Reading file: {}", path.display());
+        Ok(std::fs::read_to_string(path)?)
+    }
+
+    fn list_files(&self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry> {
         let mut entry = FileTreeEntry {
             name: path
                 .file_name()
@@ -229,17 +228,7 @@ impl CodeExplorer {
         Ok(entry)
     }
 
-    pub fn format_with_line_numbers(content: &str) -> String {
-        content
-            .lines()
-            .enumerate()
-            .map(|(i, line)| format!("{:>4} | {}", i + 1, line))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// Applies FileUpdates to a file
-    pub fn apply_updates(&self, path: &Path, updates: &[FileUpdate]) -> Result<String> {
+    fn apply_updates(&self, path: &Path, updates: &[FileUpdate]) -> Result<String> {
         let content = std::fs::read_to_string(path)?;
         let lines: Vec<&str> = content.lines().collect();
 
@@ -314,14 +303,15 @@ impl CodeExplorer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::format_with_line_numbers;
     use anyhow::Result;
     use std::fs;
     use tempfile::TempDir;
 
     // Helper function to setup temporary test environment
-    fn setup_test_directory() -> Result<(TempDir, CodeExplorer)> {
+    fn setup_test_directory() -> Result<(TempDir, Explorer)> {
         let temp_dir = TempDir::new()?;
-        let explorer = CodeExplorer::new(temp_dir.path().to_path_buf());
+        let explorer = Explorer::new(temp_dir.path().to_path_buf());
         Ok((temp_dir, explorer))
     }
 
@@ -348,7 +338,7 @@ mod tests {
         let input = "First line\nSecond line\nThird line";
         let expected = "   1 | First line\n   2 | Second line\n   3 | Third line";
 
-        assert_eq!(CodeExplorer::format_with_line_numbers(input), expected);
+        assert_eq!(format_with_line_numbers(input), expected);
     }
 
     #[test]

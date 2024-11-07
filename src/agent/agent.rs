@@ -1,7 +1,7 @@
-use crate::explorer::CodeExplorer;
 use crate::llm::{LLMProvider, LLMRequest, Message, MessageContent, MessageRole};
 use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
+use crate::utils::format_with_line_numbers;
 use anyhow::Result;
 use std::path::PathBuf;
 use tracing::{debug, trace, warn};
@@ -9,20 +9,20 @@ use tracing::{debug, trace, warn};
 pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
-    explorer: CodeExplorer,
+    explorer: Box<dyn CodeExplorer>,
     ui: Box<dyn UserInterface>,
 }
 
 impl Agent {
     pub fn new(
         llm_provider: Box<dyn LLMProvider>,
-        root_dir: PathBuf,
+        explorer: Box<dyn CodeExplorer>,
         ui: Box<dyn UserInterface>,
     ) -> Self {
         Self {
             working_memory: WorkingMemory::default(),
             llm_provider,
-            explorer: CodeExplorer::new(root_dir),
+            explorer,
             ui,
         }
     }
@@ -197,7 +197,7 @@ impl Agent {
                     .map(|(path, content)| format!(
                         "  -----{}:\n{}",
                         path.display(),
-                        CodeExplorer::format_with_line_numbers(content)
+                        format_with_line_numbers(content)
                     ))
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -246,7 +246,7 @@ impl Agent {
                     let full_path = if path.is_absolute() {
                         path.clone()
                     } else {
-                        self.explorer.root_dir.join(path)
+                        self.explorer.root_dir().join(path)
                     };
 
                     match self.explorer.list_files(&full_path, *max_depth) {
@@ -308,7 +308,7 @@ impl Agent {
                     let full_path = if path.is_absolute() {
                         path.clone()
                     } else {
-                        self.explorer.root_dir.join(path)
+                        self.explorer.root_dir().join(path)
                     };
 
                     match self.explorer.read_file(&full_path) {
@@ -362,7 +362,7 @@ impl Agent {
                 let full_path = if path.is_absolute() {
                     path.clone()
                 } else {
-                    self.explorer.root_dir.join(path)
+                    self.explorer.root_dir().join(path)
                 };
 
                 // Ensure the parent directory exists
@@ -400,7 +400,7 @@ impl Agent {
                 let full_path = if path.is_absolute() {
                     path.clone()
                 } else {
-                    self.explorer.root_dir.join(path)
+                    self.explorer.root_dir().join(path)
                 };
 
                 match self.explorer.apply_updates(&full_path, updates) {
