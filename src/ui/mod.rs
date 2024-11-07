@@ -2,7 +2,7 @@ pub mod terminal;
 use async_trait::async_trait;
 use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UIMessage {
     // System actions that the agent takes
     Action(String),
