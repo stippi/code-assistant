@@ -214,11 +214,15 @@ impl Agent {
                     .iter()
                     .enumerate()
                     .map(|(i, action)| format!(
-                        "{}. Tool: {:?}\n   Reasoning: {}\n   Result: {}",
+                        "{}. Tool: {:?}\n   Reasoning: {}\n   Result: {}{}\n",
                         i + 1,
                         action.tool,
                         action.reasoning,
-                        action.result
+                        action.result,
+                        action
+                            .error
+                            .clone()
+                            .map_or(String::new(), |e| format!("\n   Error: {}", e))
                     ))
                     .collect::<Vec<_>>()
                     .join("\n\n")
@@ -327,7 +331,7 @@ impl Agent {
                 let result_message = if !loaded_files.is_empty() {
                     format!("Successfully loaded files: {}", loaded_files.join(", "))
                 } else {
-                    String::new()
+                    String::from("No files loaded")
                 };
 
                 let error_message = if !failed_files.is_empty() {

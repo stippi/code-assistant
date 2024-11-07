@@ -92,7 +92,7 @@ impl MockExplorer {
 
 impl CodeExplorer for MockExplorer {
     fn root_dir(&self) -> PathBuf {
-        PathBuf::from("root")
+        PathBuf::from("./root")
     }
 
     fn read_file(&self, path: &PathBuf) -> Result<String, anyhow::Error> {
@@ -246,12 +246,12 @@ fn create_test_response(tool: Tool, reasoning: &str, task_completed: bool) -> LL
 fn create_explorer_mock() -> MockExplorer {
     let mut files = HashMap::new();
     files.insert(
-        PathBuf::from("test.txt"),
+        PathBuf::from("./root/test.txt"),
         "line 1\nline 2\nline 3\n".to_string(),
     );
 
     let file_tree = Some(FileTreeEntry {
-        name: "root".to_string(),
+        name: "./root".to_string(),
         entry_type: FileSystemEntryType::Directory,
         children: HashMap::new(),
         is_expanded: true,
@@ -338,19 +338,20 @@ async fn test_agent_ask_user() -> Result<(), anyhow::Error> {
 async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     // Test success case
     let mock_llm = MockLLMProvider::new(vec![
-        Ok(create_test_response(
-            Tool::ReadFiles {
-                paths: vec![PathBuf::from("test.txt")],
-            },
-            "Reading test file",
-            false,
-        )),
+        // Responses in reverse order
         Ok(create_test_response(
             Tool::MessageUser {
                 message: (String::from("Done")),
             },
             "Dummy reason",
             true,
+        )),
+        Ok(create_test_response(
+            Tool::ReadFiles {
+                paths: vec![PathBuf::from("test.txt")],
+            },
+            "Reading test file",
+            false,
         )),
     ]);
     // Obtain a reference to the mock_llm before handing ownership to the agent
@@ -365,16 +366,17 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     // Run the agent
     agent.start("Test task".to_string()).await?;
 
-    // Verify the file is displayed in the working memory
+    // Verify the file is displayed in the working memory of the second request
     let locked_requests = mock_llm_ref.requests.lock().unwrap();
-    for request in locked_requests.iter() {
-        println!("Request: {:#?}", request);
-    }
+    let second_request = &locked_requests[1];
 
-    // if let LLMRequest(req) = &locked_requests[1] {
-    //     // First message is about creating repository structure
-    //     println!("Request: {:#?}", req);
-    // }
+    if let MessageContent::Text(content) = &second_request.messages[0].content {
+        assert!(content.contains(
+            "Loaded files and their contents:\n  -----./root/test.txt:\n   1 | line 1\n   2 | line 2\n   3 | line 3\n"
+        ), "File content not found in working memory message:\n{}", content);
+    } else {
+        panic!("Expected text content in message");
+    }
 
     Ok(())
 }
