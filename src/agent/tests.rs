@@ -15,12 +15,43 @@ struct MockLLMProvider {
 }
 
 impl MockLLMProvider {
-    fn new(responses: Vec<Result<LLMResponse, anyhow::Error>>) -> Self {
+    fn new(mut responses: Vec<Result<LLMResponse, anyhow::Error>>) -> Self {
+        // Add CompleteTask response at the beginning if the first response is ok
+        if responses.first().map_or(false, |r| r.is_ok()) {
+            responses.insert(
+                0,
+                Ok(create_test_response(
+                    Tool::CompleteTask {
+                        message: "Task completed successfully".to_string(),
+                    },
+                    "Completing task after successful execution",
+                )),
+            );
+        }
+
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(responses)),
         }
     }
+
+    // // Helper method for tests that need specific completion handling
+    // fn new_with_custom_completion(
+    //     mut responses: Vec<Result<LLMResponse, anyhow::Error>>,
+    //     completion_message: Option<String>,
+    // ) -> Self {
+    //     if let Some(msg) = completion_message {
+    //         responses.push(Ok(create_test_response(
+    //             Tool::CompleteTask { message: msg },
+    //             "Custom completion message",
+    //         )));
+    //     }
+
+    //     Self {
+    //         requests: Arc::new(Mutex::new(Vec::new())),
+    //         responses: Arc::new(Mutex::new(responses)),
+    //     }
+    // }
 }
 
 #[async_trait]
@@ -139,10 +170,9 @@ impl CodeExplorer for MockExplorer {
 }
 
 // Helper function to create a test response
-fn create_test_response(tool: Tool, reasoning: &str, task_completed: bool) -> LLMResponse {
+fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
     let response = serde_json::json!({
         "reasoning": reasoning,
-        "task_completed": task_completed,
         "tool": {
             "name": match &tool {
                 Tool::ListFiles { .. } => "ListFiles",
@@ -152,6 +182,7 @@ fn create_test_response(tool: Tool, reasoning: &str, task_completed: bool) -> LL
                 Tool::Summarize { .. } => "Summarize",
                 Tool::AskUser { .. } => "AskUser",
                 Tool::MessageUser { .. } => "MessageUser",
+                Tool::CompleteTask { .. } => "CompleteTask",
             },
             "params": match &tool {
                 Tool::ListFiles { paths, max_depth } => {
@@ -185,6 +216,9 @@ fn create_test_response(tool: Tool, reasoning: &str, task_completed: bool) -> LL
                     "question": question
                 }),
                 Tool::MessageUser { message } => serde_json::json!({
+                    "message": message
+                }),
+                Tool::CompleteTask { message } => serde_json::json!({
                     "message": message
                 }),
             }
@@ -226,7 +260,6 @@ async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
     let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
         tool,
         "Testing message to user",
-        true,
     ))]);
 
     let mock_ui = MockUI::default();
@@ -265,7 +298,6 @@ async fn test_agent_ask_user() -> Result<(), anyhow::Error> {
             question: test_question.to_string(),
         },
         "Need to ask user a question",
-        true,
     ))]);
 
     let mock_ui = MockUI::new(vec![Ok(test_answer.to_string())]);
@@ -299,14 +331,12 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
                 message: (String::from("Done")),
             },
             "Dummy reason",
-            true,
         )),
         Ok(create_test_response(
             Tool::ReadFiles {
                 paths: vec![PathBuf::from("test.txt")],
             },
             "Reading test file",
-            false,
         )),
     ]);
     // Obtain a reference to the mock_llm before handing ownership to the agent
@@ -327,7 +357,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
 
     if let MessageContent::Text(content) = &second_request.messages[0].content {
         assert!(content.contains(
-            "Loaded files and their contents:\n  -----./root/test.txt:\n   1 | line 1\n   2 | line 2\n   3 | line 3\n"
+            "Loaded files and their contents:\n  -----test.txt:\n   1 | line 1\n   2 | line 2\n   3 | line 3\n"
         ), "File content not found in working memory message:\n{}", content);
     } else {
         panic!("Expected text content in message");

@@ -1,62 +1,7 @@
 use anyhow::Result;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-
-mod deserialization {
-    use super::*;
-    use serde::de::{self, Visitor};
-    use std::fmt;
-
-    struct FlexibleBoolVisitor;
-
-    impl<'de> Visitor<'de> for FlexibleBoolVisitor {
-        type Value = bool;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a boolean, string, or integer")
-        }
-
-        fn visit_bool<E>(self, value: bool) -> Result<bool, E>
-        where
-            E: de::Error,
-        {
-            Ok(value)
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<bool, E>
-        where
-            E: de::Error,
-        {
-            match value.to_lowercase().as_str() {
-                "true" | "1" | "yes" | "on" => Ok(true),
-                "false" | "0" | "no" | "off" => Ok(false),
-                _ => Err(E::custom(format!("Invalid boolean value: {}", value))),
-            }
-        }
-
-        fn visit_i64<E>(self, value: i64) -> Result<bool, E>
-        where
-            E: de::Error,
-        {
-            Ok(value != 0)
-        }
-
-        fn visit_u64<E>(self, value: u64) -> Result<bool, E>
-        where
-            E: de::Error,
-        {
-            Ok(value != 0)
-        }
-    }
-
-    pub(crate) fn deserialize_flexible_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_any(FlexibleBoolVisitor)
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileTreeEntry {

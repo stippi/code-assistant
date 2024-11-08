@@ -698,6 +698,12 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
                 .ok_or_else(|| anyhow::anyhow!("Missing message parameter"))?
                 .to_string(),
         },
+        "CompleteTask" => Tool::CompleteTask {
+            message: tool_params["message"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing message parameter"))?
+                .to_string(),
+        },
         _ => anyhow::bail!("Unknown tool: {}", tool_name),
     };
 
