@@ -170,63 +170,67 @@ impl Agent {
         parse_llm_response(&response)
     }
 
+    pub fn render_working_memory(&self) -> String {
+        return format!(
+            "Task: {}\n\n\
+            Repository structure:\n\
+            {}\n\n\
+            Current Working Memory:\n\
+            - Loaded files and their contents:\n{}\n\
+            - File summaries:\n{}\n\n\
+            Previous actions:\n{}\n",
+            self.working_memory.current_task,
+            // File tree structure
+            self.working_memory
+                .file_tree
+                .as_ref()
+                .map(|tree| tree.to_string())
+                .unwrap_or_else(|| "No file tree available".to_string()),
+            // Format loaded files with their contents and line numbers
+            self.working_memory
+                .loaded_files
+                .iter()
+                .map(|(path, content)| format!(
+                    "  -----{}:\n{}",
+                    path.display(),
+                    format_with_line_numbers(content)
+                ))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            // Format file summaries
+            self.working_memory
+                .file_summaries
+                .iter()
+                .map(|(path, summary)| format!("  {}: {}", path.display(), summary))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            // Format action history
+            self.working_memory
+                .action_history
+                .iter()
+                .enumerate()
+                .map(|(i, action)| format!(
+                    "{}. Tool: {:?}\n   Reasoning: {}\n   Result: {}{}\n",
+                    i + 1,
+                    action.tool,
+                    action.reasoning,
+                    action.result,
+                    action
+                        .error
+                        .clone()
+                        .map_or(String::new(), |e| format!("\n   Error: {}", e))
+                ))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        );
+    }
+
     /// Prepare messages for LLM request - currently returns a single user message
     /// but kept as Vec<Message> for flexibility to change the format later
     fn prepare_messages(&self) -> Vec<Message> {
         vec![Message {
             role: MessageRole::User,
-            content: MessageContent::Text(format!(
-                "Task: {}\n\n\
-                Repository structure:\n\
-                {}\n\n\
-                Current Working Memory:\n\
-                - Loaded files and their contents:\n{}\n\
-                - File summaries:\n{}\n\n\
-                Previous actions:\n{}\n",
-                self.working_memory.current_task,
-                // File tree structure
-                self.working_memory
-                    .file_tree
-                    .as_ref()
-                    .map(|tree| tree.to_string())
-                    .unwrap_or_else(|| "No file tree available".to_string()),
-                // Format loaded files with their contents and line numbers
-                self.working_memory
-                    .loaded_files
-                    .iter()
-                    .map(|(path, content)| format!(
-                        "  -----{}:\n{}",
-                        path.display(),
-                        format_with_line_numbers(content)
-                    ))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                // Format file summaries
-                self.working_memory
-                    .file_summaries
-                    .iter()
-                    .map(|(path, summary)| format!("  {}: {}", path.display(), summary))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                // Format action history
-                self.working_memory
-                    .action_history
-                    .iter()
-                    .enumerate()
-                    .map(|(i, action)| format!(
-                        "{}. Tool: {:?}\n   Reasoning: {}\n   Result: {}{}\n",
-                        i + 1,
-                        action.tool,
-                        action.reasoning,
-                        action.result,
-                        action
-                            .error
-                            .clone()
-                            .map_or(String::new(), |e| format!("\n   Error: {}", e))
-                    ))
-                    .collect::<Vec<_>>()
-                    .join("\n\n")
-            )),
+            content: MessageContent::Text(self.render_working_memory()),
         }]
     }
 
