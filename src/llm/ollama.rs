@@ -11,6 +11,7 @@ struct OllamaRequest {
     messages: Vec<OllamaMessage>,
     stream: bool,
     options: OllamaOptions,
+    format: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,6 +118,7 @@ impl LLMProvider for OllamaClient {
             model: self.model.clone(),
             messages,
             stream: false,
+            format: "json".to_string(),
             options: OllamaOptions {
                 num_ctx: self.num_ctx,
             },
