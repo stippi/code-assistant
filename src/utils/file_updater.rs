@@ -129,6 +129,86 @@ fn validate_updates(updates: &[FileUpdate], line_count: usize) -> Result<(), any
     Ok(())
 }
 
+/// Normalizes line endings in the update content to match the target line's format.
+/// Also handles empty lines at the beginning and end of the update intelligently.
+fn normalize_update_content(
+    update: &FileUpdate,
+    line_infos: &[LineInfo],
+    content: &str,
+) -> Result<String, anyhow::Error> {
+    let original_uses_crlf = if update.end_line > 0 && update.end_line <= line_infos.len() {
+        line_infos[update.start_line - 1].is_crlf
+    } else {
+        false
+    };
+
+    // Split the update content into lines, preserving empty lines
+    let update_lines: Vec<&str> = update.new_content.split_inclusive('\n').collect();
+    if update_lines.is_empty() {
+        return Ok(update.new_content.clone());
+    }
+
+    // Get the lines before and after the update in the original content
+    let prev_line = if update.start_line > 1 {
+        let prev_idx = update.start_line - 2;
+        Some(&line_infos[prev_idx])
+    } else {
+        None
+    };
+    let next_line = if update.end_line < line_infos.len() {
+        Some(&line_infos[update.end_line])
+    } else {
+        None
+    };
+
+    let mut result = String::with_capacity(update.new_content.len() + update_lines.len());
+
+    // Handle empty lines at the start
+    let first_update_line = update_lines[0].trim_end_matches(['\r', '\n']);
+    if first_update_line.is_empty() {
+        // Only add empty line if there wasn't one before
+        if let Some(prev) = prev_line {
+            let prev_content = &content[prev.range.clone()];
+            if !prev_content.trim().is_empty() {
+                result.push('\n');
+                if original_uses_crlf {
+                    result.insert(0, '\r');
+                }
+            }
+        }
+    }
+
+    // Process all lines, normalizing line endings
+    for (i, line) in update_lines.iter().enumerate() {
+        let is_last = i == update_lines.len() - 1;
+        let line_without_endings = line.trim_end_matches(['\r', '\n']);
+
+        // Skip empty lines at the end if the next line in original is empty
+        if is_last && line_without_endings.is_empty() {
+            if let Some(next) = next_line {
+                let next_content = &content[next.range.clone()];
+                if next_content.trim().is_empty() {
+                    continue;
+                }
+            }
+        }
+
+        result.push_str(line_without_endings);
+
+        // Add appropriate line ending unless it's the last line and there is no line ending
+        if line.ends_with('\n') {
+            if original_uses_crlf {
+                if !result.ends_with('\r') {
+                    result.push('\r');
+                }
+            }
+            result.push('\n');
+        }
+    }
+
+    Ok(result)
+}
+
 /// Applies a single update to the content
 fn apply_single_update(
     content: &mut String,
@@ -157,18 +237,8 @@ fn apply_single_update(
         end_idx += 1;
     }
 
-    // Ensure the new content has the correct line ending
-    let mut new_content = update.new_content.clone();
-    if update.end_line < line_infos.len() {
-        let last_line = &line_infos[update.end_line - 1];
-        if !new_content.ends_with('\n') {
-            if last_line.is_crlf {
-                new_content.push_str("\r\n");
-            } else {
-                new_content.push('\n');
-            }
-        }
-    }
+    // Normalize the update content
+    let new_content = normalize_update_content(update, line_infos, content)?;
 
     content.replace_range(start_idx..end_idx, &new_content);
     Ok(())
@@ -342,5 +412,143 @@ mod tests {
                 update.start_line, update.end_line
             ))
         }));
+    }
+
+    #[test]
+    fn test_normalize_line_endings() {
+        let test_cases = vec![
+            (
+                "Line 1\r\nLine 2\r\nLine 3\r\n",
+                FileUpdate {
+                    start_line: 2,
+                    end_line: 2,
+                    new_content: "New\nLine\n".to_string(),
+                },
+                "Line 1\r\nNew\r\nLine\r\nLine 3\r\n",
+            ),
+            (
+                "Line 1\nLine 2\nLine 3\n",
+                FileUpdate {
+                    start_line: 2,
+                    end_line: 2,
+                    new_content: "New\r\nLine\r\n".to_string(),
+                },
+                "Line 1\nNew\nLine\nLine 3\n",
+            ),
+        ];
+
+        for (input, update, expected) in test_cases {
+            let result = apply_content_updates(input, &[update]).unwrap();
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn test_empty_line_handling() {
+        let test_cases = vec![
+            // Case 1: Empty line at start, no empty line before
+            (
+                "Text 1\nText 2\nText 3\n",
+                FileUpdate {
+                    start_line: 2,
+                    end_line: 2,
+                    new_content: "\nNew Text\n".to_string(),
+                },
+                "Text 1\n\nNew Text\nText 3\n",
+            ),
+            // Case 2: Empty line at start, empty line already exists before
+            (
+                "Text 1\n\nText 2\nText 3\n",
+                FileUpdate {
+                    start_line: 3,
+                    end_line: 3,
+                    new_content: "\nNew Text\n".to_string(),
+                },
+                "Text 1\n\nNew Text\nText 3\n",
+            ),
+            // Case 3: Empty line at end, no empty line after
+            (
+                "Text 1\nText 2\nText 3\n",
+                FileUpdate {
+                    start_line: 2,
+                    end_line: 2,
+                    new_content: "New Text\n\n".to_string(),
+                },
+                "Text 1\nNew Text\n\nText 3\n",
+            ),
+            // Case 4: Empty line at end, empty line already exists after
+            (
+                "Text 1\nText 2\n\nText 3\n",
+                FileUpdate {
+                    start_line: 2,
+                    end_line: 2,
+                    new_content: "New Text\n\n".to_string(),
+                },
+                "Text 1\nNew Text\n\nText 3\n",
+            ),
+            // Case 5: Multiple empty lines
+            (
+                "Text 1\nText 2\nText 3\n",
+                FileUpdate {
+                    start_line: 2,
+                    end_line: 2,
+                    new_content: "\n\nNew Text\n\n\n".to_string(),
+                },
+                "Text 1\n\nNew Text\n\nText 3\n",
+            ),
+            // Case 6: Mixed line endings with empty lines
+            (
+                "Text 1\r\nText 2\r\nText 3\r\n",
+                FileUpdate {
+                    start_line: 2,
+                    end_line: 2,
+                    new_content: "\nNew Text\n\n".to_string(),
+                },
+                "Text 1\r\n\r\nNew Text\r\n\r\nText 3\r\n",
+            ),
+        ];
+
+        for (input, update, expected) in test_cases {
+            let result = apply_content_updates(input, &[update]).unwrap();
+            assert_eq!(result, expected, "Failed for input:\n{}", input);
+        }
+    }
+
+    #[test]
+    fn test_complex_mixed_cases() {
+        let test_cases = vec![
+            // Mixed line endings with empty lines at both ends
+            (
+                "Header\r\n\r\nContent\r\nFooter",
+                vec![FileUpdate {
+                    start_line: 3,
+                    end_line: 3,
+                    new_content: "\n\nNew Content\n\n".to_string(),
+                }],
+                "Header\r\n\r\nNew Content\r\n\r\nFooter",
+            ),
+            // Multiple updates with different line endings
+            (
+                "Line 1\nLine 2\r\nLine 3\nLine 4",
+                vec![
+                    FileUpdate {
+                        start_line: 2,
+                        end_line: 2,
+                        new_content: "\nNew Line 2\n".to_string(),
+                    },
+                    FileUpdate {
+                        start_line: 4,
+                        end_line: 4,
+                        new_content: "New Line 4\n\n".to_string(),
+                    },
+                ],
+                "Line 1\n\nNew Line 2\nLine 3\nNew Line 4\n",
+            ),
+        ];
+
+        for (input, updates, expected) in test_cases {
+            let result = apply_content_updates(input, &updates).unwrap();
+            assert_eq!(result, expected, "Failed for input:\n{}", input);
+        }
     }
 }
