@@ -115,6 +115,8 @@ pub enum Tool {
     AskUser { question: String },
     /// Message the user
     MessageUser { message: String },
+    /// Complete the current task
+    CompleteTask { message: String },
 }
 
 /// Result of a tool execution
@@ -160,8 +162,6 @@ pub struct ToolDescription {
 pub struct AgentAction {
     pub tool: Tool,
     pub reasoning: String,
-    #[serde(deserialize_with = "deserialization::deserialize_flexible_bool")]
-    pub task_completed: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

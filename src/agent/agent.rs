@@ -32,7 +32,6 @@ impl Agent {
         debug!("Starting agent with task: {}", task);
         self.working_memory.current_task = task;
 
-        // Create initial file tree with limited depth
         self.ui
             .display(UIMessage::Action(
                 "Creating initial repository structure...".to_string(),
@@ -48,7 +47,8 @@ impl Agent {
             let result = self.execute_action(&action).await?;
             self.working_memory.action_history.push(result);
 
-            if action.task_completed {
+            // Check if this was a CompleteTask action
+            if let Tool::CompleteTask { .. } = action.tool {
                 break;
             }
         }
@@ -122,7 +122,13 @@ impl Agent {
            - Provide a message to the user. Use the "AskUser" tool instead if you need a response.
            - Parameters: {"message": "your message here"}
            - Returns: Confirmation message
-           - Use this when you need to inform the user"#;
+           - Use this when you need to inform the user
+
+        8. CompleteTask
+           - Complete the current task with a final message to the user
+           - Parameters: {"message": "your completion message here"}
+           - Returns: Confirmation message
+           - Use this when you have successfully completed the task and want to inform the user about it"#;
 
         let request = LLMRequest {
             messages,
@@ -146,7 +152,6 @@ impl Agent {
                 ALWAYS respond in the following JSON format:\n\
                 {{\
                     \"reasoning\": <explain your thought process>,\
-                    \"task_completed\": <true/false>,\
                     \"tool\": {{\
                         \"name\": <ToolName>,\
                         \"params\": <tool-specific parameters>\
@@ -324,7 +329,7 @@ impl Agent {
                         Ok(content) => {
                             self.working_memory
                                 .loaded_files
-                                .insert(full_path.clone(), content);
+                                .insert(path.clone(), content);
                             loaded_files.push(path.display().to_string());
                         }
                         Err(e) => {
@@ -509,6 +514,20 @@ impl Agent {
                     reasoning: action.reasoning.clone(),
                 }
             }
+
+            Tool::CompleteTask { message } => {
+                self.ui
+                    .display(UIMessage::Action(format!("Task completed: {}", message)))
+                    .await?;
+
+                ActionResult {
+                    tool: action.tool.clone(),
+                    success: true,
+                    result: "Task completed".to_string(),
+                    error: None,
+                    reasoning: action.reasoning.clone(),
+                }
+            }
         };
 
         // Log the result
@@ -572,10 +591,6 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing reasoning"))?
         .to_string();
-
-    let task_completed = value["task_completed"]
-        .as_bool()
-        .ok_or_else(|| anyhow::anyhow!("Missing task_completed"))?;
 
     let tool_name = value["tool"]["name"]
         .as_str()
@@ -686,17 +701,10 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
         _ => anyhow::bail!("Unknown tool: {}", tool_name),
     };
 
-    debug!(
-        "Parsed agent action: tool={:?}, task_completed={}",
-        tool, task_completed
-    );
+    debug!("Parsed agent action: tool={:?}", tool);
     debug!("Agent reasoning: {}", reasoning);
 
-    Ok(AgentAction {
-        tool,
-        reasoning,
-        task_completed,
-    })
+    Ok(AgentAction { tool, reasoning })
 }
 
 fn update_tree_entry(
