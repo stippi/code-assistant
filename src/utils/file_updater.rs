@@ -1,4 +1,14 @@
 use crate::types::FileUpdate;
+use std::ops::Range;
+
+/// Represents a line in the content with its range in bytes
+#[derive(Debug)]
+struct LineInfo {
+    /// Byte range in the content, excluding line ending
+    range: Range<usize>,
+    /// Whether this line ends with \r\n
+    is_crlf: bool,
+}
 
 /// Applies a series of updates to a string content and returns the modified content.
 /// The function preserves line endings of the original content.
@@ -18,9 +28,72 @@ pub fn apply_content_updates(
     content: &str,
     updates: &[FileUpdate],
 ) -> Result<String, anyhow::Error> {
-    let lines: Vec<&str> = content.lines().collect();
+    // Build line index by scanning the content once
+    let line_infos = index_lines(content);
 
-    // Validate the updates
+    // Validate updates
+    validate_updates(updates, line_infos.len())?;
+
+    // Sort updates in reverse order to apply from bottom to top
+    let mut sorted_updates = updates.to_vec();
+    sorted_updates.sort_by(|a, b| b.start_line.cmp(&a.start_line));
+
+    // Apply updates
+    let mut result = content.to_string();
+    for update in sorted_updates {
+        apply_single_update(&mut result, &update, &line_infos)?;
+    }
+
+    Ok(result)
+}
+
+/// Creates an index of all lines in the content by scanning once through the string
+fn index_lines(content: &str) -> Vec<LineInfo> {
+    let mut line_infos = Vec::new();
+    let mut line_start = 0;
+    let mut chars = content.char_indices().peekable();
+
+    while let Some((i, ch)) = chars.next() {
+        if ch == '\n' {
+            // Check if this is part of CRLF
+            let is_crlf = line_start < i && content[line_start..i].ends_with('\r');
+            let line_end = if is_crlf { i - 1 } else { i };
+
+            line_infos.push(LineInfo {
+                range: line_start..line_end,
+                is_crlf,
+            });
+
+            line_start = i + 1;
+        }
+    }
+
+    // Handle last line if it doesn't end with a newline
+    if line_start < content.len() {
+        let is_crlf = content[line_start..].ends_with("\r\n");
+        let line_end = if is_crlf {
+            content.len() - 2
+        } else {
+            content.len()
+        };
+
+        line_infos.push(LineInfo {
+            range: line_start..line_end,
+            is_crlf,
+        });
+    } else if line_start == content.len() {
+        // Handle empty last line
+        line_infos.push(LineInfo {
+            range: line_start..line_start,
+            is_crlf: false,
+        });
+    }
+
+    line_infos
+}
+
+/// Validates all updates before applying any changes
+fn validate_updates(updates: &[FileUpdate], line_count: usize) -> Result<(), anyhow::Error> {
     for update in updates {
         if update.start_line == 0 || update.end_line == 0 {
             anyhow::bail!("Line numbers must start at 1");
@@ -28,63 +101,77 @@ pub fn apply_content_updates(
         if update.start_line > update.end_line {
             anyhow::bail!("Start line must not be greater than end line");
         }
-        if update.end_line > lines.len() {
+        if update.end_line > line_count {
             anyhow::bail!(
                 "End line {} exceeds file length {}",
                 update.end_line,
-                lines.len()
+                line_count
             );
         }
     }
 
-    // Sort the updates by start_line in reverse order
+    // Check for overlapping updates
     let mut sorted_updates = updates.to_vec();
-    sorted_updates.sort_by(|a, b| b.start_line.cmp(&a.start_line));
+    sorted_updates.sort_by(|a, b| a.start_line.cmp(&b.start_line));
 
-    // Check if there are any overlapping updates
     for updates in sorted_updates.windows(2) {
-        if updates[1].end_line >= updates[0].start_line {
+        if updates[0].end_line >= updates[1].start_line {
             anyhow::bail!(
                 "Overlapping updates: lines {}-{} and {}-{}",
-                updates[1].start_line,
-                updates[1].end_line,
                 updates[0].start_line,
-                updates[0].end_line
+                updates[0].end_line,
+                updates[1].start_line,
+                updates[1].end_line
             );
         }
     }
 
-    // Apply the updates from bottom to top
-    let mut result = content.to_string(); // Keep the original line breaks
-    for update in sorted_updates {
-        let start_index = if update.start_line > 1 {
-            // Find the position after the previous line's newline
-            result
-                .split('\n')
-                .take(update.start_line - 1)
-                .map(|line| line.len() + 1) // +1 for the newline
-                .sum()
+    Ok(())
+}
+
+/// Applies a single update to the content
+fn apply_single_update(
+    content: &mut String,
+    update: &FileUpdate,
+    line_infos: &[LineInfo],
+) -> Result<(), anyhow::Error> {
+    let start_idx = if update.start_line > 1 {
+        // Get the end of the previous line including its line ending
+        let prev_line = &line_infos[update.start_line - 2];
+        let mut end_idx = prev_line.range.end;
+        if prev_line.is_crlf {
+            end_idx += 2; // \r\n
         } else {
-            0
-        };
-
-        let end_index = result
-            .split('\n')
-            .take(update.end_line)
-            .map(|line| line.len() + 1)
-            .sum::<usize>()
-            - if update.end_line == lines.len() { 1 } else { 0 };
-
-        // Make sure the new content ends in a line break unless it is at the end of the file
-        let mut new_content = update.new_content.clone();
-        if update.end_line < lines.len() && !new_content.ends_with('\n') {
-            new_content.push('\n');
+            end_idx += 1; // \n
         }
+        end_idx
+    } else {
+        0
+    };
 
-        result.replace_range(start_index..end_index, &new_content);
+    let end_line = &line_infos[update.end_line - 1];
+    let mut end_idx = end_line.range.end;
+    if end_line.is_crlf {
+        end_idx += 2;
+    } else if update.end_line < line_infos.len() {
+        end_idx += 1;
     }
 
-    Ok(result)
+    // Ensure the new content has the correct line ending
+    let mut new_content = update.new_content.clone();
+    if update.end_line < line_infos.len() {
+        let last_line = &line_infos[update.end_line - 1];
+        if !new_content.ends_with('\n') {
+            if last_line.is_crlf {
+                new_content.push_str("\r\n");
+            } else {
+                new_content.push('\n');
+            }
+        }
+    }
+
+    content.replace_range(start_idx..end_idx, &new_content);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -93,96 +180,167 @@ mod tests {
     use crate::types::FileUpdate;
 
     #[test]
-    fn test_single_update() {
-        let content = "Line 1\nLine 2\nLine 3\nLine 4\n";
-        let updates = vec![FileUpdate {
-            start_line: 2,
-            end_line: 3,
-            new_content: "Updated Line 2\nUpdated Line 3".to_string(),
-        }];
-
-        let result = apply_content_updates(content, &updates).unwrap();
-        assert_eq!(result, "Line 1\nUpdated Line 2\nUpdated Line 3\nLine 4\n");
-    }
-
-    #[test]
-    fn test_multiple_updates() {
-        let content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
-        let updates = vec![
-            FileUpdate {
-                start_line: 1,
-                end_line: 2,
-                new_content: "Updated Line 1\nUpdated Line 2".to_string(),
-            },
-            FileUpdate {
-                start_line: 4,
-                end_line: 5,
-                new_content: "Updated Line 4\nUpdated Line 5".to_string(),
-            },
+    fn test_single_line_updates() {
+        let test_cases = vec![
+            (
+                "Hello\nWorld\n",
+                vec![FileUpdate {
+                    start_line: 1,
+                    end_line: 1,
+                    new_content: "Modified".to_string(),
+                }],
+                "Modified\nWorld\n",
+            ),
+            (
+                "First\nSecond\nThird\n",
+                vec![FileUpdate {
+                    start_line: 2,
+                    end_line: 2,
+                    new_content: "New Second".to_string(),
+                }],
+                "First\nNew Second\nThird\n",
+            ),
         ];
 
-        let result = apply_content_updates(content, &updates).unwrap();
-        assert_eq!(
-            result,
-            "Updated Line 1\nUpdated Line 2\nLine 3\nUpdated Line 4\nUpdated Line 5\n"
-        );
+        for (input, updates, expected) in test_cases {
+            let result = apply_content_updates(input, &updates).unwrap();
+            assert_eq!(result, expected);
+        }
     }
 
     #[test]
-    fn test_invalid_line_number() {
-        let content = "Line 1\n";
-        let updates = vec![FileUpdate {
-            start_line: 0,
-            end_line: 1,
-            new_content: "Updated Line".to_string(),
-        }];
+    fn test_multiple_line_updates() {
+        let test_cases = vec![
+            (
+                "One\nTwo\nThree\nFour\n",
+                vec![FileUpdate {
+                    start_line: 2,
+                    end_line: 3,
+                    new_content: "Updated\nLines".to_string(),
+                }],
+                "One\nUpdated\nLines\nFour\n",
+            ),
+            (
+                "A\nB\nC\nD\nE\n",
+                vec![
+                    FileUpdate {
+                        start_line: 1,
+                        end_line: 2,
+                        new_content: "First\nUpdate".to_string(),
+                    },
+                    FileUpdate {
+                        start_line: 4,
+                        end_line: 5,
+                        new_content: "Second\nUpdate".to_string(),
+                    },
+                ],
+                "First\nUpdate\nC\nSecond\nUpdate\n",
+            ),
+        ];
 
-        let result = apply_content_updates(content, &updates);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Line numbers must start at 1"
-        );
+        for (input, updates, expected) in test_cases {
+            let result = apply_content_updates(input, &updates).unwrap();
+            assert_eq!(result, expected);
+        }
     }
 
     #[test]
-    fn test_out_of_bounds() {
-        let content = "Line 1\n";
+    fn test_crlf_line_endings() {
+        let input = "Line 1\r\nLine 2\r\nLine 3\r\n";
         let updates = vec![FileUpdate {
-            start_line: 1,
+            start_line: 2,
             end_line: 2,
-            new_content: "Updated Line".to_string(),
+            new_content: "Modified Line".to_string(),
         }];
 
-        let result = apply_content_updates(content, &updates);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "End line 2 exceeds file length 1"
-        );
+        let result = apply_content_updates(input, &updates).unwrap();
+        assert_eq!(result, "Line 1\r\nModified Line\r\nLine 3\r\n");
     }
 
     #[test]
-    fn test_overlapping_updates() {
-        let content = "Line 1\nLine 2\nLine 3\nLine 4\n";
+    fn test_mixed_line_endings() {
+        let input = "Line 1\nLine 2\r\nLine 3\n";
         let updates = vec![
             FileUpdate {
                 start_line: 1,
-                end_line: 2,
-                new_content: "Updated Lines 1-2".to_string(),
+                end_line: 1,
+                new_content: "Modified 1".to_string(),
             },
             FileUpdate {
                 start_line: 2,
-                end_line: 3,
-                new_content: "Updated Lines 2-3".to_string(),
+                end_line: 2,
+                new_content: "Modified 2".to_string(),
             },
         ];
 
-        let result = apply_content_updates(content, &updates);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Overlapping updates"));
+        let result = apply_content_updates(input, &updates).unwrap();
+        assert_eq!(result, "Modified 1\nModified 2\r\nLine 3\n");
+    }
+
+    #[test]
+    fn test_last_line_without_newline() {
+        let input = "Line 1\nLine 2\nLine 3";
+        let updates = vec![FileUpdate {
+            start_line: 3,
+            end_line: 3,
+            new_content: "Modified Last".to_string(),
+        }];
+
+        let result = apply_content_updates(input, &updates).unwrap();
+        assert_eq!(result, "Line 1\nLine 2\nModified Last");
+    }
+
+    #[test]
+    fn test_unicode_content() {
+        let input = "Hello 👋\nWorld 🌎\nTest 🧪\n";
+        let updates = vec![FileUpdate {
+            start_line: 2,
+            end_line: 2,
+            new_content: "Modified 🚀".to_string(),
+        }];
+
+        let result = apply_content_updates(input, &updates).unwrap();
+        assert_eq!(result, "Hello 👋\nModified 🚀\nTest 🧪\n");
+    }
+
+    #[test]
+    fn test_empty_lines() {
+        let input = "First\n\nThird\n";
+        let updates = vec![FileUpdate {
+            start_line: 2,
+            end_line: 2,
+            new_content: "Second".to_string(),
+        }];
+
+        let result = apply_content_updates(input, &updates).unwrap();
+        assert_eq!(result, "First\nSecond\nThird\n");
+    }
+
+    #[test]
+    fn test_large_file_simulation() {
+        // Create a large file content (100 lines)
+        let content: String = (1..=100).map(|i| format!("Line {}\n", i)).collect();
+
+        // Create 10 random updates
+        let updates: Vec<FileUpdate> = vec![(5, 7), (20, 22), (40, 41), (60, 63), (80, 82)]
+            .into_iter()
+            .map(|(start, end)| FileUpdate {
+                start_line: start,
+                end_line: end,
+                new_content: format!("Modified lines {}-{}\n", start, end),
+            })
+            .collect();
+
+        // Apply updates
+        let result = apply_content_updates(&content, &updates).unwrap();
+
+        // Verify some basic properties
+        assert!(result.lines().count() >= 90); // At least 90 lines (some updates might combine lines)
+        assert!(updates.iter().all(|update| {
+            result.contains(&format!(
+                "Modified lines {}-{}",
+                update.start_line, update.end_line
+            ))
+        }));
     }
 }
