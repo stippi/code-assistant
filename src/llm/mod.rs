@@ -1,8 +1,10 @@
 pub mod anthropic;
+pub mod ollama;
 pub mod openai;
 pub mod types;
 
 pub use anthropic::AnthropicClient;
+pub use ollama::OllamaClient;
 pub use openai::OpenAIClient;
 pub use types::*;
 

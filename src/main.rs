@@ -7,14 +7,20 @@ mod utils;
 
 use crate::agent::Agent;
 use crate::explorer::Explorer;
-use crate::llm::{AnthropicClient, LLMProvider, OpenAIClient};
+use crate::llm::{AnthropicClient, LLMProvider, OllamaClient, OpenAIClient};
 use crate::ui::terminal::TerminalUI;
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 use tracing::Level;
 
-/// AI-powered coding assistant
+#[derive(ValueEnum, Debug, Clone)]
+enum LLMProviderType {
+    Anthropic,
+    OpenAI,
+    Ollama,
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -29,30 +35,51 @@ struct Args {
     /// Enable verbose logging
     #[arg(short, long)]
     verbose: bool,
+
+    /// LLM provider to use
+    #[arg(short = 'p', long, default_value = "anthropic")]
+    provider: LLMProviderType,
+
+    /// Model name to use (provider-specific)
+    #[arg(short = 'm', long)]
+    model: Option<String>,
+
+    /// Context window size (in tokens, only relevant for Ollama)
+    #[arg(long, default_value = "8192")]
+    num_ctx: usize,
 }
 
-fn create_llm_client() -> Result<Box<dyn LLMProvider>> {
-    // Try Anthropic first
-    if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
-        return Ok(Box::new(AnthropicClient::new(
-            api_key,
-            "claude-3-5-sonnet-20241022".to_string(),
-        )));
-    }
+fn create_llm_client(args: &Args) -> Result<Box<dyn LLMProvider>> {
+    match args.provider {
+        LLMProviderType::Anthropic => {
+            let api_key = std::env::var("ANTHROPIC_API_KEY")
+                .context("ANTHROPIC_API_KEY environment variable not set")?;
 
-    // Try OpenAI as fallback
-    if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
-        return Ok(Box::new(OpenAIClient::new(
-            api_key,
-            "gpt-4o-latest".to_string(),
-        )));
-    }
+            Ok(Box::new(AnthropicClient::new(
+                api_key,
+                args.model
+                    .clone()
+                    .unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string()),
+            )))
+        }
 
-    // No API keys available
-    anyhow::bail!(
-        "Neither ANTHROPIC_API_KEY nor OPENAI_API_KEY environment variables are set. \
-                  Please set at least one of them to use the code assistant."
-    )
+        LLMProviderType::OpenAI => {
+            let api_key = std::env::var("OPENAI_API_KEY")
+                .context("OPENAI_API_KEY environment variable not set")?;
+
+            Ok(Box::new(OpenAIClient::new(
+                api_key,
+                args.model.clone().unwrap_or_else(|| "gpt-4".to_string()),
+            )))
+        }
+
+        LLMProviderType::Ollama => Ok(Box::new(OllamaClient::new(
+            args.model
+                .clone()
+                .context("Model name is required for Ollama provider")?,
+            args.num_ctx,
+        ))),
+    }
 }
 
 #[tokio::main]
@@ -82,8 +109,8 @@ async fn main() -> Result<()> {
         anyhow::bail!("Path '{}' is not a directory", args.path.display());
     }
 
-    // Setup LLM client - try providers in order of preference
-    let llm_client = create_llm_client().context("Failed to initialize LLM client")?;
+    // Setup LLM client with the specified provider
+    let llm_client = create_llm_client(&args).context("Failed to initialize LLM client")?;
 
     // Setup CodeExplorer
     let root_path = args.path.canonicalize()?;
