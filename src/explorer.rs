@@ -230,73 +230,12 @@ impl CodeExplorer for Explorer {
 
     fn apply_updates(&self, path: &Path, updates: &[FileUpdate]) -> Result<String> {
         let content = std::fs::read_to_string(path)?;
-        let lines: Vec<&str> = content.lines().collect();
+        let updated_content = crate::utils::apply_content_updates(&content, updates)?;
 
-        // Validate the updates
-        for update in updates {
-            if update.start_line == 0 || update.end_line == 0 {
-                anyhow::bail!("Line numbers must start at 1");
-            }
-            if update.start_line > update.end_line {
-                anyhow::bail!("Start line must not be greater than end line");
-            }
-            if update.end_line > lines.len() {
-                anyhow::bail!(
-                    "End line {} exceeds file length {}",
-                    update.end_line,
-                    lines.len()
-                );
-            }
-        }
+        // Update the stored content
+        std::fs::write(path, &updated_content)?;
 
-        // Sort the updates by start_line in reverse order
-        let mut sorted_updates = updates.to_vec();
-        sorted_updates.sort_by(|a, b| b.start_line.cmp(&a.start_line));
-
-        // Check if there are any overlapping updates
-        for updates in sorted_updates.windows(2) {
-            if updates[1].end_line >= updates[0].start_line {
-                anyhow::bail!(
-                    "Overlapping updates: lines {}-{} and {}-{}",
-                    updates[1].start_line,
-                    updates[1].end_line,
-                    updates[0].start_line,
-                    updates[0].end_line
-                );
-            }
-        }
-
-        // Apply the updates from bottom to top
-        let mut result = content.clone(); // Keep the original line breaks
-        for update in sorted_updates {
-            let start_index = if update.start_line > 1 {
-                // Find the position after the previous line's newline
-                result
-                    .split('\n')
-                    .take(update.start_line - 1)
-                    .map(|line| line.len() + 1) // +1 for the newline
-                    .sum()
-            } else {
-                0
-            };
-
-            let end_index = result
-                .split('\n')
-                .take(update.end_line)
-                .map(|line| line.len() + 1)
-                .sum::<usize>()
-                - if update.end_line == lines.len() { 1 } else { 0 };
-
-            // Make sure the new content ends in a line break unless it is at the end of the file
-            let mut new_content = update.new_content.clone();
-            if update.end_line < lines.len() && !new_content.ends_with('\n') {
-                new_content.push('\n');
-            }
-
-            result.replace_range(start_index..end_index, &new_content);
-        }
-
-        Ok(result)
+        Ok(updated_content)
     }
 }
 
@@ -413,46 +352,6 @@ mod tests {
         assert!(dir1.is_expanded);
         assert!(dir1.children.contains_key("file2.txt"));
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_apply_updates_invalid_line_number() -> Result<()> {
-        let (temp_dir, explorer) = setup_test_directory()?;
-        let file_path = create_test_file(temp_dir.path(), "test.txt", "content")?;
-
-        let updates = vec![FileUpdate {
-            start_line: 0, // Invalid line number
-            end_line: 1,
-            new_content: "new content".to_string(),
-        }];
-
-        let result = explorer.apply_updates(&file_path, &updates);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Line numbers must start at 1"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_apply_updates_out_of_bounds() -> Result<()> {
-        let (temp_dir, explorer) = setup_test_directory()?;
-        let file_path = create_test_file(temp_dir.path(), "test.txt", "single line")?;
-
-        let updates = vec![FileUpdate {
-            start_line: 1,
-            end_line: 10, // The file only has 1 line
-            new_content: "new content".to_string(),
-        }];
-
-        let result = explorer.apply_updates(&file_path, &updates);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "End line 10 exceeds file length 1"
-        );
         Ok(())
     }
 }

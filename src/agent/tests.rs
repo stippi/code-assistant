@@ -126,60 +126,15 @@ impl CodeExplorer for MockExplorer {
 
         let content = files
             .get(path)
-            .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))?;
+            .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))?
+            .clone();
 
-        let lines: Vec<&str> = content.lines().collect();
-        let mut result = String::new();
-
-        // Validate updates
-        for update in updates {
-            if update.start_line == 0 || update.end_line == 0 {
-                return Err(anyhow::anyhow!("Line numbers must start at 1"));
-            }
-            if update.start_line > update.end_line {
-                return Err(anyhow::anyhow!(
-                    "Start line must not be greater than end line"
-                ));
-            }
-            if update.end_line > lines.len() {
-                return Err(anyhow::anyhow!(
-                    "End line {} exceeds file length {}",
-                    update.end_line,
-                    lines.len()
-                ));
-            }
-        }
-
-        // Apply updates
-        let mut current_line = 1;
-        for update in updates {
-            // Add lines before the update
-            while current_line < update.start_line {
-                result.push_str(lines[current_line - 1]);
-                result.push('\n');
-                current_line += 1;
-            }
-
-            // Add the update
-            result.push_str(&update.new_content);
-            if !update.new_content.ends_with('\n') {
-                result.push('\n');
-            }
-
-            current_line = update.end_line + 1;
-        }
-
-        // Add remaining lines
-        while current_line <= lines.len() {
-            result.push_str(lines[current_line - 1]);
-            result.push('\n');
-            current_line += 1;
-        }
+        let updated_content = crate::utils::apply_content_updates(&content, updates)?;
 
         // Update the stored content
-        files.insert(path.to_path_buf(), result.clone());
+        files.insert(path.to_path_buf(), updated_content.clone());
 
-        Ok(result)
+        Ok(updated_content)
     }
 }
 
