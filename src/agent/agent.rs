@@ -133,12 +133,13 @@ impl Agent {
                 Your goal is to either gather relevant information in the working memory, \
                 or complete the task(s) if you have all necessary information.\n\n\
                 Working Memory Management:\n\
+                - All path parameters are expected relative to the root directory\n\
                 - Use ListFiles to expand collapsed directories (marked with ' [...]') in the repository structure\n\
                 - Use ReadFiles to load important files into working memory\n\
                 - Use Summarize to remove files that turned out to be less relevant\n\
                 - Keep only information that's necessary for the current task\n\
                 - Use UpdateFile to make changes to existing files\n\
-                - Use WriteFile to create new files or replace existing (small) files. Always provide the complete content when writing files\n\n\
+                - Use WriteFile to create new files or replace existing (small) files. Always provide the complete content when using WriteFile!\n\n\
                 {}\n\n\
                 Before making changes to files, unless you already know the used libraries/dependencies,\n\
                 always confirm that methods exist on the respective types by inspecting dependencies within the code-base!\n\n\
