@@ -305,9 +305,22 @@ impl OpenAIClient {
 #[async_trait]
 impl LLMProvider for OpenAIClient {
     async fn send_message(&self, request: LLMRequest) -> Result<LLMResponse> {
+        let mut messages: Vec<OpenAIChatMessage> = Vec::new();
+
+        // Add system message if present
+        if let Some(system_prompt) = request.system_prompt {
+            messages.push(OpenAIChatMessage {
+                role: "system".to_string(),
+                content: system_prompt,
+            });
+        }
+
+        // Add conversation messages
+        messages.extend(request.messages.iter().map(Self::convert_message));
+
         let openai_request = OpenAIRequest {
             model: self.model.clone(),
-            messages: request.messages.iter().map(Self::convert_message).collect(),
+            messages,
             temperature: request.temperature,
             max_tokens: Some(request.max_tokens),
             stream: None,

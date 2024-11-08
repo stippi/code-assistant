@@ -25,7 +25,7 @@ enum LLMProviderType {
 #[command(version, about, long_about = None)]
 struct Args {
     /// Path to the code directory to analyze
-    #[arg(short, long, default_value = ".")]
+    #[arg(long, default_value = ".")]
     path: PathBuf,
 
     /// Task to perform on the codebase
@@ -69,7 +69,7 @@ fn create_llm_client(args: &Args) -> Result<Box<dyn LLMProvider>> {
 
             Ok(Box::new(OpenAIClient::new(
                 api_key,
-                args.model.clone().unwrap_or_else(|| "gpt-4".to_string()),
+                args.model.clone().unwrap_or_else(|| "gpt-4o".to_string()),
             )))
         }
 
