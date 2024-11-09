@@ -161,6 +161,11 @@ impl Agent {
                 {}\n\n\
                 Before making changes to files, unless you already know the used libraries/dependencies,\n\
                 always confirm that methods exist on the respective types by inspecting dependencies within the code-base!\n\n\
+                After making changes to code, always validate them using the ExecuteCommand tool with appropriate commands for the project type:\n\
+                - For Rust projects: Use 'cargo check' and 'cargo test'\n\
+                - For Node.js projects: Check package.json for test/lint scripts and use them\n\
+                - For Python projects: Use pytest, mypy, or similar tools if available\n\
+                - For other projects: Look for common build/test scripts and configuration files\n\n\
                 ALWAYS respond in the following JSON format:\n\
                 {{\
                     \"reasoning\": <explain your thought process>,\
@@ -189,7 +194,7 @@ impl Agent {
     }
 
     pub fn render_working_memory(&self) -> String {
-        return format!(
+        format!(
             "Task: {}\n\n\
             Repository structure:\n\
             {}\n\n\
@@ -240,7 +245,7 @@ impl Agent {
                 ))
                 .collect::<Vec<_>>()
                 .join("\n\n")
-        );
+        )
     }
 
     /// Prepare messages for LLM request - currently returns a single user message
