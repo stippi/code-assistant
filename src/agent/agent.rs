@@ -4,6 +4,7 @@ use crate::ui::{UIMessage, UserInterface};
 use crate::utils::format_with_line_numbers;
 use anyhow::Result;
 use std::path::PathBuf;
+use std::process::Command;
 use tracing::{debug, trace, warn};
 
 pub struct Agent {
@@ -124,7 +125,16 @@ impl Agent {
            - Returns: Confirmation message
            - Use this when you need to inform the user
 
-        8. CompleteTask
+        8. ExecuteCommand
+            - Execute a command line program
+            - Parameters: {
+                "command_line": "the complete command to execute",
+                "working_dir": "optional: working directory for the command"
+            }
+            - Returns: The command's output and error streams
+            - Use this to run CLI commands like 'cargo', 'git', etc.
+
+        9. CompleteTask
            - Complete the current task with a final message to the user
            - Parameters: {"message": "your completion message here"}
            - Returns: Confirmation message
@@ -515,6 +525,71 @@ impl Agent {
                 }
             }
 
+            Tool::ExecuteCommand {
+                command_line,
+                working_dir,
+            } => {
+                self.ui
+                    .display(UIMessage::Action(format!(
+                        "Executing command: {}",
+                        command_line
+                    )))
+                    .await?;
+
+                // Split command line into command and arguments
+                let mut parts = command_line.split_whitespace();
+                let command = parts
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("Empty command line"))?;
+
+                // Create Command with working directory if specified
+                let mut cmd = Command::new(command);
+                cmd.args(parts);
+
+                if let Some(dir) = working_dir {
+                    cmd.current_dir(dir);
+                }
+
+                match cmd.output() {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+
+                        let mut result = String::new();
+                        if !stdout.is_empty() {
+                            result.push_str("Output:\n");
+                            result.push_str(&stdout);
+                        }
+                        if !stderr.is_empty() {
+                            if !result.is_empty() {
+                                result.push_str("\n");
+                            }
+                            result.push_str("Errors:\n");
+                            result.push_str(&stderr);
+                        }
+
+                        ActionResult {
+                            tool: action.tool.clone(),
+                            success: output.status.success(),
+                            result,
+                            error: if output.status.success() {
+                                None
+                            } else {
+                                Some(format!("Command exited with status: {}", output.status))
+                            },
+                            reasoning: action.reasoning.clone(),
+                        }
+                    }
+                    Err(e) => ActionResult {
+                        tool: action.tool.clone(),
+                        success: false,
+                        result: String::new(),
+                        error: Some(format!("Failed to execute command: {}", e)),
+                        reasoning: action.reasoning.clone(),
+                    },
+                }
+            }
+
             Tool::CompleteTask { message } => {
                 self.ui
                     .display(UIMessage::Action(format!("Task completed: {}", message)))
@@ -703,6 +778,13 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing message parameter"))?
                 .to_string(),
+        },
+        "ExecuteCommand" => Tool::ExecuteCommand {
+            command_line: tool_params["command_line"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing command_line parameter"))?
+                .to_string(),
+            working_dir: tool_params["working_dir"].as_str().map(PathBuf::from),
         },
         _ => anyhow::bail!("Unknown tool: {}", tool_name),
     };

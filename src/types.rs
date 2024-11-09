@@ -62,6 +62,13 @@ pub enum Tool {
     MessageUser { message: String },
     /// Complete the current task
     CompleteTask { message: String },
+    /// Execute a CLI command
+    ExecuteCommand {
+        /// The complete command line to execute
+        command_line: String,
+        /// Optional working directory for the command
+        working_dir: Option<PathBuf>,
+    },
 }
 
 /// Result of a tool execution
