@@ -9,6 +9,7 @@ use crate::agent::Agent;
 use crate::explorer::Explorer;
 use crate::llm::{AnthropicClient, LLMProvider, OllamaClient, OpenAIClient};
 use crate::ui::terminal::TerminalUI;
+use crate::utils::DefaultCommandExecutor;
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
@@ -119,8 +120,10 @@ async fn main() -> Result<()> {
     // Initialize terminal UI
     let terminal_ui = Box::new(TerminalUI::new());
 
+    let command_executor = Box::new(DefaultCommandExecutor);
+
     // Initialize agent
-    let mut agent = Agent::new(llm_client, explorer, terminal_ui);
+    let mut agent = Agent::new(llm_client, explorer, command_executor, terminal_ui);
 
     // Start agent with the specified task
     agent.start(args.task).await?;

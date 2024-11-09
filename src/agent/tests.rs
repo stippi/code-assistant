@@ -2,9 +2,12 @@ use super::*;
 use crate::llm::{types::*, LLMProvider, LLMRequest};
 use crate::types::*;
 use crate::ui::{UIError, UIMessage, UserInterface};
+use crate::utils::{CommandExecutor, CommandOutput};
+use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 // Mock LLM Provider
@@ -58,6 +61,49 @@ impl MockLLMProvider {
 impl LLMProvider for MockLLMProvider {
     async fn send_message(&self, request: LLMRequest) -> Result<LLMResponse, anyhow::Error> {
         self.requests.lock().unwrap().push(request);
+        self.responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Err(anyhow::anyhow!("No more mock responses")))
+    }
+}
+
+// Mock CommandExecutor
+#[derive(Clone)]
+struct MockCommandExecutor {
+    responses: Arc<Mutex<Vec<Result<CommandOutput, anyhow::Error>>>>,
+    calls: Arc<AtomicUsize>,
+    captured_commands: Arc<Mutex<Vec<(String, Option<PathBuf>)>>>,
+}
+
+impl MockCommandExecutor {
+    fn new(responses: Vec<Result<CommandOutput, anyhow::Error>>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(responses)),
+            calls: Arc::new(AtomicUsize::new(0)),
+            captured_commands: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn get_captured_commands(&self) -> Vec<(String, Option<PathBuf>)> {
+        self.captured_commands.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl CommandExecutor for MockCommandExecutor {
+    async fn execute(
+        &self,
+        command_line: &str,
+        working_dir: Option<&PathBuf>,
+    ) -> Result<CommandOutput> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.captured_commands
+            .lock()
+            .unwrap()
+            .push((command_line.to_string(), working_dir.cloned()));
+
         self.responses
             .lock()
             .unwrap()
@@ -182,6 +228,7 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
                 Tool::Summarize { .. } => "Summarize",
                 Tool::AskUser { .. } => "AskUser",
                 Tool::MessageUser { .. } => "MessageUser",
+                Tool::ExecuteCommand { .. } => "ExecuteCommand",
                 Tool::CompleteTask { .. } => "CompleteTask",
             },
             "params": match &tool {
@@ -218,6 +265,10 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
                 Tool::MessageUser { message } => serde_json::json!({
                     "message": message
                 }),
+                Tool::ExecuteCommand { command_line, working_dir } => serde_json::json!({
+                    "command_line": command_line,
+                    "working_dir": working_dir
+                }),
                 Tool::CompleteTask { message } => serde_json::json!({
                     "message": message
                 }),
@@ -249,6 +300,10 @@ fn create_explorer_mock() -> MockExplorer {
     MockExplorer::new(files, file_tree)
 }
 
+fn create_command_executor_mock() -> MockCommandExecutor {
+    MockCommandExecutor::new(vec![])
+}
+
 #[tokio::test]
 async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
     // Prepare test data
@@ -267,6 +322,7 @@ async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         Box::new(create_explorer_mock()),
+        Box::new(create_command_executor_mock()),
         Box::new(mock_ui.clone()),
     );
 
@@ -305,6 +361,7 @@ async fn test_agent_ask_user() -> Result<(), anyhow::Error> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         Box::new(create_explorer_mock()),
+        Box::new(create_command_executor_mock()),
         Box::new(mock_ui.clone()),
     );
 
@@ -345,6 +402,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         Box::new(create_explorer_mock()),
+        Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
     );
 
@@ -362,6 +420,46 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     } else {
         panic!("Expected text content in message");
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_execute_command() -> Result<()> {
+    let test_output = CommandOutput {
+        success: true,
+        stdout: "command output".to_string(),
+        stderr: "".to_string(),
+    };
+
+    let mock_command = MockCommandExecutor::new(vec![Ok(test_output)]);
+    let mock_command_ref = mock_command.clone();
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
+        Tool::ExecuteCommand {
+            command_line: "test command".to_string(),
+            working_dir: None,
+        },
+        "Testing command execution",
+    ))]);
+
+    let mut agent = Agent::new(
+        Box::new(mock_llm),
+        Box::new(create_explorer_mock()),
+        Box::new(mock_command),
+        Box::new(MockUI::default()),
+    );
+
+    // Run the agent
+    agent.start("Test task".to_string()).await?;
+
+    // Verify number of calls and command parameters
+    assert_eq!(mock_command_ref.calls.load(Ordering::Relaxed), 1);
+
+    let captured_commands = mock_command_ref.get_captured_commands();
+    assert_eq!(captured_commands.len(), 1);
+    assert_eq!(captured_commands[0].0, "test command");
+    assert_eq!(captured_commands[0].1, None);
 
     Ok(())
 }

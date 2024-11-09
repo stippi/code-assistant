@@ -1,16 +1,16 @@
 use crate::llm::{LLMProvider, LLMRequest, Message, MessageContent, MessageRole};
 use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
-use crate::utils::format_with_line_numbers;
+use crate::utils::{format_with_line_numbers, CommandExecutor};
 use anyhow::Result;
 use std::path::PathBuf;
-use std::process::Command;
 use tracing::{debug, trace, warn};
 
 pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
     explorer: Box<dyn CodeExplorer>,
+    command_executor: Box<dyn CommandExecutor>,
     ui: Box<dyn UserInterface>,
 }
 
@@ -18,6 +18,7 @@ impl Agent {
     pub fn new(
         llm_provider: Box<dyn LLMProvider>,
         explorer: Box<dyn CodeExplorer>,
+        command_executor: Box<dyn CommandExecutor>,
         ui: Box<dyn UserInterface>,
     ) -> Self {
         Self {
@@ -25,6 +26,7 @@ impl Agent {
             llm_provider,
             explorer,
             ui,
+            command_executor,
         }
     }
 
@@ -536,46 +538,33 @@ impl Agent {
                     )))
                     .await?;
 
-                // Split command line into command and arguments
-                let mut parts = command_line.split_whitespace();
-                let command = parts
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("Empty command line"))?;
-
-                // Create Command with working directory if specified
-                let mut cmd = Command::new(command);
-                cmd.args(parts);
-
-                if let Some(dir) = working_dir {
-                    cmd.current_dir(dir);
-                }
-
-                match cmd.output() {
+                match self
+                    .command_executor
+                    .execute(&command_line, working_dir.as_ref())
+                    .await
+                {
                     Ok(output) => {
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-
                         let mut result = String::new();
-                        if !stdout.is_empty() {
+                        if !output.stdout.is_empty() {
                             result.push_str("Output:\n");
-                            result.push_str(&stdout);
+                            result.push_str(&output.stdout);
                         }
-                        if !stderr.is_empty() {
+                        if !output.stderr.is_empty() {
                             if !result.is_empty() {
                                 result.push_str("\n");
                             }
                             result.push_str("Errors:\n");
-                            result.push_str(&stderr);
+                            result.push_str(&output.stderr);
                         }
 
                         ActionResult {
                             tool: action.tool.clone(),
-                            success: output.status.success(),
+                            success: output.success,
                             result,
-                            error: if output.status.success() {
+                            error: if output.success {
                                 None
                             } else {
-                                Some(format!("Command exited with status: {}", output.status))
+                                Some("Command failed".to_string())
                             },
                             reasoning: action.reasoning.clone(),
                         }
