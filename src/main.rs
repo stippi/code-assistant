@@ -63,6 +63,10 @@ enum Mode {
     },
     /// Run as MCP server
     Server {
+        /// Path to the code directory to serve
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+
         /// Enable verbose logging
         #[arg(short, long)]
         verbose: bool,
@@ -168,12 +172,22 @@ async fn main() -> Result<()> {
             agent.start(task).await?;
         }
 
-        Mode::Server { verbose } => {
+        Mode::Server { path, verbose } => {
             // Setup logging based on verbose flag
             setup_logging(verbose, false);
 
+            // Canonicalize the path to get absolute path
+            let root_path = path
+                .canonicalize()
+                .context("Failed to resolve project path")?;
+
+            // Ensure the path exists and is a directory
+            if !root_path.is_dir() {
+                anyhow::bail!("Path '{}' is not a directory", root_path.display());
+            }
+
             // Initialize server
-            let server = MCPServer::new()?;
+            let server = MCPServer::new(root_path)?;
             server.run().await?;
         }
     }

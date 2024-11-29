@@ -1,51 +1,57 @@
 use crate::mcp::handler::MessageHandler;
 use anyhow::Result;
-use tokio::io::stdin;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use std::path::PathBuf;
+use tokio::io::{stdin, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tracing::{debug, error};
 
 pub struct MCPServer {
     handler: MessageHandler,
 }
 
 impl MCPServer {
-    pub fn new() -> Result<Self> {
+    pub fn new(root_path: PathBuf) -> Result<Self> {
         Ok(Self {
-            handler: MessageHandler::new(),
+            handler: MessageHandler::new(root_path),
         })
     }
 
     pub async fn run(&self) -> Result<()> {
-        eprintln!("Starting MCP server using stdio transport");
+        debug!("Starting MCP server using stdio transport");
 
         let stdin = stdin();
         let mut stdout = tokio::io::stdout();
         let mut reader = BufReader::new(stdin);
 
-        // Read lines from stdin
         let mut line = String::new();
         while let Ok(n) = reader.read_line(&mut line).await {
             if n == 0 {
                 break; // EOF
             }
 
-            eprintln!("Received message: {}", line);
+            let trimmed = line.trim();
+            debug!("Received message: {}", trimmed);
 
             // Process the message
-            match self.handler.handle_message(&line).await {
+            match self.handler.handle_message(trimmed).await {
                 Ok(Some(response)) => {
-                    // Write response to stdout
+                    debug!("Sending response: {}", response);
+                    // Make sure to write the complete response followed by a newline
                     stdout.write_all(response.as_bytes()).await?;
                     stdout.write_all(b"\n").await?;
                     stdout.flush().await?;
                 }
-                Ok(None) => (),
-                Err(e) => eprintln!("Error handling message: {}", e),
+                Ok(None) => {
+                    debug!("No response required (notification)");
+                }
+                Err(e) => {
+                    error!("Error handling message: {}", e);
+                }
             }
 
             line.clear();
         }
 
-        eprintln!("MCP server shutting down");
+        debug!("MCP server shutting down");
         Ok(())
     }
 }
