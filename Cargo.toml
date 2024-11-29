@@ -13,6 +13,9 @@ tokio = { version = "1.36", features = ["full"] }
 reqwest = { version = "0.11", features = ["json"] }
 futures = "0.3"
 
+# WebSocket Support
+tokio-tungstenite = "0.24"
+
 # JSON (de)serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -23,7 +26,7 @@ thiserror = "1.0"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
