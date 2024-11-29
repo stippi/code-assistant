@@ -60,8 +60,13 @@ impl MessageHandler {
                     None => return Err(anyhow::anyhow!("No arguments provided")),
                 };
 
-                // Nutze den vorhandenen Explorer
-                match self.explorer.read_file(&path) {
+                let full_path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    self.explorer.root_dir().join(path)
+                };
+
+                match self.explorer.read_file(&full_path) {
                     Ok(content) => ToolCallResult {
                         content: vec![ToolResultContent::Text { text: content }],
                         is_error: None,
@@ -89,8 +94,14 @@ impl MessageHandler {
 
                 let path = PathBuf::from(path_str);
 
+                let full_path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    self.explorer.root_dir().join(path)
+                };
+
                 // Nutze die vorhandene list_files Implementierung
-                match self.explorer.list_files(&path, max_depth) {
+                match self.explorer.list_files(&full_path, max_depth) {
                     Ok(tree_entry) => {
                         // Konvertiere den FileTreeEntry in einen String
                         let result = tree_entry.to_string();
