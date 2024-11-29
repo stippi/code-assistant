@@ -1,8 +1,10 @@
 use super::types::*;
+use crate::explorer::Explorer;
+use crate::types::{CodeExplorer, FileSystemEntryType, Tool as AgentTool};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tracing::{debug, error};
+use tracing::{debug, error}; // Rename to avoid naming conflict
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JSONRPCRequest {
@@ -35,12 +37,87 @@ pub struct ErrorObject {
 }
 
 pub struct MessageHandler {
-    root_path: PathBuf,
+    explorer: Box<dyn CodeExplorer>,
 }
 
 impl MessageHandler {
     pub fn new(root_path: PathBuf) -> Self {
-        Self { root_path }
+        Self {
+            explorer: Box::new(Explorer::new(root_path.clone())),
+        }
+    }
+
+    async fn handle_tool_call(&self, id: RequestId, params: ToolCallParams) -> Result<String> {
+        let result = match params.name.as_str() {
+            "read-file" => {
+                let path = match params.arguments {
+                    Some(args) => {
+                        let path_str = args["path"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'path' argument"))?;
+                        PathBuf::from(path_str)
+                    }
+                    None => return Err(anyhow::anyhow!("No arguments provided")),
+                };
+
+                // Nutze den vorhandenen Explorer
+                match self.explorer.read_file(&path) {
+                    Ok(content) => ToolCallResult {
+                        content: vec![ToolResultContent::Text { text: content }],
+                        is_error: None,
+                    },
+                    Err(e) => ToolCallResult {
+                        content: vec![ToolResultContent::Text {
+                            text: format!("Error reading file: {}", e),
+                        }],
+                        is_error: Some(true),
+                    },
+                }
+            }
+
+            "list-files" => {
+                let args = params
+                    .arguments
+                    .ok_or_else(|| anyhow::anyhow!("No arguments provided"))?;
+                let path_str = args["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'path' argument"))?;
+                let max_depth = args
+                    .get("max_depth")
+                    .and_then(|v| v.as_u64())
+                    .map(|d| d as usize);
+
+                let path = PathBuf::from(path_str);
+
+                // Nutze die vorhandene list_files Implementierung
+                match self.explorer.list_files(&path, max_depth) {
+                    Ok(tree_entry) => {
+                        // Konvertiere den FileTreeEntry in einen String
+                        let result = tree_entry.to_string();
+                        ToolCallResult {
+                            content: vec![ToolResultContent::Text { text: result }],
+                            is_error: None,
+                        }
+                    }
+                    Err(e) => ToolCallResult {
+                        content: vec![ToolResultContent::Text {
+                            text: format!("Error listing files: {}", e),
+                        }],
+                        is_error: Some(true),
+                    },
+                }
+            }
+
+            _ => return Err(anyhow::anyhow!("Unknown tool: {}", params.name)),
+        };
+
+        let response = JSONRPCResponse {
+            jsonrpc: "2.0".to_string(),
+            id,
+            result,
+        };
+
+        Ok(serde_json::to_string(&response)?)
     }
 
     async fn handle_tools_list(&self, id: RequestId) -> Result<String> {
@@ -82,6 +159,19 @@ impl MessageHandler {
                         }),
                     },
                 ],
+                next_cursor: None,
+            },
+        };
+
+        Ok(serde_json::to_string(&response)?)
+    }
+
+    async fn handle_prompts_list(&self, id: RequestId) -> Result<String> {
+        let response = JSONRPCResponse {
+            jsonrpc: "2.0".to_string(),
+            id,
+            result: ListPromptsResult {
+                prompts: vec![], // Erstmal eine leere Liste
                 next_cursor: None,
             },
         };
@@ -132,22 +222,10 @@ impl MessageHandler {
                         Ok(Some(serde_json::to_string(&response)?))
                     }
 
-                    // Handle notifications (no response needed)
-                    ("notifications/initialized", None) => {
-                        // Parse notification params - they're optional but should be validated if present
-                        if let Some(params) = request.params.as_object() {
-                            debug!(
-                                "Received initialized notification with params: {:?}",
-                                params
-                            );
-                        }
-                        Ok(None)
-                    }
-
                     // Handle resources/list
                     ("resources/list", Some(id)) => {
                         debug!("Handling resources/list request");
-                        let uri = format!("file://{}", self.root_path.display());
+                        let uri = format!("file://{}", self.explorer.root_dir().display());
                         let response = JSONRPCResponse {
                             jsonrpc: "2.0".to_string(),
                             id,
@@ -166,9 +244,20 @@ impl MessageHandler {
                         Ok(Some(serde_json::to_string(&response)?))
                     }
 
+                    ("prompts/list", Some(id)) => {
+                        debug!("Handling prompts/list request");
+                        self.handle_prompts_list(id).await.map(Some)
+                    }
+
                     ("tools/list", Some(id)) => {
                         debug!("Handling tools/list request");
                         self.handle_tools_list(id).await.map(Some)
+                    }
+
+                    ("tools/call", Some(id)) => {
+                        debug!("Handling tools/call request");
+                        let params: ToolCallParams = serde_json::from_value(request.params)?;
+                        self.handle_tool_call(id, params).await.map(Some)
                     }
 
                     // Handle notifications (no response needed)
