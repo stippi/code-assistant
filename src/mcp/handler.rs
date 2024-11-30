@@ -4,7 +4,7 @@ use crate::types::{CodeExplorer, FileSystemEntryType, Tool as AgentTool};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tracing::{debug, error}; // Rename to avoid naming conflict
+use tracing::{debug, error};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JSONRPCRequest {

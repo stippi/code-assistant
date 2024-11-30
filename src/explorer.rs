@@ -157,12 +157,7 @@ impl Explorer {
             };
 
             if is_dir {
-                self.expand_directory(
-                    entry_path, // Path ist jetzt schon ein &Path
-                    &mut child_entry,
-                    current_depth + 1,
-                    max_depth,
-                )?;
+                self.expand_directory(entry_path, &mut child_entry, current_depth + 1, max_depth)?;
             }
 
             entry.children.insert(child_entry.name.clone(), child_entry);
@@ -218,7 +213,7 @@ impl CodeExplorer for Explorer {
 
         if path.is_dir() {
             self.expand_directory(
-                path.as_path(), // Konvertierung zu &Path
+                path.as_path(),
                 &mut entry,
                 0,
                 max_depth.unwrap_or(usize::MAX),
