@@ -1,6 +1,8 @@
+use super::resources::ResourceManager;
 use super::types::*;
 use crate::explorer::Explorer;
-use crate::types::{CodeExplorer, FileSystemEntryType, Tool as AgentTool};
+use crate::mcp::types::ResourceContent;
+use crate::types::{CodeExplorer, FileSystemEntryType, FileTreeEntry, Tool as AgentTool};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -38,13 +40,57 @@ pub struct ErrorObject {
 
 pub struct MessageHandler {
     explorer: Box<dyn CodeExplorer>,
+    resources: ResourceManager,
 }
 
 impl MessageHandler {
-    pub fn new(root_path: PathBuf) -> Self {
-        Self {
+    pub fn new(root_path: PathBuf, resources: ResourceManager) -> Result<Self> {
+        Ok(Self {
             explorer: Box::new(Explorer::new(root_path.clone())),
-        }
+            resources,
+        })
+    }
+
+    /// Creates the initial file tree when starting up
+    pub async fn create_initial_tree(&self) -> Result<FileTreeEntry> {
+        self.explorer.create_initial_tree(2)
+    }
+
+    async fn handle_resources_list(&self, id: RequestId) -> Result<String> {
+        let resources = self.resources.list_resources().await;
+        let response = JSONRPCResponse {
+            jsonrpc: "2.0".to_string(),
+            id,
+            result: ListResourcesResult {
+                resources,
+                next_cursor: None,
+            },
+        };
+
+        Ok(serde_json::to_string(&response)?)
+    }
+
+    async fn handle_resources_read(&self, id: RequestId, uri: String) -> Result<String> {
+        let response = match self.resources.read_resource(&uri).await {
+            Some(content) => serde_json::to_string(&JSONRPCResponse {
+                jsonrpc: "2.0".to_string(),
+                id,
+                result: ReadResourceResult {
+                    contents: vec![content],
+                },
+            })?,
+            None => serde_json::to_string(&JSONRPCError {
+                jsonrpc: "2.0".to_string(),
+                id,
+                error: ErrorObject {
+                    code: -32001,
+                    message: format!("Resource not found: {}", uri),
+                    data: None,
+                },
+            })?,
+        };
+
+        Ok(response)
     }
 
     async fn handle_tool_call(&self, id: RequestId, params: ToolCallParams) -> Result<String> {
@@ -63,14 +109,20 @@ impl MessageHandler {
                 let full_path = if path.is_absolute() {
                     path.clone()
                 } else {
-                    self.explorer.root_dir().join(path)
+                    self.explorer.root_dir().join(&path)
                 };
 
                 match self.explorer.read_file(&full_path) {
-                    Ok(content) => ToolCallResult {
-                        content: vec![ToolResultContent::Text { text: content }],
-                        is_error: None,
-                    },
+                    Ok(content) => {
+                        // Update resources when a file is read
+                        self.resources
+                            .update_loaded_file(path, content.clone())
+                            .await;
+                        ToolCallResult {
+                            content: vec![ToolResultContent::Text { text: content }],
+                            is_error: None,
+                        }
+                    }
                     Err(e) => ToolCallResult {
                         content: vec![ToolResultContent::Text {
                             text: format!("Error reading file: {}", e),
@@ -93,20 +145,20 @@ impl MessageHandler {
                     .map(|d| d as usize);
 
                 let path = PathBuf::from(path_str);
-
                 let full_path = if path.is_absolute() {
                     path.clone()
                 } else {
                     self.explorer.root_dir().join(path)
                 };
 
-                // Nutze die vorhandene list_files Implementierung
                 match self.explorer.list_files(&full_path, max_depth) {
                     Ok(tree_entry) => {
-                        // Konvertiere den FileTreeEntry in einen String
-                        let result = tree_entry.to_string();
+                        // Update the file tree resource when listing files
+                        self.resources.update_file_tree(tree_entry.clone()).await;
                         ToolCallResult {
-                            content: vec![ToolResultContent::Text { text: result }],
+                            content: vec![ToolResultContent::Text {
+                                text: tree_entry.to_string(),
+                            }],
                             is_error: None,
                         }
                     }
@@ -199,12 +251,11 @@ impl MessageHandler {
                 return Ok(None);
             }
         };
+
         match message {
-            // Handle requests
             JSONRPCMessage::Request(request) => {
                 debug!("Processing request: {:?}", request);
                 match (request.method.as_str(), request.id) {
-                    // Handle initialize request
                     ("initialize", Some(id)) => {
                         let params: InitializeParams = serde_json::from_value(request.params)?;
                         debug!("Initialize params: {:?}", params);
@@ -233,26 +284,15 @@ impl MessageHandler {
                         Ok(Some(serde_json::to_string(&response)?))
                     }
 
-                    // Handle resources/list
                     ("resources/list", Some(id)) => {
                         debug!("Handling resources/list request");
-                        let uri = format!("file://{}", self.explorer.root_dir().display());
-                        let response = JSONRPCResponse {
-                            jsonrpc: "2.0".to_string(),
-                            id,
-                            result: ListResourcesResult {
-                                resources: vec![Resource {
-                                    name: "Repository".to_string(),
-                                    uri,
-                                    description: Some(
-                                        "The current workspace repository".to_string(),
-                                    ),
-                                    mime_type: None,
-                                }],
-                                next_cursor: None,
-                            },
-                        };
-                        Ok(Some(serde_json::to_string(&response)?))
+                        self.handle_resources_list(id).await.map(Some)
+                    }
+
+                    ("resources/read", Some(id)) => {
+                        debug!("Handling resources/read request");
+                        let params: ReadResourceRequest = serde_json::from_value(request.params)?;
+                        self.handle_resources_read(id, params.uri).await.map(Some)
                     }
 
                     ("prompts/list", Some(id)) => {
@@ -271,13 +311,11 @@ impl MessageHandler {
                         self.handle_tool_call(id, params).await.map(Some)
                     }
 
-                    // Handle notifications (no response needed)
                     (_, None) => {
                         debug!("Received notification: {}", request.method);
                         Ok(None)
                     }
 
-                    // Handle unknown methods
                     (unknown_method, Some(id)) => {
                         let error = JSONRPCError {
                             jsonrpc: "2.0".to_string(),
@@ -293,7 +331,6 @@ impl MessageHandler {
                 }
             }
 
-            // Handle notifications
             JSONRPCMessage::Notification { method, params, .. } => match method.as_str() {
                 "notifications/initialized" => {
                     if let Some(params) = params {
@@ -310,4 +347,16 @@ impl MessageHandler {
             },
         }
     }
+}
+
+// Add ReadResourceRequest struct to types.rs if not already present
+#[derive(Debug, Deserialize)]
+struct ReadResourceRequest {
+    uri: String,
+}
+
+// Add ReadResourceResult struct to types.rs if not already present
+#[derive(Debug, Serialize)]
+struct ReadResourceResult {
+    contents: Vec<ResourceContent>,
 }

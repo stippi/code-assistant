@@ -97,10 +97,10 @@ pub struct InitializeResult {
 }
 
 // Resource types
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resource {
-    pub name: String,
     pub uri: String,
+    pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
@@ -112,6 +112,25 @@ pub struct ListResourcesResult {
     pub resources: Vec<Resource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReadResourceRequest {
+    pub uri: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReadResourceResult {
+    pub contents: Vec<ResourceContent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceContent {
+    pub uri: String,
+    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 // Tool types
