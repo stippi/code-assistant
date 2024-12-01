@@ -2,6 +2,7 @@ use super::resources::ResourceManager;
 use super::types::*;
 use crate::explorer::Explorer;
 use crate::types::{CodeExplorer, FileUpdate};
+use crate::utils::{CommandExecutor, DefaultCommandExecutor};
 use anyhow::Result;
 use std::path::PathBuf;
 use tokio::io::{AsyncWriteExt, Stdout};
@@ -9,6 +10,7 @@ use tracing::{debug, error};
 
 pub struct MessageHandler {
     explorer: Box<dyn CodeExplorer>,
+    command_executor: Box<dyn CommandExecutor>,
     resources: ResourceManager,
     stdout: Stdout,
 }
@@ -17,6 +19,7 @@ impl MessageHandler {
     pub fn new(root_path: PathBuf, stdout: Stdout) -> Result<Self> {
         Ok(Self {
             explorer: Box::new(Explorer::new(root_path.clone())),
+            command_executor: Box::new(DefaultCommandExecutor),
             resources: ResourceManager::new(),
             stdout,
         })
@@ -172,6 +175,24 @@ impl MessageHandler {
             id,
             ListToolsResult {
                 tools: vec![
+                    Tool {
+                        name: "execute-command".to_string(),
+                        description: Some("Execute a command line program".to_string()),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "command_line": {
+                                    "type": "string",
+                                    "description": "The complete command to execute"
+                                },
+                                "working_dir": {
+                                    "type": "string",
+                                    "description": "Optional: working directory for the command"
+                                }
+                            },
+                            "required": ["command_line"]
+                        }),
+                    },
                     Tool {
                         name: "list-files".to_string(),
                         description: Some("List files in a directory".to_string()),
@@ -548,6 +569,48 @@ impl MessageHandler {
                     Err(e) => ToolCallResult {
                         content: vec![ToolResultContent::Text {
                             text: format!("Error listing files: {}", e),
+                        }],
+                        is_error: Some(true),
+                    },
+                }
+            }
+            "execute-command" => {
+                let args = params
+                    .arguments
+                    .ok_or_else(|| anyhow::anyhow!("No arguments provided"))?;
+                let command_line = args["command_line"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'command_line' argument"))?;
+                let working_dir = args
+                    .get("working_dir")
+                    .and_then(|v| v.as_str())
+                    .map(PathBuf::from);
+                match self
+                    .command_executor
+                    .execute(command_line, working_dir.as_ref())
+                    .await
+                {
+                    Ok(output) => {
+                        let mut result = String::new();
+                        if !output.stdout.is_empty() {
+                            result.push_str("Output:\n");
+                            result.push_str(&output.stdout);
+                        }
+                        if !output.stderr.is_empty() {
+                            if !result.is_empty() {
+                                result.push_str("\n");
+                            }
+                            result.push_str("Errors:\n");
+                            result.push_str(&output.stderr);
+                        }
+                        ToolCallResult {
+                            content: vec![ToolResultContent::Text { text: result }],
+                            is_error: if output.success { None } else { Some(true) },
+                        }
+                    }
+                    Err(e) => ToolCallResult {
+                        content: vec![ToolResultContent::Text {
+                            text: format!("Failed to execute command: {}", e),
                         }],
                         is_error: Some(true),
                     },
