@@ -235,7 +235,11 @@ impl MessageHandler {
                     },
                     Tool {
                         name: "update-file".to_string(),
-                        description: Some("Update sections in an existing file without replacing the entire content".to_string()),
+                        description: Some(
+                            "Update sections in an existing file based on line numbers. IMPORTANT: Line numbers are 1-based, \
+                             matching the line numbers shown when viewing file resources. For example, to replace the first \
+                             line of a file, use start_line: 1, not 0.".to_string()
+                        ),
                         input_schema: serde_json::json!({
                             "type": "object",
                             "properties": {
@@ -245,16 +249,17 @@ impl MessageHandler {
                                 },
                                 "updates": {
                                     "type": "array",
+                                    "description": "List of updates to apply to the file",
                                     "items": {
                                         "type": "object",
                                         "properties": {
                                             "start_line": {
                                                 "type": "integer",
-                                                "description": "First line number of the section to replace (1-based)"
+                                                "description": "First line number to replace (1-based, matching the displayed line numbers)"
                                             },
                                             "end_line": {
                                                 "type": "integer",
-                                                "description": "Last line number of the section to replace (1-based)"
+                                                "description": "Last line number to replace (1-based, matching the displayed line numbers)"
                                             },
                                             "new_content": {
                                                 "type": "string",

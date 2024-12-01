@@ -9,6 +9,7 @@ A powerful CLI tool built in Rust for assisting with code-related tasks.
 - **Working Memory Management**: Efficient handling of file contents with the ability to load and unload files from memory.
 - **File Summarization**: Capability to create and store file summaries for quick reference and better understanding of the codebase.
 - **Interactive Communication**: Built-in ability to ask users questions and get responses for better decision-making.
+- **MCP Server Mode**: Can run as a Model Context Protocol server, providing tools and resources to LLMs through standard interfaces.
 
 ## Installation
 
