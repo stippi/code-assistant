@@ -96,6 +96,11 @@ impl ResourceManager {
         }
     }
 
+    /// Remove a file summary
+    pub fn remove_file_summary(&mut self, path: &PathBuf) {
+        self.file_summaries.remove(path);
+    }
+
     /// Updates the file tree
     pub fn update_file_tree(&mut self, tree: FileTreeEntry) {
         self.file_tree = Some(tree);

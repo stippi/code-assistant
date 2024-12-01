@@ -273,6 +273,20 @@ impl MessageHandler {
                             "required": ["path", "updates"]
                         }),
                     },
+                    Tool {
+                        name: "delete-file".to_string(),
+                        description: Some("Delete a file from the workspace. This operation cannot be undone!".to_string()),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Relative path to the file to delete"
+                                }
+                            },
+                            "required": ["path"]
+                        }),
+                    },
                 ],
                 next_cursor: None,
             },
@@ -443,6 +457,58 @@ impl MessageHandler {
                         }],
                         is_error: Some(true),
                     },
+                }
+            }
+
+            "delete-file" => {
+                let args = params
+                    .arguments
+                    .ok_or_else(|| anyhow::anyhow!("No arguments provided"))?;
+                let path = PathBuf::from(
+                    args["path"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'path' argument"))?,
+                );
+                let full_path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    self.explorer.root_dir().join(&path)
+                };
+                // First check if file exists and is actually a file
+                if full_path.is_file() {
+                    // Try to delete the file
+                    match std::fs::remove_file(&full_path) {
+                        Ok(_) => {
+                            // Remove from resources if loaded
+                            self.resources.remove_loaded_file(&path);
+                            // Remove summary if exists
+                            self.resources.remove_file_summary(&path);
+                            // Notify clients
+                            self.send_list_changed_notification().await?;
+                            ToolCallResult {
+                                content: vec![ToolResultContent::Text {
+                                    text: format!("Successfully deleted {}", path.display()),
+                                }],
+                                is_error: None,
+                            }
+                        }
+                        Err(e) => ToolCallResult {
+                            content: vec![ToolResultContent::Text {
+                                text: format!("Error deleting file: {}", e),
+                            }],
+                            is_error: Some(true),
+                        },
+                    }
+                } else {
+                    ToolCallResult {
+                        content: vec![ToolResultContent::Text {
+                            text: format!(
+                                "Error: {} is not a file or doesn't exist",
+                                path.display()
+                            ),
+                        }],
+                        is_error: Some(true),
+                    }
                 }
             }
 

@@ -39,6 +39,8 @@ pub struct FileUpdate {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "tool", content = "params")]
 pub enum Tool {
+    /// Delete a file
+    //    DeleteFile { path: PathBuf },
     /// List contents of directories
     ListFiles {
         paths: Vec<PathBuf>,
