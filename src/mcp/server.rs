@@ -35,11 +35,8 @@ impl MCPServer {
 
             // Process the message
             match self.handler.handle_message(trimmed).await {
-                Ok(Some(_)) => {
-                    debug!("Response processed successfully");
-                }
-                Ok(None) => {
-                    debug!("No response required (notification)");
+                Ok(()) => {
+                    debug!("Message processed successfully");
                 }
                 Err(e) => {
                     error!("Error handling message: {}", e);

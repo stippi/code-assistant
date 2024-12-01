@@ -31,6 +31,37 @@ impl MessageHandler {
         Ok(())
     }
 
+    /// Sends a JSON-RPC response
+    async fn send_response<T: serde::Serialize>(&mut self, id: RequestId, result: T) -> Result<()> {
+        let response = JSONRPCResponse {
+            jsonrpc: "2.0".to_string(),
+            id,
+            result,
+        };
+        self.send_message(&serde_json::to_value(response)?).await
+    }
+
+    /// Sends a JSON-RPC error response
+    async fn send_error(
+        &mut self,
+        id: RequestId,
+        code: i32,
+        message: String,
+        data: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let error = JSONRPCError {
+            jsonrpc: "2.0".to_string(),
+            id,
+            error: ErrorObject {
+                code,
+                message,
+                data,
+            },
+        };
+        self.send_message(&serde_json::to_value(error)?).await
+    }
+
+    /// Sends a notification
     async fn send_notification(
         &mut self,
         method: &str,
@@ -49,18 +80,26 @@ impl MessageHandler {
             })
         };
 
-        let message = serde_json::to_string(&notification)?;
-        self.stdout.write_all(message.as_bytes()).await?;
+        self.send_message(&notification).await
+    }
+
+    /// Helper method to send any JSON message
+    async fn send_message(&mut self, message: &serde_json::Value) -> Result<()> {
+        let message_str = serde_json::to_string(message)?;
+        debug!("Sending message: {}", message_str);
+        self.stdout.write_all(message_str.as_bytes()).await?;
         self.stdout.write_all(b"\n").await?;
         self.stdout.flush().await?;
         Ok(())
     }
 
+    /// Notify clients that the resource list has changed
     async fn send_list_changed_notification(&mut self) -> Result<()> {
         self.send_notification("notifications/resources/list_changed", None)
             .await
     }
 
+    /// Notify clients that a specific resource has been updated
     async fn send_resource_updated_notification(&mut self, uri: &str) -> Result<()> {
         self.send_notification(
             "notifications/resources/updated",
@@ -69,44 +108,112 @@ impl MessageHandler {
         .await
     }
 
-    async fn handle_resources_list(&self, id: RequestId) -> Result<String> {
-        let resources = self.resources.list_resources();
-        let response = JSONRPCResponse {
-            jsonrpc: "2.0".to_string(),
+    /// Handle initialize request
+    async fn handle_initialize(&mut self, id: RequestId, params: InitializeParams) -> Result<()> {
+        debug!("Initialize params: {:?}", params);
+
+        self.send_response(
             id,
-            result: ListResourcesResult {
-                resources,
+            InitializeResult {
+                capabilities: ServerCapabilities {
+                    tools: Some(ToolsCapability {
+                        list_changed: Some(false),
+                    }),
+                    experimental: None,
+                },
+                protocol_version: params.protocol_version,
+                server_info: Implementation {
+                    name: "code-assistant".to_string(),
+                    version: "0.1.0".to_string(),
+                },
+                instructions: Some("Code Assistant helps you analyze and modify code.".to_string()),
+            },
+        )
+        .await
+    }
+
+    /// Handle resources/list request
+    async fn handle_resources_list(&mut self, id: RequestId) -> Result<()> {
+        debug!("Handling resources/list request");
+        self.send_response(
+            id,
+            ListResourcesResult {
+                resources: self.resources.list_resources(),
                 next_cursor: None,
             },
-        };
-
-        Ok(serde_json::to_string(&response)?)
+        )
+        .await
     }
 
-    async fn handle_resources_read(&self, id: RequestId, uri: String) -> Result<String> {
-        let response = match self.resources.read_resource(&uri) {
-            Some(content) => serde_json::to_string(&JSONRPCResponse {
-                jsonrpc: "2.0".to_string(),
-                id,
-                result: ReadResourceResult {
-                    contents: vec![content],
-                },
-            })?,
-            None => serde_json::to_string(&JSONRPCError {
-                jsonrpc: "2.0".to_string(),
-                id,
-                error: ErrorObject {
-                    code: -32001,
-                    message: format!("Resource not found: {}", uri),
-                    data: None,
-                },
-            })?,
-        };
-
-        Ok(response)
+    /// Handle resources/read request
+    async fn handle_resources_read(&mut self, id: RequestId, uri: String) -> Result<()> {
+        debug!("Handling resources/read request for {}", uri);
+        match self.resources.read_resource(&uri) {
+            Some(content) => {
+                self.send_response(
+                    id,
+                    ReadResourceResult {
+                        contents: vec![content],
+                    },
+                )
+                .await
+            }
+            None => {
+                self.send_error(id, -32001, format!("Resource not found: {}", uri), None)
+                    .await
+            }
+        }
     }
 
-    async fn handle_tool_call(&mut self, id: RequestId, params: ToolCallParams) -> Result<String> {
+    /// Handle tools/list request
+    async fn handle_tools_list(&mut self, id: RequestId) -> Result<()> {
+        debug!("Handling tools/list request");
+        self.send_response(
+            id,
+            ListToolsResult {
+                tools: vec![
+                    Tool {
+                        name: "read-file".to_string(),
+                        description: Some("Read content of a file from the workspace".to_string()),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Relative path to the file from project root"
+                                }
+                            },
+                            "required": ["path"]
+                        }),
+                    },
+                    Tool {
+                        name: "list-files".to_string(),
+                        description: Some("List files in a directory".to_string()),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Directory path relative to project root"
+                                },
+                                "max_depth": {
+                                    "type": "integer",
+                                    "description": "Maximum directory depth"
+                                }
+                            },
+                            "required": ["path"]
+                        }),
+                    },
+                ],
+                next_cursor: None,
+            },
+        )
+        .await
+    }
+
+    /// Handle tools/call request
+    async fn handle_tool_call(&mut self, id: RequestId, params: ToolCallParams) -> Result<()> {
+        debug!("Handling tool call for {}", params.name);
         let result = match params.name.as_str() {
             "read-file" => {
                 let path = match params.arguments {
@@ -193,84 +300,37 @@ impl MessageHandler {
                 }
             }
 
-            _ => return Err(anyhow::anyhow!("Unknown tool: {}", params.name)),
+            _ => {
+                return self
+                    .send_error(id, -32601, format!("Unknown tool: {}", params.name), None)
+                    .await;
+            }
         };
 
-        let response = JSONRPCResponse {
-            jsonrpc: "2.0".to_string(),
-            id,
-            result,
-        };
-
-        Ok(serde_json::to_string(&response)?)
+        self.send_response(id, result).await
     }
 
-    async fn handle_tools_list(&self, id: RequestId) -> Result<String> {
-        let response = JSONRPCResponse {
-            jsonrpc: "2.0".to_string(),
+    /// Handle prompts/list request
+    async fn handle_prompts_list(&mut self, id: RequestId) -> Result<()> {
+        debug!("Handling prompts/list request");
+        self.send_response(
             id,
-            result: ListToolsResult {
-                tools: vec![
-                    Tool {
-                        name: "read-file".to_string(),
-                        description: Some("Read content of a file from the workspace".to_string()),
-                        input_schema: serde_json::json!({
-                            "type": "object",
-                            "properties": {
-                                "path": {
-                                    "type": "string",
-                                    "description": "Relative path to the file from project root"
-                                }
-                            },
-                            "required": ["path"]
-                        }),
-                    },
-                    Tool {
-                        name: "list-files".to_string(),
-                        description: Some("List files in a directory".to_string()),
-                        input_schema: serde_json::json!({
-                            "type": "object",
-                            "properties": {
-                                "path": {
-                                    "type": "string",
-                                    "description": "Directory path relative to project root"
-                                },
-                                "max_depth": {
-                                    "type": "integer",
-                                    "description": "Maximum directory depth"
-                                }
-                            },
-                            "required": ["path"]
-                        }),
-                    },
-                ],
-                next_cursor: None,
-            },
-        };
-
-        Ok(serde_json::to_string(&response)?)
-    }
-
-    async fn handle_prompts_list(&self, id: RequestId) -> Result<String> {
-        let response = JSONRPCResponse {
-            jsonrpc: "2.0".to_string(),
-            id,
-            result: ListPromptsResult {
+            ListPromptsResult {
                 prompts: vec![],
                 next_cursor: None,
             },
-        };
-
-        Ok(serde_json::to_string(&response)?)
+        )
+        .await
     }
 
-    pub async fn handle_message(&mut self, message: &str) -> Result<Option<String>> {
+    /// Main message handling entry point
+    pub async fn handle_message(&mut self, message: &str) -> Result<()> {
         // Parse the message first
         let message: JSONRPCMessage = match serde_json::from_str(message) {
             Ok(msg) => msg,
             Err(e) => {
                 error!("Invalid JSON-RPC message: {}", e);
-                return Ok(None);
+                return Ok(());
             }
         };
 
@@ -280,75 +340,38 @@ impl MessageHandler {
                 match (request.method.as_str(), request.id) {
                     ("initialize", Some(id)) => {
                         let params: InitializeParams = serde_json::from_value(request.params)?;
-                        debug!("Initialize params: {:?}", params);
-
-                        let response = JSONRPCResponse {
-                            jsonrpc: "2.0".to_string(),
-                            id,
-                            result: InitializeResult {
-                                capabilities: ServerCapabilities {
-                                    tools: Some(ToolsCapability {
-                                        list_changed: Some(false),
-                                    }),
-                                    experimental: None,
-                                },
-                                protocol_version: params.protocol_version,
-                                server_info: Implementation {
-                                    name: "code-assistant".to_string(),
-                                    version: "0.1.0".to_string(),
-                                },
-                                instructions: Some(
-                                    "Code Assistant helps you analyze and modify code.".to_string(),
-                                ),
-                            },
-                        };
-
-                        Ok(Some(serde_json::to_string(&response)?))
+                        self.handle_initialize(id, params).await?;
                     }
 
                     ("resources/list", Some(id)) => {
-                        debug!("Handling resources/list request");
-                        self.handle_resources_list(id).await.map(Some)
+                        self.handle_resources_list(id).await?;
                     }
 
                     ("resources/read", Some(id)) => {
-                        debug!("Handling resources/read request");
                         let params: ReadResourceRequest = serde_json::from_value(request.params)?;
-                        self.handle_resources_read(id, params.uri).await.map(Some)
-                    }
-
-                    ("prompts/list", Some(id)) => {
-                        debug!("Handling prompts/list request");
-                        self.handle_prompts_list(id).await.map(Some)
+                        self.handle_resources_read(id, params.uri).await?;
                     }
 
                     ("tools/list", Some(id)) => {
-                        debug!("Handling tools/list request");
-                        self.handle_tools_list(id).await.map(Some)
+                        self.handle_tools_list(id).await?;
                     }
 
                     ("tools/call", Some(id)) => {
-                        debug!("Handling tools/call request");
                         let params: ToolCallParams = serde_json::from_value(request.params)?;
-                        self.handle_tool_call(id, params).await.map(Some)
+                        self.handle_tool_call(id, params).await?;
+                    }
+
+                    ("prompts/list", Some(id)) => {
+                        self.handle_prompts_list(id).await?;
+                    }
+
+                    (method, Some(id)) => {
+                        self.send_error(id, -32601, format!("Method not found: {}", method), None)
+                            .await?;
                     }
 
                     (_, None) => {
-                        debug!("Received notification: {}", request.method);
-                        Ok(None)
-                    }
-
-                    (unknown_method, Some(id)) => {
-                        let error = JSONRPCError {
-                            jsonrpc: "2.0".to_string(),
-                            id,
-                            error: ErrorObject {
-                                code: -32601,
-                                message: format!("Method not found: {}", unknown_method),
-                                data: None,
-                            },
-                        };
-                        Ok(Some(serde_json::to_string(&error)?))
+                        debug!("Received notification request - ignoring");
                     }
                 }
             }
@@ -360,13 +383,13 @@ impl MessageHandler {
                     } else {
                         debug!("Client initialized");
                     }
-                    Ok(None)
                 }
                 _ => {
                     debug!("Unknown notification: {}", method);
-                    Ok(None)
                 }
             },
         }
+
+        Ok(())
     }
 }
