@@ -110,4 +110,14 @@ impl ResourceManager {
     pub fn update_file_summary(&mut self, path: PathBuf, summary: String) {
         self.file_summaries.insert(path, summary);
     }
+
+    /// Check if a file is currently loaded
+    pub fn is_file_loaded(&self, path: &PathBuf) -> bool {
+        self.loaded_files.contains_key(path)
+    }
+
+    /// Removes a loaded file from working memory
+    pub fn remove_loaded_file(&mut self, path: &PathBuf) {
+        self.loaded_files.remove(path);
+    }
 }

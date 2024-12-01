@@ -1,7 +1,7 @@
 use super::resources::ResourceManager;
 use super::types::*;
 use crate::explorer::Explorer;
-use crate::types::CodeExplorer;
+use crate::types::{CodeExplorer, FileUpdate};
 use anyhow::Result;
 use std::path::PathBuf;
 use tokio::io::{AsyncWriteExt, Stdout};
@@ -173,20 +173,6 @@ impl MessageHandler {
             ListToolsResult {
                 tools: vec![
                     Tool {
-                        name: "read-file".to_string(),
-                        description: Some("Read content of a file from the workspace".to_string()),
-                        input_schema: serde_json::json!({
-                            "type": "object",
-                            "properties": {
-                                "path": {
-                                    "type": "string",
-                                    "description": "Relative path to the file from project root"
-                                }
-                            },
-                            "required": ["path"]
-                        }),
-                    },
-                    Tool {
                         name: "list-files".to_string(),
                         description: Some("List files in a directory".to_string()),
                         input_schema: serde_json::json!({
@@ -204,6 +190,84 @@ impl MessageHandler {
                             "required": ["path"]
                         }),
                     },
+                    Tool {
+                        name: "load-file".to_string(),
+                        description: Some(
+                            "Load a file into working memory for access as a resource".to_string(),
+                        ),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Relative path to the file from project root"
+                                }
+                            },
+                            "required": ["path"]
+                        }),
+                    },
+                    Tool {
+                        name: "summarize".to_string(),
+                        description: Some("Replace file content with a summary in working memory, unloading the full content.".to_string()),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "files": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "path": {
+                                                "type": "string",
+                                                "description": "Path to the file to summarize"
+                                            },
+                                            "summary": {
+                                                "type": "string",
+                                                "description": "Your summary of the file contents"
+                                            }
+                                        },
+                                        "required": ["path", "summary"]
+                                    }
+                                }
+                            },
+                            "required": ["files"]
+                        }),
+                    },
+                    Tool {
+                        name: "update-file".to_string(),
+                        description: Some("Update sections in an existing file without replacing the entire content".to_string()),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Relative path to the file to update"
+                                },
+                                "updates": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "start_line": {
+                                                "type": "integer",
+                                                "description": "First line number of the section to replace (1-based)"
+                                            },
+                                            "end_line": {
+                                                "type": "integer",
+                                                "description": "Last line number of the section to replace (1-based)"
+                                            },
+                                            "new_content": {
+                                                "type": "string",
+                                                "description": "The new content to insert (without line numbers)"
+                                            }
+                                        },
+                                        "required": ["start_line", "end_line", "new_content"]
+                                    }
+                                }
+                            },
+                            "required": ["path", "updates"]
+                        }),
+                    },
                 ],
                 next_cursor: None,
             },
@@ -215,7 +279,8 @@ impl MessageHandler {
     async fn handle_tool_call(&mut self, id: RequestId, params: ToolCallParams) -> Result<()> {
         debug!("Handling tool call for {}", params.name);
         let result = match params.name.as_str() {
-            "read-file" => {
+            "load-file" => {
+                // Changed from "read-file"
                 let path = match params.arguments {
                     Some(args) => {
                         let path_str = args["path"]
@@ -235,23 +300,141 @@ impl MessageHandler {
                 match self.explorer.read_file(&full_path) {
                     Ok(content) => {
                         // Update resources when a file is read
-                        self.resources
-                            .update_loaded_file(path.clone(), content.clone());
+                        self.resources.update_loaded_file(path.clone(), content);
                         self.send_list_changed_notification().await?;
-                        self.send_resource_updated_notification(&format!(
-                            "file://{}",
-                            path.display()
-                        ))
-                        .await?;
+                        let resource_uri = format!("file://{}", path.display());
+                        self.send_resource_updated_notification(&resource_uri)
+                            .await?;
 
                         ToolCallResult {
-                            content: vec![ToolResultContent::Text { text: content }],
+                            content: vec![ToolResultContent::Text {
+                                text: format!("File loaded as resource: {}", resource_uri),
+                            }],
                             is_error: None,
                         }
                     }
                     Err(e) => ToolCallResult {
                         content: vec![ToolResultContent::Text {
-                            text: format!("Error reading file: {}", e),
+                            text: format!("Error loading file: {}", e),
+                        }],
+                        is_error: Some(true),
+                    },
+                }
+            }
+
+            "summarize" => {
+                let args = params
+                    .arguments
+                    .ok_or_else(|| anyhow::anyhow!("No arguments provided"))?;
+
+                let files = args["files"]
+                    .as_array()
+                    .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'files' array"))?;
+
+                let mut processed_files = Vec::new();
+
+                for file_entry in files {
+                    let path = PathBuf::from(
+                        file_entry["path"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Missing or invalid path"))?,
+                    );
+                    let summary = file_entry["summary"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("Missing or invalid summary"))?
+                        .to_string();
+
+                    // Update the resources - remove file content and add summary
+                    self.resources.remove_loaded_file(&path);
+                    self.resources.update_file_summary(path.clone(), summary);
+
+                    processed_files.push(format!("file://{}", path.display()));
+                }
+
+                // Notify about changes
+                self.send_list_changed_notification().await?;
+                for uri in &processed_files {
+                    self.send_resource_updated_notification(uri).await?;
+                    self.send_resource_updated_notification(&uri.replace("file://", "summary://"))
+                        .await?;
+                }
+
+                ToolCallResult {
+                    content: vec![ToolResultContent::Text {
+                        text: format!(
+                            "Replaced {} file(s) with summaries. Files unloaded: {}",
+                            processed_files.len(),
+                            processed_files.join(", ")
+                        ),
+                    }],
+                    is_error: None,
+                }
+            }
+
+            "update-file" => {
+                let args = params
+                    .arguments
+                    .ok_or_else(|| anyhow::anyhow!("No arguments provided"))?;
+
+                let path = PathBuf::from(
+                    args["path"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'path' argument"))?,
+                );
+                let updates = args["updates"]
+                    .as_array()
+                    .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'updates' array"))?;
+
+                let mut file_updates = Vec::new();
+                for update in updates {
+                    file_updates.push(FileUpdate {
+                        start_line: update["start_line"]
+                            .as_u64()
+                            .ok_or_else(|| anyhow::anyhow!("Invalid start_line"))?
+                            as usize,
+                        end_line: update["end_line"]
+                            .as_u64()
+                            .ok_or_else(|| anyhow::anyhow!("Invalid end_line"))?
+                            as usize,
+                        new_content: update["new_content"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Missing new_content"))?
+                            .to_string(),
+                    });
+                }
+
+                let full_path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    self.explorer.root_dir().join(&path)
+                };
+
+                match self.explorer.apply_updates(&full_path, &file_updates) {
+                    Ok(new_content) => {
+                        // If the file is currently loaded as a resource, update it
+                        if self.resources.is_file_loaded(&path) {
+                            self.resources.update_loaded_file(path.clone(), new_content);
+                            self.send_resource_updated_notification(&format!(
+                                "file://{}",
+                                path.display()
+                            ))
+                            .await?;
+                        }
+
+                        ToolCallResult {
+                            content: vec![ToolResultContent::Text {
+                                text: format!(
+                                    "Successfully applied {} updates to {}",
+                                    file_updates.len(),
+                                    path.display()
+                                ),
+                            }],
+                            is_error: None,
+                        }
+                    }
+                    Err(e) => ToolCallResult {
+                        content: vec![ToolResultContent::Text {
+                            text: format!("Error updating file: {}", e),
                         }],
                         is_error: Some(true),
                     },
