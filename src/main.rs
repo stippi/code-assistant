@@ -187,7 +187,7 @@ async fn main() -> Result<()> {
             }
 
             // Initialize server
-            let server = MCPServer::new(root_path)?;
+            let mut server = MCPServer::new(root_path)?;
             server.run().await?;
         }
     }

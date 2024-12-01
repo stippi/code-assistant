@@ -1,63 +1,76 @@
 use super::resources::ResourceManager;
 use super::types::*;
 use crate::explorer::Explorer;
-use crate::mcp::types::ResourceContent;
-use crate::types::{CodeExplorer, FileSystemEntryType, FileTreeEntry, Tool as AgentTool};
+use crate::types::CodeExplorer;
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tokio::io::{AsyncWriteExt, Stdout};
 use tracing::{debug, error};
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct JSONRPCRequest {
-    pub jsonrpc: String,
-    pub id: Option<RequestId>,
-    pub method: String,
-    pub params: serde_json::Value,
-}
-
-#[derive(Debug, Serialize)]
-pub struct JSONRPCResponse<T> {
-    pub jsonrpc: String,
-    pub id: RequestId,
-    pub result: T,
-}
-
-#[derive(Debug, Serialize)]
-pub struct JSONRPCError {
-    pub jsonrpc: String,
-    pub id: RequestId,
-    pub error: ErrorObject,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ErrorObject {
-    pub code: i32,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<serde_json::Value>,
-}
 
 pub struct MessageHandler {
     explorer: Box<dyn CodeExplorer>,
     resources: ResourceManager,
+    stdout: Stdout,
 }
 
 impl MessageHandler {
-    pub fn new(root_path: PathBuf, resources: ResourceManager) -> Result<Self> {
+    pub fn new(root_path: PathBuf, stdout: Stdout) -> Result<Self> {
         Ok(Self {
             explorer: Box::new(Explorer::new(root_path.clone())),
-            resources,
+            resources: ResourceManager::new(),
+            stdout,
         })
     }
 
     /// Creates the initial file tree when starting up
-    pub async fn create_initial_tree(&self) -> Result<FileTreeEntry> {
-        self.explorer.create_initial_tree(2)
+    pub async fn create_initial_tree(&mut self) -> Result<()> {
+        let tree = self.explorer.create_initial_tree(2)?;
+        self.resources.update_file_tree(tree);
+        self.send_list_changed_notification().await?;
+        self.send_resource_updated_notification("tree:///").await?;
+        Ok(())
+    }
+
+    async fn send_notification(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let notification = if let Some(params) = params {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params
+            })
+        } else {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": method
+            })
+        };
+
+        let message = serde_json::to_string(&notification)?;
+        self.stdout.write_all(message.as_bytes()).await?;
+        self.stdout.write_all(b"\n").await?;
+        self.stdout.flush().await?;
+        Ok(())
+    }
+
+    async fn send_list_changed_notification(&mut self) -> Result<()> {
+        self.send_notification("notifications/resources/list_changed", None)
+            .await
+    }
+
+    async fn send_resource_updated_notification(&mut self, uri: &str) -> Result<()> {
+        self.send_notification(
+            "notifications/resources/updated",
+            Some(serde_json::json!({ "uri": uri })),
+        )
+        .await
     }
 
     async fn handle_resources_list(&self, id: RequestId) -> Result<String> {
-        let resources = self.resources.list_resources().await;
+        let resources = self.resources.list_resources();
         let response = JSONRPCResponse {
             jsonrpc: "2.0".to_string(),
             id,
@@ -71,7 +84,7 @@ impl MessageHandler {
     }
 
     async fn handle_resources_read(&self, id: RequestId, uri: String) -> Result<String> {
-        let response = match self.resources.read_resource(&uri).await {
+        let response = match self.resources.read_resource(&uri) {
             Some(content) => serde_json::to_string(&JSONRPCResponse {
                 jsonrpc: "2.0".to_string(),
                 id,
@@ -93,7 +106,7 @@ impl MessageHandler {
         Ok(response)
     }
 
-    async fn handle_tool_call(&self, id: RequestId, params: ToolCallParams) -> Result<String> {
+    async fn handle_tool_call(&mut self, id: RequestId, params: ToolCallParams) -> Result<String> {
         let result = match params.name.as_str() {
             "read-file" => {
                 let path = match params.arguments {
@@ -116,8 +129,14 @@ impl MessageHandler {
                     Ok(content) => {
                         // Update resources when a file is read
                         self.resources
-                            .update_loaded_file(path, content.clone())
-                            .await;
+                            .update_loaded_file(path.clone(), content.clone());
+                        self.send_list_changed_notification().await?;
+                        self.send_resource_updated_notification(&format!(
+                            "file://{}",
+                            path.display()
+                        ))
+                        .await?;
+
                         ToolCallResult {
                             content: vec![ToolResultContent::Text { text: content }],
                             is_error: None,
@@ -154,7 +173,10 @@ impl MessageHandler {
                 match self.explorer.list_files(&full_path, max_depth) {
                     Ok(tree_entry) => {
                         // Update the file tree resource when listing files
-                        self.resources.update_file_tree(tree_entry.clone()).await;
+                        self.resources.update_file_tree(tree_entry.clone());
+                        self.send_list_changed_notification().await?;
+                        self.send_resource_updated_notification("tree:///").await?;
+
                         ToolCallResult {
                             content: vec![ToolResultContent::Text {
                                 text: tree_entry.to_string(),
@@ -234,7 +256,7 @@ impl MessageHandler {
             jsonrpc: "2.0".to_string(),
             id,
             result: ListPromptsResult {
-                prompts: vec![], // Erstmal eine leere Liste
+                prompts: vec![],
                 next_cursor: None,
             },
         };
@@ -242,7 +264,7 @@ impl MessageHandler {
         Ok(serde_json::to_string(&response)?)
     }
 
-    pub async fn handle_message(&self, message: &str) -> Result<Option<String>> {
+    pub async fn handle_message(&mut self, message: &str) -> Result<Option<String>> {
         // Parse the message first
         let message: JSONRPCMessage = match serde_json::from_str(message) {
             Ok(msg) => msg,
@@ -347,16 +369,4 @@ impl MessageHandler {
             },
         }
     }
-}
-
-// Add ReadResourceRequest struct to types.rs if not already present
-#[derive(Debug, Deserialize)]
-struct ReadResourceRequest {
-    uri: String,
-}
-
-// Add ReadResourceResult struct to types.rs if not already present
-#[derive(Debug, Serialize)]
-struct ReadResourceResult {
-    contents: Vec<ResourceContent>,
 }
