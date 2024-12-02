@@ -1,13 +1,14 @@
 use super::types::{Resource, ResourceContent};
 use crate::types::FileTreeEntry;
 use crate::utils::format_with_line_numbers;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub struct ResourceManager {
     loaded_files: HashMap<PathBuf, String>,
     file_summaries: HashMap<PathBuf, String>,
     file_tree: Option<FileTreeEntry>,
+    subscriptions: HashSet<String>,
 }
 
 impl ResourceManager {
@@ -16,6 +17,7 @@ impl ResourceManager {
             loaded_files: HashMap::new(),
             file_summaries: HashMap::new(),
             file_tree: None,
+            subscriptions: HashSet::new(),
         }
     }
 
@@ -94,6 +96,21 @@ impl ResourceManager {
             }
             _ => None,
         }
+    }
+
+    /// Subscribes to a resource
+    pub fn subscribe(&mut self, uri: &str) {
+        self.subscriptions.insert(uri.to_string());
+    }
+
+    /// Unsubscribes from a resource
+    pub fn unsubscribe(&mut self, uri: &str) {
+        self.subscriptions.remove(uri);
+    }
+
+    /// Checks if a resource is subscribed
+    pub fn is_subscribed(&self, uri: &str) -> bool {
+        self.subscriptions.contains(uri)
     }
 
     /// Remove a file summary

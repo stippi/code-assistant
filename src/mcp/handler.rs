@@ -104,6 +104,10 @@ impl MessageHandler {
 
     /// Notify clients that a specific resource has been updated
     async fn send_resource_updated_notification(&mut self, uri: &str) -> Result<()> {
+        if !self.resources.is_subscribed(uri) {
+            debug!("Resource changed, but is not subscribed: {}", uri);
+            return Ok(());
+        }
         self.send_notification(
             "notifications/resources/updated",
             Some(serde_json::json!({ "uri": uri })),
@@ -119,6 +123,10 @@ impl MessageHandler {
             id,
             InitializeResult {
                 capabilities: ServerCapabilities {
+                    resources: Some(ResourcesCapability {
+                        list_changed: Some(true),
+                        subscribe: Some(true),
+                    }),
                     tools: Some(ToolsCapability {
                         list_changed: Some(false),
                     }),
@@ -166,6 +174,27 @@ impl MessageHandler {
                     .await
             }
         }
+    }
+
+    /// Handle resources/subscribe request
+    async fn handle_resources_subscribe(&mut self, id: RequestId, uri: String) -> Result<()> {
+        debug!("Handling resources/subscribe request for {}", uri);
+        if self.resources.read_resource(&uri).is_none() {
+            return self
+                .send_error(id, -32001, format!("Resource not found: {}", uri), None)
+                .await;
+        }
+
+        self.resources.subscribe(&uri);
+        self.send_response(id, EmptyResult { meta: None }).await
+    }
+
+    /// Handle resources/unsubscribe request
+    async fn handle_resources_unsubscribe(&mut self, id: RequestId, uri: String) -> Result<()> {
+        debug!("Handling resources/unsubscribe request for {}", uri);
+
+        self.resources.unsubscribe(&uri);
+        self.send_response(id, EmptyResult { meta: None }).await
     }
 
     /// Handle tools/list request
@@ -667,6 +696,18 @@ impl MessageHandler {
                     ("resources/read", Some(id)) => {
                         let params: ReadResourceRequest = serde_json::from_value(request.params)?;
                         self.handle_resources_read(id, params.uri).await?;
+                    }
+
+                    ("resources/subscribe", Some(id)) => {
+                        let params: SubscribeResourceRequest =
+                            serde_json::from_value(request.params)?;
+                        self.handle_resources_subscribe(id, params.uri).await?;
+                    }
+
+                    ("resources/unsubscribe", Some(id)) => {
+                        let params: UnsubscribeResourceRequest =
+                            serde_json::from_value(request.params)?;
+                        self.handle_resources_unsubscribe(id, params.uri).await?;
                     }
 
                     ("tools/list", Some(id)) => {

@@ -49,6 +49,12 @@ pub struct ErrorObject {
     pub data: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct EmptyResult {
+    #[serde(skip_serializing_if = "Option::is_none", rename = "_meta")]
+    pub meta: Option<serde_json::Value>,
+}
+
 // Client capabilities types
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClientCapabilities {
@@ -59,7 +65,15 @@ pub struct ClientCapabilities {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ToolsCapability {
+    #[serde(rename = "listChanged")]
     pub list_changed: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResourcesCapability {
+    #[serde(rename = "listChanged")]
+    pub list_changed: Option<bool>,
+    pub subscribe: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -81,6 +95,7 @@ pub struct InitializeParams {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ServerCapabilities {
     pub tools: Option<ToolsCapability>,
+    pub resources: Option<ResourcesCapability>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental: Option<serde_json::Map<String, serde_json::Value>>,
 }
@@ -116,6 +131,16 @@ pub struct ListResourcesResult {
 
 #[derive(Debug, Deserialize)]
 pub struct ReadResourceRequest {
+    pub uri: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubscribeResourceRequest {
+    pub uri: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UnsubscribeResourceRequest {
     pub uri: String,
 }
 
