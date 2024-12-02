@@ -2,7 +2,7 @@ use crate::mcp::handler::MessageHandler;
 use anyhow::Result;
 use std::path::PathBuf;
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 pub struct MCPServer {
     handler: MessageHandler,
@@ -31,12 +31,12 @@ impl MCPServer {
             }
 
             let trimmed = line.trim();
-            debug!("Received message: {}", trimmed);
+            trace!("Received message: {}", trimmed);
 
             // Process the message
             match self.handler.handle_message(trimmed).await {
                 Ok(()) => {
-                    debug!("Message processed successfully");
+                    trace!("Message processed successfully");
                 }
                 Err(e) => {
                     error!("Error handling message: {}", e);

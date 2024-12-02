@@ -2,11 +2,12 @@ use super::resources::ResourceManager;
 use super::types::*;
 use crate::explorer::Explorer;
 use crate::types::{CodeExplorer, FileUpdate};
+use crate::utils::format_with_line_numbers;
 use crate::utils::{CommandExecutor, DefaultCommandExecutor};
 use anyhow::Result;
 use std::path::PathBuf;
 use tokio::io::{AsyncWriteExt, Stdout};
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 pub struct MessageHandler {
     explorer: Box<dyn CodeExplorer>,
@@ -89,7 +90,16 @@ impl MessageHandler {
     /// Helper method to send any JSON message
     async fn send_message(&mut self, message: &serde_json::Value) -> Result<()> {
         let message_str = serde_json::to_string(message)?;
-        debug!("Sending message: {}", message_str);
+
+        // Skip logging for certain message types
+        let skip_logging = ["\"result\":{\"prompts\":", "\"result\":{\"resources\":"]
+            .iter()
+            .any(|s| message_str.contains(s));
+
+        if !skip_logging {
+            debug!("Sending message: {}", message_str);
+        }
+
         self.stdout.write_all(message_str.as_bytes()).await?;
         self.stdout.write_all(b"\n").await?;
         self.stdout.flush().await?;
@@ -145,7 +155,7 @@ impl MessageHandler {
 
     /// Handle resources/list request
     async fn handle_resources_list(&mut self, id: RequestId) -> Result<()> {
-        debug!("Handling resources/list request");
+        trace!("Handling resources/list request");
         self.send_response(
             id,
             ListResourcesResult {
@@ -349,7 +359,6 @@ impl MessageHandler {
         debug!("Handling tool call for {}", params.name);
         let result = match params.name.as_str() {
             "load-file" => {
-                // Changed from "read-file"
                 let path = match params.arguments {
                     Some(args) => {
                         let path_str = args["path"]
@@ -369,7 +378,8 @@ impl MessageHandler {
                 match self.explorer.read_file(&full_path) {
                     Ok(content) => {
                         // Update resources when a file is read
-                        self.resources.update_loaded_file(path.clone(), content);
+                        self.resources
+                            .update_loaded_file(path.clone(), content.clone());
                         self.send_list_changed_notification().await?;
                         let resource_uri = format!("file://{}", path.display());
                         self.send_resource_updated_notification(&resource_uri)
@@ -377,7 +387,11 @@ impl MessageHandler {
 
                         ToolCallResult {
                             content: vec![ToolResultContent::Text {
-                                text: format!("File loaded as resource: {}", resource_uri),
+                                text: format!(
+                                    "File loaded as resource: {}\nContent:\n{}",
+                                    resource_uri,
+                                    format_with_line_numbers(content.as_str())
+                                ),
                             }],
                             is_error: None,
                         }
@@ -658,7 +672,7 @@ impl MessageHandler {
 
     /// Handle prompts/list request
     async fn handle_prompts_list(&mut self, id: RequestId) -> Result<()> {
-        debug!("Handling prompts/list request");
+        trace!("Handling prompts/list request");
         self.send_response(
             id,
             ListPromptsResult {
@@ -682,7 +696,7 @@ impl MessageHandler {
 
         match message {
             JSONRPCMessage::Request(request) => {
-                debug!("Processing request: {:?}", request);
+                trace!("Processing request: {:?}", request);
                 match (request.method.as_str(), request.id) {
                     ("initialize", Some(id)) => {
                         let params: InitializeParams = serde_json::from_value(request.params)?;
