@@ -85,24 +85,24 @@ impl Agent {
            - Returns: Confirmation message
 
         4. UpdateFile
-            - Applies updates to a file. Make sure the updates apply cleanly.
-            - Parameters: {
-                "path": "path/to/file",
-                "updates": [
-                  {
-                    "start_line": <first line number of the replaced section>,
-                    "end_line": <last line number of the section>,
-                    "new_content": "the new content without leading line numbers, can have more or fewer lines"
-                  },
-                  {
-                    "start_line": <first line number of another replaced section>,
-                    "end_line": <last line number of the section>,
-                    "new_content": "the new content"
-                  },
-                  ...
-                ]
-            }
-            - Returns: Confirmation message
+           - Applies updates to a file. Make sure the updates apply cleanly.
+           - Parameters: {
+               "path": "path/to/file",
+               "updates": [
+                 {
+                   "start_line": <first line number of the replaced section>,
+                   "end_line": <last line number of the section>,
+                   "new_content": "the new content without leading line numbers, can have more or fewer lines"
+                 },
+                 {
+                   "start_line": <first line number of another replaced section>,
+                   "end_line": <last line number of the section>,
+                   "new_content": "the new content"
+                 },
+                 ...
+               ]
+           }
+           - Returns: Confirmation message
 
         5. Summarize
            - Replaces file contents with summaries in working memory
@@ -128,15 +128,20 @@ impl Agent {
            - Use this when you need to inform the user
 
         8. ExecuteCommand
-            - Execute a command line program
-            - Parameters: {
-                "command_line": "the complete command to execute",
-                "working_dir": "optional: working directory for the command"
-            }
-            - Returns: The command's output and error streams
-            - Use this to run CLI commands like 'cargo', 'git', etc.
+           - Execute a command line program
+           - Parameters: {
+               "command_line": "the complete command to execute",
+               "working_dir": "optional: working directory for the command"
+           }
+           - Returns: The command's output and error streams
+           - Use this to run CLI commands like 'cargo', 'git', etc.
 
-        9. CompleteTask
+        9. DeleteFiles
+           - Delete one or more files from the filesystem
+           - Parameters: {"paths": ["path/to/file1", "path/to/file2", ...]}
+           - Returns: Confirmation of which files were deleted
+
+        10. CompleteTask
            - Complete the current task with a final message to the user
            - Parameters: {"message": "your completion message here"}
            - Returns: Confirmation message
@@ -166,7 +171,7 @@ impl Agent {
                 - For Node.js projects: Check package.json for test/lint scripts and use them\n\
                 - For Python projects: Use pytest, mypy, or similar tools if available\n\
                 - For other projects: Look for common build/test scripts and configuration files\n\n\
-                ALWAYS respond in the following JSON format:\n\
+                ALWAYS respond with a single, valid JSON object matching the following schema:\n\n\
                 {{\
                     \"reasoning\": <explain your thought process>,\
                     \"tool\": {{\
@@ -174,7 +179,7 @@ impl Agent {
                         \"params\": <tool-specific parameters>\
                     }}\
                 }}\n\n\
-                Always explain your reasoning before choosing a tool. Think step by step.",
+                Always explain your reasoning before choosing a tool. Think step by step. Execute only one tool per response.",
                 tools_description
             )),
         };
@@ -581,6 +586,58 @@ impl Agent {
                         error: Some(format!("Failed to execute command: {}", e)),
                         reasoning: action.reasoning.clone(),
                     },
+                }
+            }
+
+            Tool::DeleteFiles { paths } => {
+                let mut deleted_files = Vec::new();
+                let mut failed_files = Vec::new();
+                for path in paths {
+                    self.ui
+                        .display(UIMessage::Action(format!(
+                            "Deleting file `{}`",
+                            path.display()
+                        )))
+                        .await?;
+                    let full_path = if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        self.explorer.root_dir().join(path)
+                    };
+                    match std::fs::remove_file(&full_path) {
+                        Ok(_) => {
+                            deleted_files.push(path.display().to_string());
+                            // Remove from working memory if it was loaded
+                            self.working_memory.loaded_files.remove(path);
+                            self.working_memory.file_summaries.remove(path);
+                        }
+                        Err(e) => {
+                            failed_files.push((path.display().to_string(), e.to_string()));
+                        }
+                    }
+                }
+                let result_message = if !deleted_files.is_empty() {
+                    format!("Successfully deleted files: {}", deleted_files.join(", "))
+                } else {
+                    String::from("No files were deleted")
+                };
+                let error_message = if !failed_files.is_empty() {
+                    Some(
+                        failed_files
+                            .iter()
+                            .map(|(path, err)| format!("{}: {}", path, err))
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    )
+                } else {
+                    None
+                };
+                ActionResult {
+                    tool: action.tool.clone(),
+                    success: !deleted_files.is_empty(),
+                    result: result_message,
+                    error: error_message,
+                    reasoning: action.reasoning.clone(),
                 }
             }
 

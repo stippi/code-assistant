@@ -225,6 +225,7 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
                 Tool::ReadFiles { .. } => "ReadFiles",
                 Tool::WriteFile { .. } => "WriteFile",
                 Tool::UpdateFile { .. } => "UpdateFile",
+                Tool::DeleteFiles { .. } => "DeleteFiles",
                 Tool::Summarize { .. } => "Summarize",
                 Tool::AskUser { .. } => "AskUser",
                 Tool::MessageUser { .. } => "MessageUser",
@@ -250,6 +251,9 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
                 Tool::UpdateFile { path, updates } => serde_json::json!({
                     "path": path,
                     "updates": updates
+                }),
+                Tool::DeleteFiles { paths } => serde_json::json!({
+                    "paths": paths
                 }),
                 Tool::Summarize { files } => serde_json::json!({
                     "files": files.iter().map(|(path, summary)| {
