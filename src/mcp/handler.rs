@@ -300,7 +300,8 @@ impl MessageHandler {
                              matching the line numbers shown when viewing file resources. The end_line is exclusive, \
                              meaning the section to replace ends before that line. For example, to replace lines 1-3, \
                              use start_line: 1, end_line: 4. To insert new content without replacing anything, \
-                             use the same start_line and end_line.".to_string()
+                             use the same start_line and end_line. Provide the new content parameter first, \
+                             then start_line and end_line parameter according to what needs to be replaced.".to_string()
                         ),
                         input_schema: serde_json::json!({
                             "type": "object",
@@ -315,17 +316,17 @@ impl MessageHandler {
                                     "items": {
                                         "type": "object",
                                         "properties": {
+                                            "new_content": {
+                                                "type": "string",
+                                                "description": "The new content to insert (without line numbers)"
+                                            },
                                             "start_line": {
                                                 "type": "integer",
                                                 "description": "First line number to replace (1-based, matching the displayed line numbers)"
                                             },
                                             "end_line": {
                                                 "type": "integer",
-                                                "description": "Last line number to replace (1-based, matching the displayed line numbers)"
-                                            },
-                                            "new_content": {
-                                                "type": "string",
-                                                "description": "The new content to insert (without line numbers)"
+                                                "description": "Line number right after the section to replace (1-based, matching the displayed line numbers)"
                                             }
                                         },
                                         "required": ["start_line", "end_line", "new_content"]
