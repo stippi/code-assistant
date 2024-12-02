@@ -95,15 +95,15 @@ fn index_lines(content: &str) -> Vec<LineInfo> {
 /// Validates all updates before applying any changes
 fn validate_updates(updates: &[FileUpdate], line_count: usize) -> Result<(), anyhow::Error> {
     for update in updates {
-        if update.start_line == 0 || update.end_line == 0 {
+        if update.start_line == 0 {
             anyhow::bail!("Line numbers must start at 1");
         }
         if update.start_line > update.end_line {
             anyhow::bail!("Start line must not be greater than end line");
         }
-        if update.end_line > line_count {
+        if update.end_line > line_count + 1 {
             anyhow::bail!(
-                "End line {} exceeds file length {}",
+                "End line {} exceeds file length {} + 1",
                 update.end_line,
                 line_count
             );
@@ -115,7 +115,7 @@ fn validate_updates(updates: &[FileUpdate], line_count: usize) -> Result<(), any
     sorted_updates.sort_by(|a, b| a.start_line.cmp(&b.start_line));
 
     for updates in sorted_updates.windows(2) {
-        if updates[0].end_line >= updates[1].start_line {
+        if updates[0].end_line > updates[1].start_line {
             anyhow::bail!(
                 "Overlapping updates: lines {}-{} and {}-{}",
                 updates[0].start_line,
@@ -129,12 +129,10 @@ fn validate_updates(updates: &[FileUpdate], line_count: usize) -> Result<(), any
     Ok(())
 }
 
-/// Normalizes line endings in the update content to match the target line's format.
-/// Also handles empty lines at the beginning and end of the update intelligently.
+/// Normalizes line endings in the update content to match the target line's format
 fn normalize_update_content(
     update: &FileUpdate,
     line_infos: &[LineInfo],
-    content: &str,
 ) -> Result<String, anyhow::Error> {
     let original_uses_crlf = if update.start_line > 0 && update.start_line <= line_infos.len() {
         line_infos[update.start_line - 1].is_crlf
@@ -144,60 +142,26 @@ fn normalize_update_content(
 
     let line_ending = if original_uses_crlf { "\r\n" } else { "\n" };
 
-    // Split content into lines, preserving empty lines but removing line endings
-    let update_lines: Vec<&str> = update
-        .new_content
-        .split_inclusive('\n')
-        .map(|l| l.trim_end_matches(&['\r', '\n']))
-        .collect();
+    // Split content into lines while preserving empty lines
+    let mut lines: Vec<&str> = update.new_content.split('\n').collect();
 
-    if update_lines.is_empty() {
-        return Ok(String::new());
+    // Remove trailing empty line if it exists (it will be handled by line ending logic)
+    if lines.last().map_or(false, |line| line.is_empty()) {
+        lines.pop();
     }
 
     let mut result = String::with_capacity(update.new_content.len());
 
-    // Handle empty lines at the start
-    let mut leading_empty = 0;
-    for line in &update_lines {
-        if line.is_empty() {
-            leading_empty += 1;
-        } else {
-            break;
-        }
-    }
-
-    // Add at most one empty line at the start if needed
-    if leading_empty > 0 && update.start_line > 1 {
-        let prev_line_idx = update.start_line - 2;
-        let prev_line = &content[line_infos[prev_line_idx].range.clone()];
-        if !prev_line.trim().is_empty() {
+    // Join lines with proper line endings
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
             result.push_str(line_ending);
         }
+        result.push_str(line.trim_end_matches('\r'));
     }
 
-    // Process the main content
-    let mut last_non_empty = update_lines.len();
-    for (i, line) in update_lines.iter().enumerate().skip(leading_empty) {
-        if !line.is_empty() {
-            last_non_empty = i;
-        }
-        if i > leading_empty && !result.ends_with(line_ending) {
-            result.push_str(line_ending);
-        }
-        result.push_str(line);
-    }
-
-    // Handle empty lines at the end
-    if last_non_empty < update_lines.len() - 1 && update.end_line < line_infos.len() {
-        let next_line = &content[line_infos[update.end_line].range.clone()];
-        if !next_line.trim().is_empty() {
-            result.push_str(line_ending);
-        }
-    }
-
-    // Ensure content ends with line ending if not the last line
-    if update.end_line < line_infos.len() && !result.ends_with(line_ending) {
+    // Add final line ending if not the last line or if original ended with one
+    if update.end_line <= line_infos.len() || update.new_content.ends_with('\n') {
         result.push_str(line_ending);
     }
 
@@ -210,31 +174,49 @@ fn apply_single_update(
     update: &FileUpdate,
     line_infos: &[LineInfo],
 ) -> Result<(), anyhow::Error> {
+    // Handle insert case (start_line == end_line)
+    if update.start_line == update.end_line {
+        let insert_idx = if update.start_line > 1 {
+            let prev_line = &line_infos[update.start_line - 2];
+            let mut end_idx = prev_line.range.end;
+            if prev_line.is_crlf {
+                end_idx += 2;
+            } else {
+                end_idx += 1;
+            }
+            end_idx
+        } else {
+            0
+        };
+
+        let new_content = normalize_update_content(update, line_infos)?;
+        content.replace_range(insert_idx..insert_idx, &new_content);
+        return Ok(());
+    }
+
+    // Handle replace case
     let start_idx = if update.start_line > 1 {
-        // Get the end of the previous line including its line ending
         let prev_line = &line_infos[update.start_line - 2];
         let mut end_idx = prev_line.range.end;
         if prev_line.is_crlf {
-            end_idx += 2; // \r\n
+            end_idx += 2;
         } else {
-            end_idx += 1; // \n
+            end_idx += 1;
         }
         end_idx
     } else {
         0
     };
 
-    let end_line = &line_infos[update.end_line - 1];
+    let end_line = &line_infos[update.end_line - 2];
     let mut end_idx = end_line.range.end;
     if end_line.is_crlf {
         end_idx += 2;
-    } else if update.end_line < line_infos.len() {
+    } else if update.end_line <= line_infos.len() {
         end_idx += 1;
     }
 
-    // Normalize the update content
-    let new_content = normalize_update_content(update, line_infos, content)?;
-
+    let new_content = normalize_update_content(update, line_infos)?;
     content.replace_range(start_idx..end_idx, &new_content);
     Ok(())
 }
@@ -245,13 +227,81 @@ mod tests {
     use crate::types::FileUpdate;
 
     #[test]
+    fn test_insert_operations() {
+        let test_cases = vec![
+            // Insert at beginning
+            (
+                "First\nSecond\n",
+                vec![FileUpdate {
+                    start_line: 1,
+                    end_line: 1,
+                    new_content: "Inserted\n".to_string(),
+                }],
+                "Inserted\nFirst\nSecond\n",
+            ),
+            // Insert in middle
+            (
+                "One\nTwo\nThree\n",
+                vec![FileUpdate {
+                    start_line: 2,
+                    end_line: 2,
+                    new_content: "New Line\n".to_string(),
+                }],
+                "One\nNew Line\nTwo\nThree\n",
+            ),
+            // Insert at end
+            (
+                "Start\nMiddle\n",
+                vec![FileUpdate {
+                    start_line: 3,
+                    end_line: 3,
+                    new_content: "End\n".to_string(),
+                }],
+                "Start\nMiddle\nEnd\n",
+            ),
+            // Insert with empty content
+            (
+                "A\nB\nC\n",
+                vec![FileUpdate {
+                    start_line: 2,
+                    end_line: 2,
+                    new_content: String::new(),
+                }],
+                "A\n\nB\nC\n",
+            ),
+            // Multiple inserts
+            (
+                "First\nLast\n",
+                vec![
+                    FileUpdate {
+                        start_line: 2,
+                        end_line: 2,
+                        new_content: "Middle\n".to_string(),
+                    },
+                    FileUpdate {
+                        start_line: 3,
+                        end_line: 3,
+                        new_content: "After Last\n".to_string(),
+                    },
+                ],
+                "First\nMiddle\nLast\nAfter Last\n",
+            ),
+        ];
+
+        for (input, updates, expected) in test_cases {
+            let result = apply_content_updates(input, &updates).unwrap();
+            assert_eq!(result, expected, "Failed for input:\n{}", input);
+        }
+    }
+
+    #[test]
     fn test_single_line_updates() {
         let test_cases = vec![
             (
                 "Hello\nWorld\n",
                 vec![FileUpdate {
                     start_line: 1,
-                    end_line: 1,
+                    end_line: 2,
                     new_content: "Modified".to_string(),
                 }],
                 "Modified\nWorld\n",
@@ -260,7 +310,7 @@ mod tests {
                 "First\nSecond\nThird\n",
                 vec![FileUpdate {
                     start_line: 2,
-                    end_line: 2,
+                    end_line: 3,
                     new_content: "New Second".to_string(),
                 }],
                 "First\nNew Second\nThird\n",
@@ -280,22 +330,31 @@ mod tests {
                 "One\nTwo\nThree\nFour\n",
                 vec![FileUpdate {
                     start_line: 2,
-                    end_line: 3,
+                    end_line: 4,
                     new_content: "Updated\nLines".to_string(),
                 }],
                 "One\nUpdated\nLines\nFour\n",
+            ),
+            (
+                "One\nTwo\nThree\nFour\n",
+                vec![FileUpdate {
+                    start_line: 2,
+                    end_line: 4,
+                    new_content: "Updated\n\n\nLines".to_string(),
+                }],
+                "One\nUpdated\n\n\nLines\nFour\n",
             ),
             (
                 "A\nB\nC\nD\nE\n",
                 vec![
                     FileUpdate {
                         start_line: 1,
-                        end_line: 2,
+                        end_line: 3,
                         new_content: "First\nUpdate".to_string(),
                     },
                     FileUpdate {
                         start_line: 4,
-                        end_line: 5,
+                        end_line: 6,
                         new_content: "Second\nUpdate".to_string(),
                     },
                 ],
@@ -314,7 +373,7 @@ mod tests {
         let input = "Line 1\r\nLine 2\r\nLine 3\r\n";
         let updates = vec![FileUpdate {
             start_line: 2,
-            end_line: 2,
+            end_line: 3,
             new_content: "Modified Line".to_string(),
         }];
 
@@ -328,12 +387,12 @@ mod tests {
         let updates = vec![
             FileUpdate {
                 start_line: 1,
-                end_line: 1,
+                end_line: 2,
                 new_content: "Modified 1".to_string(),
             },
             FileUpdate {
                 start_line: 2,
-                end_line: 2,
+                end_line: 3,
                 new_content: "Modified 2".to_string(),
             },
         ];
@@ -347,7 +406,7 @@ mod tests {
         let input = "Line 1\nLine 2\nLine 3";
         let updates = vec![FileUpdate {
             start_line: 3,
-            end_line: 3,
+            end_line: 4,
             new_content: "Modified Last".to_string(),
         }];
 
@@ -360,7 +419,7 @@ mod tests {
         let input = "Hello 👋\nWorld 🌎\nTest 🧪\n";
         let updates = vec![FileUpdate {
             start_line: 2,
-            end_line: 2,
+            end_line: 3,
             new_content: "Modified 🚀".to_string(),
         }];
 
@@ -373,7 +432,7 @@ mod tests {
         let input = "First\n\nThird\n";
         let updates = vec![FileUpdate {
             start_line: 2,
-            end_line: 2,
+            end_line: 3,
             new_content: "Second".to_string(),
         }];
 
@@ -387,7 +446,7 @@ mod tests {
         let content: String = (1..=100).map(|i| format!("Line {}\n", i)).collect();
 
         // Create 10 random updates
-        let updates: Vec<FileUpdate> = vec![(5, 7), (20, 22), (40, 41), (60, 63), (80, 82)]
+        let updates: Vec<FileUpdate> = vec![(5, 8), (20, 23), (40, 42), (60, 64), (80, 83)]
             .into_iter()
             .map(|(start, end)| FileUpdate {
                 start_line: start,
@@ -416,7 +475,7 @@ mod tests {
                 "Line 1\r\nLine 2\r\nLine 3\r\n",
                 FileUpdate {
                     start_line: 2,
-                    end_line: 2,
+                    end_line: 3,
                     new_content: "New\nLine\n".to_string(),
                 },
                 "Line 1\r\nNew\r\nLine\r\nLine 3\r\n",
@@ -425,7 +484,7 @@ mod tests {
                 "Line 1\nLine 2\nLine 3\n",
                 FileUpdate {
                     start_line: 2,
-                    end_line: 2,
+                    end_line: 3,
                     new_content: "New\r\nLine\r\n".to_string(),
                 },
                 "Line 1\nNew\nLine\nLine 3\n",
@@ -446,57 +505,47 @@ mod tests {
                 "Text 1\nText 2\nText 3\n",
                 FileUpdate {
                     start_line: 2,
-                    end_line: 2,
-                    new_content: "\nNew Text\n".to_string(),
-                },
-                "Text 1\n\nNew Text\nText 3\n",
-            ),
-            // Case 2: Empty line at start, empty line already exists before
-            (
-                "Text 1\n\nText 2\nText 3\n",
-                FileUpdate {
-                    start_line: 3,
                     end_line: 3,
                     new_content: "\nNew Text\n".to_string(),
                 },
                 "Text 1\n\nNew Text\nText 3\n",
             ),
-            // Case 3: Empty line at end, no empty line after
+            // Case 2: Empty line at end, no empty line after
             (
                 "Text 1\nText 2\nText 3\n",
                 FileUpdate {
                     start_line: 2,
-                    end_line: 2,
+                    end_line: 3,
                     new_content: "New Text\n\n".to_string(),
                 },
                 "Text 1\nNew Text\n\nText 3\n",
             ),
-            // Case 4: Empty line at end, empty line already exists after
+            // Case 3: Empty line at end, empty line already exists after
             (
                 "Text 1\nText 2\n\nText 3\n",
                 FileUpdate {
                     start_line: 2,
-                    end_line: 2,
+                    end_line: 3,
                     new_content: "New Text\n\n".to_string(),
                 },
-                "Text 1\nNew Text\n\nText 3\n",
+                "Text 1\nNew Text\n\n\nText 3\n",
             ),
             // Case 5: Multiple empty lines
             (
                 "Text 1\nText 2\nText 3\n",
                 FileUpdate {
                     start_line: 2,
-                    end_line: 2,
+                    end_line: 3,
                     new_content: "\n\nNew Text\n\n\n".to_string(),
                 },
-                "Text 1\n\nNew Text\n\nText 3\n",
+                "Text 1\n\n\nNew Text\n\n\nText 3\n",
             ),
             // Case 6: Mixed line endings with empty lines
             (
                 "Text 1\r\nText 2\r\nText 3\r\n",
                 FileUpdate {
                     start_line: 2,
-                    end_line: 2,
+                    end_line: 3,
                     new_content: "\nNew Text\n\n".to_string(),
                 },
                 "Text 1\r\n\r\nNew Text\r\n\r\nText 3\r\n",
@@ -517,10 +566,10 @@ mod tests {
                 "Header\r\n\r\nContent\r\nFooter",
                 vec![FileUpdate {
                     start_line: 3,
-                    end_line: 3,
-                    new_content: "\n\nNew Content\n\n".to_string(),
+                    end_line: 4,
+                    new_content: "\nNew Content\n".to_string(),
                 }],
-                "Header\r\n\r\nNew Content\r\n\r\nFooter",
+                "Header\r\n\r\n\r\nNew Content\r\nFooter",
             ),
             // Multiple updates
             (
@@ -528,13 +577,13 @@ mod tests {
                 vec![
                     FileUpdate {
                         start_line: 2,
-                        end_line: 2,
-                        new_content: "\nNew Line 2\n".to_string(),
+                        end_line: 3,
+                        new_content: "\nNew Line 2".to_string(),
                     },
                     FileUpdate {
                         start_line: 4,
-                        end_line: 4,
-                        new_content: "New Line 4\n\n".to_string(),
+                        end_line: 5,
+                        new_content: "New Line 4\n".to_string(),
                     },
                 ],
                 "Line 1\n\nNew Line 2\nLine 3\nNew Line 4\n",

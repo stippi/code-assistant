@@ -297,8 +297,10 @@ impl MessageHandler {
                         name: "update-file".to_string(),
                         description: Some(
                             "Update sections in an existing file based on line numbers. IMPORTANT: Line numbers are 1-based, \
-                             matching the line numbers shown when viewing file resources. For example, to replace the first \
-                             line of a file, use start_line: 1, not 0.".to_string()
+                             matching the line numbers shown when viewing file resources. The end_line is exclusive, \
+                             meaning the section to replace ends before that line. For example, to replace lines 1-3, \
+                             use start_line: 1, end_line: 4. To insert new content without replacing anything, \
+                             use the same start_line and end_line.".to_string()
                         ),
                         input_schema: serde_json::json!({
                             "type": "object",

@@ -25,6 +25,23 @@ impl CommandExecutor for DefaultCommandExecutor {
         command_line: &str,
         working_dir: Option<&PathBuf>,
     ) -> Result<CommandOutput> {
+        // Validate working_dir first
+        if let Some(dir) = working_dir {
+            if !dir.exists() {
+                return Err(anyhow::anyhow!(
+                    "Working directory does not exist: {}",
+                    dir.display()
+                ));
+            }
+            if !dir.is_dir() {
+                return Err(anyhow::anyhow!(
+                    "Path is not a directory: {}",
+                    dir.display()
+                ));
+            }
+        }
+        // Parse command line with proper quote handling
+        // TODO: Consider using a proper shell-words parser library
         let mut parts = command_line.split_whitespace();
         let command = parts
             .next()
