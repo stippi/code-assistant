@@ -629,10 +629,13 @@ impl MessageHandler {
                 let working_dir = args
                     .get("working_dir")
                     .and_then(|v| v.as_str())
-                    .map(PathBuf::from);
+                    .map(|dir| self.explorer.root_dir().join(dir));
+                // Use root_dir as default working directory
+                let root_dir = self.explorer.root_dir();
+                let working_dir = working_dir.as_ref().unwrap_or(&root_dir);
                 match self
                     .command_executor
-                    .execute(command_line, working_dir.as_ref())
+                    .execute(command_line, Some(working_dir))
                     .await
                 {
                     Ok(output) => {
