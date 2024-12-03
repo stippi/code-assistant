@@ -86,18 +86,20 @@ impl Agent {
 
         4. UpdateFile
            - Applies updates to a file. Make sure the updates apply cleanly.
+             To insert new content without replacing anything, specify the same line number for start_line and end_line.
+             Make sure to generate the new_content first and then specify the line numbers after you know exactly what needs replacing.
            - Parameters: {
                "path": "path/to/file",
                "updates": [
                  {
-                   "start_line": <first line number of the replaced section>,
-                   "end_line": <last line number of the section>,
-                   "new_content": "the new content without leading line numbers, can have more or fewer lines"
+                   "new_content": "the new content without leading line numbers, can have more or fewer lines",
+                   "start_line": <first line number to replace>,
+                   "end_line": <line number after the last line to replace (exclusive)>
                  },
                  {
+                   "new_content": "the new content",
                    "start_line": <first line number of another replaced section>,
-                   "end_line": <last line number of the section>,
-                   "new_content": "the new content"
+                   "end_line": <line number after the section (exclusive)>
                  },
                  ...
                ]
