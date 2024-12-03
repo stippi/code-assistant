@@ -88,6 +88,8 @@ impl Agent {
            - Applies updates to a file. Make sure the updates apply cleanly.
              To insert new content without replacing anything, specify the same line number for start_line and end_line.
              Make sure to generate the new_content first and then specify the line numbers after you know exactly what needs replacing.
+             You need to split large updates across multiple calls of the tool, otherwise your message might be truncated, as there is a token limit.
+             Note that you will see your changes in the working memory after this tool is executed.
            - Parameters: {
                "path": "path/to/file",
                "updates": [
