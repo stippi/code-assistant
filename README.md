@@ -1,8 +1,8 @@
-# Code Assistant
+# 🤖 Code Assistant
 
 A powerful CLI tool built in Rust for assisting with code-related tasks.
 
-## Features
+## ✨ Features
 
 - **Autonomous Exploration**: The agent can intelligently explore codebases and build up working memory of the project structure.
 - **Reading/Writing Files**: The agent can read file contents and make changes to files as needed.
@@ -11,7 +11,7 @@ A powerful CLI tool built in Rust for assisting with code-related tasks.
 - **Interactive Communication**: Built-in ability to ask users questions and get responses for better decision-making.
 - **MCP Server Mode**: Can run as a Model Context Protocol server, providing tools and resources to LLMs running in an MCP client.
 
-## Installation
+## 📥 Installation
 
 Ensure you have Rust installed on your system. Then:
 
@@ -28,7 +28,7 @@ cargo build --release
 # The binary will be available in target/release/code-assistant
 ```
 
-## Usage
+## 🚀 Usage
 
 ```bash
 code-assistant --task <TASK> [OPTIONS]
@@ -51,6 +51,6 @@ code-assistant --task "Explain the purpose of this codebase"
 code-assistant -p openai --path ./my-project -t "List all API endpoints" -v
 ```
 
-## Contributing
+## 👥 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.

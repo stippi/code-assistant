@@ -40,20 +40,22 @@ impl CommandExecutor for DefaultCommandExecutor {
                 ));
             }
         }
-        // Parse command line with proper quote handling
-        // TODO: Consider using a proper shell-words parser library
-        let mut parts = command_line.split_whitespace();
-        let command = parts
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("Empty command line"))?;
+        // Create shell command using login shell or fallback
+        #[cfg(target_family = "unix")]
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        #[cfg(target_family = "unix")]
+        let mut cmd = std::process::Command::new(shell);
+        #[cfg(target_family = "unix")]
+        cmd.args(["-c", command_line]);
 
-        let mut cmd = std::process::Command::new(command);
-        cmd.args(parts);
+        #[cfg(target_family = "windows")]
+        let mut cmd = std::process::Command::new("cmd");
+        #[cfg(target_family = "windows")]
+        cmd.args(["/C", command_line]);
 
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
         }
-
         let output = cmd.output()?;
 
         Ok(CommandOutput {
