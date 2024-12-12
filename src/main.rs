@@ -2,6 +2,7 @@ mod agent;
 mod explorer;
 mod llm;
 mod mcp;
+mod persistence;
 mod types;
 mod ui;
 mod utils;
@@ -16,7 +17,6 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io;
 use std::path::PathBuf;
-use tracing::Level;
 use tracing_subscriber::fmt::SubscriberBuilder;
 
 #[derive(ValueEnum, Debug, Clone)]
@@ -41,9 +41,13 @@ enum Mode {
         #[arg(long, default_value = ".")]
         path: PathBuf,
 
-        /// Task to perform on the codebase
-        #[arg(short, long)]
-        task: String,
+        /// Task to perform on the codebase (required unless --continue is used)
+        #[arg(short, long, required_unless_present = "continue_task")]
+        task: Option<String>,
+
+        /// Continue from previous state
+        #[arg(long)]
+        continue_task: bool,
 
         /// Enable verbose logging
         #[arg(short, long)]
@@ -146,6 +150,7 @@ async fn main() -> Result<()> {
         Mode::Agent {
             path,
             task,
+            continue_task,
             verbose,
             provider,
             model,
@@ -165,17 +170,32 @@ async fn main() -> Result<()> {
 
             // Setup CodeExplorer
             let root_path = path.canonicalize()?;
-            let explorer = Box::new(Explorer::new(root_path));
+            let explorer = Box::new(Explorer::new(root_path.clone()));
 
             // Initialize terminal UI
             let terminal_ui = Box::new(TerminalUI::new());
             let command_executor = Box::new(DefaultCommandExecutor);
 
+            // Validate parameters
+            if continue_task && task.is_some() {
+                anyhow::bail!(
+                    "Cannot specify both --task and --continue. The task will be loaded from the saved state."
+                );
+            }
+
+            if !continue_task && task.is_none() {
+                anyhow::bail!("Either --task or --continue must be specified");
+            }
+
             // Initialize agent
             let mut agent = Agent::new(llm_client, explorer, command_executor, terminal_ui);
 
-            // Start agent with the specified task
-            agent.start(task).await?;
+            // Get task either from state file or argument
+            if continue_task {
+                agent.start_from_state(&root_path).await?;
+            } else {
+                agent.start_with_task(task.unwrap()).await?;
+            }
         }
 
         Mode::Server { path, verbose } => {

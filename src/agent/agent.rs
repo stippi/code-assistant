@@ -1,4 +1,5 @@
 use crate::llm::{ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole};
+use crate::persistence::AgentState;
 use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::{format_with_line_numbers, CommandExecutor};
@@ -30,10 +31,39 @@ impl Agent {
         }
     }
 
-    /// Start the agent with a specific task
-    pub async fn start(&mut self, task: String) -> Result<()> {
+    async fn run_agent_loop(&mut self) -> Result<()> {
+        // Main agent loop
+        loop {
+            let action = self.get_next_action().await?;
+
+            let result = self.execute_action(&action).await?;
+            self.working_memory.action_history.push(result);
+
+            // Save state after each action
+            let root_dir = self.explorer.root_dir();
+            let state = AgentState::new(
+                root_dir,
+                self.working_memory.current_task.clone(),
+                self.working_memory.clone(),
+            );
+            state.save()?;
+
+            // Check if this was a CompleteTask action
+            if let Tool::CompleteTask { .. } = action.tool {
+                // Clean up state file on successful completion
+                AgentState::cleanup(&root_dir)?;
+                break;
+            }
+        }
+
+        debug!("Task completed");
+        Ok(())
+    }
+
+    /// Start a new agent task
+    pub async fn start_with_task(&mut self, task: String) -> Result<()> {
         debug!("Starting agent with task: {}", task);
-        self.working_memory.current_task = task;
+        self.working_memory.current_task = task.clone();
 
         self.ui
             .display(UIMessage::Action(
@@ -43,21 +73,33 @@ impl Agent {
 
         self.working_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
 
-        // Main agent loop
-        loop {
-            let action = self.get_next_action().await?;
+        // Save initial state
+        let root_dir = self.explorer.root_dir();
+        let state = AgentState::new(root_dir, task, self.working_memory.clone());
+        state.save()?;
 
-            let result = self.execute_action(&action).await?;
-            self.working_memory.action_history.push(result);
+        self.run_agent_loop().await
+    }
 
-            // Check if this was a CompleteTask action
-            if let Tool::CompleteTask { .. } = action.tool {
-                break;
-            }
+    /// Continue from a saved state
+    pub async fn start_from_state(&mut self, root_dir: &PathBuf) -> Result<()> {
+        if let Some(state) = AgentState::load(root_dir)? {
+            debug!("Continuing task: {}", state.memory.current_task);
+            self.working_memory = state.memory;
+            // Don't restore file contents, they will be reloaded when needed
+            self.working_memory.loaded_files.clear(); 
+            
+            self.ui
+                .display(UIMessage::Action(format!(
+                    "Continuing task: {}",
+                    self.working_memory.current_task
+                )))
+                .await?;
+
+            self.run_agent_loop().await
+        } else {
+            anyhow::bail!("No saved state found")
         }
-
-        debug!("Task completed");
-        Ok(())
     }
 
     /// Get next action from LLM

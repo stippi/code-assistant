@@ -12,7 +12,7 @@ pub struct FileTreeEntry {
 }
 
 /// Represents the agent's working memory during execution
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct WorkingMemory {
     /// Currently loaded file contents
     pub loaded_files: HashMap<PathBuf, String>,
