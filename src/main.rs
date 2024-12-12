@@ -111,10 +111,16 @@ fn create_llm_client(
 }
 
 fn setup_logging(verbose: bool, use_stdout: bool) {
-    let log_level = if verbose { Level::DEBUG } else { Level::INFO };
+    let filter = {
+        if verbose {
+            "code_assistant=debug,info".to_string()
+        } else {
+            "code_assistant=info,warn".to_string()
+        }
+    };
 
     let subscriber = tracing_subscriber::fmt()
-        .with_max_level(log_level)
+        .with_env_filter(filter)
         .with_target(false)
         .with_thread_ids(false)
         .with_file(true)

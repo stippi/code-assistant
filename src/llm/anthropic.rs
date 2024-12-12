@@ -6,7 +6,7 @@ use reqwest::{Client, Response, StatusCode};
 use serde::Serialize;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 /// Response structure for Anthropic error messages
 #[derive(Debug, Serialize, serde::Deserialize)]
@@ -275,7 +275,7 @@ impl AnthropicClient {
             {
                 match (status, error_response.error.error_type.as_str()) {
                     (StatusCode::TOO_MANY_REQUESTS, _) | (_, "rate_limit_error") => {
-                        debug!(
+                        error!(
                             "Rate limit error detected: status={}, type={}, message={}",
                             status, error_response.error.error_type, error_response.error.message
                         );
@@ -291,7 +291,7 @@ impl AnthropicClient {
                         ApiError::ServiceError(error_response.error.message)
                     }
                     _ => {
-                        debug!(
+                        error!(
                             "Unknown error detected: status={}, type={}, message={}",
                             status, error_response.error.error_type, error_response.error.message
                         );

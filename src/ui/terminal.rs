@@ -23,6 +23,12 @@ impl UserInterface for TerminalUI {
         match message {
             UIMessage::Action(msg) => self.write_line(&msg).await?,
             UIMessage::Question(msg) => self.write_line(&format!("{}\n> ", msg)).await?,
+            UIMessage::Reasoning(msg) => {
+                self.write_line("").await?;
+                self.write_line("Reasoning:").await?;
+                self.write_line(&format!("  {}", msg)).await?;
+                self.write_line("").await?;
+            }
         }
         Ok(())
     }

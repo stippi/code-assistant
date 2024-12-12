@@ -1,4 +1,4 @@
-use crate::llm::{LLMProvider, LLMRequest, Message, MessageContent, MessageRole};
+use crate::llm::{ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole};
 use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::{format_with_line_numbers, CommandExecutor};
@@ -189,72 +189,64 @@ impl Agent {
         };
 
         for (i, message) in request.messages.iter().enumerate() {
-            debug!(
-                "Message {}: Role={:?}, Content={:?}",
-                i, message.role, message.content
-            );
+            if let MessageContent::Text(text) = &message.content {
+                debug!("Message {}: Role={:?}\n---\n{}\n---", i, message.role, text);
+            }
         }
 
         let response = self.llm_provider.send_message(request).await?;
 
-        debug!("Raw LLM response: {:?}", response);
+        debug!("Raw LLM response:");
+        for block in &response.content {
+            if let ContentBlock::Text { text } = block {
+                debug!("---\n{}\n---", text);
+            }
+        }
 
         parse_llm_response(&response)
     }
 
     pub fn render_working_memory(&self) -> String {
-        format!(
-            "Task: {}\n\n\
-            Repository structure:\n\
-            {}\n\n\
-            Current Working Memory:\n\
-            - Loaded files and their contents:\n{}\n\
-            - File summaries:\n{}\n\n\
-            Previous actions:\n{}\n",
-            self.working_memory.current_task,
-            // File tree structure
-            self.working_memory
-                .file_tree
-                .as_ref()
-                .map(|tree| tree.to_string())
-                .unwrap_or_else(|| "No file tree available".to_string()),
-            // Format loaded files with their contents and line numbers
-            self.working_memory
-                .loaded_files
-                .iter()
-                .map(|(path, content)| format!(
-                    "  -----{}:\n{}",
-                    path.display(),
-                    format_with_line_numbers(content)
-                ))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            // Format file summaries
-            self.working_memory
-                .file_summaries
-                .iter()
-                .map(|(path, summary)| format!("  {}: {}", path.display(), summary))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            // Format action history
-            self.working_memory
-                .action_history
-                .iter()
-                .enumerate()
-                .map(|(i, action)| format!(
-                    "{}. Tool: {:?}\n   Reasoning: {}\n   Result: {}{}\n",
-                    i + 1,
-                    action.tool,
-                    action.reasoning,
-                    action.result,
-                    action
-                        .error
-                        .clone()
-                        .map_or(String::new(), |e| format!("\n   Error: {}", e))
-                ))
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        )
+        let mut memory = format!("Task: {}\n\n", self.working_memory.current_task);
+
+        // Add repository structure with proper indentation
+        memory.push_str("Repository structure:\n");
+        if let Some(tree) = &self.working_memory.file_tree {
+            memory.push_str(&tree.to_string());
+        } else {
+            memory.push_str("No file tree available");
+        }
+        memory.push_str("\n\n");
+
+        // Add loaded files with their contents
+        memory.push_str("Current Working Memory:\n");
+        memory.push_str("- Loaded files and their contents (with line numbers prepended):\n");
+        for (path, content) in &self.working_memory.loaded_files {
+            memory.push_str(&format!(
+                "\n-----{}:\n{}\n",
+                path.display(),
+                format_with_line_numbers(content)
+            ));
+        }
+
+        // Add file summaries
+        memory.push_str("\n- File summaries:\n");
+        for (path, summary) in &self.working_memory.file_summaries {
+            memory.push_str(&format!("  {}: {}\n", path.display(), summary));
+        }
+
+        // Add action history
+        memory.push_str("\nPrevious actions:\n");
+        for (i, action) in self.working_memory.action_history.iter().enumerate() {
+            memory.push_str(&format!("\n{}. Tool: {:?}\n", i + 1, action.tool));
+            memory.push_str(&format!("   Reasoning: {}\n", action.reasoning));
+            memory.push_str(&format!("   Result: {}\n", action.result));
+            if let Some(error) = &action.error {
+                memory.push_str(&format!("   Error: {}\n", error));
+            }
+        }
+
+        memory
     }
 
     /// Prepare messages for LLM request - currently returns a single user message
@@ -269,6 +261,11 @@ impl Agent {
     /// Executes an action and returns the result
     async fn execute_action(&mut self, action: &AgentAction) -> Result<ActionResult> {
         debug!("Executing action: {:?}", action.tool);
+
+        // Display the agent's reasoning
+        self.ui
+            .display(UIMessage::Reasoning(action.reasoning.clone()))
+            .await?;
 
         let result = match &action.tool {
             Tool::ListFiles { paths, max_depth } => {

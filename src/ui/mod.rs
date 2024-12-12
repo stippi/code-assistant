@@ -8,6 +8,8 @@ pub enum UIMessage {
     Action(String),
     // Questions to the user that need a response
     Question(String),
+    // LLM's reasoning about its next action
+    Reasoning(String),
 }
 
 #[derive(Error, Debug)]
