@@ -313,14 +313,12 @@ fn create_command_executor_mock() -> MockCommandExecutor {
 async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
     // Prepare test data
     let test_message = "Test message for user";
+    let test_reasoning = "Dummy reason";
     let tool = Tool::MessageUser {
         message: test_message.to_string(),
     };
 
-    let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
-        tool,
-        "Testing message to user",
-    ))]);
+    let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(tool, test_reasoning))]);
 
     let mock_ui = MockUI::default();
 
@@ -339,8 +337,14 @@ async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
     let messages = mock_ui.get_messages();
     assert!(!messages.is_empty());
 
-    if let UIMessage::Action(msg) = &messages[1] {
-        // First message is about creating repository structure
+    // First message is about creating repository structure
+    if let UIMessage::Reasoning(msg) = &messages[1] {
+        assert!(msg.contains(test_reasoning));
+    } else {
+        panic!("Expected UIMessage::Reasoning");
+    }
+
+    if let UIMessage::Action(msg) = &messages[2] {
         assert!(msg.contains(test_message));
     } else {
         panic!("Expected UIMessage::Action");
@@ -423,7 +427,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
 
     if let MessageContent::Text(content) = &second_request.messages[0].content {
         assert!(content.contains(
-            "Loaded files and their contents:\n  -----test.txt:\n   1 | line 1\n   2 | line 2\n   3 | line 3\n"
+            "Loaded files and their contents (with line numbers prepended):\n\n-----test.txt:\n   1 | line 1\n   2 | line 2\n   3 | line 3\n"
         ), "File content not found in working memory message:\n{}", content);
     } else {
         panic!("Expected text content in message");
