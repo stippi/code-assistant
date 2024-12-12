@@ -97,23 +97,33 @@ impl Agent {
                 .await?;
 
             // Replay each action
-            for action in state.actions {
-                debug!("Replaying action: {:?}", action.tool);
-                match self
-                    .execute_action(&AgentAction {
-                        tool: action.tool,
-                        reasoning: action.reasoning,
-                    })
-                    .await
-                {
+            for original_action in state.actions {
+                debug!("Replaying action: {:?}", original_action.tool);
+                let action = AgentAction {
+                    tool: original_action.tool.clone(),
+                    reasoning: original_action.reasoning.clone(),
+                };
+
+                match self.execute_action(&action).await {
                     Ok(result) => {
                         if !result.success {
-                            warn!("Action replay failed: {:?}", result.error);
+                            warn!(
+                                "Action replay failed: {:?}. Using original result instead.",
+                                result.error
+                            );
+                            // Use the original successful result instead
+                            self.working_memory.action_history.push(original_action);
+                        } else {
+                            self.working_memory.action_history.push(result);
                         }
-                        self.working_memory.action_history.push(result);
                     }
                     Err(e) => {
-                        warn!("Failed to replay action: {}", e);
+                        warn!(
+                            "Failed to replay action: {}. Using original result instead.",
+                            e
+                        );
+                        // Use the original result in case of error
+                        self.working_memory.action_history.push(original_action);
                     }
                 }
             }
