@@ -253,8 +253,14 @@ impl AnthropicClient {
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
+        // Log raw headers for debugging
+        debug!("Response headers: {:?}", response.headers());
+
         // Extract rate limit information from response headers
         let rate_limits = AnthropicRateLimitInfo::from_response(&response);
+
+        // Log parsed rate limits
+        debug!("Parsed rate limits: {:?}", rate_limits);
 
         let status = response.status();
         let response_text = response
@@ -269,6 +275,10 @@ impl AnthropicClient {
             {
                 match (status, error_response.error.error_type.as_str()) {
                     (StatusCode::TOO_MANY_REQUESTS, _) | (_, "rate_limit_error") => {
+                        debug!(
+                            "Rate limit error detected: status={}, type={}, message={}",
+                            status, error_response.error.error_type, error_response.error.message
+                        );
                         ApiError::RateLimit(error_response.error.message)
                     }
                     (StatusCode::UNAUTHORIZED, _) => {
@@ -280,7 +290,13 @@ impl AnthropicClient {
                     (status, _) if status.is_server_error() => {
                         ApiError::ServiceError(error_response.error.message)
                     }
-                    _ => ApiError::Unknown(error_response.error.message),
+                    _ => {
+                        debug!(
+                            "Unknown error detected: status={}, type={}, message={}",
+                            status, error_response.error.error_type, error_response.error.message
+                        );
+                        ApiError::Unknown(error_response.error.message)
+                    }
                 }
             } else {
                 ApiError::Unknown(format!("Status {}: {}", status, response_text))
