@@ -283,7 +283,7 @@ mod tests {
 
         let updates = vec![FileUpdate {
             start_line: 2,
-            end_line: 3,
+            end_line: 4,
             new_content: "Updated Line 2\nUpdated Line 3".to_string(),
         }];
 
@@ -301,12 +301,12 @@ mod tests {
         let updates = vec![
             FileUpdate {
                 start_line: 1,
-                end_line: 2,
+                end_line: 3,
                 new_content: "Updated Line 1\nUpdated Line 2".to_string(),
             },
             FileUpdate {
                 start_line: 4,
-                end_line: 5,
+                end_line: 6,
                 new_content: "Updated Line 4\nUpdated Line 5".to_string(),
             },
         ];
