@@ -436,8 +436,8 @@ async fn test_execute_command() -> Result<()> {
         stderr: "".to_string(),
     };
 
-    let mock_command = MockCommandExecutor::new(vec![Ok(test_output)]);
-    let mock_command_ref = mock_command.clone();
+    let mock_command_executor = MockCommandExecutor::new(vec![Ok(test_output)]);
+    let mock_command_executor_ref = mock_command_executor.clone();
 
     let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
         Tool::ExecuteCommand {
@@ -450,7 +450,7 @@ async fn test_execute_command() -> Result<()> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         Box::new(create_explorer_mock()),
-        Box::new(mock_command),
+        Box::new(mock_command_executor),
         Box::new(MockUI::default()),
     );
 
@@ -458,9 +458,9 @@ async fn test_execute_command() -> Result<()> {
     agent.start_with_task("Test task".to_string()).await?;
 
     // Verify number of calls and command parameters
-    assert_eq!(mock_command_ref.calls.load(Ordering::Relaxed), 1);
+    assert_eq!(mock_command_executor_ref.calls.load(Ordering::Relaxed), 1);
 
-    let captured_commands = mock_command_ref.get_captured_commands();
+    let captured_commands = mock_command_executor_ref.get_captured_commands();
     assert_eq!(captured_commands.len(), 1);
     assert_eq!(captured_commands[0].0, "test command");
     assert_eq!(captured_commands[0].1, None);
