@@ -15,6 +15,7 @@ use crate::ui::terminal::TerminalUI;
 use crate::utils::DefaultCommandExecutor;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use persistence::FileStatePersistence;
 use std::io;
 use std::path::PathBuf;
 use tracing_subscriber::fmt::SubscriberBuilder;
@@ -168,13 +169,12 @@ async fn main() -> Result<()> {
             let llm_client = create_llm_client(provider, model, num_ctx)
                 .context("Failed to initialize LLM client")?;
 
-            // Setup CodeExplorer
+            // Setup dynamic types
             let root_path = path.canonicalize()?;
             let explorer = Box::new(Explorer::new(root_path.clone()));
-
-            // Initialize terminal UI
             let terminal_ui = Box::new(TerminalUI::new());
             let command_executor = Box::new(DefaultCommandExecutor);
+            let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
 
             // Validate parameters
             if continue_task && task.is_some() {
@@ -188,11 +188,17 @@ async fn main() -> Result<()> {
             }
 
             // Initialize agent
-            let mut agent = Agent::new(llm_client, explorer, command_executor, terminal_ui);
+            let mut agent = Agent::new(
+                llm_client,
+                explorer,
+                command_executor,
+                terminal_ui,
+                state_persistence,
+            );
 
             // Get task either from state file or argument
             if continue_task {
-                agent.start_from_state(&root_path).await?;
+                agent.start_from_state().await?;
             } else {
                 agent.start_with_task(task.unwrap()).await?;
             }

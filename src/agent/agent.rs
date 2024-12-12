@@ -1,5 +1,5 @@
 use crate::llm::{ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole};
-use crate::persistence::AgentState;
+use crate::persistence::StatePersistence;
 use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::{format_with_line_numbers, CommandExecutor};
@@ -13,6 +13,7 @@ pub struct Agent {
     explorer: Box<dyn CodeExplorer>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Box<dyn UserInterface>,
+    state_persistence: Box<dyn StatePersistence>,
 }
 
 impl Agent {
@@ -21,6 +22,7 @@ impl Agent {
         explorer: Box<dyn CodeExplorer>,
         command_executor: Box<dyn CommandExecutor>,
         ui: Box<dyn UserInterface>,
+        state_persistence: Box<dyn StatePersistence>,
     ) -> Self {
         Self {
             working_memory: WorkingMemory::default(),
@@ -28,6 +30,7 @@ impl Agent {
             explorer,
             ui,
             command_executor,
+            state_persistence,
         }
     }
 
@@ -40,17 +43,15 @@ impl Agent {
             self.working_memory.action_history.push(result);
 
             // Save state after each action
-            let root_dir = self.explorer.root_dir();
-            let state = AgentState::new(
+            self.state_persistence.save_state(
                 self.working_memory.current_task.clone(),
                 self.working_memory.action_history.clone(),
-            );
-            state.save(&root_dir)?;
+            )?;
 
             // Check if this was a CompleteTask action
             if let Tool::CompleteTask { .. } = action.tool {
                 // Clean up state file on successful completion
-                AgentState::cleanup(&root_dir)?;
+                self.state_persistence.cleanup()?;
                 break;
             }
         }
@@ -73,15 +74,15 @@ impl Agent {
         self.working_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
 
         // Save initial state
-        let state = AgentState::new(task, self.working_memory.action_history.clone());
-        state.save(&self.explorer.root_dir())?;
+        self.state_persistence
+            .save_state(task, self.working_memory.action_history.clone())?;
 
         self.run_agent_loop().await
     }
 
     /// Continue from a saved state
-    pub async fn start_from_state(&mut self, root_dir: &PathBuf) -> Result<()> {
-        if let Some(state) = AgentState::load(root_dir)? {
+    pub async fn start_from_state(&mut self) -> Result<()> {
+        if let Some(state) = self.state_persistence.load_state()? {
             debug!("Continuing task: {}", state.task);
             self.working_memory.current_task = state.task;
 

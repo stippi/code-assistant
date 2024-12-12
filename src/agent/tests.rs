@@ -1,5 +1,6 @@
 use super::*;
 use crate::llm::{types::*, LLMProvider, LLMRequest};
+use crate::persistence::MockStatePersistence;
 use crate::types::*;
 use crate::ui::{UIError, UIMessage, UserInterface};
 use crate::utils::{CommandExecutor, CommandOutput};
@@ -328,6 +329,7 @@ async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(mock_ui.clone()),
+        Box::new(MockStatePersistence::new()),
     );
 
     // Run the agent
@@ -367,6 +369,7 @@ async fn test_agent_ask_user() -> Result<(), anyhow::Error> {
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(mock_ui.clone()),
+        Box::new(MockStatePersistence::new()),
     );
 
     // Run the agent
@@ -408,6 +411,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
+        Box::new(MockStatePersistence::new()),
     );
 
     // Run the agent
@@ -452,6 +456,7 @@ async fn test_execute_command() -> Result<()> {
         Box::new(create_explorer_mock()),
         Box::new(mock_command_executor),
         Box::new(MockUI::default()),
+        Box::new(MockStatePersistence::new()),
     );
 
     // Run the agent
