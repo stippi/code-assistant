@@ -74,7 +74,7 @@ pub enum Tool {
 }
 
 /// Result of a tool execution
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ActionResult {
     pub tool: Tool,
     pub success: bool,

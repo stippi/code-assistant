@@ -42,16 +42,15 @@ impl Agent {
             // Save state after each action
             let root_dir = self.explorer.root_dir();
             let state = AgentState::new(
-                root_dir,
                 self.working_memory.current_task.clone(),
-                self.working_memory.clone(),
+                self.working_memory.action_history.clone(),
             );
-            state.save()?;
+            state.save(&root_dir)?;
 
             // Check if this was a CompleteTask action
             if let Tool::CompleteTask { .. } = action.tool {
                 // Clean up state file on successful completion
-                AgentState::cleanup(&root_dir)?;
+                //AgentState::cleanup(&root_dir)?;
                 break;
             }
         }
@@ -74,25 +73,50 @@ impl Agent {
         self.working_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
 
         // Save initial state
-        let root_dir = self.explorer.root_dir();
-        let state = AgentState::new(root_dir, task, self.working_memory.clone());
-        state.save()?;
+        let state = AgentState::new(task, self.working_memory.action_history.clone());
+        state.save(&self.explorer.root_dir())?;
 
         self.run_agent_loop().await
     }
 
     /// Continue from a saved state
     pub async fn start_from_state(&mut self, root_dir: &PathBuf) -> Result<()> {
-        if let Some((state, memory)) = AgentState::load(root_dir, self.explorer.as_ref())? {
-            debug!("Continuing task: {}", state.memory.current_task);
-            self.working_memory = memory;
-            
+        if let Some(state) = AgentState::load(root_dir)? {
+            debug!("Continuing task: {}", state.task);
+            self.working_memory.current_task = state.task;
+
+            // Create fresh working memory
+            self.working_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
+
             self.ui
                 .display(UIMessage::Action(format!(
-                    "Continuing task: {}",
-                    self.working_memory.current_task
+                    "Continuing task: {}, replaying {} actions",
+                    self.working_memory.current_task,
+                    state.actions.len()
                 )))
                 .await?;
+
+            // Replay each action
+            for action in state.actions {
+                debug!("Replaying action: {:?}", action.tool);
+                match self
+                    .execute_action(&AgentAction {
+                        tool: action.tool,
+                        reasoning: action.reasoning,
+                    })
+                    .await
+                {
+                    Ok(result) => {
+                        if !result.success {
+                            warn!("Action replay failed: {:?}", result.error);
+                        }
+                        self.working_memory.action_history.push(result);
+                    }
+                    Err(e) => {
+                        warn!("Failed to replay action: {}", e);
+                    }
+                }
+            }
 
             self.run_agent_loop().await
         } else {
