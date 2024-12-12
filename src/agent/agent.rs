@@ -83,11 +83,9 @@ impl Agent {
 
     /// Continue from a saved state
     pub async fn start_from_state(&mut self, root_dir: &PathBuf) -> Result<()> {
-        if let Some(state) = AgentState::load(root_dir)? {
+        if let Some((state, memory)) = AgentState::load(root_dir, self.explorer.as_ref())? {
             debug!("Continuing task: {}", state.memory.current_task);
-            self.working_memory = state.memory;
-            // Don't restore file contents, they will be reloaded when needed
-            self.working_memory.loaded_files.clear(); 
+            self.working_memory = memory;
             
             self.ui
                 .display(UIMessage::Action(format!(

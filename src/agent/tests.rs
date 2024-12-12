@@ -331,7 +331,7 @@ async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
     );
 
     // Run the agent
-    agent.start("Test task".to_string()).await?;
+    agent.start_with_task("Test task".to_string()).await?;
 
     // Verify the message was displayed
     let messages = mock_ui.get_messages();
@@ -370,7 +370,7 @@ async fn test_agent_ask_user() -> Result<(), anyhow::Error> {
     );
 
     // Run the agent
-    agent.start("Test task".to_string()).await?;
+    agent.start_with_task("Test task".to_string()).await?;
 
     // Verify the question was asked
     let messages = mock_ui.get_messages();
@@ -411,7 +411,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     );
 
     // Run the agent
-    agent.start("Test task".to_string()).await?;
+    agent.start_with_task("Test task".to_string()).await?;
 
     // Verify the file is displayed in the working memory of the second request
     let locked_requests = mock_llm_ref.requests.lock().unwrap();
@@ -455,7 +455,7 @@ async fn test_execute_command() -> Result<()> {
     );
 
     // Run the agent
-    agent.start("Test task".to_string()).await?;
+    agent.start_with_task("Test task".to_string()).await?;
 
     // Verify number of calls and command parameters
     assert_eq!(mock_command_ref.calls.load(Ordering::Relaxed), 1);
