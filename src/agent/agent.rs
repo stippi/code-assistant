@@ -50,7 +50,7 @@ impl Agent {
             // Check if this was a CompleteTask action
             if let Tool::CompleteTask { .. } = action.tool {
                 // Clean up state file on successful completion
-                //AgentState::cleanup(&root_dir)?;
+                AgentState::cleanup(&root_dir)?;
                 break;
             }
         }
