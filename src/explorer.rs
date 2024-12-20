@@ -1,7 +1,9 @@
-use crate::types::{CodeExplorer, FileSystemEntryType, FileTreeEntry, FileUpdate};
+use crate::types::{CodeExplorer, FileSystemEntryType, FileTreeEntry, FileUpdate, SearchMode, SearchOptions, SearchResult};
 use anyhow::Result;
 use ignore::WalkBuilder;
+use regex::RegexBuilder;
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
@@ -232,6 +234,97 @@ impl CodeExplorer for Explorer {
 
         Ok(updated_content)
     }
+
+    fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>> {
+        let mut results = Vec::new();
+        let max_results = options.max_results.unwrap_or(usize::MAX);
+
+        // Prepare regex for different search modes
+        let regex = match options.mode {
+            SearchMode::Exact => {
+                let mut pattern = if options.whole_words {
+                    format!(r"\b{}\b", regex::escape(&options.query))
+                } else {
+                    regex::escape(&options.query)
+                };
+
+                // For case-insensitive search, we use regex's case-insensitive flag
+                RegexBuilder::new(&pattern)
+                    .case_insensitive(!options.case_sensitive)
+                    .build()?
+            }
+            SearchMode::Regex => {
+                let pattern = if options.whole_words {
+                    format!(r"\b{}\b", options.query)
+                } else {
+                    options.query
+                };
+
+                RegexBuilder::new(&pattern)
+                    .case_insensitive(!options.case_sensitive)
+                    .build()?
+            }
+            SearchMode::Regex => {
+                // Use the query directly as a regex pattern
+                RegexBuilder::new(&options.query)
+                    .case_insensitive(!options.case_sensitive)
+                    .build()?
+            }
+        };
+
+        let walker = WalkBuilder::new(path)
+            .hidden(false)
+            .git_ignore(true)
+            .build();
+
+        for entry in walker {
+            let entry = entry?;
+            let path = entry.path();
+
+            // Skip directories and non-text files
+            if path.is_dir() || !is_text_file(path) {
+                continue;
+            }
+
+            let file = std::fs::File::open(path)?;
+            let reader = BufReader::new(file);
+
+            for (line_idx, line) in reader.lines().enumerate() {
+                let line = line?;
+                
+                // Find all matches in the line
+                let matches: Vec<_> = regex.find_iter(&line).collect();
+                if !matches.is_empty() {
+                    results.push(SearchResult {
+                        file: path.to_path_buf(),
+                        line_number: line_idx + 1,
+                        line_content: line.to_string(),
+                        match_ranges: matches.iter().map(|m| (m.start(), m.end())).collect(),
+                    });
+
+                    if results.len() >= max_results {
+                        return Ok(results);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+}
+
+/// Helper function to determine if a file is likely to be a text file
+fn is_text_file(path: &Path) -> bool {
+    let text_extensions = [
+        "txt", "md", "rs", "js", "py", "java", "c", "cpp", "h", "hpp",
+        "css", "html", "xml", "json", "yaml", "yml", "toml", "sh", "bash",
+        "zsh", "fish", "conf", "cfg", "ini", "properties", "env",
+    ];
+
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| text_extensions.contains(&ext.to_lowercase().as_str()))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -316,6 +409,67 @@ mod tests {
             result,
             "Updated Line 1\nUpdated Line 2\nLine 3\nUpdated Line 4\nUpdated Line 5\n"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_search() -> Result<()> {
+        let (temp_dir, explorer) = setup_test_directory()?;
+
+        // Create test files with content
+        create_test_file(
+            temp_dir.path(),
+            "file1.txt",
+            "This is line 1\nThis is line 2\nThis is line 3",
+        )?;
+        create_test_file(
+            temp_dir.path(),
+            "file2.txt",
+            "Another file line 1\nAnother file line 2",
+        )?;
+
+        // Create a subdirectory with a file
+        fs::create_dir(temp_dir.path().join("subdir"))?;
+        create_test_file(
+            &temp_dir.path().join("subdir"),
+            "file3.txt",
+            "Subdir line 1\nSubdir line 2",
+        )?;
+
+        // Test searching with different queries
+        let results = explorer.search(
+            temp_dir.path(),
+            SearchOptions {
+                query: "line 2".to_string(),
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().any(|r| r.line_content.contains("This is line 2")));
+        assert!(results.iter().any(|r| r.line_content.contains("Another file line 2")));
+        assert!(results.iter().any(|r| r.line_content.contains("Subdir line 2")));
+
+        // Test with max_results
+        let results = explorer.search(
+            temp_dir.path(),
+            SearchOptions {
+                query: "line".to_string(),
+                max_results: Some(2),
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(results.len(), 2);
+
+        // Test with non-matching query
+        let results = explorer.search(
+            temp_dir.path(),
+            SearchOptions {
+                query: "nonexistent".to_string(),
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(results.len(), 0);
+
         Ok(())
     }
 

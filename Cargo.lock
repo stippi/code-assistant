@@ -265,6 +265,7 @@ dependencies = [
  "futures",
  "glob",
  "ignore",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

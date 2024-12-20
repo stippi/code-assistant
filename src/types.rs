@@ -131,6 +131,37 @@ pub enum FileSystemEntryType {
     Directory,
 }
 
+#[derive(Debug, Clone)]
+pub enum SearchMode {
+    /// Standard text search, case-insensitive by default
+    Exact,
+    /// Regular expression search
+    Regex,
+}
+
+impl Default for SearchMode {
+    fn default() -> Self {
+        Self::Exact
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SearchOptions {
+    pub query: String,
+    pub case_sensitive: bool,
+    pub whole_words: bool,
+    pub mode: SearchMode,
+    pub max_results: Option<usize>,
+}
+
+#[derive(Debug)]
+pub struct SearchResult {
+    pub file: PathBuf,
+    pub line_number: usize,
+    pub line_content: String,
+    pub match_ranges: Vec<(usize, usize)>, // Start and end positions of matches in the line
+}
+
 pub trait CodeExplorer {
     fn root_dir(&self) -> PathBuf;
     /// Reads the content of a file
@@ -139,4 +170,6 @@ pub trait CodeExplorer {
     fn list_files(&self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry>;
     /// Applies FileUpdates to a file
     fn apply_updates(&self, path: &Path, updates: &[FileUpdate]) -> Result<String>;
+    /// Search for text in files with advanced options
+    fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>>;
 }

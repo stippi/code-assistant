@@ -6,6 +6,7 @@ use crate::ui::{UIError, UIMessage, UserInterface};
 use crate::utils::{CommandExecutor, CommandOutput};
 use anyhow::Result;
 use async_trait::async_trait;
+use regex::RegexBuilder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -214,6 +215,74 @@ impl CodeExplorer for MockExplorer {
 
         Ok(updated_content)
     }
+
+    fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>, anyhow::Error> {
+        let files = self.files.lock().unwrap();
+        let max_results = options.max_results.unwrap_or(usize::MAX);
+        let mut results = Vec::new();
+
+        // Create regex based on search mode
+        let regex = match options.mode {
+            SearchMode::Exact => {
+                let mut pattern = if options.whole_words {
+                    format!(r"\b{}\b", regex::escape(&options.query))
+                } else {
+                    regex::escape(&options.query)
+                };
+
+                RegexBuilder::new(&pattern)
+                    .case_insensitive(!options.case_sensitive)
+                    .build()?
+            }
+            SearchMode::Regex => {
+                let pattern = if options.whole_words {
+                    format!(r"\b{}\b", options.query)
+                } else {
+                    options.query
+                };
+
+                RegexBuilder::new(&pattern)
+                    .case_insensitive(!options.case_sensitive)
+                    .build()?
+            }
+            SearchMode::Regex => {
+                let pattern = if options.whole_words {
+                    format!(r"\b{}\b", options.query)
+                } else {
+                    options.query.clone()
+                };
+
+                RegexBuilder::new(&pattern)
+                    .case_insensitive(!options.case_sensitive)
+                    .build()?
+            }
+        };
+
+        for (file_path, content) in files.iter() {
+            // Only search files under the specified path
+            if !file_path.starts_with(path) {
+                continue;
+            }
+
+            for (line_idx, line) in content.lines().enumerate() {
+                let matches: Vec<_> = regex.find_iter(line).collect();
+                if !matches.is_empty() {
+                    results.push(SearchResult {
+                        file: file_path.clone(),
+                        line_number: line_idx + 1,
+                        line_content: line.to_string(),
+                        match_ranges: matches.iter().map(|m| (m.start(), m.end())).collect(),
+                    });
+
+                    if results.len() >= max_results {
+                        return Ok(results);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
 }
 
 // Helper function to create a test response
@@ -307,6 +376,131 @@ fn create_explorer_mock() -> MockExplorer {
 
 fn create_command_executor_mock() -> MockCommandExecutor {
     MockCommandExecutor::new(vec![])
+}
+
+#[test]
+fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
+    let mut files = HashMap::new();
+    files.insert(
+        PathBuf::from("./root/test1.txt"),
+        "line 1\nline 2\nline 3\n".to_string(),
+    );
+    files.insert(
+        PathBuf::from("./root/test2.txt"),
+        "another line\nmatching line\n".to_string(),
+    );
+    files.insert(
+        PathBuf::from("./root/subdir/test3.txt"),
+        "subdir line\nmatching line\n".to_string(),
+    );
+
+    let explorer = MockExplorer::new(files, None);
+
+    // Test basic search
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: "matching".to_string(),
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().any(|r| r.file.ends_with("test2.txt")));
+    assert!(results.iter().any(|r| r.file.ends_with("test3.txt")));
+
+    // Test case-sensitive search
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: "LINE".to_string(),
+            case_sensitive: true,
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(results.len(), 0); // Should find nothing with case-sensitive search
+
+    // Test case-insensitive search
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: "LINE".to_string(),
+            case_sensitive: false,
+            ..Default::default()
+        },
+    )?;
+    assert!(results.len() > 0); // Should find matches
+
+    // Test whole word search
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: "line".to_string(),
+            whole_words: true,
+            ..Default::default()
+        },
+    )?;
+    // When searching for whole words, matches should not be part of other words
+    assert!(results.iter().all(|r| {
+        let line = &r.line_content;
+        // Check that "line" is not part of another word
+        !line.contains("inline") && !line.contains("pipeline") && !line.contains("airline")
+    }));
+
+    // Test regex mode
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: r"line \d".to_string(),
+            mode: SearchMode::Regex,
+            ..Default::default()
+        },
+    )?;
+    assert!(results.iter().any(|r| r.line_content.contains("line 1")));
+
+    // Test regex search
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: r"line \d+".to_string(), // Match "line" followed by numbers
+            mode: SearchMode::Regex,
+            ..Default::default()
+        },
+    )?;
+    assert!(results.iter().any(|r| r.line_content.contains("line 1")));
+
+    // Test with max_results
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: "line".to_string(),
+            max_results: Some(2),
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(results.len(), 2);
+
+    // Test search in subdirectory
+    let results = explorer.search(
+        &PathBuf::from("./root/subdir"),
+        SearchOptions {
+            query: "subdir".to_string(),
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(results.len(), 1);
+    assert!(results[0].file.ends_with("test3.txt"));
+
+    // Test search with no matches
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: "nonexistent".to_string(),
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(results.len(), 0);
+
+    Ok(())
 }
 
 #[tokio::test]

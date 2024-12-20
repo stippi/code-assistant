@@ -1,7 +1,7 @@
 use super::resources::ResourceManager;
 use super::types::*;
 use crate::explorer::Explorer;
-use crate::types::{CodeExplorer, FileUpdate};
+use crate::types::{CodeExplorer, FileUpdate, SearchMode, SearchOptions};
 use crate::utils::format_with_line_numbers;
 use crate::utils::{CommandExecutor, DefaultCommandExecutor};
 use anyhow::Result;
@@ -214,6 +214,41 @@ impl MessageHandler {
             id,
             ListToolsResult {
                 tools: vec![
+                    Tool {
+                        name: "search".to_string(),
+                        description: Some("Search for text in files with advanced options".to_string()),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "The text to search for. Supports regular expressions."
+                                },
+                                "path": {
+                                    "type": "string",
+                                    "description": "Optional: directory path to search in (relative to project root)"
+                                },
+                                "max_results": {
+                                    "type": "integer",
+                                    "description": "Optional: maximum number of results to return"
+                                },
+                                "case_sensitive": {
+                                    "type": "boolean",
+                                    "description": "Optional: whether the search should be case-sensitive (default: false)"
+                                },
+                                "whole_words": {
+                                    "type": "boolean",
+                                    "description": "Optional: match whole words only (default: false)"
+                                },
+                                "mode": {
+                                    "type": "string",
+                                    "description": "Optional: search mode - 'exact' (default) for standard text search, or 'regex' for regular expressions",
+                                    "enum": ["exact", "regex"]
+                                }
+                            },
+                            "required": ["query"]
+                        }),
+                    },
                     Tool {
                         name: "execute-command".to_string(),
                         description: Some("Execute a command line program".to_string()),
@@ -620,6 +655,65 @@ impl MessageHandler {
                     },
                 }
             }
+            "search" => {
+                let args = params
+                    .arguments
+                    .ok_or_else(|| anyhow::anyhow!("No arguments provided"))?;
+                let mut options = SearchOptions {
+                    query: args["query"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'query' argument"))?
+                        .to_string(),
+                    case_sensitive: args
+                        .get("case_sensitive")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    whole_words: args
+                        .get("whole_words")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    mode: match args.get("mode").and_then(|v| v.as_str()) {
+                        Some("regex") => SearchMode::Regex,
+                        Some("regex") => SearchMode::Regex,
+                        _ => SearchMode::Exact,
+                    },
+                    max_results: args
+                        .get("max_results")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as usize),
+                };
+
+                let path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(|p| self.explorer.root_dir().join(p))
+                    .unwrap_or_else(|| self.explorer.root_dir().clone());
+
+                match self.explorer.search(&path, options) {
+                    Ok(results) => {
+                        let mut output = String::new();
+                        for result in results {
+                            output.push_str(&format!(
+                                "{}:{}:{}\n",
+                                result.file.display(),
+                                result.line_number,
+                                result.line_content
+                            ));
+                        }
+                        ToolCallResult {
+                            content: vec![ToolResultContent::Text { text: output }],
+                            is_error: None,
+                        }
+                    }
+                    Err(e) => ToolCallResult {
+                        content: vec![ToolResultContent::Text {
+                            text: format!("Error searching files: {}", e),
+                        }],
+                        is_error: Some(true),
+                    },
+                }
+            }
+
             "execute-command" => {
                 let args = params
                     .arguments
