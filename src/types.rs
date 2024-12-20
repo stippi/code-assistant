@@ -71,6 +71,21 @@ pub enum Tool {
         /// Optional working directory for the command
         working_dir: Option<PathBuf>,
     },
+    /// Search for text in files
+    Search {
+        /// The text to search for
+        query: String,
+        /// Optional directory path to search in
+        path: Option<PathBuf>,
+        /// Whether the search should be case-sensitive
+        case_sensitive: bool,
+        /// Whether to match whole words only
+        whole_words: bool,
+        /// Whether to use regex mode
+        regex_mode: bool,
+        /// Maximum number of results to return
+        max_results: Option<usize>,
+    },
 }
 
 /// Result of a tool execution

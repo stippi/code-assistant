@@ -290,6 +290,7 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
                 Tool::MessageUser { .. } => "MessageUser",
                 Tool::ExecuteCommand { .. } => "ExecuteCommand",
                 Tool::CompleteTask { .. } => "CompleteTask",
+                Tool::Search { .. } => "Search",
             },
             "params": match &tool {
                 Tool::ListFiles { paths, max_depth } => {
@@ -334,6 +335,21 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
                 }),
                 Tool::CompleteTask { message } => serde_json::json!({
                     "message": message
+                }),
+                Tool::Search {
+                    query,
+                    path,
+                    case_sensitive,
+                    whole_words,
+                    regex_mode,
+                    max_results,
+                } => serde_json::json!({
+                    "query": query,
+                    "path": path,
+                    "case_sensitive": case_sensitive,
+                    "whole_words": whole_words,
+                    "regex_mode": regex_mode,
+                    "max_results": max_results
                 }),
             }
         }

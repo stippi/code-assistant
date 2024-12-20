@@ -220,7 +220,20 @@ impl Agent {
            - Parameters: {"paths": ["path/to/file1", "path/to/file2", ...]}
            - Returns: Confirmation of which files were deleted
 
-        10. CompleteTask
+        10. Search
+           - Search for text in files
+           - Parameters: {
+               "query": "text to search for",
+               "path": "optional: directory path to search in",
+               "case_sensitive": false,
+               "whole_words": false,
+               "regex_mode": false,
+               "max_results": null
+           }
+           - Returns: List of matches with file paths, line numbers, and matching lines
+           - Use this to find code, text, or patterns in files
+
+        11. CompleteTask
            - Complete the current task with a final message to the user
            - Parameters: {"message": "your completion message here"}
            - Returns: Confirmation message
@@ -717,6 +730,78 @@ impl Agent {
                 }
             }
 
+            Tool::Search {
+                query,
+                path,
+                case_sensitive,
+                whole_words,
+                regex_mode,
+                max_results,
+            } => {
+                let search_path = if let Some(p) = path {
+                    if p.is_absolute() {
+                        p.clone()
+                    } else {
+                        self.explorer.root_dir().join(p)
+                    }
+                } else {
+                    self.explorer.root_dir()
+                };
+
+                self.ui
+                    .display(UIMessage::Action(format!(
+                        "Searching for '{}' in {}",
+                        query,
+                        search_path.display()
+                    )))
+                    .await?;
+
+                let options = SearchOptions {
+                    query: query.clone(),
+                    case_sensitive: *case_sensitive,
+                    whole_words: *whole_words,
+                    mode: if *regex_mode {
+                        SearchMode::Regex
+                    } else {
+                        SearchMode::Exact
+                    },
+                    max_results: *max_results,
+                };
+
+                match self.explorer.search(&search_path, options) {
+                    Ok(results) => {
+                        let mut output = String::new();
+                        for result in &results {
+                            output.push_str(&format!(
+                                "{}:{}:{}\n",
+                                result.file.display(),
+                                result.line_number,
+                                result.line_content
+                            ));
+                        }
+
+                        ActionResult {
+                            tool: action.tool.clone(),
+                            success: true,
+                            result: if results.is_empty() {
+                                "No matches found".to_string()
+                            } else {
+                                format!("Found {} matches:\n{}", results.len(), output)
+                            },
+                            error: None,
+                            reasoning: action.reasoning.clone(),
+                        }
+                    }
+                    Err(e) => ActionResult {
+                        tool: action.tool.clone(),
+                        success: false,
+                        result: String::new(),
+                        error: Some(format!("Search failed: {}", e)),
+                        reasoning: action.reasoning.clone(),
+                    },
+                }
+            }
+
             Tool::CompleteTask { message } => {
                 self.ui
                     .display(UIMessage::Action(format!("Task completed: {}", message)))
@@ -912,6 +997,25 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
                 .ok_or_else(|| anyhow::anyhow!("Missing command_line parameter"))?
                 .to_string(),
             working_dir: tool_params["working_dir"].as_str().map(PathBuf::from),
+        },
+        "Search" => Tool::Search {
+            query: tool_params["query"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing query parameter"))?
+                .to_string(),
+            path: tool_params["path"].as_str().map(PathBuf::from),
+            case_sensitive: tool_params["case_sensitive"]
+                .as_bool()
+                .unwrap_or(false),
+            whole_words: tool_params["whole_words"]
+                .as_bool()
+                .unwrap_or(false),
+            regex_mode: tool_params["regex_mode"]
+                .as_bool()
+                .unwrap_or(false),
+            max_results: tool_params["max_results"]
+                .as_u64()
+                .map(|n| n as usize),
         },
         _ => anyhow::bail!("Unknown tool: {}", tool_name),
     };
