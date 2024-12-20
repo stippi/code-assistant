@@ -364,7 +364,7 @@ impl MessageHandler {
                                                 "description": "Line number right after the section to replace (1-based, matching the displayed line numbers)"
                                             }
                                         },
-                                        "required": ["start_line", "end_line", "new_content"]
+                                        "required": ["new_content", "start_line", "end_line"]
                                     }
                                 }
                             },
@@ -655,11 +655,12 @@ impl MessageHandler {
                     },
                 }
             }
+
             "search" => {
                 let args = params
                     .arguments
                     .ok_or_else(|| anyhow::anyhow!("No arguments provided"))?;
-                let mut options = SearchOptions {
+                let options = SearchOptions {
                     query: args["query"]
                         .as_str()
                         .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'query' argument"))?
@@ -673,7 +674,6 @@ impl MessageHandler {
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false),
                     mode: match args.get("mode").and_then(|v| v.as_str()) {
-                        Some("regex") => SearchMode::Regex,
                         Some("regex") => SearchMode::Regex,
                         _ => SearchMode::Exact,
                     },

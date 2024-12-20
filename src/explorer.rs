@@ -242,31 +242,24 @@ impl CodeExplorer for Explorer {
         // Prepare regex for different search modes
         let regex = match options.mode {
             SearchMode::Exact => {
-                let mut pattern = if options.whole_words {
+                // For exact search, escape regex special characters and optionally add word boundaries
+                let pattern = if options.whole_words {
                     format!(r"\b{}\b", regex::escape(&options.query))
                 } else {
                     regex::escape(&options.query)
                 };
-
-                // For case-insensitive search, we use regex's case-insensitive flag
                 RegexBuilder::new(&pattern)
                     .case_insensitive(!options.case_sensitive)
                     .build()?
             }
             SearchMode::Regex => {
+                // For regex search, optionally add word boundaries to user's pattern
                 let pattern = if options.whole_words {
                     format!(r"\b{}\b", options.query)
                 } else {
-                    options.query
+                    options.query.clone()
                 };
-
                 RegexBuilder::new(&pattern)
-                    .case_insensitive(!options.case_sensitive)
-                    .build()?
-            }
-            SearchMode::Regex => {
-                // Use the query directly as a regex pattern
-                RegexBuilder::new(&options.query)
                     .case_insensitive(!options.case_sensitive)
                     .build()?
             }
