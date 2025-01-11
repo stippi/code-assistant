@@ -3,6 +3,7 @@ mod explorer;
 mod llm;
 mod mcp;
 mod persistence;
+mod tool_definitions;
 mod types;
 mod ui;
 mod utils;

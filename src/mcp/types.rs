@@ -158,19 +158,9 @@ pub struct ResourceContent {
     pub text: Option<String>,
 }
 
-// Tool types
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Tool {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(rename = "inputSchema")]
-    pub input_schema: serde_json::Value,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ListToolsResult {
-    pub tools: Vec<Tool>,
+    pub tools: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }

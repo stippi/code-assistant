@@ -1,14 +1,16 @@
+use crate::types::ToolDefinition;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Generic request structure that can be mapped to different providers
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct LLMRequest {
     pub messages: Vec<Message>,
     pub max_tokens: usize,
     pub temperature: f32,
     pub system_prompt: Option<String>,
+    pub tools: Option<Vec<ToolDefinition>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -110,20 +110,20 @@ pub struct AgentResponse {
 }
 
 /// LLM request structure
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone)]
 pub struct LLMRequest {
     pub task: String,
     pub working_memory: WorkingMemory,
-    pub available_tools: Vec<ToolDescription>,
+    pub available_tools: Vec<ToolDefinition>,
     pub max_tokens: usize,
 }
 
 /// Tool description for LLM
-#[derive(Debug, Serialize)]
-pub struct ToolDescription {
+#[derive(Debug, Clone)]
+pub struct ToolDefinition {
     pub name: String,
     pub description: String,
-    pub parameters: HashMap<String, String>,
+    pub parameters: serde_json::Value,
 }
 
 /// Represents the parsed response from the LLM

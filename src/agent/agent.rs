@@ -1,5 +1,6 @@
 use crate::llm::{ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole};
 use crate::persistence::StatePersistence;
+use crate::tool_definitions::Tools;
 use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::{format_with_line_numbers, CommandExecutor};
@@ -139,106 +140,6 @@ impl Agent {
     async fn get_next_action(&self) -> Result<AgentAction> {
         let messages = self.prepare_messages();
 
-        let tools_description = r#"
-        Available tools:
-        1. ListFiles
-           - Expands the contents of directories marked with " [...]" in the repository structure
-           - Parameters: {"paths": ["path/to/dir1", "path/to/dir2", ...]}
-           - Returns: Confirmation of which directories were expanded
-
-        2. ReadFiles
-           - Reads the content of one or multiple files
-           - Parameters: {"paths": ["path/to/file1", "path/to/file2", ...]}
-           - Returns: Confirmation of which files were loaded into working memory
-
-        3. WriteFile
-           - Creates or overwrites a file. Use for new files only or when files are short. Prefer to use "UpdateFile".
-           - Parameters: {
-               "path": "path/to/file",
-               "content": "content to write"
-             }
-           - Returns: Confirmation message
-
-        4. UpdateFile
-           - Applies updates to a file. Make sure the updates apply cleanly.
-             To insert new content without replacing anything, specify the same line number for start_line and end_line.
-             Make sure to generate the new_content first and then specify the line numbers after you know exactly what needs replacing.
-             You need to split large updates across multiple calls of the tool, otherwise your message might be truncated, as there is a token limit.
-             Note that you will see your changes in the working memory after this tool is executed.
-           - Parameters: {
-               "path": "path/to/file",
-               "updates": [
-                 {
-                   "new_content": "the new content without leading line numbers, can have more or fewer lines",
-                   "start_line": <first line number to replace>,
-                   "end_line": <line number after the last line to replace (exclusive)>
-                 },
-                 {
-                   "new_content": "the new content",
-                   "start_line": <first line number of another replaced section>,
-                   "end_line": <line number after the section (exclusive)>
-                 },
-                 ...
-               ]
-           }
-           - Returns: Confirmation message
-
-        5. Summarize
-           - Replaces file contents with summaries in working memory
-           - Parameters: {
-               "files": [
-                   {"path": "path/to/file1", "summary": "your summary of the file1"},
-                   {"path": "path/to/file2", "summary": "your summary of the file2"}
-               ]
-             }
-           - Returns: Confirmation message
-           - Use this to maintain a high-level understanding while managing memory usage
-
-        6. AskUser
-           - Asks the user a question and provides their response
-           - Parameters: {"question": "your question here?"}
-           - Returns: The user's response as a string
-           - Use this when you need clarification or a decision from the user
-
-        7. MessageUser
-           - Provide a message to the user. Use the "AskUser" tool instead if you need a response.
-           - Parameters: {"message": "your message here"}
-           - Returns: Confirmation message
-           - Use this when you need to inform the user
-
-        8. ExecuteCommand
-           - Execute a command line program
-           - Parameters: {
-               "command_line": "the complete command to execute",
-               "working_dir": "optional: working directory for the command"
-           }
-           - Returns: The command's output and error streams
-           - Use this to run CLI commands like 'cargo', 'git', etc.
-
-        9. DeleteFiles
-           - Delete one or more files from the filesystem
-           - Parameters: {"paths": ["path/to/file1", "path/to/file2", ...]}
-           - Returns: Confirmation of which files were deleted
-
-        10. Search
-           - Search for text in files
-           - Parameters: {
-               "query": "text to search for",
-               "path": "optional: directory path to search in",
-               "case_sensitive": false,
-               "whole_words": false,
-               "regex_mode": false,
-               "max_results": null
-           }
-           - Returns: List of matches with file paths, line numbers, and matching lines
-           - Use this to find code, text, or patterns in files
-
-        11. CompleteTask
-           - Complete the current task with a final message to the user
-           - Parameters: {"message": "your completion message here"}
-           - Returns: Confirmation message
-           - Use this when you have successfully completed the task and want to inform the user about it"#;
-
         let request = LLMRequest {
             messages,
             max_tokens: 8192,
@@ -246,34 +147,29 @@ impl Agent {
             system_prompt: Some(format!(
                 "You are an agent assisting the user in programming tasks. Your task is to analyze codebases and complete specific tasks.\n\n\
                 Your goal is to either gather relevant information in the working memory, \
-                or complete the task(s) if you have all necessary information.\n\n\
+                or complete the task(s) if you have all necessary information.\n\
+                \n\
                 Working Memory Management:\n\
                 - All path parameters are expected relative to the root directory\n\
-                - Use ListFiles to expand collapsed directories (marked with ' [...]') in the repository structure\n\
-                - Use ReadFiles to load important files into working memory\n\
-                - Use Summarize to remove files that turned out to be less relevant\n\
+                - Use list-files to expand collapsed directories (marked with ' [...]') in the repository structure\n\
+                - Use read-files to load important files into working memory\n\
+                - Use summarize to remove files that turned out to be less relevant\n\
                 - Keep only information that's necessary for the current task\n\
-                - Use UpdateFile to make changes to existing files\n\
-                - Use WriteFile to create new files or replace existing (small) files. Always provide the complete content when using WriteFile!\n\n\
-                {}\n\n\
+                - Files that have been changed using update-file will always reflect the newest changes\n\
+                \n\
                 Before making changes to files, unless you already know the used libraries/dependencies,\n\
-                always confirm that methods exist on the respective types by inspecting dependencies within the code-base!\n\n\
-                After making changes to code, always validate them using the ExecuteCommand tool with appropriate commands for the project type:\n\
+                always confirm that methods exist on the respective types by inspecting dependencies within the code-base!\n\
+                \n\
+                After making changes to code, always validate them using the execute-command tool with appropriate commands for the project type:\n\
                 - For Rust projects: Use 'cargo check' and 'cargo test'\n\
                 - For Node.js projects: Check package.json for test/lint scripts and use them\n\
                 - For Python projects: Use pytest, mypy, or similar tools if available\n\
-                - For other projects: Look for common build/test scripts and configuration files\n\n\
-                ALWAYS respond with a single, valid JSON object matching the following schema:\n\n\
-                {{\
-                    \"reasoning\": <explain your thought process>,\
-                    \"tool\": {{\
-                        \"name\": <ToolName>,\
-                        \"params\": <tool-specific parameters>\
-                    }}\
-                }}\n\n\
-                Always explain your reasoning before choosing a tool. Think step by step. Execute only one tool per response.",
-                tools_description
+                - For other projects: Look for common build/test scripts and configuration files\n\
+                \n\
+                ALWAYS respond with your thoughts about what to do next first, then call the appropriate tool according to your reasoning.\n\
+                Think step by step.",
             )),
+            tools: Some(Tools::all()),
         };
 
         for (i, message) in request.messages.iter().enumerate() {
@@ -288,6 +184,9 @@ impl Agent {
         for block in &response.content {
             if let ContentBlock::Text { text } = block {
                 debug!("---\n{}\n---", text);
+            }
+            if let ContentBlock::ToolUse { id, name, input } = block {
+                debug!("---\ntool: {}, input: {}\n---", name, input);
             }
         }
 
@@ -1004,18 +903,10 @@ fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<AgentAction>
                 .ok_or_else(|| anyhow::anyhow!("Missing query parameter"))?
                 .to_string(),
             path: tool_params["path"].as_str().map(PathBuf::from),
-            case_sensitive: tool_params["case_sensitive"]
-                .as_bool()
-                .unwrap_or(false),
-            whole_words: tool_params["whole_words"]
-                .as_bool()
-                .unwrap_or(false),
-            regex_mode: tool_params["regex_mode"]
-                .as_bool()
-                .unwrap_or(false),
-            max_results: tool_params["max_results"]
-                .as_u64()
-                .map(|n| n as usize),
+            case_sensitive: tool_params["case_sensitive"].as_bool().unwrap_or(false),
+            whole_words: tool_params["whole_words"].as_bool().unwrap_or(false),
+            regex_mode: tool_params["regex_mode"].as_bool().unwrap_or(false),
+            max_results: tool_params["max_results"].as_u64().map(|n| n as usize),
         },
         _ => anyhow::bail!("Unknown tool: {}", tool_name),
     };

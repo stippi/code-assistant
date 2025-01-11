@@ -15,6 +15,8 @@ struct OpenAIRequest {
     max_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -292,6 +294,7 @@ impl OpenAIClient {
             .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
 
         // Convert to our generic LLMResponse format
+        // TODO: Handle tools
         let response = LLMResponse {
             content: vec![ContentBlock::Text {
                 text: openai_response.choices[0].message.content.clone(),
@@ -324,6 +327,18 @@ impl LLMProvider for OpenAIClient {
             temperature: request.temperature,
             max_tokens: Some(request.max_tokens),
             stream: None,
+            tools: request.tools.map(|tools| {
+                tools
+                    .into_iter()
+                    .map(|tool| {
+                        serde_json::json!({
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.parameters
+                        })
+                    })
+                    .collect()
+            }),
         };
 
         self.send_with_retry(&openai_request, 3).await
