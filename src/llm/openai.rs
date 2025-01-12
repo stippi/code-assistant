@@ -332,9 +332,12 @@ impl LLMProvider for OpenAIClient {
                     .into_iter()
                     .map(|tool| {
                         serde_json::json!({
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": tool.parameters
+                            "type": "function",
+                            "function": {
+                                "name": tool.name,
+                                "description": tool.description,
+                                "parameters": tool.parameters
+                            }
                         })
                     })
                     .collect()

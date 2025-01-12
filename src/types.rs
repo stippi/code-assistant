@@ -109,15 +109,6 @@ pub struct AgentResponse {
     pub task_completed: bool,
 }
 
-/// LLM request structure
-#[derive(Debug, Clone)]
-pub struct LLMRequest {
-    pub task: String,
-    pub working_memory: WorkingMemory,
-    pub available_tools: Vec<ToolDefinition>,
-    pub max_tokens: usize,
-}
-
 /// Tool description for LLM
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {

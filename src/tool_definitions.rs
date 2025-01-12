@@ -12,11 +12,12 @@ impl Tools {
             Self::search(),
             Self::execute_command(),
             Self::list_files(),
-            Self::load_file(),
+            Self::load_files(),
             Self::summarize(),
             Self::update_file(),
             Self::write_file(),
-            Self::delete_file(),
+            Self::delete_files(),
+            Self::ask_user(),
         ]
     }
 
@@ -100,19 +101,22 @@ impl Tools {
         }
     }
 
-    pub fn load_file() -> ToolDefinition {
+    pub fn load_files() -> ToolDefinition {
         ToolDefinition {
-            name: "load-file".to_string(),
-            description: "Load a file into working memory for access as a resource".to_string(),
+            name: "load-files".to_string(),
+            description: "Load files into working memory".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Relative path to the file from project root"
+                    "paths": {
+                        "type": "array",
+                        "description": "Paths to the files relative to the workspace root directory",
+                        "items": {
+                            "type": "string"
+                        }
                     }
                 },
-                "required": ["path"]
+                "required": ["paths"]
             }),
         }
     }
@@ -217,20 +221,42 @@ impl Tools {
         }
     }
 
-    pub fn delete_file() -> ToolDefinition {
+    pub fn delete_files() -> ToolDefinition {
         ToolDefinition {
-            name: "delete-file".to_string(),
-            description: "Delete a file from the workspace. This operation cannot be undone!"
+            name: "delete-files".to_string(),
+            description: "Delete files from the workspace. This operation cannot be undone!"
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Relative path to the file to delete"
+                    "paths": {
+                        "type": "array",
+                        "description": "Paths to the files relative to the workspace root directory",
+                        "items": {
+                            "type": "string"
+                        }
                     }
                 },
-                "required": ["path"]
+                "required": ["paths"]
+            }),
+        }
+    }
+
+    pub fn ask_user() -> ToolDefinition {
+        ToolDefinition {
+            name: "ask-user".to_string(),
+            description:
+                "Ask the user a question. Use for clarifications, feedback or confirmation."
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question for the user"
+                    }
+                },
+                "required": ["question"]
             }),
         }
     }

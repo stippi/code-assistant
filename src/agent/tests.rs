@@ -216,7 +216,11 @@ impl CodeExplorer for MockExplorer {
         Ok(updated_content)
     }
 
-    fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>, anyhow::Error> {
+    fn search(
+        &self,
+        path: &Path,
+        options: SearchOptions,
+    ) -> Result<Vec<SearchResult>, anyhow::Error> {
         let files = self.files.lock().unwrap();
         let max_results = options.max_results.unwrap_or(usize::MAX);
         let mut results = Vec::new();
