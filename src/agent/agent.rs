@@ -167,7 +167,7 @@ impl Agent {
                 - For other projects: Look for common build/test scripts and configuration files\n\
                 \n\
                 ALWAYS respond with your thoughts about what to do next first, then call the appropriate tool according to your reasoning.\n\
-                Think step by step.",
+                Think step by step. When you have finished your task, use the 'complete-task' tool.",
             )),
             tools: Some(Tools::all()),
         };

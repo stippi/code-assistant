@@ -135,6 +135,8 @@ struct AnthropicRequest {
     system: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
 }
 
 pub struct AnthropicClient {
@@ -340,6 +342,9 @@ impl LLMProvider for AnthropicClient {
                     })
                     .collect()
             }),
+            tool_choice: Some(serde_json::json!({
+                "type": "any",
+            })),
         };
 
         self.send_with_retry(&anthropic_request, 3).await
