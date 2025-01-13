@@ -214,7 +214,7 @@ impl MessageHandler {
         self.send_response(
             id,
             ListToolsResult {
-                tools: Tools::all()
+                tools: Tools::mcp()
                     .into_iter()
                     .map(|tool| {
                         serde_json::json!({

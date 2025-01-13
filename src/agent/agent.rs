@@ -891,12 +891,6 @@ fn parse_tool_from_params(name: &str, params: &serde_json::Value) -> Result<Tool
                 .ok_or_else(|| anyhow::anyhow!("Missing content parameter"))?
                 .to_string(),
         }),
-        "ask-user" => Ok(Tool::AskUser {
-            question: params["question"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing question parameter"))?
-                .to_string(),
-        }),
         "delete-files" => Ok(Tool::DeleteFiles {
             paths: params["paths"]
                 .as_array()
@@ -909,6 +903,18 @@ fn parse_tool_from_params(name: &str, params: &serde_json::Value) -> Result<Tool
                     ))
                 })
                 .collect::<Result<Vec<_>>>()?,
+        }),
+        "ask-user" => Ok(Tool::AskUser {
+            question: params["question"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing question parameter"))?
+                .to_string(),
+        }),
+        "complete-task" => Ok(Tool::CompleteTask {
+            message: params["message"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing message parameter"))?
+                .to_string(),
         }),
         _ => Err(anyhow::anyhow!("Unknown tool: {}", name)),
     }

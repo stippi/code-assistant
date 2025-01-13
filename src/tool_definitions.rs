@@ -18,6 +18,21 @@ impl Tools {
             Self::write_file(),
             Self::delete_files(),
             Self::ask_user(),
+            Self::message_user(),
+            Self::complete_task(),
+        ]
+    }
+
+    pub fn mcp() -> Vec<ToolDefinition> {
+        vec![
+            Self::search(),
+            Self::execute_command(),
+            Self::list_files(),
+            Self::load_files(),
+            Self::summarize(),
+            Self::update_file(),
+            Self::write_file(),
+            Self::delete_files(),
         ]
     }
 
@@ -87,9 +102,12 @@ impl Tools {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Directory path relative to project root"
+                    "paths": {
+                        "type": "array",
+                        "description": "Directory paths relative to project root",
+                        "items": {
+                            "type": "string"
+                        }
                     },
                     "max_depth": {
                         "type": "integer",
@@ -254,6 +272,40 @@ impl Tools {
                     "question": {
                         "type": "string",
                         "description": "The question for the user"
+                    }
+                },
+                "required": ["question"]
+            }),
+        }
+    }
+
+    pub fn message_user() -> ToolDefinition {
+        ToolDefinition {
+            name: "message-user".to_string(),
+            description: "Complete the task".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "A final message for the user"
+                    }
+                },
+                "required": ["question"]
+            }),
+        }
+    }
+
+    pub fn complete_task() -> ToolDefinition {
+        ToolDefinition {
+            name: "complete-task".to_string(),
+            description: "Complete the task".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "A final message for the user"
                     }
                 },
                 "required": ["question"]
