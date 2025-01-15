@@ -2,10 +2,12 @@ pub mod anthropic;
 pub mod ollama;
 pub mod openai;
 pub mod types;
+pub mod vertex;
 
 pub use anthropic::AnthropicClient;
 pub use ollama::OllamaClient;
 pub use openai::OpenAIClient;
+pub use vertex::VertexClient;
 pub use types::*;
 
 use anyhow::Result;

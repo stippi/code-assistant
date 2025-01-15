@@ -37,18 +37,21 @@ Available options:
 - `--path <PATH>`: Path to the code directory to analyze (default: current directory)
 - `-t, --task <TASK>`: Required. The task to perform on the codebase
 - `-v, --verbose`: Enable verbose logging
-- `-p, --provider <PROVIDER>`: LLM provider to use [anthropic, openai, ollama] (default: anthropic)
+- `-p, --provider <PROVIDER>`: LLM provider to use [anthropic, openai, ollama, vertex] (default: anthropic)
 - `-m, --model <MODEL>`: Model name to use (provider-specific)
 - `--num-ctx <NUM>`: Context window size in tokens (default: 8192, only relevant for Ollama)
 Environment variables:
 - `ANTHROPIC_API_KEY`: Required when using the Anthropic provider
 - `OPENAI_API_KEY`: Required when using the OpenAI provider
+- `GOOGLE_API_KEY`: Required when using the Vertex provider
 Example:
 ```bash
 # Analyze code in current directory using Anthropic's Claude
 code-assistant --task "Explain the purpose of this codebase"
 # Use OpenAI to analyze a specific directory with verbose logging
 code-assistant -p openai --path ./my-project -t "List all API endpoints" -v
+# Use Google's Vertex AI with a specific model
+code-assistant -p vertex --model gemini-1.5-flash -t "Analyze code complexity"
 ```
 
 ## 👥 Contributing

@@ -10,7 +10,7 @@ mod utils;
 
 use crate::agent::Agent;
 use crate::explorer::Explorer;
-use crate::llm::{AnthropicClient, LLMProvider, OllamaClient, OpenAIClient};
+use crate::llm::{AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient};
 use crate::mcp::MCPServer;
 use crate::ui::terminal::TerminalUI;
 use crate::utils::DefaultCommandExecutor;
@@ -26,6 +26,7 @@ enum LLMProviderType {
     Anthropic,
     OpenAI,
     Ollama,
+    Vertex,
 }
 
 #[derive(Parser, Debug)]
@@ -104,6 +105,16 @@ fn create_llm_client(
             Ok(Box::new(OpenAIClient::new(
                 api_key,
                 model.clone().unwrap_or_else(|| "gpt-4o".to_string()),
+            )))
+        }
+
+        LLMProviderType::Vertex => {
+            let api_key = std::env::var("GOOGLE_API_KEY")
+                .context("GOOGLE_API_KEY environment variable not set")?;
+
+            Ok(Box::new(VertexClient::new(
+                api_key,
+                model.clone().unwrap_or_else(|| "gemini-1.5-pro-latest".to_string()),
             )))
         }
 
