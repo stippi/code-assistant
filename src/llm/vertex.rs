@@ -1,9 +1,9 @@
 use crate::llm::{types::*, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler};
-use crate::types::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, warn};
@@ -16,9 +16,9 @@ struct VertexRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     generation_config: Option<GenerationConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<ToolsWrapper>,
+    tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_config: Option<ToolConfig>,
+    tool_config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -31,37 +31,25 @@ struct Parts {
     text: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct VertexMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<String>,
-    parts: Vec<MessagePart>,
+    parts: Vec<VertexPart>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct MessagePart {
-    text: String,
+struct VertexPart {
+    #[serde(rename = "functionCall")]
+    function_call: Option<VertexFunctionCall>,
+    // Optional text field could be added if we get text responses
+    text: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct GenerationConfig {
     temperature: f32,
     max_output_tokens: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct ToolConfig {
-    function_calling_config: FunctionCallingConfig,
-}
-
-#[derive(Debug, Serialize)]
-struct FunctionCallingConfig {
-    mode: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ToolsWrapper {
-    function_declarations: Vec<ToolDefinition>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,10 +62,16 @@ struct VertexCandidate {
     content: VertexContent,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct VertexContent {
-    parts: Vec<MessagePart>,
-    // TODO: Add function call response fields once we know the exact format
+    parts: Vec<VertexPart>,
+    role: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct VertexFunctionCall {
+    name: String,
+    args: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,7 +142,10 @@ impl VertexClient {
                 MessageRole::User => "user".to_string(),
                 MessageRole::Assistant => "model".to_string(),
             }),
-            parts: vec![MessagePart { text }],
+            parts: vec![VertexPart {
+                text: Some(text),
+                function_call: None,
+            }],
         }
     }
 
@@ -219,6 +216,12 @@ impl VertexClient {
             self.model
         );
 
+        debug!(
+            "Sending Vertex request to {}:\n{}",
+            self.model,
+            serde_json::to_string_pretty(request)?
+        );
+
         let response = self
             .client
             .post(&url)
@@ -231,11 +234,21 @@ impl VertexClient {
 
         let rate_limits = VertexRateLimitInfo::from_response(&response);
 
+        debug!("Response headers: {:?}", response.headers());
+
         let status = response.status();
         let response_text = response
             .text()
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+
+        debug!(
+            "Vertex response (status={}): {}",
+            status,
+            serde_json::to_string_pretty(&serde_json::from_str::<serde_json::Value>(
+                &response_text
+            )?)?
+        );
 
         if !status.is_success() {
             let error = if let Ok(error_response) =
@@ -272,14 +285,33 @@ impl VertexClient {
 
         // Convert to our generic LLMResponse format
         let response = LLMResponse {
-            content: vec![ContentBlock::Text {
-                text: vertex_response.candidates[0]
-                    .content
-                    .parts
-                    .first()
-                    .map(|p| p.text.clone())
-                    .unwrap_or_default(),
-            }],
+            content: vertex_response
+                .candidates
+                .into_iter()
+                .flat_map(|candidate| {
+                    candidate
+                        .content
+                        .parts
+                        .into_iter()
+                        .map(|part| {
+                            if let Some(function_call) = part.function_call {
+                                ContentBlock::ToolUse {
+                                    id: format!("vertex-{}", function_call.name), // Generate a unique ID
+                                    name: function_call.name,
+                                    input: function_call.args,
+                                }
+                            } else if let Some(text) = part.text {
+                                ContentBlock::Text { text }
+                            } else {
+                                // Fallback if neither function_call nor text is present
+                                ContentBlock::Text {
+                                    text: "Empty response part".to_string(),
+                                }
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect(),
         };
 
         Ok((response, rate_limits))
@@ -303,14 +335,22 @@ impl LLMProvider for VertexClient {
                 temperature: request.temperature,
                 max_output_tokens: request.max_tokens,
             }),
-            tools: request.tools.map(|tools| ToolsWrapper {
-                function_declarations: tools,
+            tools: request.tools.map(|tools| {
+                vec![json!({
+                    "function_declarations": tools.into_iter().map(|tool| {
+                        json!({
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.parameters,
+                        })
+                    }).collect::<Vec<_>>()
+                })]
             }),
-            tool_config: Some(ToolConfig {
-                function_calling_config: FunctionCallingConfig {
-                    mode: "none".to_string(), // TODO: Update based on tools presence
-                },
-            }),
+            tool_config: Some(json!({
+                "function_calling_config": {
+                    "mode": "ANY",
+                }
+            })),
         };
 
         self.send_with_retry(&vertex_request, 3).await

@@ -114,7 +114,7 @@ impl Tools {
                         "description": "Maximum directory depth"
                     }
                 },
-                "required": ["path"]
+                "required": ["paths"]
             }),
         }
     }
@@ -291,7 +291,7 @@ impl Tools {
                         "description": "A final message for the user"
                     }
                 },
-                "required": ["question"]
+                "required": ["message"]
             }),
         }
     }
@@ -308,7 +308,7 @@ impl Tools {
                         "description": "A final message for the user"
                     }
                 },
-                "required": ["question"]
+                "required": ["message"]
             }),
         }
     }
