@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 #[derive(Debug, Serialize)]
 struct VertexRequest {
@@ -216,7 +216,7 @@ impl VertexClient {
             self.model
         );
 
-        debug!(
+        trace!(
             "Sending Vertex request to {}:\n{}",
             self.model,
             serde_json::to_string_pretty(request)?
@@ -234,7 +234,7 @@ impl VertexClient {
 
         let rate_limits = VertexRateLimitInfo::from_response(&response);
 
-        debug!("Response headers: {:?}", response.headers());
+        trace!("Response headers: {:?}", response.headers());
 
         let status = response.status();
         let response_text = response
@@ -242,7 +242,7 @@ impl VertexClient {
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
-        debug!(
+        trace!(
             "Vertex response (status={}): {}",
             status,
             serde_json::to_string_pretty(&serde_json::from_str::<serde_json::Value>(
