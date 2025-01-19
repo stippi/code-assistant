@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::agent::parse_llm_response;
 use crate::llm::{types::*, LLMProvider, LLMRequest};
 use crate::persistence::MockStatePersistence;
 use crate::types::*;
@@ -676,6 +677,41 @@ async fn test_execute_command() -> Result<()> {
     assert_eq!(captured_commands.len(), 1);
     assert_eq!(captured_commands[0].0, "test command");
     assert_eq!(captured_commands[0].1, None);
+
+    Ok(())
+}
+
+#[test]
+fn test_flexible_xml_parsing() -> Result<()> {
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: r#"I will search for TODO comments in the code.
+
+<search>
+<query>TODO & FIXME</query>
+<path>src/</path>
+<case_sensitive>true</case_sensitive>
+<max_results>
+    50
+</max_results>
+</search>"#
+                .to_string(),
+        }],
+    };
+
+    let actions = parse_llm_response(&response)?;
+    assert_eq!(actions.len(), 1);
+    assert!(actions[0].reasoning.contains("search for TODO comments"));
+
+    if let Tool::Search {
+        query, max_results, ..
+    } = &actions[0].tool
+    {
+        assert_eq!(query, "TODO & FIXME"); // Notice the & character is allowed
+        assert_eq!(*max_results, Some(50));
+    } else {
+        panic!("Expected Search tool");
+    }
 
     Ok(())
 }

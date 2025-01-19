@@ -5,6 +5,7 @@ use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::{format_with_line_numbers, CommandExecutor};
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{debug, warn};
 
@@ -733,41 +734,131 @@ impl Agent {
     }
 }
 
-fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<Vec<AgentAction>> {
-    // Collect all text content as reasoning
-    let reasoning = response
-        .content
-        .iter()
-        .filter_map(|block| {
-            if let ContentBlock::Text { text } = block {
-                Some(text.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
+pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<Vec<AgentAction>> {
+    let mut actions = Vec::new();
 
-    // Extract all tool uses from the response
-    let actions = response
-        .content
-        .iter()
-        .filter_map(|block| {
-            if let ContentBlock::ToolUse { name, input, .. } = block {
-                Some(parse_tool_from_params(name, input).map(|tool| AgentAction {
+    // Process each content block
+    for block in &response.content {
+        if let ContentBlock::Text { text } = block {
+            // Split the text into lines
+            let lines: Vec<&str> = text.lines().collect();
+
+            // Find the first line that starts with '<'
+            let (reasoning_lines, tool_lines): (Vec<&str>, Vec<&str>) =
+                lines.iter().partition(|line| !line.trim().starts_with('<'));
+
+            // Join reasoning lines
+            let reasoning = reasoning_lines.join("\n");
+
+            // Join and parse tool lines if any exist
+            if !tool_lines.is_empty() {
+                let tool_xml = tool_lines.join("\n");
+                let tool = parse_tool_xml(&tool_xml)?;
+                actions.push(AgentAction {
                     tool,
-                    reasoning: reasoning.clone(),
-                }))
-            } else {
-                None
+                    reasoning: reasoning.trim().to_string(),
+                });
             }
-        })
-        .collect::<Result<Vec<_>>>()?;
+        }
+    }
 
     Ok(actions)
 }
 
-fn parse_tool_from_params(name: &str, params: &serde_json::Value) -> Result<Tool> {
+fn parse_tool_xml(xml: &str) -> Result<Tool> {
+    // Extract tool name from first tag
+    let tool_name = xml
+        .trim()
+        .strip_prefix('<')
+        .and_then(|s| s.split_whitespace().next())
+        .and_then(|s| s.strip_suffix('>'))
+        .ok_or_else(|| anyhow::anyhow!("Missing tool name"))?
+        .to_string();
+
+    let mut params = HashMap::new();
+
+    // Simple state machine for parsing
+    #[derive(Debug)]
+    enum State {
+        LookingForParam,
+        InParam(String),
+        InValue,
+    }
+
+    let mut state = State::LookingForParam;
+    let mut current_param = String::new();
+    let mut current_value = String::new();
+
+    // Split into lines and process each
+    for line in xml.lines() {
+        let line = line.trim();
+
+        match state {
+            State::LookingForParam => {
+                if let Some(param_name) = line
+                    .strip_prefix('<')
+                    .and_then(|s| s.strip_suffix('>'))
+                    .filter(|s| !s.starts_with('/'))
+                {
+                    current_param = param_name.to_string();
+                    state = State::InParam(current_param.clone());
+                }
+            }
+            State::InParam(ref param) => {
+                // Collect everything until we see the closing tag
+                if !line.contains(&format!("</{}>", param)) {
+                    current_value.push_str(line);
+                    current_value.push('\n');
+                    state = State::InValue;
+                } else {
+                    // Single line parameter
+                    let value = line
+                        .strip_suffix(&format!("</{}>", param))
+                        .unwrap_or(line)
+                        .trim();
+                    params.insert(param.clone(), value.to_string());
+                    state = State::LookingForParam;
+                }
+            }
+            State::InValue => {
+                if line.contains(&format!("</{}>", current_param)) {
+                    // End of multi-line value
+                    if let Some(value) = line.strip_suffix(&format!("</{}>", current_param)) {
+                        current_value.push_str(value);
+                    }
+                    params.insert(current_param.clone(), current_value.trim().to_string());
+                    current_value.clear();
+                    state = State::LookingForParam;
+                } else {
+                    current_value.push_str(line);
+                    current_value.push('\n');
+                }
+            }
+        }
+    }
+
+    parse_tool_from_params(&tool_name, &params)
+}
+
+fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>) -> Result<Tool> {
+    match tool_name {
+        "search" => Ok(Tool::Search {
+            query: params
+                .get("query")
+                .ok_or_else(|| anyhow::anyhow!("Missing query"))?
+                .to_string(),
+            path: params.get("path").map(PathBuf::from),
+            case_sensitive: params.get("case_sensitive").map_or(false, |v| v == "true"),
+            whole_words: params.get("whole_words").map_or(false, |v| v == "true"),
+            regex_mode: params.get("regex_mode").map_or(false, |v| v == "true"),
+            max_results: params.get("max_results").and_then(|v| v.parse().ok()),
+        }),
+        // ... andere Tools entsprechend anpassen
+        _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
+    }
+}
+
+fn parse_tool_from_params_json(name: &str, params: &serde_json::Value) -> Result<Tool> {
     match name {
         "search" => Ok(Tool::Search {
             query: params["query"]
