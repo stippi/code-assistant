@@ -1,4 +1,5 @@
 use crate::llm::{types::*, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler};
+use crate::types::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Response, StatusCode};
@@ -37,7 +38,7 @@ struct VertexMessage {
     parts: Vec<MessagePart>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct MessagePart {
     text: String,
 }

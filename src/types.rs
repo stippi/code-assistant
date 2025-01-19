@@ -110,7 +110,7 @@ pub struct AgentResponse {
 }
 
 /// Tool description for LLM
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
