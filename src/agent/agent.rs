@@ -734,16 +734,19 @@ impl Agent {
     }
 }
 
+const TOOL_TAG_PREFIX: &str = "tool:";
+const PARAM_TAG_PREFIX: &str = "param:";
+
 pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<Vec<AgentAction>> {
     let mut actions = Vec::new();
 
-    // Process each content block
     for block in &response.content {
         if let ContentBlock::Text { text } = block {
             let mut current_pos = 0;
             let mut reasoning = String::new();
 
-            while let Some(tool_start) = text[current_pos..].find('<') {
+            while let Some(tool_start) = text[current_pos..].find(&format!("<{}", TOOL_TAG_PREFIX))
+            {
                 let abs_start = current_pos + tool_start;
 
                 // Add text before tool to reasoning
@@ -759,26 +762,31 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
                     .and_then(|s| s.strip_prefix('<'))
                     .ok_or_else(|| anyhow::anyhow!("Invalid XML: missing tag name"))?;
 
-                // Find closing tag for the root element
-                let closing_tag = format!("</{}>", tag_name);
-                if let Some(rel_end) = text[abs_start..].find(&closing_tag) {
-                    let abs_end = abs_start + rel_end + closing_tag.len();
-                    let tool_content = &text[abs_start..abs_end];
-                    debug!("Found tool content:\n{}", tool_content);
+                // Only process tags with our tool prefix
+                if let Some(tool_name) = tag_name.strip_prefix(TOOL_TAG_PREFIX) {
+                    // Find closing tag for the root element
+                    let closing_tag = format!("</{}{}>", TOOL_TAG_PREFIX, tool_name);
+                    if let Some(rel_end) = text[abs_start..].find(&closing_tag) {
+                        let abs_end = abs_start + rel_end + closing_tag.len();
+                        let tool_content = &text[abs_start..abs_end];
+                        debug!("Found tool content:\n{}", tool_content);
 
-                    // Parse and add the tool action
-                    let tool = parse_tool_xml(tool_content)?;
-                    actions.push(AgentAction {
-                        tool,
-                        reasoning: reasoning.trim().to_string(),
-                    });
+                        // Parse and add the tool action
+                        let tool = parse_tool_xml(tool_content)?;
+                        actions.push(AgentAction {
+                            tool,
+                            reasoning: reasoning.trim().to_string(),
+                        });
 
-                    current_pos = abs_end;
-                } else {
-                    // Missing closing tag, treat rest as reasoning
-                    reasoning.push_str(&text[abs_start..]);
-                    break;
+                        current_pos = abs_end;
+                        continue;
+                    }
                 }
+
+                // If we get here, either the tag didn't have our prefix or we didn't find the closing tag
+                // In both cases, treat it as regular text
+                reasoning.push_str(&text[abs_start..abs_start + 1]);
+                current_pos = abs_start + 1;
             }
 
             // Add any remaining text to reasoning
@@ -796,7 +804,7 @@ fn parse_tool_xml(xml: &str) -> Result<Tool> {
 
     let tool_name = xml
         .trim()
-        .strip_prefix('<')
+        .strip_prefix(&format!("<{}", TOOL_TAG_PREFIX))
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.strip_suffix('>'))
         .ok_or_else(|| anyhow::anyhow!("Missing tool name"))?
@@ -813,15 +821,15 @@ fn parse_tool_xml(xml: &str) -> Result<Tool> {
         debug!("Processing line: '{}'", line);
 
         if line.is_empty()
-            || line == format!("<{}>", tool_name)
-            || line == format!("</{}>", tool_name)
+            || line == format!("<{}{}>", TOOL_TAG_PREFIX, tool_name)
+            || line == format!("</{}{}>", TOOL_TAG_PREFIX, tool_name)
         {
             debug!("Skipping tool tag line");
             continue;
         }
 
-        // Check for parameter start
-        if let Some(param_start) = line.strip_prefix('<') {
+        // Check for parameter start with prefix
+        if let Some(param_start) = line.strip_prefix(&format!("<{}", PARAM_TAG_PREFIX)) {
             if !param_start.starts_with('/') {
                 // Ignore closing tags
                 if let Some(param_name) = param_start.split('>').next() {
@@ -829,15 +837,17 @@ fn parse_tool_xml(xml: &str) -> Result<Tool> {
                     debug!("Found parameter start: {}", current_param);
 
                     // Check if it's a single-line parameter
-                    if line.contains(&format!("</{}>", current_param)) {
-                        let value = line
-                            .split('>')
-                            .nth(1)
-                            .and_then(|s| s.split(&format!("</{}", current_param)).next())
-                            .unwrap_or("")
-                            .trim()
-                            .to_string();
+                    if line.contains(&format!("</{}{}>", PARAM_TAG_PREFIX, current_param)) {
+                        // Find positions for start/end tags
+                        let content_start = line
+                            .find('>')
+                            .map(|pos| pos + 1)
+                            .ok_or_else(|| anyhow::anyhow!("Invalid parameter tag format"))?;
+                        let content_end = line
+                            .find(&format!("</{}{}>", PARAM_TAG_PREFIX, current_param))
+                            .ok_or_else(|| anyhow::anyhow!("Missing closing parameter tag"))?;
 
+                        let value = line[content_start..content_end].trim().to_string();
                         debug!("Single-line parameter: {} = {}", current_param, value);
                         params.insert(current_param.clone(), value);
                         current_param.clear();
@@ -849,8 +859,8 @@ fn parse_tool_xml(xml: &str) -> Result<Tool> {
             }
         }
 
-        // Check for parameter end
-        if let Some(end_tag) = line.strip_prefix("</") {
+        // Check for parameter end with prefix
+        if let Some(end_tag) = line.strip_prefix(&format!("</{}", PARAM_TAG_PREFIX)) {
             if end_tag
                 .strip_suffix('>')
                 .map_or(false, |name| name == current_param)
@@ -865,9 +875,8 @@ fn parse_tool_xml(xml: &str) -> Result<Tool> {
 
         // If we're inside a parameter, collect its value
         if !current_param.is_empty() {
-            // Only add space if we already have content and current line is not empty
-            if !current_value.is_empty() && !line.is_empty() {
-                current_value.push(' ');
+            if !current_value.is_empty() {
+                current_value.push('\n');
             }
             current_value.push_str(line);
             debug!("Added value content: {}", current_value);

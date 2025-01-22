@@ -693,14 +693,14 @@ fn test_flexible_xml_parsing() -> Result<()> {
         content: vec![ContentBlock::Text {
             text: r#"I will search for TODO comments in the code.
 
-<search>
-<query>TODO & FIXME</query>
-<path>src/</path>
-<case_sensitive>true</case_sensitive>
-<max_results>
+<tool:search>
+<param:query>TODO & FIXME <html></param:query>
+<param:path>src/</param:path>
+<param:case_sensitive>true</param:case_sensitive>
+<param:max_results>
     50
-</max_results>
-</search>"#
+</param:max_results>
+</tool:search>"#
                 .to_string(),
         }],
     };
@@ -713,7 +713,7 @@ fn test_flexible_xml_parsing() -> Result<()> {
         query, max_results, ..
     } = &actions[0].tool
     {
-        assert_eq!(query, "TODO & FIXME"); // Notice the & character is allowed
+        assert_eq!(query, "TODO & FIXME <html>"); // Notice the & character is allowed and also tags
         assert_eq!(*max_results, Some(50));
     } else {
         panic!("Expected Search tool");
