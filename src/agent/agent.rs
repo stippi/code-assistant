@@ -740,24 +740,50 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
     // Process each content block
     for block in &response.content {
         if let ContentBlock::Text { text } = block {
-            // Split the text into lines
-            let lines: Vec<&str> = text.lines().collect();
+            let mut current_pos = 0;
+            let mut reasoning = String::new();
 
-            // Find the first line that starts with '<'
-            let (reasoning_lines, tool_lines): (Vec<&str>, Vec<&str>) =
-                lines.iter().partition(|line| !line.trim().starts_with('<'));
+            while let Some(tool_start) = text[current_pos..].find('<') {
+                let abs_start = current_pos + tool_start;
 
-            // Join reasoning lines
-            let reasoning = reasoning_lines.join("\n");
+                // Add text before tool to reasoning
+                reasoning.push_str(text[current_pos..abs_start].trim());
+                if !reasoning.is_empty() {
+                    reasoning.push('\n');
+                }
 
-            // Join and parse tool lines if any exist
-            if !tool_lines.is_empty() {
-                let tool_xml = tool_lines.join("\n");
-                let tool = parse_tool_xml(&tool_xml)?;
-                actions.push(AgentAction {
-                    tool,
-                    reasoning: reasoning.trim().to_string(),
-                });
+                // Find the root tag name
+                let tag_name = text[abs_start..]
+                    .split('>')
+                    .next()
+                    .and_then(|s| s.strip_prefix('<'))
+                    .ok_or_else(|| anyhow::anyhow!("Invalid XML: missing tag name"))?;
+
+                // Find closing tag for the root element
+                let closing_tag = format!("</{}>", tag_name);
+                if let Some(rel_end) = text[abs_start..].find(&closing_tag) {
+                    let abs_end = abs_start + rel_end + closing_tag.len();
+                    let tool_content = &text[abs_start..abs_end];
+                    debug!("Found tool content:\n{}", tool_content);
+
+                    // Parse and add the tool action
+                    let tool = parse_tool_xml(tool_content)?;
+                    actions.push(AgentAction {
+                        tool,
+                        reasoning: reasoning.trim().to_string(),
+                    });
+
+                    current_pos = abs_end;
+                } else {
+                    // Missing closing tag, treat rest as reasoning
+                    reasoning.push_str(&text[abs_start..]);
+                    break;
+                }
+            }
+
+            // Add any remaining text to reasoning
+            if current_pos < text.len() {
+                reasoning.push_str(text[current_pos..].trim());
             }
         }
     }
@@ -766,7 +792,8 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
 }
 
 fn parse_tool_xml(xml: &str) -> Result<Tool> {
-    // Extract tool name from first tag
+    debug!("Parsing XML:\n{}", xml);
+
     let tool_name = xml
         .trim()
         .strip_prefix('<')
@@ -775,68 +802,79 @@ fn parse_tool_xml(xml: &str) -> Result<Tool> {
         .ok_or_else(|| anyhow::anyhow!("Missing tool name"))?
         .to_string();
 
+    debug!("Found tool name: {}", tool_name);
+
     let mut params = HashMap::new();
-
-    // Simple state machine for parsing
-    #[derive(Debug)]
-    enum State {
-        LookingForParam,
-        InParam(String),
-        InValue,
-    }
-
-    let mut state = State::LookingForParam;
     let mut current_param = String::new();
     let mut current_value = String::new();
 
-    // Split into lines and process each
     for line in xml.lines() {
         let line = line.trim();
+        debug!("Processing line: '{}'", line);
 
-        match state {
-            State::LookingForParam => {
-                if let Some(param_name) = line
-                    .strip_prefix('<')
-                    .and_then(|s| s.strip_suffix('>'))
-                    .filter(|s| !s.starts_with('/'))
-                {
+        if line.is_empty()
+            || line == format!("<{}>", tool_name)
+            || line == format!("</{}>", tool_name)
+        {
+            debug!("Skipping tool tag line");
+            continue;
+        }
+
+        // Check for parameter start
+        if let Some(param_start) = line.strip_prefix('<') {
+            if !param_start.starts_with('/') {
+                // Ignore closing tags
+                if let Some(param_name) = param_start.split('>').next() {
                     current_param = param_name.to_string();
-                    state = State::InParam(current_param.clone());
-                }
-            }
-            State::InParam(ref param) => {
-                // Collect everything until we see the closing tag
-                if !line.contains(&format!("</{}>", param)) {
-                    current_value.push_str(line);
-                    current_value.push('\n');
-                    state = State::InValue;
-                } else {
-                    // Single line parameter
-                    let value = line
-                        .strip_suffix(&format!("</{}>", param))
-                        .unwrap_or(line)
-                        .trim();
-                    params.insert(param.clone(), value.to_string());
-                    state = State::LookingForParam;
-                }
-            }
-            State::InValue => {
-                if line.contains(&format!("</{}>", current_param)) {
-                    // End of multi-line value
-                    if let Some(value) = line.strip_suffix(&format!("</{}>", current_param)) {
-                        current_value.push_str(value);
+                    debug!("Found parameter start: {}", current_param);
+
+                    // Check if it's a single-line parameter
+                    if line.contains(&format!("</{}>", current_param)) {
+                        let value = line
+                            .split('>')
+                            .nth(1)
+                            .and_then(|s| s.split(&format!("</{}", current_param)).next())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+
+                        debug!("Single-line parameter: {} = {}", current_param, value);
+                        params.insert(current_param.clone(), value);
+                        current_param.clear();
+                    } else {
+                        current_value.clear(); // Start collecting multi-line value
                     }
-                    params.insert(current_param.clone(), current_value.trim().to_string());
-                    current_value.clear();
-                    state = State::LookingForParam;
-                } else {
-                    current_value.push_str(line);
-                    current_value.push('\n');
                 }
+                continue;
             }
+        }
+
+        // Check for parameter end
+        if let Some(end_tag) = line.strip_prefix("</") {
+            if end_tag
+                .strip_suffix('>')
+                .map_or(false, |name| name == current_param)
+            {
+                debug!("Parameter complete: {} = {}", current_param, current_value);
+                params.insert(current_param.clone(), current_value.trim().to_string());
+                current_param.clear();
+                current_value.clear();
+            }
+            continue;
+        }
+
+        // If we're inside a parameter, collect its value
+        if !current_param.is_empty() {
+            // Only add space if we already have content and current line is not empty
+            if !current_value.is_empty() && !line.is_empty() {
+                current_value.push(' ');
+            }
+            current_value.push_str(line);
+            debug!("Added value content: {}", current_value);
         }
     }
 
+    debug!("Final parameters: {:?}", params);
     parse_tool_from_params(&tool_name, &params)
 }
 
@@ -851,163 +889,121 @@ fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>) -> 
             case_sensitive: params.get("case_sensitive").map_or(false, |v| v == "true"),
             whole_words: params.get("whole_words").map_or(false, |v| v == "true"),
             regex_mode: params.get("regex_mode").map_or(false, |v| v == "true"),
-            max_results: params.get("max_results").and_then(|v| v.parse().ok()),
-        }),
-        // ... andere Tools entsprechend anpassen
-        _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
-    }
-}
-
-fn parse_tool_from_params_json(name: &str, params: &serde_json::Value) -> Result<Tool> {
-    match name {
-        "search" => Ok(Tool::Search {
-            query: params["query"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing query"))?
-                .to_string(),
-            path: params
-                .get("path")
-                .and_then(|p| p.as_str())
-                .map(PathBuf::from),
-            case_sensitive: params
-                .get("case_sensitive")
-                .and_then(|b| b.as_bool())
-                .unwrap_or(false),
-            whole_words: params
-                .get("whole_words")
-                .and_then(|b| b.as_bool())
-                .unwrap_or(false),
-            regex_mode: params
-                .get("mode")
-                .and_then(|m| m.as_str())
-                .map_or(false, |m| m == "regex"),
             max_results: params
                 .get("max_results")
-                .and_then(|n| n.as_u64())
-                .map(|n| n as usize),
+                .map(|v| v.trim().parse::<usize>())
+                .transpose()?,
         }),
-        "execute-command" => Ok(Tool::ExecuteCommand {
-            command_line: params["command_line"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing command_line"))?
-                .to_string(),
-            working_dir: params
-                .get("working_dir")
-                .and_then(|d| d.as_str())
-                .map(PathBuf::from),
-        }),
+
         "list-files" => Ok(Tool::ListFiles {
-            paths: params["paths"]
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("Missing or invalid paths array"))?
-                .iter()
-                .map(|p| {
-                    Ok(PathBuf::from(
-                        p.as_str()
-                            .ok_or_else(|| anyhow::anyhow!("Invalid path in array"))?,
-                    ))
-                })
-                .collect::<Result<Vec<_>>>()?,
-            max_depth: params["max_depth"].as_u64().map(|d| d as usize),
+            paths: params
+                .get("paths")
+                .ok_or_else(|| anyhow::anyhow!("Missing paths"))?
+                .split(',')
+                .map(|s| PathBuf::from(s.trim()))
+                .collect(),
+            max_depth: params
+                .get("max_depth")
+                .map(|v| v.trim().parse::<usize>())
+                .transpose()?,
         }),
+
         "load-files" => Ok(Tool::ReadFiles {
-            paths: params["paths"]
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("Missing or invalid paths array"))?
-                .iter()
-                .map(|p| {
-                    Ok(PathBuf::from(
-                        p.as_str()
-                            .ok_or_else(|| anyhow::anyhow!("Invalid path in array"))?,
-                    ))
-                })
-                .collect::<Result<Vec<_>>>()?,
+            paths: params
+                .get("paths")
+                .ok_or_else(|| anyhow::anyhow!("Missing paths"))?
+                .split(',')
+                .map(|s| PathBuf::from(s.trim()))
+                .collect(),
         }),
+
         "summarize" => Ok(Tool::Summarize {
-            files: params["files"]
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("Missing or invalid files array"))?
-                .iter()
-                .map(|f| {
-                    Ok((
-                        PathBuf::from(
-                            f["path"]
-                                .as_str()
-                                .ok_or_else(|| anyhow::anyhow!("Missing path in file entry"))?,
-                        ),
-                        f["summary"]
-                            .as_str()
-                            .ok_or_else(|| anyhow::anyhow!("Missing summary in file entry"))?
-                            .to_string(),
+            files: params
+                .get("files")
+                .ok_or_else(|| anyhow::anyhow!("Missing files"))?
+                .lines()
+                .filter_map(|line| {
+                    let mut parts = line.splitn(2, ':');
+                    Some((
+                        PathBuf::from(parts.next()?.trim()),
+                        parts.next()?.trim().to_string(),
                     ))
                 })
-                .collect::<Result<Vec<_>>>()?,
+                .collect(),
         }),
+
         "update-file" => Ok(Tool::UpdateFile {
             path: PathBuf::from(
-                params["path"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
+                params
+                    .get("path")
+                    .ok_or_else(|| anyhow::anyhow!("Missing path"))?,
             ),
-            updates: params["updates"]
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("Missing or invalid updates array"))?
-                .iter()
-                .map(|update| {
-                    Ok(FileUpdate {
-                        start_line: update["start_line"]
-                            .as_u64()
-                            .ok_or_else(|| anyhow::anyhow!("Invalid or missing start_line"))?
-                            as usize,
-                        end_line: update["end_line"]
-                            .as_u64()
-                            .ok_or_else(|| anyhow::anyhow!("Invalid or missing end_line"))?
-                            as usize,
-                        new_content: update["new_content"]
-                            .as_str()
-                            .ok_or_else(|| anyhow::anyhow!("Missing new_content"))?
-                            .to_string(),
+            updates: params
+                .get("updates")
+                .ok_or_else(|| anyhow::anyhow!("Missing updates"))?
+                .lines()
+                .filter_map(|line| {
+                    let mut parts = line.split(',');
+                    Some(FileUpdate {
+                        start_line: parts.next()?.trim().parse().ok()?,
+                        end_line: parts.next()?.trim().parse().ok()?,
+                        new_content: parts.next()?.trim().to_string(),
                     })
                 })
-                .collect::<Result<Vec<_>>>()?,
+                .collect(),
         }),
+
         "write-file" => Ok(Tool::WriteFile {
             path: PathBuf::from(
-                params["path"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
+                params
+                    .get("path")
+                    .ok_or_else(|| anyhow::anyhow!("Missing path"))?,
             ),
-            content: params["content"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing content parameter"))?
+            content: params
+                .get("content")
+                .ok_or_else(|| anyhow::anyhow!("Missing content"))?
                 .to_string(),
         }),
+
         "delete-files" => Ok(Tool::DeleteFiles {
-            paths: params["paths"]
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("Missing or invalid paths array"))?
-                .iter()
-                .map(|p| {
-                    Ok(PathBuf::from(
-                        p.as_str()
-                            .ok_or_else(|| anyhow::anyhow!("Invalid path in array"))?,
-                    ))
-                })
-                .collect::<Result<Vec<_>>>()?,
+            paths: params
+                .get("paths")
+                .ok_or_else(|| anyhow::anyhow!("Missing paths"))?
+                .split(',')
+                .map(|s| PathBuf::from(s.trim()))
+                .collect(),
         }),
+
         "ask-user" => Ok(Tool::AskUser {
-            question: params["question"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing question parameter"))?
+            question: params
+                .get("question")
+                .ok_or_else(|| anyhow::anyhow!("Missing question"))?
                 .to_string(),
         }),
+
+        "message-user" => Ok(Tool::MessageUser {
+            message: params
+                .get("message")
+                .ok_or_else(|| anyhow::anyhow!("Missing message"))?
+                .to_string(),
+        }),
+
         "complete-task" => Ok(Tool::CompleteTask {
-            message: params["message"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Missing message parameter"))?
+            message: params
+                .get("message")
+                .ok_or_else(|| anyhow::anyhow!("Missing message"))?
                 .to_string(),
         }),
-        _ => Err(anyhow::anyhow!("Unknown tool: {}", name)),
+
+        "execute-command" => Ok(Tool::ExecuteCommand {
+            command_line: params
+                .get("command_line")
+                .ok_or_else(|| anyhow::anyhow!("Missing command_line"))?
+                .to_string(),
+            working_dir: params.get("working_dir").map(PathBuf::from),
+        }),
+
+        _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
     }
 }
 

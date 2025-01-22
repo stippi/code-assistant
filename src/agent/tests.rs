@@ -683,6 +683,12 @@ async fn test_execute_command() -> Result<()> {
 
 #[test]
 fn test_flexible_xml_parsing() -> Result<()> {
+    // Initialize logging for this test
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("code_assistant=debug")
+        .with_test_writer()
+        .try_init();
+
     let response = LLMResponse {
         content: vec![ContentBlock::Text {
             text: r#"I will search for TODO comments in the code.
