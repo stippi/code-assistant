@@ -12,7 +12,6 @@ struct OpenAIRequest {
     model: String,
     messages: Vec<OpenAIChatMessage>,
     temperature: f32,
-    max_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -310,13 +309,11 @@ impl LLMProvider for OpenAIClient {
     async fn send_message(&self, request: LLMRequest) -> Result<LLMResponse> {
         let mut messages: Vec<OpenAIChatMessage> = Vec::new();
 
-        // Add system message if present
-        if let Some(system_prompt) = request.system_prompt {
-            messages.push(OpenAIChatMessage {
-                role: "system".to_string(),
-                content: system_prompt,
-            });
-        }
+        // Add system message
+        messages.push(OpenAIChatMessage {
+            role: "system".to_string(),
+            content: request.system_prompt,
+        });
 
         // Add conversation messages
         messages.extend(request.messages.iter().map(Self::convert_message));
@@ -324,8 +321,7 @@ impl LLMProvider for OpenAIClient {
         let openai_request = OpenAIRequest {
             model: self.model.clone(),
             messages,
-            temperature: request.temperature,
-            max_tokens: Some(request.max_tokens),
+            temperature: 1.0,
             stream: None,
             tools: request.tools.map(|tools| {
                 tools

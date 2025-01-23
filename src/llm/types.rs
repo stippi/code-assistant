@@ -7,9 +7,7 @@ use std::time::Duration;
 #[derive(Debug)]
 pub struct LLMRequest {
     pub messages: Vec<Message>,
-    pub max_tokens: usize,
-    pub temperature: f32,
-    pub system_prompt: Option<String>,
+    pub system_prompt: String,
     pub tools: Option<Vec<ToolDefinition>>,
 }
 

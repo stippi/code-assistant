@@ -9,6 +9,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{debug, warn};
 
+const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
+
+fn get_system_message(replacements: &HashMap<&str, String>) -> String {
+    let mut message = String::from(SYSTEM_MESSAGE);
+    for (key, value) in replacements {
+        message = message.replace(key, value);
+    }
+    message
+}
+
 pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
@@ -141,36 +151,14 @@ impl Agent {
     async fn get_next_actions(&self) -> Result<Vec<AgentAction>> {
         let messages = self.prepare_messages();
 
+        let replacements = HashMap::new();
+        // replacements.insert("${TOOL_TAG_PREFIX}", TOOL_TAG_PREFIX.to_string());
+        let system_message = get_system_message(&replacements);
+
         let request = LLMRequest {
             messages,
-            max_tokens: 8192,
-            temperature: 0.7,
-            system_prompt: Some(format!(
-                "You are an agent assisting the user in programming tasks. Your task is to analyze codebases and complete specific tasks.\n\n\
-                Your goal is to either gather relevant information in the working memory, \
-                or complete the task(s) if you have all necessary information.\n\
-                \n\
-                Working Memory Management:\n\
-                - All path parameters are expected relative to the root directory\n\
-                - Use list-files to expand collapsed directories (marked with ' [...]') in the repository structure\n\
-                - Use read-files to load important files into working memory\n\
-                - Use summarize to remove files that turned out to be less relevant\n\
-                - Keep only information that's necessary for the current task\n\
-                - Files that have been changed using update-file will always reflect the newest changes\n\
-                \n\
-                Before making changes to files, unless you already know the used libraries/dependencies,\n\
-                always confirm that methods exist on the respective types by inspecting dependencies within the code-base!\n\
-                \n\
-                After making changes to code, always validate them using the execute-command tool with appropriate commands for the project type:\n\
-                - For Rust projects: Use 'cargo check' and 'cargo test'\n\
-                - For Node.js projects: Check package.json for test/lint scripts and use them\n\
-                - For Python projects: Use pytest, mypy, or similar tools if available\n\
-                - For other projects: Look for common build/test scripts and configuration files\n\
-                \n\
-                ALWAYS respond with your thoughts about what to do next first, then call the appropriate tool according to your reasoning.\n\
-                Think step by step. When you have finished your task, use the 'complete-task' tool.",
-            )),
-            tools: Some(Tools::all()),
+            system_prompt: system_message,
+            tools: None,
         };
 
         for (i, message) in request.messages.iter().enumerate() {

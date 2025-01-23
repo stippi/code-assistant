@@ -327,13 +327,15 @@ impl LLMProvider for VertexClient {
         contents.extend(request.messages.iter().map(Self::convert_message));
 
         let vertex_request = VertexRequest {
-            system_instruction: request.system_prompt.map(|prompt| SystemInstruction {
-                parts: Parts { text: prompt },
+            system_instruction: Some(SystemInstruction {
+                parts: Parts {
+                    text: request.system_prompt,
+                },
             }),
             contents,
             generation_config: Some(GenerationConfig {
-                temperature: request.temperature,
-                max_output_tokens: request.max_tokens,
+                temperature: 0.7,
+                max_output_tokens: 8192,
             }),
             tools: request.tools.map(|tools| {
                 vec![json!({
