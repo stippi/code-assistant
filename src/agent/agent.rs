@@ -19,9 +19,15 @@ fn get_system_message(replacements: &HashMap<&str, String>) -> String {
     message
 }
 
+pub enum ToolMode {
+    Native,
+    Xml,
+}
+
 pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
+    tool_mode: ToolMode,
     explorer: Box<dyn CodeExplorer>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Box<dyn UserInterface>,
@@ -31,6 +37,7 @@ pub struct Agent {
 impl Agent {
     pub fn new(
         llm_provider: Box<dyn LLMProvider>,
+        tool_mode: ToolMode,
         explorer: Box<dyn CodeExplorer>,
         command_executor: Box<dyn CommandExecutor>,
         ui: Box<dyn UserInterface>,
@@ -39,6 +46,7 @@ impl Agent {
         Self {
             working_memory: WorkingMemory::default(),
             llm_provider,
+            tool_mode,
             explorer,
             ui,
             command_executor,
@@ -158,7 +166,10 @@ impl Agent {
         let request = LLMRequest {
             messages,
             system_prompt: system_message,
-            tools: None,
+            tools: match self.tool_mode {
+                ToolMode::Native => Some(Tools::all()),
+                ToolMode::Xml => None,
+            },
         };
 
         for (i, message) in request.messages.iter().enumerate() {
@@ -621,7 +632,7 @@ impl Agent {
                 }
             }
 
-            Tool::Search {
+            Tool::SearchFiles {
                 query,
                 path,
                 case_sensitive,
@@ -728,10 +739,11 @@ const PARAM_TAG_PREFIX: &str = "param:";
 pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<Vec<AgentAction>> {
     let mut actions = Vec::new();
 
+    let mut reasoning = String::new();
+
     for block in &response.content {
         if let ContentBlock::Text { text } = block {
             let mut current_pos = 0;
-            let mut reasoning = String::new();
 
             while let Some(tool_start) = text[current_pos..].find(&format!("<{}", TOOL_TAG_PREFIX))
             {
@@ -781,6 +793,15 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
             if current_pos < text.len() {
                 reasoning.push_str(text[current_pos..].trim());
             }
+        }
+
+        if let ContentBlock::ToolUse { name, input, .. } = block {
+            let tool = parse_tool_json(name, input)?;
+            actions.push(AgentAction {
+                tool,
+                reasoning: reasoning.trim().to_string(),
+            });
+            reasoning = String::new();
         }
     }
 
@@ -877,7 +898,7 @@ fn parse_tool_xml(xml: &str) -> Result<Tool> {
 
 fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>) -> Result<Tool> {
     match tool_name {
-        "search" => Ok(Tool::Search {
+        "search_files" => Ok(Tool::SearchFiles {
             query: params
                 .get("query")
                 .ok_or_else(|| anyhow::anyhow!("Missing query"))?
@@ -892,7 +913,7 @@ fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>) -> 
                 .transpose()?,
         }),
 
-        "list-files" => Ok(Tool::ListFiles {
+        "list_files" => Ok(Tool::ListFiles {
             paths: params
                 .get("paths")
                 .ok_or_else(|| anyhow::anyhow!("Missing paths"))?
@@ -905,7 +926,7 @@ fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>) -> 
                 .transpose()?,
         }),
 
-        "load-files" => Ok(Tool::ReadFiles {
+        "read_files" => Ok(Tool::ReadFiles {
             paths: params
                 .get("paths")
                 .ok_or_else(|| anyhow::anyhow!("Missing paths"))?
@@ -929,7 +950,7 @@ fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>) -> 
                 .collect(),
         }),
 
-        "update-file" => Ok(Tool::UpdateFile {
+        "update_file" => Ok(Tool::UpdateFile {
             path: PathBuf::from(
                 params
                     .get("path")
@@ -950,7 +971,7 @@ fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>) -> 
                 .collect(),
         }),
 
-        "write-file" => Ok(Tool::WriteFile {
+        "write_file" => Ok(Tool::WriteFile {
             path: PathBuf::from(
                 params
                     .get("path")
@@ -962,7 +983,7 @@ fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>) -> 
                 .to_string(),
         }),
 
-        "delete-files" => Ok(Tool::DeleteFiles {
+        "delete_files" => Ok(Tool::DeleteFiles {
             paths: params
                 .get("paths")
                 .ok_or_else(|| anyhow::anyhow!("Missing paths"))?
@@ -971,28 +992,28 @@ fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>) -> 
                 .collect(),
         }),
 
-        "ask-user" => Ok(Tool::AskUser {
+        "ask_user" => Ok(Tool::AskUser {
             question: params
                 .get("question")
                 .ok_or_else(|| anyhow::anyhow!("Missing question"))?
                 .to_string(),
         }),
 
-        "message-user" => Ok(Tool::MessageUser {
+        "message_user" => Ok(Tool::MessageUser {
             message: params
                 .get("message")
                 .ok_or_else(|| anyhow::anyhow!("Missing message"))?
                 .to_string(),
         }),
 
-        "complete-task" => Ok(Tool::CompleteTask {
+        "complete_task" => Ok(Tool::CompleteTask {
             message: params
                 .get("message")
                 .ok_or_else(|| anyhow::anyhow!("Missing message"))?
                 .to_string(),
         }),
 
-        "execute-command" => Ok(Tool::ExecuteCommand {
+        "execute_command" => Ok(Tool::ExecuteCommand {
             command_line: params
                 .get("command_line")
                 .ok_or_else(|| anyhow::anyhow!("Missing command_line"))?
@@ -1001,6 +1022,165 @@ fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>) -> 
         }),
 
         _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
+    }
+}
+
+fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool> {
+    match name {
+        "execute_command" => Ok(Tool::ExecuteCommand {
+            command_line: params["command_line"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing command_line"))?
+                .to_string(),
+            working_dir: params
+                .get("working_dir")
+                .and_then(|d| d.as_str())
+                .map(PathBuf::from),
+        }),
+        "search_files" => Ok(Tool::SearchFiles {
+            query: params["query"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing query"))?
+                .to_string(),
+            path: params
+                .get("path")
+                .and_then(|p| p.as_str())
+                .map(PathBuf::from),
+            case_sensitive: params
+                .get("case_sensitive")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false),
+            whole_words: params
+                .get("whole_words")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false),
+            regex_mode: params
+                .get("mode")
+                .and_then(|m| m.as_str())
+                .map_or(false, |m| m == "regex"),
+            max_results: params
+                .get("max_results")
+                .and_then(|n| n.as_u64())
+                .map(|n| n as usize),
+        }),
+        "list_files" => Ok(Tool::ListFiles {
+            paths: params["paths"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Missing or invalid paths array"))?
+                .iter()
+                .map(|p| {
+                    Ok(PathBuf::from(
+                        p.as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Invalid path in array"))?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+            max_depth: params["max_depth"].as_u64().map(|d| d as usize),
+        }),
+        "read_files" => Ok(Tool::ReadFiles {
+            paths: params["paths"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Missing or invalid paths array"))?
+                .iter()
+                .map(|p| {
+                    Ok(PathBuf::from(
+                        p.as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Invalid path in array"))?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        }),
+        "summarize" => Ok(Tool::Summarize {
+            files: params["files"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Missing or invalid files array"))?
+                .iter()
+                .map(|f| {
+                    Ok((
+                        PathBuf::from(
+                            f["path"]
+                                .as_str()
+                                .ok_or_else(|| anyhow::anyhow!("Missing path in file entry"))?,
+                        ),
+                        f["summary"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Missing summary in file entry"))?
+                            .to_string(),
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        }),
+        "update_file" => Ok(Tool::UpdateFile {
+            path: PathBuf::from(
+                params["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
+            ),
+            updates: params["updates"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Missing or invalid updates array"))?
+                .iter()
+                .map(|update| {
+                    Ok(FileUpdate {
+                        start_line: update["start_line"]
+                            .as_u64()
+                            .ok_or_else(|| anyhow::anyhow!("Invalid or missing start_line"))?
+                            as usize,
+                        end_line: update["end_line"]
+                            .as_u64()
+                            .ok_or_else(|| anyhow::anyhow!("Invalid or missing end_line"))?
+                            as usize,
+                        new_content: update["new_content"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Missing new_content"))?
+                            .to_string(),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        }),
+        "write_file" => Ok(Tool::WriteFile {
+            path: PathBuf::from(
+                params["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
+            ),
+            content: params["content"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing content parameter"))?
+                .to_string(),
+        }),
+        "delete_files" => Ok(Tool::DeleteFiles {
+            paths: params["paths"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Missing or invalid paths array"))?
+                .iter()
+                .map(|p| {
+                    Ok(PathBuf::from(
+                        p.as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Invalid path in array"))?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        }),
+        "ask_user" => Ok(Tool::AskUser {
+            question: params["question"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing question parameter"))?
+                .to_string(),
+        }),
+        "message_user" => Ok(Tool::MessageUser {
+            message: params["message"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing message parameter"))?
+                .to_string(),
+        }),
+        "complete_task" => Ok(Tool::CompleteTask {
+            message: params["message"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing message parameter"))?
+                .to_string(),
+        }),
+        _ => Err(anyhow::anyhow!("Unknown tool: {}", name)),
     }
 }
 

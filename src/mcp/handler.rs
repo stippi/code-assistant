@@ -234,7 +234,7 @@ impl MessageHandler {
     async fn handle_tool_call(&mut self, id: RequestId, params: ToolCallParams) -> Result<()> {
         debug!("Handling tool call for {}", params.name);
         let result = match params.name.as_str() {
-            "load-file" => {
+            "load_files" => {
                 let path = match params.arguments {
                     Some(args) => {
                         let path_str = args["path"]
@@ -330,7 +330,7 @@ impl MessageHandler {
                 }
             }
 
-            "update-file" => {
+            "update_file" => {
                 let args = params
                     .arguments
                     .ok_or_else(|| anyhow::anyhow!("No arguments provided"))?;
@@ -400,7 +400,7 @@ impl MessageHandler {
                 }
             }
 
-            "delete-file" => {
+            "delete_files" => {
                 let args = params
                     .arguments
                     .ok_or_else(|| anyhow::anyhow!("No arguments provided"))?;
@@ -452,7 +452,7 @@ impl MessageHandler {
                 }
             }
 
-            "list-files" => {
+            "list_files" => {
                 let args = params
                     .arguments
                     .ok_or_else(|| anyhow::anyhow!("No arguments provided"))?;
@@ -552,7 +552,7 @@ impl MessageHandler {
                 }
             }
 
-            "execute-command" => {
+            "execute_command" => {
                 let args = params
                     .arguments
                     .ok_or_else(|| anyhow::anyhow!("No arguments provided"))?;

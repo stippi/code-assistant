@@ -5,6 +5,7 @@ use crate::persistence::MockStatePersistence;
 use crate::types::*;
 use crate::ui::{UIError, UIMessage, UserInterface};
 use crate::utils::{CommandExecutor, CommandOutput};
+use agent::ToolMode;
 use anyhow::Result;
 use async_trait::async_trait;
 use regex::RegexBuilder;
@@ -281,89 +282,94 @@ impl CodeExplorer for MockExplorer {
 
 // Helper function to create a test response
 fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
-    let response = serde_json::json!({
-        "reasoning": reasoning,
-        "tool": {
-            "name": match &tool {
-                Tool::ListFiles { .. } => "ListFiles",
-                Tool::ReadFiles { .. } => "ReadFiles",
-                Tool::WriteFile { .. } => "WriteFile",
-                Tool::UpdateFile { .. } => "UpdateFile",
-                Tool::DeleteFiles { .. } => "DeleteFiles",
-                Tool::Summarize { .. } => "Summarize",
-                Tool::AskUser { .. } => "AskUser",
-                Tool::MessageUser { .. } => "MessageUser",
-                Tool::ExecuteCommand { .. } => "ExecuteCommand",
-                Tool::CompleteTask { .. } => "CompleteTask",
-                Tool::Search { .. } => "Search",
-            },
-            "params": match &tool {
-                Tool::ListFiles { paths, max_depth } => {
-                    let mut map = serde_json::Map::new();
-                    map.insert("paths".to_string(), serde_json::json!(paths));
-                    if let Some(depth) = max_depth {
-                        map.insert("max_depth".to_string(), serde_json::json!(depth));
-                    }
-                    serde_json::Value::Object(map)
-                },
-                Tool::ReadFiles { paths } => serde_json::json!({
-                    "paths": paths
-                }),
-                Tool::WriteFile { path, content } => serde_json::json!({
-                    "path": path,
-                    "content": content
-                }),
-                Tool::UpdateFile { path, updates } => serde_json::json!({
-                    "path": path,
-                    "updates": updates
-                }),
-                Tool::DeleteFiles { paths } => serde_json::json!({
-                    "paths": paths
-                }),
-                Tool::Summarize { files } => serde_json::json!({
-                    "files": files.iter().map(|(path, summary)| {
-                        serde_json::json!({
-                            "path": path,
-                            "summary": summary
-                        })
-                    }).collect::<Vec<_>>()
-                }),
-                Tool::AskUser { question } => serde_json::json!({
-                    "question": question
-                }),
-                Tool::MessageUser { message } => serde_json::json!({
-                    "message": message
-                }),
-                Tool::ExecuteCommand { command_line, working_dir } => serde_json::json!({
-                    "command_line": command_line,
-                    "working_dir": working_dir
-                }),
-                Tool::CompleteTask { message } => serde_json::json!({
-                    "message": message
-                }),
-                Tool::Search {
-                    query,
-                    path,
-                    case_sensitive,
-                    whole_words,
-                    regex_mode,
-                    max_results,
-                } => serde_json::json!({
-                    "query": query,
-                    "path": path,
-                    "case_sensitive": case_sensitive,
-                    "whole_words": whole_words,
-                    "regex_mode": regex_mode,
-                    "max_results": max_results
-                }),
+    let tool_name = match &tool {
+        Tool::SearchFiles { .. } => "search_files",
+        Tool::ExecuteCommand { .. } => "execute_command",
+        Tool::ListFiles { .. } => "list_files",
+        Tool::ReadFiles { .. } => "read_files",
+        Tool::WriteFile { .. } => "write_file",
+        Tool::UpdateFile { .. } => "update_file",
+        Tool::DeleteFiles { .. } => "delete_files",
+        Tool::Summarize { .. } => "summarize",
+        Tool::AskUser { .. } => "ask_user",
+        Tool::MessageUser { .. } => "message_user",
+        Tool::CompleteTask { .. } => "complete_task",
+    };
+    let tool_input = match &tool {
+        Tool::SearchFiles {
+            query,
+            path,
+            case_sensitive,
+            whole_words,
+            regex_mode,
+            max_results,
+        } => serde_json::json!({
+            "query": query,
+            "path": path,
+            "case_sensitive": case_sensitive,
+            "whole_words": whole_words,
+            "regex_mode": regex_mode,
+            "max_results": max_results
+        }),
+        Tool::ExecuteCommand {
+            command_line,
+            working_dir,
+        } => serde_json::json!({
+            "command_line": command_line,
+            "working_dir": working_dir
+        }),
+        Tool::ListFiles { paths, max_depth } => {
+            let mut map = serde_json::Map::new();
+            map.insert("paths".to_string(), serde_json::json!(paths));
+            if let Some(depth) = max_depth {
+                map.insert("max_depth".to_string(), serde_json::json!(depth));
             }
+            serde_json::Value::Object(map)
         }
-    });
+        Tool::ReadFiles { paths } => serde_json::json!({
+            "paths": paths
+        }),
+        Tool::WriteFile { path, content } => serde_json::json!({
+            "path": path,
+            "content": content
+        }),
+        Tool::UpdateFile { path, updates } => serde_json::json!({
+            "path": path,
+            "updates": updates
+        }),
+        Tool::DeleteFiles { paths } => serde_json::json!({
+            "paths": paths
+        }),
+        Tool::Summarize { files } => serde_json::json!({
+            "files": files.iter().map(|(path, summary)| {
+                serde_json::json!({
+                    "path": path,
+                    "summary": summary
+                })
+            }).collect::<Vec<_>>()
+        }),
+        Tool::AskUser { question } => serde_json::json!({
+            "question": question
+        }),
+        Tool::MessageUser { message } => serde_json::json!({
+            "message": message
+        }),
+        Tool::CompleteTask { message } => serde_json::json!({
+            "message": message
+        }),
+    };
 
     LLMResponse {
-        content: vec![ContentBlock::Text {
-            text: response.to_string(),
-        }],
+        content: vec![
+            ContentBlock::Text {
+                text: reasoning.to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "some-tool-id".to_string(),
+                name: tool_name.to_string(),
+                input: tool_input,
+            },
+        ],
     }
 }
 
@@ -528,6 +534,7 @@ async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
+        ToolMode::Native,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(mock_ui.clone()),
@@ -574,6 +581,7 @@ async fn test_agent_ask_user() -> Result<(), anyhow::Error> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
+        ToolMode::Native,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(mock_ui.clone()),
@@ -616,6 +624,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
+        ToolMode::Native,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
@@ -661,6 +670,7 @@ async fn test_execute_command() -> Result<()> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
+        ToolMode::Native,
         Box::new(create_explorer_mock()),
         Box::new(mock_command_executor),
         Box::new(MockUI::default()),
@@ -693,14 +703,14 @@ fn test_flexible_xml_parsing() -> Result<()> {
         content: vec![ContentBlock::Text {
             text: r#"I will search for TODO comments in the code.
 
-<tool:search>
+<tool:search_files>
 <param:query>TODO & FIXME <html></param:query>
 <param:path>src/</param:path>
 <param:case_sensitive>true</param:case_sensitive>
 <param:max_results>
     50
 </param:max_results>
-</tool:search>"#
+</tool:search_files>"#
                 .to_string(),
         }],
     };
@@ -709,7 +719,7 @@ fn test_flexible_xml_parsing() -> Result<()> {
     assert_eq!(actions.len(), 1);
     assert!(actions[0].reasoning.contains("search for TODO comments"));
 
-    if let Tool::Search {
+    if let Tool::SearchFiles {
         query, max_results, ..
     } = &actions[0].tool
     {

@@ -9,10 +9,10 @@ impl Tools {
     /// Returns all available tool definitions
     pub fn all() -> Vec<ToolDefinition> {
         vec![
-            Self::search(),
             Self::execute_command(),
+            Self::search_files(),
             Self::list_files(),
-            Self::load_files(),
+            Self::read_files(),
             Self::summarize(),
             Self::update_file(),
             Self::write_file(),
@@ -25,10 +25,10 @@ impl Tools {
 
     pub fn mcp() -> Vec<ToolDefinition> {
         vec![
-            Self::search(),
             Self::execute_command(),
+            Self::search_files(),
             Self::list_files(),
-            Self::load_files(),
+            Self::read_files(),
             Self::summarize(),
             Self::update_file(),
             Self::write_file(),
@@ -36,9 +36,30 @@ impl Tools {
         ]
     }
 
-    pub fn search() -> ToolDefinition {
+    pub fn execute_command() -> ToolDefinition {
         ToolDefinition {
-            name: "search".to_string(),
+            name: "execute_command".to_string(),
+            description: "Execute a command line program".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "command_line": {
+                        "type": "string",
+                        "description": "The complete command to execute"
+                    },
+                    "working_dir": {
+                        "type": "string",
+                        "description": "Optional: working directory for the command"
+                    }
+                },
+                "required": ["command_line"]
+            }),
+        }
+    }
+
+    pub fn search_files() -> ToolDefinition {
+        ToolDefinition {
+            name: "search_files".to_string(),
             description: "Search for text in files with advanced options".to_string(),
             parameters: json!({
                 "type": "object",
@@ -74,30 +95,9 @@ impl Tools {
         }
     }
 
-    pub fn execute_command() -> ToolDefinition {
-        ToolDefinition {
-            name: "execute-command".to_string(),
-            description: "Execute a command line program".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "command_line": {
-                        "type": "string",
-                        "description": "The complete command to execute"
-                    },
-                    "working_dir": {
-                        "type": "string",
-                        "description": "Optional: working directory for the command"
-                    }
-                },
-                "required": ["command_line"]
-            }),
-        }
-    }
-
     pub fn list_files() -> ToolDefinition {
         ToolDefinition {
-            name: "list-files".to_string(),
+            name: "list_files".to_string(),
             description: "List files in a directory".to_string(),
             parameters: json!({
                 "type": "object",
@@ -119,9 +119,9 @@ impl Tools {
         }
     }
 
-    pub fn load_files() -> ToolDefinition {
+    pub fn read_files() -> ToolDefinition {
         ToolDefinition {
-            name: "load-files".to_string(),
+            name: "read_files".to_string(),
             description: "Load files into working memory".to_string(),
             parameters: json!({
                 "type": "object",
@@ -173,7 +173,7 @@ impl Tools {
 
     pub fn update_file() -> ToolDefinition {
         ToolDefinition {
-            name: "update-file".to_string(),
+            name: "update_file".to_string(),
             description: "Update sections in an existing file based on line numbers. IMPORTANT: Line numbers are 1-based, \
                          matching the line numbers shown when viewing file resources. The end_line is exclusive, \
                          meaning the section to replace ends before that line. For example, to replace lines 1-3, \
@@ -217,7 +217,7 @@ impl Tools {
 
     pub fn write_file() -> ToolDefinition {
         ToolDefinition {
-            name: "write-file".to_string(),
+            name: "write_file".to_string(),
             description:
                 "Creates or overwrites a file. Use for new files or when updating most of a file. \
                          For smaller updates prefer to use update-file."
@@ -241,7 +241,7 @@ impl Tools {
 
     pub fn delete_files() -> ToolDefinition {
         ToolDefinition {
-            name: "delete-files".to_string(),
+            name: "delete_files".to_string(),
             description: "Delete files from the workspace. This operation cannot be undone!"
                 .to_string(),
             parameters: json!({
@@ -262,7 +262,7 @@ impl Tools {
 
     pub fn ask_user() -> ToolDefinition {
         ToolDefinition {
-            name: "ask-user".to_string(),
+            name: "ask_user".to_string(),
             description:
                 "Ask the user a question. Use for clarifications, feedback or confirmation."
                     .to_string(),
@@ -281,7 +281,7 @@ impl Tools {
 
     pub fn message_user() -> ToolDefinition {
         ToolDefinition {
-            name: "message-user".to_string(),
+            name: "message_user".to_string(),
             description: "Complete the task".to_string(),
             parameters: json!({
                 "type": "object",
@@ -298,7 +298,7 @@ impl Tools {
 
     pub fn complete_task() -> ToolDefinition {
         ToolDefinition {
-            name: "complete-task".to_string(),
+            name: "complete_task".to_string(),
             description: "Complete the task".to_string(),
             parameters: json!({
                 "type": "object",

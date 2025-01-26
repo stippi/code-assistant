@@ -47,7 +47,7 @@ pub enum Tool {
         // Optional depth limit, None means unlimited
         max_depth: Option<usize>,
     },
-    /// Read content of one or multiple files
+    /// Read content of one or multiple files into working memory
     ReadFiles { paths: Vec<PathBuf> },
     /// Write content to a file
     WriteFile { path: PathBuf, content: String },
@@ -72,7 +72,7 @@ pub enum Tool {
         working_dir: Option<PathBuf>,
     },
     /// Search for text in files
-    Search {
+    SearchFiles {
         /// The text to search for
         query: String,
         /// Optional directory path to search in
