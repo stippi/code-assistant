@@ -88,13 +88,231 @@ pub enum Tool {
     },
 }
 
+/// Specific results for each tool type
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum ToolResult {
+    ReadFiles {
+        loaded_files: HashMap<PathBuf, String>,
+        failed_files: Vec<(PathBuf, String)>,
+    },
+    ListFiles {
+        expanded_paths: Vec<(PathBuf, FileTreeEntry)>,
+        failed_paths: Vec<(String, String)>,
+    },
+    SearchFiles {
+        results: Vec<SearchResult>,
+        query: String,
+    },
+    ExecuteCommand {
+        success: bool,
+        stdout: String,
+        stderr: String,
+    },
+    WriteFile {
+        path: PathBuf,
+        success: bool,
+    },
+    UpdateFile {
+        path: PathBuf,
+        success: bool,
+        content: String,
+    },
+    DeleteFiles {
+        deleted: Vec<PathBuf>,
+        failed: Vec<(PathBuf, String)>,
+    },
+    Summarize {
+        files: Vec<(PathBuf, String)>,
+    },
+    AskUser {
+        response: String,
+    },
+    MessageUser {
+        result: String,
+    },
+    CompleteTask {
+        result: String,
+    },
+}
+
+impl ToolResult {
+    // Format a user-facing message describing the result
+    pub fn format_message(&self) -> String {
+        match self {
+            ToolResult::ReadFiles {
+                loaded_files,
+                failed_files,
+            } => {
+                let mut msg = String::new();
+                if !loaded_files.is_empty() {
+                    msg.push_str(&format!(
+                        "Successfully loaded files: {}",
+                        loaded_files
+                            .keys()
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                if !failed_files.is_empty() {
+                    if !msg.is_empty() {
+                        msg.push_str("\n");
+                    }
+                    msg.push_str("Failed to load: ");
+                    msg.push_str(
+                        &failed_files
+                            .iter()
+                            .map(|(p, e)| format!("{}: {}", p.display(), e))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                }
+                msg
+            }
+            ToolResult::ListFiles {
+                expanded_paths,
+                failed_paths,
+                ..
+            } => {
+                let mut msg = String::new();
+                if !expanded_paths.is_empty() {
+                    msg.push_str(&format!("Successfully listed contents of: "));
+                    msg.push_str(
+                        &expanded_paths
+                            .iter()
+                            .map(|(path, _)| format!("{}", path.display()))
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    );
+                }
+                if !failed_paths.is_empty() {
+                    if !msg.is_empty() {
+                        msg.push_str("\n");
+                    }
+                    msg.push_str("Failed listing: ");
+                    msg.push_str(
+                        &failed_paths
+                            .iter()
+                            .map(|(path, err)| format!("{}: {}", path, err))
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    );
+                }
+                msg
+            }
+            ToolResult::SearchFiles { results, query } => {
+                if results.is_empty() {
+                    format!("No matches found for '{}'", query)
+                } else {
+                    let mut msg = format!("Found {} matches for '{}':\n", results.len(), query);
+                    for result in results {
+                        msg.push_str(&format!(
+                            "{}:{}: {}\n",
+                            result.file.display(),
+                            result.line_number,
+                            result.line_content
+                        ));
+                    }
+                    msg
+                }
+            }
+            ToolResult::ExecuteCommand {
+                success,
+                stdout,
+                stderr,
+            } => {
+                let mut msg = String::new();
+                if !stdout.is_empty() {
+                    msg.push_str("Output:\n");
+                    msg.push_str(stdout);
+                }
+                if !stderr.is_empty() {
+                    if !msg.is_empty() {
+                        msg.push_str("\n");
+                    }
+                    msg.push_str("Errors:\n");
+                    msg.push_str(stderr);
+                }
+                if !success {
+                    if !msg.is_empty() {
+                        msg.push_str("\n");
+                    }
+                    msg.push_str("Command failed");
+                }
+                msg
+            }
+            ToolResult::WriteFile { path, success } => {
+                if *success {
+                    format!("Successfully wrote file: {}", path.display())
+                } else {
+                    format!("Failed to write file: {}", path.display())
+                }
+            }
+            ToolResult::UpdateFile { path, success, .. } => {
+                if *success {
+                    format!("Successfully updated file: {}", path.display())
+                } else {
+                    format!("Failed to update file: {}", path.display())
+                }
+            }
+            ToolResult::DeleteFiles { deleted, failed } => {
+                let mut msg = String::new();
+                if !deleted.is_empty() {
+                    msg.push_str(&format!(
+                        "Successfully deleted: {}",
+                        deleted
+                            .iter()
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                if !failed.is_empty() {
+                    if !msg.is_empty() {
+                        msg.push_str("\n");
+                    }
+                    msg.push_str("Failed to delete: ");
+                    msg.push_str(
+                        &failed
+                            .iter()
+                            .map(|(p, e)| format!("{}: {}", p.display(), e))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                }
+                msg
+            }
+            ToolResult::Summarize { files } => {
+                format!("Created summaries for {} files", files.len())
+            }
+            ToolResult::AskUser { response } => response.clone(),
+            ToolResult::MessageUser { result } => result.clone(),
+            ToolResult::CompleteTask { result } => result.clone(),
+        }
+    }
+
+    pub fn is_success(&self) -> bool {
+        match self {
+            ToolResult::ReadFiles { loaded_files, .. } => !loaded_files.is_empty(),
+            ToolResult::ListFiles { .. } => true,
+            ToolResult::SearchFiles { .. } => true,
+            ToolResult::ExecuteCommand { success, .. } => *success,
+            ToolResult::WriteFile { success, .. } => *success,
+            ToolResult::UpdateFile { success, .. } => *success,
+            ToolResult::DeleteFiles { deleted, .. } => !deleted.is_empty(),
+            ToolResult::Summarize { .. } => true,
+            ToolResult::AskUser { .. } => true,
+            ToolResult::MessageUser { .. } => true,
+            ToolResult::CompleteTask { .. } => true,
+        }
+    }
+}
+
 /// Result of a tool execution
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ActionResult {
     pub tool: Tool,
-    pub success: bool,
-    pub result: String,
-    pub error: Option<String>,
+    pub result: ToolResult,
     pub reasoning: String,
 }
 
@@ -160,7 +378,7 @@ pub struct SearchOptions {
     pub max_results: Option<usize>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SearchResult {
     pub file: PathBuf,
     pub line_number: usize,

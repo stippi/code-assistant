@@ -21,9 +21,6 @@ impl MCPServer {
         let stdin = stdin();
         let mut reader = BufReader::new(stdin);
 
-        // Set up the initial file tree resource
-        self.handler.create_initial_tree().await?;
-
         let mut line = String::new();
         while let Ok(n) = reader.read_line(&mut line).await {
             if n == 0 {
