@@ -111,6 +111,7 @@ pub enum ToolResult {
     WriteFile {
         path: PathBuf,
         success: bool,
+        content: String,
     },
     UpdateFile {
         path: PathBuf,
@@ -241,7 +242,7 @@ impl ToolResult {
                 }
                 msg
             }
-            ToolResult::WriteFile { path, success } => {
+            ToolResult::WriteFile { path, success, .. } => {
                 if *success {
                     format!("Successfully wrote file: {}", path.display())
                 } else {

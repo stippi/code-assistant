@@ -50,10 +50,19 @@ impl<'a> ToolResultHandler for AgentToolHandler<'a> {
                             .insert(path.clone(), content.clone());
                     }
                 }
-                ToolResult::WriteFile { path, .. } => {
-                    // Remove any existing content/summary since file is new/overwritten
-                    self.working_memory.loaded_files.remove(path);
+                ToolResult::WriteFile { path, content, .. } => {
+                    // Remove any existing summary since file is new/overwritten
                     self.working_memory.file_summaries.remove(path);
+                    // Make this file part of the loaded files
+                    self.working_memory
+                        .loaded_files
+                        .insert(path.clone(), content.clone());
+                }
+                ToolResult::DeleteFiles { deleted, .. } => {
+                    for path in deleted {
+                        self.working_memory.loaded_files.remove(path);
+                        self.working_memory.file_summaries.remove(path);
+                    }
                 }
                 _ => {}
             }

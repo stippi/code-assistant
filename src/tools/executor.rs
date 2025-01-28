@@ -117,16 +117,31 @@ impl ToolExecutor {
                 }
             }
 
-            Tool::WriteFile { path, content } => match std::fs::write(path, content) {
-                Ok(_) => ToolResult::WriteFile {
-                    path: path.clone(),
-                    success: true,
-                },
-                Err(_) => ToolResult::WriteFile {
-                    path: path.clone(),
-                    success: false,
-                },
-            },
+            Tool::WriteFile { path, content } => {
+                let full_path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    explorer.root_dir().join(path)
+                };
+
+                // Ensure the parent directory exists
+                if let Some(parent) = full_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                match std::fs::write(path, content) {
+                    Ok(_) => ToolResult::WriteFile {
+                        path: path.clone(),
+                        success: true,
+                        content: content.clone(),
+                    },
+                    Err(_) => ToolResult::WriteFile {
+                        path: path.clone(),
+                        success: false,
+                        content: content.clone(),
+                    },
+                }
+            }
 
             Tool::UpdateFile { path, updates } => match explorer.apply_updates(path, updates) {
                 Ok(content) => ToolResult::UpdateFile {
