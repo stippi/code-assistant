@@ -1,5 +1,5 @@
 use crate::tools::ToolResultHandler;
-use crate::types::{ActionResult, FileTreeEntry, ToolResult, WorkingMemory};
+use crate::types::{FileTreeEntry, ToolResult, WorkingMemory};
 use crate::utils::format_with_line_numbers;
 use crate::PathBuf;
 use anyhow::Result;
@@ -17,10 +17,10 @@ impl<'a> AgentToolHandler<'a> {
 
 #[async_trait::async_trait]
 impl<'a> ToolResultHandler for AgentToolHandler<'a> {
-    async fn handle_result(&mut self, result: &ActionResult) -> Result<String> {
+    async fn handle_result(&mut self, result: &ToolResult) -> Result<String> {
         // Update working memory if tool was successful
-        if result.result.is_success() {
-            match &result.result {
+        if result.is_success() {
+            match &result {
                 ToolResult::ListFiles { expanded_paths, .. } => {
                     // Update working memory file tree with each entry
                     if let Some(file_tree) = &mut self.working_memory.file_tree {
@@ -59,7 +59,7 @@ impl<'a> ToolResultHandler for AgentToolHandler<'a> {
             }
         }
 
-        Ok(result.result.format_message())
+        Ok(result.format_message())
     }
 }
 
@@ -73,8 +73,8 @@ impl MCPToolHandler {
 
 #[async_trait]
 impl ToolResultHandler for MCPToolHandler {
-    async fn handle_result(&mut self, result: &ActionResult) -> Result<String> {
-        match &result.result {
+    async fn handle_result(&mut self, result: &ToolResult) -> Result<String> {
+        match &result {
             ToolResult::ListFiles { expanded_paths, .. } => {
                 let mut output = String::new();
                 for (path, entry) in expanded_paths {
@@ -99,7 +99,7 @@ impl ToolResultHandler for MCPToolHandler {
                 Ok(output)
             }
             // All other tools use standard message
-            _ => Ok(result.result.format_message()),
+            _ => Ok(result.format_message()),
         }
     }
 }
@@ -120,10 +120,10 @@ impl ReplayToolHandler {
 
 #[async_trait]
 impl ToolResultHandler for ReplayToolHandler {
-    async fn handle_result(&mut self, result: &ActionResult) -> Result<String> {
+    async fn handle_result(&mut self, result: &ToolResult) -> Result<String> {
         // Only update working memory, ignore filesystem effects
-        if result.result.is_success() {
-            match &result.result {
+        if result.is_success() {
+            match &result {
                 ToolResult::ReadFiles { loaded_files, .. } => {
                     self.working_memory
                         .loaded_files
@@ -166,7 +166,7 @@ impl ToolResultHandler for ReplayToolHandler {
             }
         }
 
-        Ok(result.result.format_message())
+        Ok(result.format_message())
     }
 }
 

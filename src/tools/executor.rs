@@ -1,5 +1,5 @@
 use super::ToolResultHandler;
-use crate::types::{ActionResult, CodeExplorer, SearchMode, SearchOptions, Tool, ToolResult};
+use crate::types::{CodeExplorer, SearchMode, SearchOptions, Tool, ToolResult};
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
@@ -14,9 +14,8 @@ impl ToolExecutor {
         command_executor: &Box<dyn CommandExecutor>,
         ui: Option<&Box<dyn UserInterface>>,
         tool: &Tool,
-        reasoning: &str,
     ) -> Result<(String, ToolResult)> {
-        let action_result = match tool {
+        let result = match tool {
             Tool::ReadFiles { paths } => {
                 let mut loaded_files = HashMap::new();
                 let mut failed_files = Vec::new();
@@ -32,13 +31,9 @@ impl ToolExecutor {
                     }
                 }
 
-                ActionResult {
-                    tool: tool.clone(),
-                    result: ToolResult::ReadFiles {
-                        loaded_files,
-                        failed_files,
-                    },
-                    reasoning: reasoning.to_string(),
+                ToolResult::ReadFiles {
+                    loaded_files,
+                    failed_files,
                 }
             }
 
@@ -57,13 +52,9 @@ impl ToolExecutor {
                     }
                 }
 
-                ActionResult {
-                    tool: tool.clone(),
-                    result: ToolResult::ListFiles {
-                        expanded_paths,
-                        failed_paths,
-                    },
-                    reasoning: reasoning.to_string(),
+                ToolResult::ListFiles {
+                    expanded_paths,
+                    failed_paths,
                 }
             }
 
@@ -94,21 +85,13 @@ impl ToolExecutor {
                 };
 
                 match explorer.search(&search_path, options) {
-                    Ok(results) => ActionResult {
-                        tool: tool.clone(),
-                        result: ToolResult::SearchFiles {
-                            results,
-                            query: query.clone(),
-                        },
-                        reasoning: reasoning.to_string(),
+                    Ok(results) => ToolResult::SearchFiles {
+                        results,
+                        query: query.clone(),
                     },
-                    Err(e) => ActionResult {
-                        tool: tool.clone(),
-                        result: ToolResult::SearchFiles {
-                            results: Vec::new(),
-                            query: format!("Search failed: {}", e),
-                        },
-                        reasoning: reasoning.to_string(),
+                    Err(e) => ToolResult::SearchFiles {
+                        results: Vec::new(),
+                        query: format!("Search failed: {}", e),
                     },
                 }
             }
@@ -121,98 +104,58 @@ impl ToolExecutor {
                     .execute(command_line, working_dir.as_ref())
                     .await
                 {
-                    Ok(output) => ActionResult {
-                        tool: tool.clone(),
-                        result: ToolResult::ExecuteCommand {
-                            success: output.success,
-                            stdout: output.stdout,
-                            stderr: output.stderr,
-                        },
-                        reasoning: reasoning.to_string(),
+                    Ok(output) => ToolResult::ExecuteCommand {
+                        success: output.success,
+                        stdout: output.stdout,
+                        stderr: output.stderr,
                     },
-                    Err(e) => ActionResult {
-                        tool: tool.clone(),
-                        result: ToolResult::ExecuteCommand {
-                            success: false,
-                            stdout: String::new(),
-                            stderr: e.to_string(),
-                        },
-                        reasoning: reasoning.to_string(),
+                    Err(e) => ToolResult::ExecuteCommand {
+                        success: false,
+                        stdout: String::new(),
+                        stderr: e.to_string(),
                     },
                 }
             }
 
             Tool::WriteFile { path, content } => match std::fs::write(path, content) {
-                Ok(_) => ActionResult {
-                    tool: tool.clone(),
-                    result: ToolResult::WriteFile {
-                        path: path.clone(),
-                        success: true,
-                    },
-                    reasoning: reasoning.to_string(),
+                Ok(_) => ToolResult::WriteFile {
+                    path: path.clone(),
+                    success: true,
                 },
-                Err(_) => ActionResult {
-                    tool: tool.clone(),
-                    result: ToolResult::WriteFile {
-                        path: path.clone(),
-                        success: false,
-                    },
-                    reasoning: reasoning.to_string(),
+                Err(_) => ToolResult::WriteFile {
+                    path: path.clone(),
+                    success: false,
                 },
             },
 
             Tool::UpdateFile { path, updates } => match explorer.apply_updates(path, updates) {
-                Ok(content) => ActionResult {
-                    tool: tool.clone(),
-                    result: ToolResult::UpdateFile {
-                        path: path.clone(),
-                        success: true,
-                        content,
-                    },
-                    reasoning: reasoning.to_string(),
+                Ok(content) => ToolResult::UpdateFile {
+                    path: path.clone(),
+                    success: true,
+                    content,
                 },
-                Err(e) => ActionResult {
-                    tool: tool.clone(),
-                    result: ToolResult::UpdateFile {
-                        path: path.clone(),
-                        success: false,
-                        content: e.to_string(),
-                    },
-                    reasoning: reasoning.to_string(),
+                Err(e) => ToolResult::UpdateFile {
+                    path: path.clone(),
+                    success: false,
+                    content: e.to_string(),
                 },
             },
 
-            Tool::Summarize { files } => ActionResult {
-                tool: tool.clone(),
-                result: ToolResult::Summarize {
-                    files: files.clone(),
-                },
-                reasoning: reasoning.to_string(),
+            Tool::Summarize { files } => ToolResult::Summarize {
+                files: files.clone(),
             },
 
             Tool::MessageUser { message } => match &ui {
                 Some(ui) => match ui.display(UIMessage::Action(message.clone())).await {
-                    Ok(_) => ActionResult {
-                        tool: tool.clone(),
-                        result: ToolResult::MessageUser {
-                            result: "Message delivered".to_string(),
-                        },
-                        reasoning: reasoning.to_string(),
+                    Ok(_) => ToolResult::MessageUser {
+                        result: "Message delivered".to_string(),
                     },
-                    Err(e) => ActionResult {
-                        tool: tool.clone(),
-                        result: ToolResult::MessageUser {
-                            result: format!("Failed to deliver message: {}", e),
-                        },
-                        reasoning: reasoning.to_string(),
+                    Err(e) => ToolResult::MessageUser {
+                        result: format!("Failed to deliver message: {}", e),
                     },
                 },
-                None => ActionResult {
-                    tool: tool.clone(),
-                    result: ToolResult::MessageUser {
-                        result: "Messaging user not available".to_string(),
-                    },
-                    reasoning: reasoning.to_string(),
+                None => ToolResult::MessageUser {
+                    result: "Messaging user not available".to_string(),
                 },
             },
 
@@ -223,52 +166,28 @@ impl ToolExecutor {
 
                     // Get the input
                     match ui.get_input("> ").await {
-                        Ok(response) => ActionResult {
-                            tool: tool.clone(),
-                            result: ToolResult::AskUser { response },
-                            reasoning: reasoning.to_string(),
-                        },
-                        Err(e) => ActionResult {
-                            tool: tool.clone(),
-                            result: ToolResult::AskUser {
-                                response: format!("Failed to get user input: {}", e),
-                            },
-                            reasoning: reasoning.to_string(),
+                        Ok(response) => ToolResult::AskUser { response },
+                        Err(e) => ToolResult::AskUser {
+                            response: format!("Failed to get user input: {}", e),
                         },
                     }
                 }
-                None => ActionResult {
-                    tool: tool.clone(),
-                    result: ToolResult::AskUser {
-                        response: "User input not available".to_string(),
-                    },
-                    reasoning: reasoning.to_string(),
+                None => ToolResult::AskUser {
+                    response: "User input not available".to_string(),
                 },
             },
 
             Tool::CompleteTask { message } => match &ui {
                 Some(ui) => match ui.display(UIMessage::Action(message.clone())).await {
-                    Ok(_) => ActionResult {
-                        tool: tool.clone(),
-                        result: ToolResult::CompleteTask {
-                            result: "Message delivered".to_string(),
-                        },
-                        reasoning: reasoning.to_string(),
+                    Ok(_) => ToolResult::CompleteTask {
+                        result: "Message delivered".to_string(),
                     },
-                    Err(e) => ActionResult {
-                        tool: tool.clone(),
-                        result: ToolResult::CompleteTask {
-                            result: format!("Failed to deliver message: {}", e),
-                        },
-                        reasoning: reasoning.to_string(),
+                    Err(e) => ToolResult::CompleteTask {
+                        result: format!("Failed to deliver message: {}", e),
                     },
                 },
-                None => ActionResult {
-                    tool: tool.clone(),
-                    result: ToolResult::CompleteTask {
-                        result: "Messaging user not available".to_string(),
-                    },
-                    reasoning: reasoning.to_string(),
+                None => ToolResult::CompleteTask {
+                    result: "Messaging user not available".to_string(),
                 },
             },
 
@@ -283,16 +202,12 @@ impl ToolExecutor {
                     }
                 }
 
-                ActionResult {
-                    tool: tool.clone(),
-                    result: ToolResult::DeleteFiles { deleted, failed },
-                    reasoning: reasoning.to_string(),
-                }
+                ToolResult::DeleteFiles { deleted, failed }
             }
         };
 
         // Let the handler process the result and get formatted output
-        let output = handler.handle_result(&action_result).await?;
-        Ok((output, action_result.result))
+        let output = handler.handle_result(&result).await?;
+        Ok((output, result))
     }
 }

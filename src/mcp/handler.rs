@@ -139,7 +139,6 @@ impl MessageHandler {
             &self.command_executor,
             None,
             &tool,
-            "",
         )
         .await?;
 

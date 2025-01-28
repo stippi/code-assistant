@@ -138,7 +138,6 @@ impl Agent {
                     &self.command_executor,
                     Some(&self.ui),
                     &action.tool,
-                    &action.reasoning,
                 )
                 .await
                 {
@@ -758,7 +757,6 @@ impl Agent {
             &self.command_executor,
             Some(&self.ui),
             &action.tool,
-            &action.reasoning,
         )
         .await?;
 
