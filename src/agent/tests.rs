@@ -185,6 +185,18 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))
     }
 
+    fn write_file(&self, path: &PathBuf, content: &String) -> Result<()> {
+        let mut files = self.files.lock().unwrap();
+        files.insert(path.to_path_buf(), content.clone());
+        Ok(())
+    }
+
+    fn delete_file(&self, path: &PathBuf) -> Result<()> {
+        let mut files = self.files.lock().unwrap();
+        files.remove(path);
+        Ok(())
+    }
+
     fn create_initial_tree(&self, _max_depth: usize) -> Result<FileTreeEntry, anyhow::Error> {
         self.file_tree
             .lock()

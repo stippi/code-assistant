@@ -21,7 +21,12 @@ impl ToolExecutor {
                 let mut failed_files = Vec::new();
 
                 for path in paths {
-                    match explorer.read_file(path) {
+                    let full_path = if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        explorer.root_dir().join(path)
+                    };
+                    match explorer.read_file(&full_path) {
                         Ok(content) => {
                             loaded_files.insert(path.clone(), content);
                         }
@@ -42,7 +47,12 @@ impl ToolExecutor {
                 let mut failed_paths = Vec::new();
 
                 for path in paths {
-                    match explorer.list_files(path, *max_depth) {
+                    let full_path = if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        explorer.root_dir().join(path)
+                    };
+                    match explorer.list_files(&full_path, *max_depth) {
                         Ok(tree_entry) => {
                             expanded_paths.push((path.clone(), tree_entry));
                         }
@@ -79,7 +89,11 @@ impl ToolExecutor {
                 };
 
                 let search_path = if let Some(p) = path {
-                    p.clone()
+                    if p.is_absolute() {
+                        p.clone()
+                    } else {
+                        explorer.root_dir().join(p)
+                    }
                 } else {
                     explorer.root_dir()
                 };
@@ -124,12 +138,7 @@ impl ToolExecutor {
                     explorer.root_dir().join(path)
                 };
 
-                // Ensure the parent directory exists
-                if let Some(parent) = full_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-
-                match std::fs::write(path, content) {
+                match explorer.write_file(&full_path, content) {
                     Ok(_) => ToolResult::WriteFile {
                         path: path.clone(),
                         success: true,
@@ -143,18 +152,26 @@ impl ToolExecutor {
                 }
             }
 
-            Tool::UpdateFile { path, updates } => match explorer.apply_updates(path, updates) {
-                Ok(content) => ToolResult::UpdateFile {
-                    path: path.clone(),
-                    success: true,
-                    content,
-                },
-                Err(e) => ToolResult::UpdateFile {
-                    path: path.clone(),
-                    success: false,
-                    content: e.to_string(),
-                },
-            },
+            Tool::UpdateFile { path, updates } => {
+                let full_path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    explorer.root_dir().join(path)
+                };
+
+                match explorer.apply_updates(&full_path, updates) {
+                    Ok(new_content) => ToolResult::UpdateFile {
+                        path: path.clone(),
+                        success: true,
+                        content: new_content,
+                    },
+                    Err(e) => ToolResult::UpdateFile {
+                        path: path.clone(),
+                        success: false,
+                        content: e.to_string(),
+                    },
+                }
+            }
 
             Tool::Summarize { files } => ToolResult::Summarize {
                 files: files.clone(),
@@ -211,7 +228,7 @@ impl ToolExecutor {
                 let mut failed = Vec::new();
 
                 for path in paths {
-                    match std::fs::remove_file(path) {
+                    match explorer.delete_file(path) {
                         Ok(_) => deleted.push(path.clone()),
                         Err(e) => failed.push((path.clone(), e.to_string())),
                     }

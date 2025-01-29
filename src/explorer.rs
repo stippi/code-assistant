@@ -1,4 +1,7 @@
-use crate::types::{CodeExplorer, FileSystemEntryType, FileTreeEntry, FileUpdate, SearchMode, SearchOptions, SearchResult};
+use crate::types::{
+    CodeExplorer, FileSystemEntryType, FileTreeEntry, FileUpdate, SearchMode, SearchOptions,
+    SearchResult,
+};
 use anyhow::Result;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
@@ -197,6 +200,20 @@ impl CodeExplorer for Explorer {
         Ok(std::fs::read_to_string(path)?)
     }
 
+    fn write_file(&self, path: &PathBuf, content: &String) -> Result<()> {
+        debug!("Writing file: {}", path.display());
+        // Ensure the parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        Ok(std::fs::write(path, content)?)
+    }
+
+    fn delete_file(&self, path: &PathBuf) -> Result<()> {
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
     fn list_files(&self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry> {
         let mut entry = FileTreeEntry {
             name: path
@@ -284,7 +301,7 @@ impl CodeExplorer for Explorer {
 
             for (line_idx, line) in reader.lines().enumerate() {
                 let line = line?;
-                
+
                 // Find all matches in the line
                 let matches: Vec<_> = regex.find_iter(&line).collect();
                 if !matches.is_empty() {
@@ -309,9 +326,32 @@ impl CodeExplorer for Explorer {
 /// Helper function to determine if a file is likely to be a text file
 fn is_text_file(path: &Path) -> bool {
     let text_extensions = [
-        "txt", "md", "rs", "js", "py", "java", "c", "cpp", "h", "hpp",
-        "css", "html", "xml", "json", "yaml", "yml", "toml", "sh", "bash",
-        "zsh", "fish", "conf", "cfg", "ini", "properties", "env",
+        "txt",
+        "md",
+        "rs",
+        "js",
+        "py",
+        "java",
+        "c",
+        "cpp",
+        "h",
+        "hpp",
+        "css",
+        "html",
+        "xml",
+        "json",
+        "yaml",
+        "yml",
+        "toml",
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "conf",
+        "cfg",
+        "ini",
+        "properties",
+        "env",
     ];
 
     path.extension()
@@ -438,9 +478,15 @@ mod tests {
             },
         )?;
         assert_eq!(results.len(), 3);
-        assert!(results.iter().any(|r| r.line_content.contains("This is line 2")));
-        assert!(results.iter().any(|r| r.line_content.contains("Another file line 2")));
-        assert!(results.iter().any(|r| r.line_content.contains("Subdir line 2")));
+        assert!(results
+            .iter()
+            .any(|r| r.line_content.contains("This is line 2")));
+        assert!(results
+            .iter()
+            .any(|r| r.line_content.contains("Another file line 2")));
+        assert!(results
+            .iter()
+            .any(|r| r.line_content.contains("Subdir line 2")));
 
         // Test with max_results
         let results = explorer.search(

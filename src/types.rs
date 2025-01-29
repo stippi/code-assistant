@@ -391,6 +391,9 @@ pub trait CodeExplorer {
     fn root_dir(&self) -> PathBuf;
     /// Reads the content of a file
     fn read_file(&self, path: &PathBuf) -> Result<String>;
+    /// Write the content of a file
+    fn write_file(&self, path: &PathBuf, content: &String) -> Result<()>;
+    fn delete_file(&self, path: &PathBuf) -> Result<()>;
     fn create_initial_tree(&self, max_depth: usize) -> Result<FileTreeEntry>;
     fn list_files(&self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry>;
     /// Applies FileUpdates to a file
