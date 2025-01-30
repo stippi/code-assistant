@@ -21,7 +21,7 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool> {
 
     debug!("Found tool name: {}", tool_name);
 
-    let mut params = HashMap::new();
+    let mut params: HashMap<String, Vec<String>> = HashMap::new();
     let mut current_param = String::new();
     let mut current_value = String::new();
 
@@ -58,7 +58,7 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool> {
 
                         let value = line[content_start..content_end].trim().to_string();
                         debug!("Single-line parameter: {} = {}", current_param, value);
-                        params.insert(current_param.clone(), value);
+                        params.entry(current_param.clone()).or_default().push(value);
                         current_param.clear();
                     } else {
                         current_value.clear(); // Start collecting multi-line value
@@ -75,7 +75,10 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool> {
                 .map_or(false, |name| name == current_param)
             {
                 debug!("Parameter complete: {} = {}", current_param, current_value);
-                params.insert(current_param.clone(), current_value.trim().to_string());
+                params
+                    .entry(current_param.clone())
+                    .or_default()
+                    .push(current_value.trim().to_string());
                 current_param.clear();
                 current_value.clear();
             }
@@ -96,50 +99,66 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool> {
     parse_tool_from_params(&tool_name, &params)
 }
 
-pub fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>) -> Result<Tool> {
+pub fn parse_tool_from_params(
+    tool_name: &str,
+    params: &HashMap<String, Vec<String>>,
+) -> Result<Tool> {
     match tool_name {
         "search_files" => Ok(Tool::SearchFiles {
             query: params
                 .get("query")
                 .ok_or_else(|| anyhow::anyhow!("Missing query"))?
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("Query parameter is empty"))?
                 .to_string(),
-            path: params.get("path").map(PathBuf::from),
-            case_sensitive: params.get("case_sensitive").map_or(false, |v| v == "true"),
-            whole_words: params.get("whole_words").map_or(false, |v| v == "true"),
-            regex_mode: params.get("regex_mode").map_or(false, |v| v == "true"),
+            path: params
+                .get("path")
+                .and_then(|v| v.first())
+                .map(PathBuf::from),
+            case_sensitive: params
+                .get("case_sensitive")
+                .map_or(false, |v| v.first().map_or(false, |s| s == "true")),
+            whole_words: params
+                .get("whole_words")
+                .map_or(false, |v| v.first().map_or(false, |s| s == "true")),
+            regex_mode: params
+                .get("regex_mode")
+                .map_or(false, |v| v.first().map_or(false, |s| s == "true")),
             max_results: params
                 .get("max_results")
+                .and_then(|v| v.first())
                 .map(|v| v.trim().parse::<usize>())
                 .transpose()?,
         }),
 
         "list_files" => Ok(Tool::ListFiles {
             paths: params
-                .get("paths")
-                .ok_or_else(|| anyhow::anyhow!("Missing paths"))?
-                .split(',')
+                .get("path")
+                .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?
+                .iter()
                 .map(|s| PathBuf::from(s.trim()))
                 .collect(),
             max_depth: params
                 .get("max_depth")
+                .and_then(|v| v.first())
                 .map(|v| v.trim().parse::<usize>())
                 .transpose()?,
         }),
 
         "read_files" => Ok(Tool::ReadFiles {
             paths: params
-                .get("paths")
-                .ok_or_else(|| anyhow::anyhow!("Missing paths"))?
-                .split(',')
+                .get("path")
+                .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?
+                .iter()
                 .map(|s| PathBuf::from(s.trim()))
                 .collect(),
         }),
 
         "summarize" => Ok(Tool::Summarize {
             files: params
-                .get("files")
-                .ok_or_else(|| anyhow::anyhow!("Missing files"))?
-                .lines()
+                .get("file")
+                .ok_or_else(|| anyhow::anyhow!("Missing file parameter"))?
+                .iter()
                 .filter_map(|line| {
                     let mut parts = line.splitn(2, ':');
                     Some((
@@ -154,14 +173,15 @@ pub fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>)
             path: PathBuf::from(
                 params
                     .get("path")
-                    .ok_or_else(|| anyhow::anyhow!("Missing path"))?,
+                    .and_then(|v| v.first())
+                    .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
             ),
             updates: params
-                .get("updates")
-                .ok_or_else(|| anyhow::anyhow!("Missing updates"))?
-                .lines()
-                .filter_map(|line| {
-                    let mut parts = line.split(',');
+                .get("update")
+                .ok_or_else(|| anyhow::anyhow!("Missing update parameter"))?
+                .iter()
+                .filter_map(|update| {
+                    let mut parts = update.split(',');
                     Some(FileUpdate {
                         start_line: parts.next()?.trim().parse().ok()?,
                         end_line: parts.next()?.trim().parse().ok()?,
@@ -175,19 +195,21 @@ pub fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>)
             path: PathBuf::from(
                 params
                     .get("path")
-                    .ok_or_else(|| anyhow::anyhow!("Missing path"))?,
+                    .and_then(|v| v.first())
+                    .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
             ),
             content: params
                 .get("content")
-                .ok_or_else(|| anyhow::anyhow!("Missing content"))?
+                .and_then(|v| v.first())
+                .ok_or_else(|| anyhow::anyhow!("Missing content parameter"))?
                 .to_string(),
         }),
 
         "delete_files" => Ok(Tool::DeleteFiles {
             paths: params
-                .get("paths")
-                .ok_or_else(|| anyhow::anyhow!("Missing paths"))?
-                .split(',')
+                .get("path")
+                .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?
+                .iter()
                 .map(|s| PathBuf::from(s.trim()))
                 .collect(),
         }),
@@ -195,30 +217,41 @@ pub fn parse_tool_from_params(tool_name: &str, params: &HashMap<String, String>)
         "ask_user" => Ok(Tool::AskUser {
             question: params
                 .get("question")
-                .ok_or_else(|| anyhow::anyhow!("Missing question"))?
+                .ok_or_else(|| anyhow::anyhow!("Missing question parameter"))?
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("Question parameter is empty"))?
                 .to_string(),
         }),
 
         "message_user" => Ok(Tool::MessageUser {
             message: params
                 .get("message")
-                .ok_or_else(|| anyhow::anyhow!("Missing message"))?
+                .ok_or_else(|| anyhow::anyhow!("Missing message parameter"))?
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("Message parameter is empty"))?
                 .to_string(),
         }),
 
         "complete_task" => Ok(Tool::CompleteTask {
             message: params
                 .get("message")
-                .ok_or_else(|| anyhow::anyhow!("Missing message"))?
+                .ok_or_else(|| anyhow::anyhow!("Missing message parameter"))?
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("Message parameter is empty"))?
                 .to_string(),
         }),
 
         "execute_command" => Ok(Tool::ExecuteCommand {
             command_line: params
                 .get("command_line")
-                .ok_or_else(|| anyhow::anyhow!("Missing command_line"))?
+                .ok_or_else(|| anyhow::anyhow!("Missing command_line parameter"))?
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("Command line parameter is empty"))?
                 .to_string(),
-            working_dir: params.get("working_dir").map(PathBuf::from),
+            working_dir: params
+                .get("working_dir")
+                .and_then(|v| v.first())
+                .map(|v| PathBuf::from(v)),
         }),
 
         _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),

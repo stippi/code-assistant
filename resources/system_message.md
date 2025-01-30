@@ -105,6 +105,16 @@ Search and replace blocks here
 </param:diff>
 </tool:replace_in_file>
 
+## summarize
+Description: Summarize file contents to free up working memory.
+Parameters:
+- file: (required, multiple) Each file parameter contains a path and summary separated by ':'
+Usage:
+<tool:summarize>
+<param:file>path/to/file1.rs: A brief summary of file1</param:file>
+<param:file>path/to/file2.rs: A brief summary of file2</param:file>
+</tool:summarize>
+
 ## search_files
 Description: Request to perform a regex search across files in a specified directory, providing context-rich results. This tool searches for patterns or specific content across multiple files, displaying each match with encapsulating context.
 Parameters:
