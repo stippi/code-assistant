@@ -14,7 +14,7 @@ impl Tools {
             Self::list_files(),
             Self::read_files(),
             Self::summarize(),
-            Self::update_file(),
+            Self::replace_in_file(),
             Self::write_file(),
             Self::delete_files(),
             Self::ask_user(),
@@ -30,7 +30,7 @@ impl Tools {
             Self::list_files(),
             Self::read_files(),
             Self::summarize(),
-            Self::update_file(),
+            Self::replace_in_file(),
             Self::write_file(),
             Self::delete_files(),
         ]
@@ -171,46 +171,37 @@ impl Tools {
         }
     }
 
-    pub fn update_file() -> ToolDefinition {
+    pub fn replace_in_file() -> ToolDefinition {
         ToolDefinition {
-            name: "update_file".to_string(),
-            description: "Update sections in an existing file based on line numbers. IMPORTANT: Line numbers are 1-based, \
-                         matching the line numbers shown when viewing file resources. The end_line is exclusive, \
-                         meaning the section to replace ends before that line. For example, to replace lines 1-3, \
-                         use start_line: 1, end_line: 4. To insert new content without replacing anything, \
-                         use the same start_line and end_line. Provide the new content parameter first, \
-                         then start_line and end_line parameter according to what needs to be replaced.".to_string(),
+            name: "replace_in_file".to_string(),
+            description: "Replace sections in a file using search/replace blocks".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path to the file to update"
+                        "description": "Path to the file to modify"
                     },
-                    "updates": {
+                    "replacements": {
                         "type": "array",
-                        "description": "List of updates to apply to the file",
+                        "description": "List of search/replace pairs",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "new_content": {
+                                "search": {
                                     "type": "string",
-                                    "description": "The new content to insert (without line numbers)"
+                                    "description": "Exact content to find"
                                 },
-                                "start_line": {
-                                    "type": "integer",
-                                    "description": "First line number to replace (1-based, matching the displayed line numbers)"
-                                },
-                                "end_line": {
-                                    "type": "integer",
-                                    "description": "Line number right after the section to replace (1-based, matching the displayed line numbers)"
+                                "replace": {
+                                    "type": "string",
+                                    "description": "Content to replace with"
                                 }
                             },
-                            "required": ["new_content", "start_line", "end_line"]
+                            "required": ["search", "replace"]
                         }
                     }
                 },
-                "required": ["path", "updates"]
+                "required": ["path", "replacements"]
             }),
         }
     }

@@ -152,20 +152,20 @@ impl ToolExecutor {
                 }
             }
 
-            Tool::UpdateFile { path, updates } => {
+            Tool::ReplaceInFile { path, replacements } => {
                 let full_path = if path.is_absolute() {
                     path.clone()
                 } else {
                     explorer.root_dir().join(path)
                 };
 
-                match explorer.apply_updates(&full_path, updates) {
-                    Ok(new_content) => ToolResult::UpdateFile {
+                match explorer.apply_replacements(&full_path, replacements) {
+                    Ok(new_content) => ToolResult::ReplaceInFile {
                         path: path.clone(),
                         success: true,
                         content: new_content,
                     },
-                    Err(e) => ToolResult::UpdateFile {
+                    Err(e) => ToolResult::ReplaceInFile {
                         path: path.clone(),
                         success: false,
                         content: e.to_string(),

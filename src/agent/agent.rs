@@ -7,7 +7,7 @@ use crate::tools::{
 };
 use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
-use crate::utils::{format_with_line_numbers, CommandExecutor};
+use crate::utils::CommandExecutor;
 use anyhow::Result;
 use std::collections::HashMap;
 use tracing::debug;
@@ -221,13 +221,9 @@ impl Agent {
 
         // Add loaded files with their contents
         memory.push_str("Current Working Memory:\n");
-        memory.push_str("- Loaded files and their contents (with line numbers prepended):\n");
+        memory.push_str("- Loaded files and their contents:\n");
         for (path, content) in &self.working_memory.loaded_files {
-            memory.push_str(&format!(
-                "\n-----{}:\n{}\n",
-                path.display(),
-                format_with_line_numbers(content)
-            ));
+            memory.push_str(&format!("\n-----{}:\n{}\n", path.display(), content));
         }
 
         // Add file summaries

@@ -1,4 +1,4 @@
-use crate::types::FileUpdate;
+use crate::types::FileReplacement;
 use crate::types::Tool;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -99,6 +99,44 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool> {
     parse_tool_from_params(&tool_name, &params)
 }
 
+fn parse_search_replace_blocks(content: &str) -> Result<Vec<FileReplacement>> {
+    let mut replacements = Vec::new();
+    let mut lines = content.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        if line.trim() == "<<<<<<< SEARCH" {
+            let mut search = String::new();
+            let mut replace = String::new();
+
+            // Collect search content
+            while let Some(line) = lines.next() {
+                if line.trim() == "=======" {
+                    break;
+                }
+                if !search.is_empty() {
+                    search.push('\n');
+                }
+                search.push_str(line);
+            }
+
+            // Collect replace content
+            while let Some(line) = lines.next() {
+                if line.trim() == ">>>>>>> REPLACE" {
+                    break;
+                }
+                if !replace.is_empty() {
+                    replace.push('\n');
+                }
+                replace.push_str(line);
+            }
+
+            replacements.push(FileReplacement { search, replace });
+        }
+    }
+
+    Ok(replacements)
+}
+
 pub fn parse_tool_from_params(
     tool_name: &str,
     params: &HashMap<String, Vec<String>>,
@@ -169,26 +207,19 @@ pub fn parse_tool_from_params(
                 .collect(),
         }),
 
-        "update_file" => Ok(Tool::UpdateFile {
+        "replace_in_file" => Ok(Tool::ReplaceInFile {
             path: PathBuf::from(
                 params
                     .get("path")
                     .and_then(|v| v.first())
                     .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
             ),
-            updates: params
-                .get("update")
-                .ok_or_else(|| anyhow::anyhow!("Missing update parameter"))?
-                .iter()
-                .filter_map(|update| {
-                    let mut parts = update.split(',');
-                    Some(FileUpdate {
-                        start_line: parts.next()?.trim().parse().ok()?,
-                        end_line: parts.next()?.trim().parse().ok()?,
-                        new_content: parts.next()?.trim().to_string(),
-                    })
-                })
-                .collect(),
+            replacements: parse_search_replace_blocks(
+                params
+                    .get("diff")
+                    .and_then(|v| v.first())
+                    .ok_or_else(|| anyhow::anyhow!("Missing diff parameter"))?,
+            )?,
         }),
 
         "write_file" => Ok(Tool::WriteFile {
@@ -343,29 +374,25 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool> {
                 })
                 .collect::<Result<Vec<_>>>()?,
         }),
-        "update_file" => Ok(Tool::UpdateFile {
+        "replace_in_file" => Ok(Tool::ReplaceInFile {
             path: PathBuf::from(
                 params["path"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
             ),
-            updates: params["updates"]
+            replacements: params["replacements"]
                 .as_array()
-                .ok_or_else(|| anyhow::anyhow!("Missing or invalid updates array"))?
+                .ok_or_else(|| anyhow::anyhow!("Missing replacements array"))?
                 .iter()
-                .map(|update| {
-                    Ok(FileUpdate {
-                        start_line: update["start_line"]
-                            .as_u64()
-                            .ok_or_else(|| anyhow::anyhow!("Invalid or missing start_line"))?
-                            as usize,
-                        end_line: update["end_line"]
-                            .as_u64()
-                            .ok_or_else(|| anyhow::anyhow!("Invalid or missing end_line"))?
-                            as usize,
-                        new_content: update["new_content"]
+                .map(|r| {
+                    Ok(FileReplacement {
+                        search: r["search"]
                             .as_str()
-                            .ok_or_else(|| anyhow::anyhow!("Missing new_content"))?
+                            .ok_or_else(|| anyhow::anyhow!("Missing search content"))?
+                            .to_string(),
+                        replace: r["replace"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Missing replace content"))?
                             .to_string(),
                     })
                 })

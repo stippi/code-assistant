@@ -1,5 +1,5 @@
 use crate::types::{
-    CodeExplorer, FileSystemEntryType, FileTreeEntry, FileUpdate, SearchMode, SearchOptions,
+    CodeExplorer, FileReplacement, FileSystemEntryType, FileTreeEntry, SearchMode, SearchOptions,
     SearchResult,
 };
 use anyhow::Result;
@@ -242,13 +242,10 @@ impl CodeExplorer for Explorer {
         Ok(entry)
     }
 
-    fn apply_updates(&self, path: &Path, updates: &[FileUpdate]) -> Result<String> {
+    fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String> {
         let content = std::fs::read_to_string(path)?;
-        let updated_content = crate::utils::apply_content_updates(&content, updates)?;
-
-        // Update the stored content
+        let updated_content = crate::utils::apply_replacements(&content, replacements)?;
         std::fs::write(path, &updated_content)?;
-
         Ok(updated_content)
     }
 
@@ -402,46 +399,46 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_updates_single() -> Result<()> {
-        let (temp_dir, explorer) = setup_test_directory()?;
-        let initial_content = "Line 1\nLine 2\nLine 3\nLine 4\n";
-        let file_path = create_test_file(temp_dir.path(), "test.txt", initial_content)?;
+    fn test_apply_replacements() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let test_file = temp_dir.path().join("test.txt");
+        std::fs::write(&test_file, "line 1\nline 2\nline 3")?;
 
-        let updates = vec![FileUpdate {
-            start_line: 2,
-            end_line: 4,
-            new_content: "Updated Line 2\nUpdated Line 3".to_string(),
-        }];
+        let explorer = Explorer::new(temp_dir.path().to_path_buf());
 
-        let result = explorer.apply_updates(&file_path, &updates)?;
-        assert_eq!(result, "Line 1\nUpdated Line 2\nUpdated Line 3\nLine 4\n");
-        Ok(())
-    }
-
-    #[test]
-    fn test_apply_updates_multiple() -> Result<()> {
-        let (temp_dir, explorer) = setup_test_directory()?;
-        let initial_content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
-        let file_path = create_test_file(temp_dir.path(), "test.txt", initial_content)?;
-
-        let updates = vec![
-            FileUpdate {
-                start_line: 1,
-                end_line: 3,
-                new_content: "Updated Line 1\nUpdated Line 2".to_string(),
+        let replacements = vec![
+            FileReplacement {
+                search: "line 1\n".to_string(),
+                replace: "new line 1\n".to_string(),
             },
-            FileUpdate {
-                start_line: 4,
-                end_line: 6,
-                new_content: "Updated Line 4\nUpdated Line 5".to_string(),
+            FileReplacement {
+                search: "line 3".to_string(),
+                replace: "new line 3".to_string(),
             },
         ];
 
-        let result = explorer.apply_updates(&file_path, &updates)?;
-        assert_eq!(
-            result,
-            "Updated Line 1\nUpdated Line 2\nLine 3\nUpdated Line 4\nUpdated Line 5\n"
+        // Apply replacements and verify content
+        let result = explorer.apply_replacements(&test_file, &replacements)?;
+        assert_eq!(result, "new line 1\nline 2\nnew line 3");
+
+        // Verify file was actually modified
+        let content = std::fs::read_to_string(&test_file)?;
+        assert_eq!(content, "new line 1\nline 2\nnew line 3");
+
+        // Test error case with ambiguous search
+        let result = explorer.apply_replacements(
+            &test_file,
+            &[FileReplacement {
+                search: "line".to_string(),
+                replace: "test".to_string(),
+            }],
         );
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Found 3 occurrences"));
+
         Ok(())
     }
 

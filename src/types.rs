@@ -29,10 +29,9 @@ pub struct WorkingMemory {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct FileUpdate {
-    pub start_line: usize,
-    pub end_line: usize,
-    pub new_content: String,
+pub struct FileReplacement {
+    pub search: String,
+    pub replace: String,
 }
 
 /// Available tools the agent can use
@@ -51,10 +50,10 @@ pub enum Tool {
     ReadFiles { paths: Vec<PathBuf> },
     /// Write content to a file
     WriteFile { path: PathBuf, content: String },
-    /// Update parts of a file
-    UpdateFile {
+    /// Replace parts within a file
+    ReplaceInFile {
         path: PathBuf,
-        updates: Vec<FileUpdate>,
+        replacements: Vec<FileReplacement>,
     },
     /// Replace file content with summaries in working memory
     Summarize { files: Vec<(PathBuf, String)> },
@@ -113,7 +112,7 @@ pub enum ToolResult {
         success: bool,
         content: String,
     },
-    UpdateFile {
+    ReplaceInFile {
         path: PathBuf,
         success: bool,
         content: String,
@@ -249,11 +248,11 @@ impl ToolResult {
                     format!("Failed to write file: {}", path.display())
                 }
             }
-            ToolResult::UpdateFile { path, success, .. } => {
+            ToolResult::ReplaceInFile { path, success, .. } => {
                 if *success {
-                    format!("Successfully updated file: {}", path.display())
+                    format!("Successfully replaced in file: {}", path.display())
                 } else {
-                    format!("Failed to update file: {}", path.display())
+                    format!("Failed to replaced in file: {}", path.display())
                 }
             }
             ToolResult::DeleteFiles { deleted, failed } => {
@@ -299,7 +298,7 @@ impl ToolResult {
             ToolResult::SearchFiles { .. } => true,
             ToolResult::ExecuteCommand { success, .. } => *success,
             ToolResult::WriteFile { success, .. } => *success,
-            ToolResult::UpdateFile { success, .. } => *success,
+            ToolResult::ReplaceInFile { success, .. } => *success,
             ToolResult::DeleteFiles { deleted, .. } => !deleted.is_empty(),
             ToolResult::Summarize { .. } => true,
             ToolResult::AskUser { .. } => true,
@@ -396,8 +395,8 @@ pub trait CodeExplorer {
     fn delete_file(&self, path: &PathBuf) -> Result<()>;
     fn create_initial_tree(&self, max_depth: usize) -> Result<FileTreeEntry>;
     fn list_files(&self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry>;
-    /// Applies FileUpdates to a file
-    fn apply_updates(&self, path: &Path, updates: &[FileUpdate]) -> Result<String>;
+    /// Applies FileReplacements to a file
+    fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String>;
     /// Search for text in files with advanced options
     fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>>;
 }

@@ -214,7 +214,7 @@ impl CodeExplorer for MockExplorer {
         Err(anyhow::anyhow!("Path not found: {}", path.display()))
     }
 
-    fn apply_updates(&self, path: &Path, updates: &[FileUpdate]) -> Result<String, anyhow::Error> {
+    fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String> {
         let mut files = self.files.lock().unwrap();
 
         let content = files
@@ -222,7 +222,7 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))?
             .clone();
 
-        let updated_content = crate::utils::apply_content_updates(&content, updates)?;
+        let updated_content = crate::utils::apply_replacements(&content, replacements)?;
 
         // Update the stored content
         files.insert(path.to_path_buf(), updated_content.clone());
@@ -300,7 +300,7 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         Tool::ListFiles { .. } => "list_files",
         Tool::ReadFiles { .. } => "read_files",
         Tool::WriteFile { .. } => "write_file",
-        Tool::UpdateFile { .. } => "update_file",
+        Tool::ReplaceInFile { .. } => "replace_in_file",
         Tool::DeleteFiles { .. } => "delete_files",
         Tool::Summarize { .. } => "summarize",
         Tool::AskUser { .. } => "ask_user",
@@ -345,9 +345,9 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
             "path": path,
             "content": content
         }),
-        Tool::UpdateFile { path, updates } => serde_json::json!({
+        Tool::ReplaceInFile { path, replacements } => serde_json::json!({
             "path": path,
-            "updates": updates
+            "replacements": replacements
         }),
         Tool::DeleteFiles { paths } => serde_json::json!({
             "paths": paths
@@ -651,9 +651,13 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     let second_request = &locked_requests[1];
 
     if let MessageContent::Text(content) = &second_request.messages[0].content {
-        assert!(content.contains(
-            "Loaded files and their contents (with line numbers prepended):\n\n-----test.txt:\n   1 | line 1\n   2 | line 2\n   3 | line 3\n"
-        ), "File content not found in working memory message:\n{}", content);
+        assert!(
+            content.contains(
+                "Loaded files and their contents:\n\n-----test.txt:\nline 1\nline 2\nline 3\n"
+            ),
+            "File content not found in working memory message:\n{}",
+            content
+        );
     } else {
         panic!("Expected text content in message");
     }
@@ -741,5 +745,32 @@ fn test_flexible_xml_parsing() -> Result<()> {
         panic!("Expected Search tool");
     }
 
+    Ok(())
+}
+
+#[test]
+fn test_apply_replacements() -> Result<(), anyhow::Error> {
+    let mut files = HashMap::new();
+    files.insert(
+        PathBuf::from("./root/test.txt"),
+        "Hello World\nThis is a test\nGoodbye".to_string(),
+    );
+
+    let explorer = MockExplorer::new(files, None);
+
+    let replacements = vec![
+        FileReplacement {
+            search: "Hello World".to_string(),
+            replace: "Hi there".to_string(),
+        },
+        FileReplacement {
+            search: "Goodbye".to_string(),
+            replace: "See you".to_string(),
+        },
+    ];
+
+    let result = explorer.apply_replacements(&PathBuf::from("./root/test.txt"), &replacements)?;
+
+    assert_eq!(result, "Hi there\nThis is a test\nSee you");
     Ok(())
 }

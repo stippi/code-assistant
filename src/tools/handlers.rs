@@ -42,7 +42,7 @@ impl<'a> ToolResultHandler for AgentToolHandler<'a> {
                             .insert(path.clone(), summary.clone());
                     }
                 }
-                ToolResult::UpdateFile { path, content, .. } => {
+                ToolResult::ReplaceInFile { path, content, .. } => {
                     // Update working memory if file was loaded
                     if self.working_memory.loaded_files.contains_key(path) {
                         self.working_memory
@@ -146,7 +146,7 @@ impl ToolResultHandler for ReplayToolHandler {
                             .insert(path.clone(), summary.clone());
                     }
                 }
-                ToolResult::UpdateFile {
+                ToolResult::ReplaceInFile {
                     path,
                     content,
                     success: true,
