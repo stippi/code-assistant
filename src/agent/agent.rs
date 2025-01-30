@@ -9,18 +9,10 @@ use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
-use std::collections::HashMap;
 use tracing::debug;
 
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
-
-fn get_system_message(replacements: &HashMap<&str, String>) -> String {
-    let mut message = String::from(SYSTEM_MESSAGE);
-    for (key, value) in replacements {
-        message = message.replace(key, value);
-    }
-    message
-}
+const SYSTEM_MESSAGE_TOOLS: &str = include_str!("../../resources/system_message_tools.md");
 
 pub enum ToolMode {
     Native,
@@ -170,13 +162,12 @@ impl Agent {
     async fn get_next_actions(&self) -> Result<Vec<AgentAction>> {
         let messages = self.prepare_messages();
 
-        let replacements = HashMap::new();
-        // replacements.insert("${TOOL_TAG_PREFIX}", TOOL_TAG_PREFIX.to_string());
-        let system_message = get_system_message(&replacements);
-
         let request = LLMRequest {
             messages,
-            system_prompt: system_message,
+            system_prompt: match self.tool_mode {
+                ToolMode::Native => SYSTEM_MESSAGE.to_string(),
+                ToolMode::Xml => SYSTEM_MESSAGE_TOOLS.to_string(),
+            },
             tools: match self.tool_mode {
                 ToolMode::Native => Some(Tools::all()),
                 ToolMode::Xml => None,
