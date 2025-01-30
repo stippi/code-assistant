@@ -749,6 +749,60 @@ fn test_flexible_xml_parsing() -> Result<()> {
 }
 
 #[test]
+fn test_replacement_xml_parsing() -> Result<()> {
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: r#"I will fix the code formatting.
+
+<tool:replace_in_file>
+<param:path>src/main.rs</param:path>
+<param:diff>
+<<<<<<< SEARCH
+function test(){
+  console.log("messy");
+}
+=======
+function test() {
+    console.log("clean");
+}
+>>>>>>> REPLACE
+
+<<<<<<< SEARCH
+const x=42
+=======
+const x = 42;
+>>>>>>> REPLACE
+</param:diff>
+</tool:replace_in_file>"#
+                .to_string(),
+        }],
+    };
+
+    let actions = parse_llm_response(&response)?;
+    assert_eq!(actions.len(), 1);
+    assert!(actions[0].reasoning.contains("fix the code formatting"));
+
+    if let Tool::ReplaceInFile { path, replacements } = &actions[0].tool {
+        assert_eq!(path, &PathBuf::from("src/main.rs"));
+        assert_eq!(replacements.len(), 2);
+        assert_eq!(
+            replacements[0].search,
+            "function test(){\n  console.log(\"messy\");\n}"
+        );
+        assert_eq!(
+            replacements[0].replace,
+            "function test() {\n    console.log(\"clean\");\n}"
+        );
+        assert_eq!(replacements[1].search, "const x=42");
+        assert_eq!(replacements[1].replace, "const x = 42;");
+    } else {
+        panic!("Expected ReplaceInFile tool");
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_apply_replacements() -> Result<(), anyhow::Error> {
     let mut files = HashMap::new();
     files.insert(

@@ -190,7 +190,7 @@ impl Tools {
                             "properties": {
                                 "search": {
                                     "type": "string",
-                                    "description": "Exact content to find"
+                                    "description": "Exact content to find. Make sure it is unique in the file."
                                 },
                                 "replace": {
                                     "type": "string",

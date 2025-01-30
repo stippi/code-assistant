@@ -23,75 +23,38 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool> {
 
     let mut params: HashMap<String, Vec<String>> = HashMap::new();
     let mut current_param = String::new();
-    let mut current_value = String::new();
+    let mut content_start = 0;
 
-    for line in xml.lines() {
-        let line = line.trim();
-        debug!("Processing line: '{}'", line);
-
-        if line.is_empty()
-            || line == format!("<{}{}>", TOOL_TAG_PREFIX, tool_name)
-            || line == format!("</{}{}>", TOOL_TAG_PREFIX, tool_name)
-        {
-            debug!("Skipping tool tag line");
-            continue;
-        }
-
-        // Check for parameter start with prefix
-        if let Some(param_start) = line.strip_prefix(&format!("<{}", PARAM_TAG_PREFIX)) {
-            if !param_start.starts_with('/') {
-                // Ignore closing tags
+    let mut chars = xml.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
+        if ch == '<' {
+            // Check for parameter tag
+            let rest = &xml[i..];
+            debug!("Found '<', rest of string: {}", rest);
+            if rest.starts_with(&format!("</{}", PARAM_TAG_PREFIX)) {
+                // Closing tag
+                let param_name = rest[format!("</{}", PARAM_TAG_PREFIX).len()..] // skip the "</param:"
+                    .split('>')
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("Invalid closing tag format"))?;
+                debug!("Found closing tag for: {}", param_name);
+                if param_name == current_param {
+                    let content = &xml[content_start..i];
+                    debug!("Found content for {}: {}", current_param, content);
+                    params
+                        .entry(current_param.clone())
+                        .or_default()
+                        .push(content.to_string());
+                    current_param.clear();
+                }
+            } else if let Some(param_start) = rest.strip_prefix(&format!("<{}", PARAM_TAG_PREFIX)) {
+                // Opening tag
                 if let Some(param_name) = param_start.split('>').next() {
                     current_param = param_name.to_string();
-                    debug!("Found parameter start: {}", current_param);
-
-                    // Check if it's a single-line parameter
-                    if line.contains(&format!("</{}{}>", PARAM_TAG_PREFIX, current_param)) {
-                        // Find positions for start/end tags
-                        let content_start = line
-                            .find('>')
-                            .map(|pos| pos + 1)
-                            .ok_or_else(|| anyhow::anyhow!("Invalid parameter tag format"))?;
-                        let content_end = line
-                            .find(&format!("</{}{}>", PARAM_TAG_PREFIX, current_param))
-                            .ok_or_else(|| anyhow::anyhow!("Missing closing parameter tag"))?;
-
-                        let value = line[content_start..content_end].trim().to_string();
-                        debug!("Single-line parameter: {} = {}", current_param, value);
-                        params.entry(current_param.clone()).or_default().push(value);
-                        current_param.clear();
-                    } else {
-                        current_value.clear(); // Start collecting multi-line value
-                    }
+                    content_start = i + format!("<{}{}>", PARAM_TAG_PREFIX, param_name).len();
+                    debug!("Found param start: {} at {}", current_param, content_start);
                 }
-                continue;
             }
-        }
-
-        // Check for parameter end with prefix
-        if let Some(end_tag) = line.strip_prefix(&format!("</{}", PARAM_TAG_PREFIX)) {
-            if end_tag
-                .strip_suffix('>')
-                .map_or(false, |name| name == current_param)
-            {
-                debug!("Parameter complete: {} = {}", current_param, current_value);
-                params
-                    .entry(current_param.clone())
-                    .or_default()
-                    .push(current_value.trim().to_string());
-                current_param.clear();
-                current_value.clear();
-            }
-            continue;
-        }
-
-        // If we're inside a parameter, collect its value
-        if !current_param.is_empty() {
-            if !current_value.is_empty() {
-                current_value.push('\n');
-            }
-            current_value.push_str(line);
-            debug!("Added value content: {}", current_value);
         }
     }
 
