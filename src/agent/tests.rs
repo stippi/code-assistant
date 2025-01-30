@@ -1,9 +1,11 @@
 use super::*;
+use crate::agent::agent::parse_llm_response;
 use crate::llm::{types::*, LLMProvider, LLMRequest};
 use crate::persistence::MockStatePersistence;
 use crate::types::*;
 use crate::ui::{UIError, UIMessage, UserInterface};
 use crate::utils::{CommandExecutor, CommandOutput};
+use agent::ToolMode;
 use anyhow::Result;
 use async_trait::async_trait;
 use regex::RegexBuilder;
@@ -183,6 +185,18 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))
     }
 
+    fn write_file(&self, path: &PathBuf, content: &String) -> Result<()> {
+        let mut files = self.files.lock().unwrap();
+        files.insert(path.to_path_buf(), content.clone());
+        Ok(())
+    }
+
+    fn delete_file(&self, path: &PathBuf) -> Result<()> {
+        let mut files = self.files.lock().unwrap();
+        files.remove(path);
+        Ok(())
+    }
+
     fn create_initial_tree(&self, _max_depth: usize) -> Result<FileTreeEntry, anyhow::Error> {
         self.file_tree
             .lock()
@@ -200,7 +214,7 @@ impl CodeExplorer for MockExplorer {
         Err(anyhow::anyhow!("Path not found: {}", path.display()))
     }
 
-    fn apply_updates(&self, path: &Path, updates: &[FileUpdate]) -> Result<String, anyhow::Error> {
+    fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String> {
         let mut files = self.files.lock().unwrap();
 
         let content = files
@@ -208,7 +222,7 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))?
             .clone();
 
-        let updated_content = crate::utils::apply_content_updates(&content, updates)?;
+        let updated_content = crate::utils::apply_replacements(&content, replacements)?;
 
         // Update the stored content
         files.insert(path.to_path_buf(), updated_content.clone());
@@ -216,7 +230,11 @@ impl CodeExplorer for MockExplorer {
         Ok(updated_content)
     }
 
-    fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>, anyhow::Error> {
+    fn search(
+        &self,
+        path: &Path,
+        options: SearchOptions,
+    ) -> Result<Vec<SearchResult>, anyhow::Error> {
         let files = self.files.lock().unwrap();
         let max_results = options.max_results.unwrap_or(usize::MAX);
         let mut results = Vec::new();
@@ -276,89 +294,94 @@ impl CodeExplorer for MockExplorer {
 
 // Helper function to create a test response
 fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
-    let response = serde_json::json!({
-        "reasoning": reasoning,
-        "tool": {
-            "name": match &tool {
-                Tool::ListFiles { .. } => "ListFiles",
-                Tool::ReadFiles { .. } => "ReadFiles",
-                Tool::WriteFile { .. } => "WriteFile",
-                Tool::UpdateFile { .. } => "UpdateFile",
-                Tool::DeleteFiles { .. } => "DeleteFiles",
-                Tool::Summarize { .. } => "Summarize",
-                Tool::AskUser { .. } => "AskUser",
-                Tool::MessageUser { .. } => "MessageUser",
-                Tool::ExecuteCommand { .. } => "ExecuteCommand",
-                Tool::CompleteTask { .. } => "CompleteTask",
-                Tool::Search { .. } => "Search",
-            },
-            "params": match &tool {
-                Tool::ListFiles { paths, max_depth } => {
-                    let mut map = serde_json::Map::new();
-                    map.insert("paths".to_string(), serde_json::json!(paths));
-                    if let Some(depth) = max_depth {
-                        map.insert("max_depth".to_string(), serde_json::json!(depth));
-                    }
-                    serde_json::Value::Object(map)
-                },
-                Tool::ReadFiles { paths } => serde_json::json!({
-                    "paths": paths
-                }),
-                Tool::WriteFile { path, content } => serde_json::json!({
-                    "path": path,
-                    "content": content
-                }),
-                Tool::UpdateFile { path, updates } => serde_json::json!({
-                    "path": path,
-                    "updates": updates
-                }),
-                Tool::DeleteFiles { paths } => serde_json::json!({
-                    "paths": paths
-                }),
-                Tool::Summarize { files } => serde_json::json!({
-                    "files": files.iter().map(|(path, summary)| {
-                        serde_json::json!({
-                            "path": path,
-                            "summary": summary
-                        })
-                    }).collect::<Vec<_>>()
-                }),
-                Tool::AskUser { question } => serde_json::json!({
-                    "question": question
-                }),
-                Tool::MessageUser { message } => serde_json::json!({
-                    "message": message
-                }),
-                Tool::ExecuteCommand { command_line, working_dir } => serde_json::json!({
-                    "command_line": command_line,
-                    "working_dir": working_dir
-                }),
-                Tool::CompleteTask { message } => serde_json::json!({
-                    "message": message
-                }),
-                Tool::Search {
-                    query,
-                    path,
-                    case_sensitive,
-                    whole_words,
-                    regex_mode,
-                    max_results,
-                } => serde_json::json!({
-                    "query": query,
-                    "path": path,
-                    "case_sensitive": case_sensitive,
-                    "whole_words": whole_words,
-                    "regex_mode": regex_mode,
-                    "max_results": max_results
-                }),
+    let tool_name = match &tool {
+        Tool::SearchFiles { .. } => "search_files",
+        Tool::ExecuteCommand { .. } => "execute_command",
+        Tool::ListFiles { .. } => "list_files",
+        Tool::ReadFiles { .. } => "read_files",
+        Tool::WriteFile { .. } => "write_file",
+        Tool::ReplaceInFile { .. } => "replace_in_file",
+        Tool::DeleteFiles { .. } => "delete_files",
+        Tool::Summarize { .. } => "summarize",
+        Tool::AskUser { .. } => "ask_user",
+        Tool::MessageUser { .. } => "message_user",
+        Tool::CompleteTask { .. } => "complete_task",
+    };
+    let tool_input = match &tool {
+        Tool::SearchFiles {
+            query,
+            path,
+            case_sensitive,
+            whole_words,
+            regex_mode,
+            max_results,
+        } => serde_json::json!({
+            "query": query,
+            "path": path,
+            "case_sensitive": case_sensitive,
+            "whole_words": whole_words,
+            "regex_mode": regex_mode,
+            "max_results": max_results
+        }),
+        Tool::ExecuteCommand {
+            command_line,
+            working_dir,
+        } => serde_json::json!({
+            "command_line": command_line,
+            "working_dir": working_dir
+        }),
+        Tool::ListFiles { paths, max_depth } => {
+            let mut map = serde_json::Map::new();
+            map.insert("paths".to_string(), serde_json::json!(paths));
+            if let Some(depth) = max_depth {
+                map.insert("max_depth".to_string(), serde_json::json!(depth));
             }
+            serde_json::Value::Object(map)
         }
-    });
+        Tool::ReadFiles { paths } => serde_json::json!({
+            "paths": paths
+        }),
+        Tool::WriteFile { path, content } => serde_json::json!({
+            "path": path,
+            "content": content
+        }),
+        Tool::ReplaceInFile { path, replacements } => serde_json::json!({
+            "path": path,
+            "replacements": replacements
+        }),
+        Tool::DeleteFiles { paths } => serde_json::json!({
+            "paths": paths
+        }),
+        Tool::Summarize { files } => serde_json::json!({
+            "files": files.iter().map(|(path, summary)| {
+                serde_json::json!({
+                    "path": path,
+                    "summary": summary
+                })
+            }).collect::<Vec<_>>()
+        }),
+        Tool::AskUser { question } => serde_json::json!({
+            "question": question
+        }),
+        Tool::MessageUser { message } => serde_json::json!({
+            "message": message
+        }),
+        Tool::CompleteTask { message } => serde_json::json!({
+            "message": message
+        }),
+    };
 
     LLMResponse {
-        content: vec![ContentBlock::Text {
-            text: response.to_string(),
-        }],
+        content: vec![
+            ContentBlock::Text {
+                text: reasoning.to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "some-tool-id".to_string(),
+                name: tool_name.to_string(),
+                input: tool_input,
+            },
+        ],
     }
 }
 
@@ -523,6 +546,7 @@ async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
+        ToolMode::Native,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(mock_ui.clone()),
@@ -569,6 +593,7 @@ async fn test_agent_ask_user() -> Result<(), anyhow::Error> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
+        ToolMode::Native,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(mock_ui.clone()),
@@ -611,6 +636,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
+        ToolMode::Native,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
@@ -625,9 +651,13 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     let second_request = &locked_requests[1];
 
     if let MessageContent::Text(content) = &second_request.messages[0].content {
-        assert!(content.contains(
-            "Loaded files and their contents (with line numbers prepended):\n\n-----test.txt:\n   1 | line 1\n   2 | line 2\n   3 | line 3\n"
-        ), "File content not found in working memory message:\n{}", content);
+        assert!(
+            content.contains(
+                "Loaded files and their contents:\n\n-----test.txt:\nline 1\nline 2\nline 3\n"
+            ),
+            "File content not found in working memory message:\n{}",
+            content
+        );
     } else {
         panic!("Expected text content in message");
     }
@@ -656,6 +686,7 @@ async fn test_execute_command() -> Result<()> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
+        ToolMode::Native,
         Box::new(create_explorer_mock()),
         Box::new(mock_command_executor),
         Box::new(MockUI::default()),
@@ -673,5 +704,121 @@ async fn test_execute_command() -> Result<()> {
     assert_eq!(captured_commands[0].0, "test command");
     assert_eq!(captured_commands[0].1, None);
 
+    Ok(())
+}
+
+#[test]
+fn test_flexible_xml_parsing() -> Result<()> {
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: r#"I will search for TODO comments in the code.
+
+<tool:search_files>
+<param:query>TODO & FIXME <html></param:query>
+<param:path>src/</param:path>
+<param:case_sensitive>true</param:case_sensitive>
+<param:max_results>
+    50
+</param:max_results>
+</tool:search_files>"#
+                .to_string(),
+        }],
+    };
+
+    let actions = parse_llm_response(&response)?;
+    assert_eq!(actions.len(), 1);
+    assert!(actions[0].reasoning.contains("search for TODO comments"));
+
+    if let Tool::SearchFiles {
+        query, max_results, ..
+    } = &actions[0].tool
+    {
+        assert_eq!(query, "TODO & FIXME <html>"); // Notice the & character is allowed and also tags
+        assert_eq!(*max_results, Some(50));
+    } else {
+        panic!("Expected Search tool");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_replacement_xml_parsing() -> Result<()> {
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: r#"I will fix the code formatting.
+
+<tool:replace_in_file>
+<param:path>src/main.rs</param:path>
+<param:diff>
+<<<<<<< SEARCH
+function test(){
+  console.log("messy");
+}
+=======
+function test() {
+    console.log("clean");
+}
+>>>>>>> REPLACE
+
+<<<<<<< SEARCH
+const x=42
+=======
+const x = 42;
+>>>>>>> REPLACE
+</param:diff>
+</tool:replace_in_file>"#
+                .to_string(),
+        }],
+    };
+
+    let actions = parse_llm_response(&response)?;
+    assert_eq!(actions.len(), 1);
+    assert!(actions[0].reasoning.contains("fix the code formatting"));
+
+    if let Tool::ReplaceInFile { path, replacements } = &actions[0].tool {
+        assert_eq!(path, &PathBuf::from("src/main.rs"));
+        assert_eq!(replacements.len(), 2);
+        assert_eq!(
+            replacements[0].search,
+            "function test(){\n  console.log(\"messy\");\n}"
+        );
+        assert_eq!(
+            replacements[0].replace,
+            "function test() {\n    console.log(\"clean\");\n}"
+        );
+        assert_eq!(replacements[1].search, "const x=42");
+        assert_eq!(replacements[1].replace, "const x = 42;");
+    } else {
+        panic!("Expected ReplaceInFile tool");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_apply_replacements() -> Result<(), anyhow::Error> {
+    let mut files = HashMap::new();
+    files.insert(
+        PathBuf::from("./root/test.txt"),
+        "Hello World\nThis is a test\nGoodbye".to_string(),
+    );
+
+    let explorer = MockExplorer::new(files, None);
+
+    let replacements = vec![
+        FileReplacement {
+            search: "Hello World".to_string(),
+            replace: "Hi there".to_string(),
+        },
+        FileReplacement {
+            search: "Goodbye".to_string(),
+            replace: "See you".to_string(),
+        },
+    ];
+
+    let result = explorer.apply_replacements(&PathBuf::from("./root/test.txt"), &replacements)?;
+
+    assert_eq!(result, "Hi there\nThis is a test\nSee you");
     Ok(())
 }

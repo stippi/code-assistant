@@ -1,5 +1,4 @@
 mod handler;
-mod resources;
 mod server;
 mod types;
 

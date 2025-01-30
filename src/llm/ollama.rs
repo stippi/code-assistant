@@ -103,13 +103,11 @@ impl LLMProvider for OllamaClient {
     async fn send_message(&self, request: LLMRequest) -> Result<LLMResponse> {
         let mut messages: Vec<OllamaMessage> = Vec::new();
 
-        // Add system message if present
-        if let Some(system_prompt) = request.system_prompt {
-            messages.push(OllamaMessage {
-                role: "system".to_string(),
-                content: system_prompt,
-            });
-        }
+        // Add system message
+        messages.push(OllamaMessage {
+            role: "system".to_string(),
+            content: request.system_prompt,
+        });
 
         // Add conversation messages
         messages.extend(request.messages.iter().map(Self::convert_message));

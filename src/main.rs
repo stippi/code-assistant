@@ -3,13 +3,15 @@ mod explorer;
 mod llm;
 mod mcp;
 mod persistence;
+mod tool_definitions;
+mod tools;
 mod types;
 mod ui;
 mod utils;
 
-use crate::agent::Agent;
+use crate::agent::{Agent, ToolMode};
 use crate::explorer::Explorer;
-use crate::llm::{AnthropicClient, LLMProvider, OllamaClient, OpenAIClient};
+use crate::llm::{AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient};
 use crate::mcp::MCPServer;
 use crate::ui::terminal::TerminalUI;
 use crate::utils::DefaultCommandExecutor;
@@ -25,6 +27,13 @@ enum LLMProviderType {
     Anthropic,
     OpenAI,
     Ollama,
+    Vertex,
+}
+
+#[derive(ValueEnum, Debug, Clone)]
+enum ToolsType {
+    Native,
+    Xml,
 }
 
 #[derive(Parser, Debug)]
@@ -65,6 +74,10 @@ enum Mode {
         /// Context window size (in tokens, only relevant for Ollama)
         #[arg(long, default_value = "8192")]
         num_ctx: usize,
+
+        /// Type of tool declaration ('native' = tools via API, 'xml' = custom system message)
+        #[arg(long)]
+        tools_type: ToolsType,
     },
     /// Run as MCP server
     Server {
@@ -103,6 +116,18 @@ fn create_llm_client(
             Ok(Box::new(OpenAIClient::new(
                 api_key,
                 model.clone().unwrap_or_else(|| "gpt-4o".to_string()),
+            )))
+        }
+
+        LLMProviderType::Vertex => {
+            let api_key = std::env::var("GOOGLE_API_KEY")
+                .context("GOOGLE_API_KEY environment variable not set")?;
+
+            Ok(Box::new(VertexClient::new(
+                api_key,
+                model
+                    .clone()
+                    .unwrap_or_else(|| "gemini-1.5-pro-latest".to_string()),
             )))
         }
 
@@ -156,6 +181,7 @@ async fn main() -> Result<()> {
             provider,
             model,
             num_ctx,
+            tools_type,
         } => {
             // Setup logging based on verbose flag
             setup_logging(verbose, true);
@@ -190,6 +216,10 @@ async fn main() -> Result<()> {
             // Initialize agent
             let mut agent = Agent::new(
                 llm_client,
+                match &tools_type {
+                    ToolsType::Native => ToolMode::Native,
+                    ToolsType::Xml => ToolMode::Xml,
+                },
                 explorer,
                 command_executor,
                 terminal_ui,

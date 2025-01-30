@@ -133,6 +133,10 @@ struct AnthropicRequest {
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
 }
 
 pub struct AnthropicClient {
@@ -323,9 +327,27 @@ impl LLMProvider for AnthropicClient {
         let anthropic_request = AnthropicRequest {
             model: self.model.clone(),
             messages: request.messages,
-            max_tokens: request.max_tokens,
-            temperature: request.temperature,
-            system: request.system_prompt,
+            max_tokens: 8192,
+            temperature: 0.7,
+            system: Some(request.system_prompt),
+            tool_choice: match &request.tools {
+                Some(_) => Some(serde_json::json!({
+                    "type": "any",
+                })),
+                _ => None,
+            },
+            tools: request.tools.map(|tools| {
+                tools
+                    .into_iter()
+                    .map(|tool| {
+                        serde_json::json!({
+                            "name": tool.name,
+                            "description": tool.description,
+                            "input_schema": tool.parameters
+                        })
+                    })
+                    .collect()
+            }),
         };
 
         self.send_with_retry(&anthropic_request, 3).await

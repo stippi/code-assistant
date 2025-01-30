@@ -12,9 +12,12 @@ struct OpenAIRequest {
     model: String,
     messages: Vec<OpenAIChatMessage>,
     temperature: f32,
-    max_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -292,6 +295,7 @@ impl OpenAIClient {
             .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
 
         // Convert to our generic LLMResponse format
+        // TODO: Handle tools
         let response = LLMResponse {
             content: vec![ContentBlock::Text {
                 text: openai_response.choices[0].message.content.clone(),
@@ -307,13 +311,11 @@ impl LLMProvider for OpenAIClient {
     async fn send_message(&self, request: LLMRequest) -> Result<LLMResponse> {
         let mut messages: Vec<OpenAIChatMessage> = Vec::new();
 
-        // Add system message if present
-        if let Some(system_prompt) = request.system_prompt {
-            messages.push(OpenAIChatMessage {
-                role: "system".to_string(),
-                content: system_prompt,
-            });
-        }
+        // Add system message
+        messages.push(OpenAIChatMessage {
+            role: "system".to_string(),
+            content: request.system_prompt,
+        });
 
         // Add conversation messages
         messages.extend(request.messages.iter().map(Self::convert_message));
@@ -321,9 +323,29 @@ impl LLMProvider for OpenAIClient {
         let openai_request = OpenAIRequest {
             model: self.model.clone(),
             messages,
-            temperature: request.temperature,
-            max_tokens: Some(request.max_tokens),
+            temperature: 1.0,
             stream: None,
+            tool_choice: match &request.tools {
+                Some(_) => Some(serde_json::json!({
+                    "type": "any",
+                })),
+                _ => None,
+            },
+            tools: request.tools.map(|tools| {
+                tools
+                    .into_iter()
+                    .map(|tool| {
+                        serde_json::json!({
+                            "type": "function",
+                            "function": {
+                                "name": tool.name,
+                                "description": tool.description,
+                                "parameters": tool.parameters
+                            }
+                        })
+                    })
+                    .collect()
+            }),
         };
 
         self.send_with_retry(&openai_request, 3).await
