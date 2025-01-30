@@ -316,7 +316,7 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
                         let tool = parse_tool_xml(tool_content)?;
                         actions.push(AgentAction {
                             tool,
-                            reasoning: reasoning.trim().to_string(),
+                            reasoning: remove_thinking_tags(reasoning.trim()).to_owned(),
                         });
 
                         current_pos = abs_end;
@@ -340,11 +340,19 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
             let tool = parse_tool_json(name, input)?;
             actions.push(AgentAction {
                 tool,
-                reasoning: reasoning.trim().to_string(),
+                reasoning: remove_thinking_tags(reasoning.trim()).to_owned(),
             });
             reasoning = String::new();
         }
     }
 
     Ok(actions)
+}
+
+fn remove_thinking_tags(input: &str) -> &str {
+    if input.starts_with("<thinking>") && input.ends_with("</thinking>") {
+        &input[10..input.len() - 11]
+    } else {
+        input
+    }
 }
