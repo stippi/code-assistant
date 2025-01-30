@@ -330,6 +330,12 @@ impl LLMProvider for AnthropicClient {
             max_tokens: 8192,
             temperature: 0.7,
             system: Some(request.system_prompt),
+            tool_choice: match &request.tools {
+                Some(_) => Some(serde_json::json!({
+                    "type": "any",
+                })),
+                _ => None,
+            },
             tools: request.tools.map(|tools| {
                 tools
                     .into_iter()
@@ -342,9 +348,6 @@ impl LLMProvider for AnthropicClient {
                     })
                     .collect()
             }),
-            tool_choice: Some(serde_json::json!({
-                "type": "any",
-            })),
         };
 
         self.send_with_retry(&anthropic_request, 3).await

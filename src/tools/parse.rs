@@ -3,13 +3,13 @@ use crate::types::Tool;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::debug;
+use tracing::trace;
 
 pub const TOOL_TAG_PREFIX: &str = "tool:";
 const PARAM_TAG_PREFIX: &str = "param:";
 
 pub fn parse_tool_xml(xml: &str) -> Result<Tool> {
-    debug!("Parsing XML:\n{}", xml);
+    trace!("Parsing XML:\n{}", xml);
 
     let tool_name = xml
         .trim()
@@ -19,7 +19,7 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool> {
         .ok_or_else(|| anyhow::anyhow!("Missing tool name"))?
         .to_string();
 
-    debug!("Found tool name: {}", tool_name);
+    trace!("Found tool name: {}", tool_name);
 
     let mut params: HashMap<String, Vec<String>> = HashMap::new();
     let mut current_param = String::new();
@@ -30,17 +30,17 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool> {
         if ch == '<' {
             // Check for parameter tag
             let rest = &xml[i..];
-            debug!("Found '<', rest of string: {}", rest);
+            trace!("Found '<', rest of string: {}", rest);
             if rest.starts_with(&format!("</{}", PARAM_TAG_PREFIX)) {
                 // Closing tag
                 let param_name = rest[format!("</{}", PARAM_TAG_PREFIX).len()..] // skip the "</param:"
                     .split('>')
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("Invalid closing tag format"))?;
-                debug!("Found closing tag for: {}", param_name);
+                trace!("Found closing tag for: {}", param_name);
                 if param_name == current_param {
                     let content = &xml[content_start..i];
-                    debug!("Found content for {}: {}", current_param, content);
+                    trace!("Found content for {}: {}", current_param, content);
                     params
                         .entry(current_param.clone())
                         .or_default()
@@ -52,13 +52,13 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool> {
                 if let Some(param_name) = param_start.split('>').next() {
                     current_param = param_name.to_string();
                     content_start = i + format!("<{}{}>", PARAM_TAG_PREFIX, param_name).len();
-                    debug!("Found param start: {} at {}", current_param, content_start);
+                    trace!("Found param start: {} at {}", current_param, content_start);
                 }
             }
         }
     }
 
-    debug!("Final parameters: {:?}", params);
+    trace!("Final parameters: {:?}", params);
     parse_tool_from_params(&tool_name, &params)
 }
 

@@ -16,6 +16,8 @@ struct OpenAIRequest {
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -323,6 +325,12 @@ impl LLMProvider for OpenAIClient {
             messages,
             temperature: 1.0,
             stream: None,
+            tool_choice: match &request.tools {
+                Some(_) => Some(serde_json::json!({
+                    "type": "any",
+                })),
+                _ => None,
+            },
             tools: request.tools.map(|tools| {
                 tools
                     .into_iter()
