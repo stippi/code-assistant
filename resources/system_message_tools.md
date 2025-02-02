@@ -136,8 +136,19 @@ Parameters:
 Usage:
 <tool:list_files>
 <param:path>Directory path here</param:path>
+<param:path>Another directory path here</param:path>
 <param:max_depth>level (optional)</param:max_depth>
 </tool:list_files>
+
+## delete_files
+Description: Request to delete one or more files at the specified paths. Use this when you need to delete files you no longer need. Will also remove the contents of the files from the working memory. Use only after you really do not need the files anymore.
+Parameters:
+- path: (required) The path of the file to delete (relative to the project root directory)
+Usage:
+<tool:delete_files>
+<param:path>File path here</param:path>
+<param:path>Another file path here</param:path>
+</tool:delete_files>
 
 ## ask_user
 Description: Ask the user a question to gather additional information needed to complete the task. This tool should be used when you encounter ambiguities, need clarification, or require more details to proceed effectively. It allows for interactive problem-solving by enabling direct communication with the user. Use this tool judiciously to maintain a balance between gathering necessary information and avoiding excessive back-and-forth.
