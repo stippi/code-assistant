@@ -7,15 +7,21 @@ pub mod vertex;
 pub use anthropic::AnthropicClient;
 pub use ollama::OllamaClient;
 pub use openai::OpenAIClient;
-pub use vertex::VertexClient;
 pub use types::*;
+pub use vertex::VertexClient;
 
 use anyhow::Result;
 use async_trait::async_trait;
+
+pub type StreamingCallback = fn(&str) -> Result<()>;
 
 /// Trait for different LLM provider implementations
 #[async_trait]
 pub trait LLMProvider {
     /// Sends a request to the LLM service
-    async fn send_message(&self, request: LLMRequest) -> Result<LLMResponse>;
+    async fn send_message(
+        &self,
+        request: LLMRequest,
+        streaming_callback: Option<StreamingCallback>,
+    ) -> Result<LLMResponse>;
 }

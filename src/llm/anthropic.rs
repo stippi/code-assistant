@@ -1,9 +1,13 @@
-use crate::llm::{types::*, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler};
+use crate::llm::{
+    types::*, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, Response, StatusCode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::str::{self};
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, warn};
@@ -137,6 +141,59 @@ struct AnthropicRequest {
     tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum StreamEvent {
+    #[serde(rename = "message_start")]
+    MessageStart { message: MessageStart },
+    #[serde(rename = "content_block_start")]
+    ContentBlockStart {
+        index: usize,
+        content_block: StreamContentBlock,
+    },
+    #[serde(rename = "content_block_delta")]
+    ContentBlockDelta { index: usize, delta: ContentDelta },
+    #[serde(rename = "content_block_stop")]
+    ContentBlockStop { index: usize },
+    #[serde(rename = "message_delta")]
+    MessageDelta,
+    #[serde(rename = "message_stop")]
+    MessageStop,
+    #[serde(rename = "ping")]
+    Ping,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageStart {
+    id: String,
+    #[serde(rename = "type")]
+    message_type: String,
+    role: String,
+    model: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamContentBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    text: Option<String>,
+    // Fields for tool use blocks
+    id: Option<String>,
+    name: Option<String>,
+    input: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum ContentDelta {
+    #[serde(rename = "text_delta")]
+    TextDelta { text: String },
+    #[serde(rename = "input_json_delta")]
+    InputJsonDelta { partial_json: String },
 }
 
 pub struct AnthropicClient {
@@ -159,12 +216,16 @@ impl AnthropicClient {
     async fn send_with_retry(
         &self,
         request: &AnthropicRequest,
+        streaming_callback: Option<StreamingCallback>,
         max_retries: u32,
     ) -> Result<LLMResponse> {
         let mut attempts = 0;
 
         loop {
-            match self.try_send_request(request).await {
+            match self
+                .try_send_request(request, streaming_callback.clone())
+                .await
+            {
                 Ok((response, rate_limits)) => {
                     // Log rate limit status on successful response
                     rate_limits.log_status();
@@ -246,12 +307,20 @@ impl AnthropicClient {
     async fn try_send_request(
         &self,
         request: &AnthropicRequest,
+        streaming_callback: Option<StreamingCallback>,
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
-        let response = self
+        let accept_value = if let Some(_) = streaming_callback {
+            "text/event-stream"
+        } else {
+            "application/json"
+        };
+
+        let mut response = self
             .client
             .post(&self.base_url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
+            .header("accept", accept_value)
             .json(request)
             .send()
             .await
@@ -267,12 +336,12 @@ impl AnthropicClient {
         debug!("Parsed rate limits: {:?}", rate_limits);
 
         let status = response.status();
-        let response_text = response
-            .text()
-            .await
-            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
-
         if !status.is_success() {
+            let response_text = response
+                .text()
+                .await
+                .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+
             // Try to parse the error response
             let error = if let Ok(error_response) =
                 serde_json::from_str::<AnthropicErrorResponse>(&response_text)
@@ -314,22 +383,166 @@ impl AnthropicClient {
             .into());
         }
 
-        let llm_response = serde_json::from_str(&response_text)
-            .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
+        if let Some(callback) = streaming_callback {
+            let mut blocks: Vec<ContentBlock> = Vec::new();
+            let mut current_block_index: Option<usize> = None;
+            let mut current_content = String::new();
+            let mut line_buffer = String::new();
 
-        Ok((llm_response, rate_limits))
+            fn process_chunk(
+                chunk: &[u8],
+                line_buffer: &mut String,
+                blocks: &mut Vec<ContentBlock>,
+                current_block_index: &mut Option<usize>,
+                current_content: &mut String,
+                callback: StreamingCallback,
+            ) -> Result<()> {
+                let chunk_str = str::from_utf8(chunk)?;
+
+                for c in chunk_str.chars() {
+                    if c == '\n' {
+                        if !line_buffer.is_empty() {
+                            process_sse_line(
+                                line_buffer,
+                                blocks,
+                                current_block_index,
+                                current_content,
+                                callback,
+                            )?;
+                            line_buffer.clear();
+                        }
+                    } else {
+                        line_buffer.push(c);
+                    }
+                }
+                Ok(())
+            }
+
+            fn process_sse_line(
+                line: &str,
+                blocks: &mut Vec<ContentBlock>,
+                current_block_index: &mut Option<usize>,
+                current_content: &mut String,
+                callback: StreamingCallback,
+            ) -> Result<()> {
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
+                        match event {
+                            StreamEvent::ContentBlockStart {
+                                index,
+                                content_block,
+                            } => {
+                                *current_block_index = Some(index);
+                                if blocks.len() <= index {
+                                    // Create the right content block type based on the received type
+                                    let block = match content_block.block_type.as_str() {
+                                        "text" => ContentBlock::Text {
+                                            text: content_block.text.unwrap_or_default(),
+                                        },
+                                        "tool_use" => ContentBlock::ToolUse {
+                                            id: content_block.id.unwrap_or_default(),
+                                            name: content_block.name.unwrap_or_default(),
+                                            input: serde_json::Value::Null,
+                                        },
+                                        _ => ContentBlock::Text {
+                                            // Fallback for unknown types
+                                            text: String::new(),
+                                        },
+                                    };
+                                    blocks.push(block);
+                                }
+                                current_content.clear();
+                            }
+                            StreamEvent::ContentBlockDelta { index: _, delta } => {
+                                if let Some(_) = current_block_index {
+                                    match &delta {
+                                        ContentDelta::TextDelta { text: delta_text } => {
+                                            callback(delta_text)?;
+                                            current_content.push_str(delta_text);
+                                        }
+                                        ContentDelta::InputJsonDelta { partial_json } => {
+                                            // Accumulate JSON parts as string
+                                            current_content.push_str(partial_json);
+                                        }
+                                        _ => {} // Ignore mismatched block/delta types
+                                    }
+                                }
+                            }
+                            StreamEvent::ContentBlockStop { index } => {
+                                if let Some(block) = blocks.get_mut(index) {
+                                    match block {
+                                        ContentBlock::Text { text } => {
+                                            *text = current_content.clone();
+                                        }
+                                        ContentBlock::ToolUse { input, .. } => {
+                                            if let Ok(json) = serde_json::from_str(current_content)
+                                            {
+                                                *input = json;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                *current_block_index = None;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(())
+            }
+
+            while let Some(chunk) = response.chunk().await? {
+                process_chunk(
+                    &chunk,
+                    &mut line_buffer,
+                    &mut blocks,
+                    &mut current_block_index,
+                    &mut current_content,
+                    callback,
+                )?;
+            }
+
+            // Process any remaining data in the buffer
+            if !line_buffer.is_empty() {
+                process_sse_line(
+                    &line_buffer,
+                    &mut blocks,
+                    &mut current_block_index,
+                    &mut current_content,
+                    callback,
+                )?;
+            }
+
+            Ok((LLMResponse { content: blocks }, rate_limits))
+        } else {
+            let response_text = response
+                .text()
+                .await
+                .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+
+            let llm_response = serde_json::from_str(&response_text)
+                .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
+
+            Ok((llm_response, rate_limits))
+        }
     }
 }
 
 #[async_trait]
 impl LLMProvider for AnthropicClient {
-    async fn send_message(&self, request: LLMRequest) -> Result<LLMResponse> {
+    async fn send_message(
+        &self,
+        request: LLMRequest,
+        streaming_callback: Option<StreamingCallback>,
+    ) -> Result<LLMResponse> {
         let anthropic_request = AnthropicRequest {
             model: self.model.clone(),
             messages: request.messages,
             max_tokens: 8192,
             temperature: 0.7,
             system: Some(request.system_prompt),
+            stream: streaming_callback.map(|_| true),
             tool_choice: match &request.tools {
                 Some(_) => Some(serde_json::json!({
                     "type": "any",
@@ -350,6 +563,7 @@ impl LLMProvider for AnthropicClient {
             }),
         };
 
-        self.send_with_retry(&anthropic_request, 3).await
+        self.send_with_retry(&anthropic_request, streaming_callback, 3)
+            .await
     }
 }

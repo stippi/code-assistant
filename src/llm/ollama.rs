@@ -1,4 +1,4 @@
-use crate::llm::{types::*, LLMProvider};
+use crate::llm::{types::*, LLMProvider, StreamingCallback};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
@@ -100,7 +100,11 @@ impl OllamaClient {
 
 #[async_trait]
 impl LLMProvider for OllamaClient {
-    async fn send_message(&self, request: LLMRequest) -> Result<LLMResponse> {
+    async fn send_message(
+        &self,
+        request: LLMRequest,
+        _streaming_callback: Option<StreamingCallback>,
+    ) -> Result<LLMResponse> {
         let mut messages: Vec<OllamaMessage> = Vec::new();
 
         // Add system message

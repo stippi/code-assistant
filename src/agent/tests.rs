@@ -1,6 +1,6 @@
 use super::*;
 use crate::agent::agent::parse_llm_response;
-use crate::llm::{types::*, LLMProvider, LLMRequest};
+use crate::llm::{types::*, LLMProvider, LLMRequest, StreamingCallback};
 use crate::persistence::MockStatePersistence;
 use crate::types::*;
 use crate::ui::{UIError, UIMessage, UserInterface};
@@ -63,7 +63,11 @@ impl MockLLMProvider {
 
 #[async_trait]
 impl LLMProvider for MockLLMProvider {
-    async fn send_message(&self, request: LLMRequest) -> Result<LLMResponse, anyhow::Error> {
+    async fn send_message(
+        &self,
+        request: LLMRequest,
+        streaming_callback: Option<StreamingCallback>,
+    ) -> Result<LLMResponse, anyhow::Error> {
         self.requests.lock().unwrap().push(request);
         self.responses
             .lock()

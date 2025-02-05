@@ -180,7 +180,7 @@ impl Agent {
             }
         }
 
-        let response = self.llm_provider.send_message(request).await?;
+        let response = self.llm_provider.send_message(request, None).await?;
 
         debug!("Raw LLM response:");
         for block in &response.content {

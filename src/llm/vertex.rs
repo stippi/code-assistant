@@ -1,4 +1,6 @@
-use crate::llm::{types::*, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler};
+use crate::llm::{
+    types::*, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Response, StatusCode};
@@ -94,7 +96,7 @@ struct VertexRateLimitInfo {
 }
 
 impl RateLimitHandler for VertexRateLimitInfo {
-    fn from_response(response: &Response) -> Self {
+    fn from_response(_response: &Response) -> Self {
         // TODO: Parse actual rate limit headers once we know what Vertex AI provides
         Self {
             requests_remaining: None,
@@ -320,7 +322,11 @@ impl VertexClient {
 
 #[async_trait]
 impl LLMProvider for VertexClient {
-    async fn send_message(&self, request: LLMRequest) -> Result<LLMResponse> {
+    async fn send_message(
+        &self,
+        request: LLMRequest,
+        _streaming_callback: Option<StreamingCallback>,
+    ) -> Result<LLMResponse> {
         let mut contents = Vec::new();
 
         // Convert messages

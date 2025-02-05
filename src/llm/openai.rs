@@ -1,4 +1,6 @@
-use crate::llm::{types::*, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler};
+use crate::llm::{
+    types::*, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Response, StatusCode};
@@ -308,7 +310,11 @@ impl OpenAIClient {
 
 #[async_trait]
 impl LLMProvider for OpenAIClient {
-    async fn send_message(&self, request: LLMRequest) -> Result<LLMResponse> {
+    async fn send_message(
+        &self,
+        request: LLMRequest,
+        _streaming_callback: Option<StreamingCallback>,
+    ) -> Result<LLMResponse> {
         let mut messages: Vec<OpenAIChatMessage> = Vec::new();
 
         // Add system message
