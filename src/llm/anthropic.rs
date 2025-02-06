@@ -459,21 +459,31 @@ impl AnthropicClient {
 
                         match event {
                             StreamEvent::ContentBlockStart { content_block, .. } => {
+                                current_content.clear();
                                 let block = match content_block.block_type.as_str() {
-                                    "text" => ContentBlock::Text {
-                                        text: content_block.text.unwrap_or_default(),
-                                    },
-                                    "tool_use" => ContentBlock::ToolUse {
-                                        id: content_block.id.unwrap_or_default(),
-                                        name: content_block.name.unwrap_or_default(),
-                                        input: serde_json::Value::Null,
-                                    },
+                                    "text" => {
+                                        if let Some(text) = content_block.text {
+                                            current_content.push_str(&text);
+                                        }
+                                        ContentBlock::Text {
+                                            text: String::new(),
+                                        }
+                                    }
+                                    "tool_use" => {
+                                        if let Some(input) = content_block.input {
+                                            current_content.push_str(&input);
+                                        }
+                                        ContentBlock::ToolUse {
+                                            id: content_block.id.unwrap_or_default(),
+                                            name: content_block.name.unwrap_or_default(),
+                                            input: serde_json::Value::Null,
+                                        }
+                                    }
                                     _ => ContentBlock::Text {
                                         text: String::new(),
                                     },
                                 };
                                 blocks.push(block);
-                                current_content.clear();
                             }
                             StreamEvent::ContentBlockDelta { delta, .. } => {
                                 match &delta {
