@@ -25,7 +25,7 @@ pub enum UIError {
 }
 
 #[async_trait]
-pub trait UserInterface: Send + Sync + Clone {
+pub trait UserInterface: Send + Sync {
     /// Display a message to the user
     async fn display(&self, message: UIMessage) -> Result<(), UIError>;
 

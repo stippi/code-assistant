@@ -12,7 +12,7 @@ use crate::ui::{UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
 use std::io::Write;
-use tracing::{debug, error};
+use tracing::debug;
 
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
 const SYSTEM_MESSAGE_TOOLS: &str = include_str!("../../resources/system_message_tools.md");

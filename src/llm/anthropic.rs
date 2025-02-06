@@ -428,18 +428,33 @@ impl AnthropicClient {
                 if let Some(data) = line.strip_prefix("data: ") {
                     if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
                         // Extract and check index for relevant events
-                        let index = match &event {
-                            StreamEvent::ContentBlockStart { common, .. } => common.index,
-                            StreamEvent::ContentBlockDelta { common, .. } => common.index,
-                            StreamEvent::ContentBlockStop { common } => common.index,
+                        match &event {
+                            StreamEvent::ContentBlockStart { common, .. } => {
+                                if common.index != blocks.len() {
+                                    return Err(anyhow::anyhow!(
+                                        "Start index {} does not match expected block {}",
+                                        common.index,
+                                        blocks.len()
+                                    ));
+                                }
+                            }
+                            StreamEvent::ContentBlockDelta { common, .. }
+                            | StreamEvent::ContentBlockStop { common } => {
+                                // Check if we have any blocks at all
+                                if blocks.is_empty() {
+                                    return Err(anyhow::anyhow!(
+                                        "Received Delta/Stop but no blocks exist"
+                                    ));
+                                }
+                                if common.index != blocks.len() - 1 {
+                                    return Err(anyhow::anyhow!(
+                                        "Delta/Stop index {} does not match current block {}",
+                                        common.index,
+                                        blocks.len() - 1
+                                    ));
+                                }
+                            }
                             _ => return Ok(()), // Early return for events without index
-                        };
-                        if index + 1 != blocks.len() {
-                            return Err(anyhow::anyhow!(
-                                "Delta index {} does not match current block {}",
-                                index,
-                                blocks.len() - 1
-                            ));
                         }
 
                         match event {

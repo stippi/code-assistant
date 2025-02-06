@@ -3,7 +3,6 @@ use async_trait::async_trait;
 use std::io::{self, Write};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-#[derive(Clone)]
 pub struct TerminalUI; // Simplified struct, no fields needed
 
 impl TerminalUI {
