@@ -11,7 +11,7 @@ use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
-use std::io::Write;
+use std::sync::Arc;
 use tracing::debug;
 
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
@@ -28,7 +28,7 @@ pub struct Agent {
     tool_mode: ToolMode,
     explorer: Box<dyn CodeExplorer>,
     command_executor: Box<dyn CommandExecutor>,
-    ui: Box<dyn UserInterface>,
+    ui: Arc<Box<dyn UserInterface>>,
     state_persistence: Box<dyn StatePersistence>,
 }
 
@@ -46,7 +46,7 @@ impl Agent {
             llm_provider,
             tool_mode,
             explorer,
-            ui,
+            ui: Arc::new(ui),
             command_executor,
             state_persistence,
         }
@@ -183,11 +183,10 @@ impl Agent {
             }
         }
 
-        let streaming_callback: StreamingCallback = Box::new(|text: &str| {
-            print!("{}", text);
-            std::io::stdout()
-                .flush()
-                .map_err(|e| anyhow::anyhow!("Failed to flush stdout: {}", e))
+        let ui = Arc::clone(&self.ui);
+        let streaming_callback: StreamingCallback = Box::new(move |text: &str| {
+            ui.display_streaming(text)
+                .map_err(|e| anyhow::anyhow!("Failed to display streaming output: {}", e))
         });
 
         let response = self

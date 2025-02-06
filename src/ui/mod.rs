@@ -10,8 +10,6 @@ pub enum UIMessage {
     Question(String),
     // LLM's reasoning about its next action
     Reasoning(String),
-    // LLM's Streaming output
-    Streaming(String),
 }
 
 #[derive(Error, Debug)]
@@ -31,4 +29,7 @@ pub trait UserInterface: Send + Sync {
 
     /// Get input from the user
     async fn get_input(&self, prompt: &str) -> Result<String, UIError>;
+
+    /// Display streaming output synchronously
+    fn display_streaming(&self, text: &str) -> Result<(), UIError>;
 }

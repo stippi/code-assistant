@@ -157,6 +157,10 @@ impl UserInterface for MockUI {
                 "No more mock responses",
             ))))
     }
+
+    fn display_streaming(&self, _text: &str) -> Result<(), UIError> {
+        Ok(())
+    }
 }
 
 // Mock Explorer
