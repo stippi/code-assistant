@@ -66,7 +66,7 @@ impl LLMProvider for MockLLMProvider {
     async fn send_message(
         &self,
         request: LLMRequest,
-        streaming_callback: Option<StreamingCallback>,
+        _streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse, anyhow::Error> {
         self.requests.lock().unwrap().push(request);
         self.responses

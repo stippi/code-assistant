@@ -10,6 +10,8 @@ pub enum UIMessage {
     Question(String),
     // LLM's reasoning about its next action
     Reasoning(String),
+    // LLM's Streaming output
+    Streaming(String),
 }
 
 #[derive(Error, Debug)]
@@ -23,7 +25,7 @@ pub enum UIError {
 }
 
 #[async_trait]
-pub trait UserInterface: Send + Sync {
+pub trait UserInterface: Send + Sync + Clone {
     /// Display a message to the user
     async fn display(&self, message: UIMessage) -> Result<(), UIError>;
 

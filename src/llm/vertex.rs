@@ -325,7 +325,7 @@ impl LLMProvider for VertexClient {
     async fn send_message(
         &self,
         request: LLMRequest,
-        _streaming_callback: Option<StreamingCallback>,
+        _streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
         let mut contents = Vec::new();
 

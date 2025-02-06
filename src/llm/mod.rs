@@ -13,7 +13,7 @@ pub use vertex::VertexClient;
 use anyhow::Result;
 use async_trait::async_trait;
 
-pub type StreamingCallback = fn(&str) -> Result<()>;
+pub type StreamingCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
 
 /// Trait for different LLM provider implementations
 #[async_trait]
@@ -22,6 +22,6 @@ pub trait LLMProvider {
     async fn send_message(
         &self,
         request: LLMRequest,
-        streaming_callback: Option<StreamingCallback>,
+        streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse>;
 }

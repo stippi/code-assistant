@@ -1,4 +1,6 @@
-use crate::llm::{ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole};
+use crate::llm::{
+    ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
+};
 use crate::persistence::StatePersistence;
 use crate::tool_definitions::Tools;
 use crate::tools::{
@@ -9,7 +11,8 @@ use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
-use tracing::debug;
+use std::io::Write;
+use tracing::{debug, error};
 
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
 const SYSTEM_MESSAGE_TOOLS: &str = include_str!("../../resources/system_message_tools.md");
@@ -180,7 +183,17 @@ impl Agent {
             }
         }
 
-        let response = self.llm_provider.send_message(request, None).await?;
+        let streaming_callback: StreamingCallback = Box::new(|text: &str| {
+            print!("{}", text);
+            std::io::stdout()
+                .flush()
+                .map_err(|e| anyhow::anyhow!("Failed to flush stdout: {}", e))
+        });
+
+        let response = self
+            .llm_provider
+            .send_message(request, Some(&streaming_callback))
+            .await?;
 
         debug!("Raw LLM response:");
         for block in &response.content {

@@ -103,7 +103,7 @@ impl LLMProvider for OllamaClient {
     async fn send_message(
         &self,
         request: LLMRequest,
-        _streaming_callback: Option<StreamingCallback>,
+        _streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
         let mut messages: Vec<OllamaMessage> = Vec::new();
 

@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use std::io::{self, Write};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+#[derive(Clone)]
 pub struct TerminalUI; // Simplified struct, no fields needed
 
 impl TerminalUI {
@@ -28,6 +29,11 @@ impl UserInterface for TerminalUI {
                 self.write_line("Reasoning:").await?;
                 self.write_line(&format!("  {}", msg)).await?;
                 self.write_line("").await?;
+            }
+            UIMessage::Streaming(msg) => {
+                let mut stdout = io::stdout().lock();
+                write!(stdout, "{}", msg)?;
+                stdout.flush()?;
             }
         }
         Ok(())

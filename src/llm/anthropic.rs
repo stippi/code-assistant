@@ -228,16 +228,13 @@ impl AnthropicClient {
     async fn send_with_retry(
         &self,
         request: &AnthropicRequest,
-        streaming_callback: Option<StreamingCallback>,
+        streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
     ) -> Result<LLMResponse> {
         let mut attempts = 0;
 
         loop {
-            match self
-                .try_send_request(request, streaming_callback.clone())
-                .await
-            {
+            match self.try_send_request(request, streaming_callback).await {
                 Ok((response, rate_limits)) => {
                     // Log rate limit status on successful response
                     rate_limits.log_status();
@@ -319,7 +316,7 @@ impl AnthropicClient {
     async fn try_send_request(
         &self,
         request: &AnthropicRequest,
-        streaming_callback: Option<StreamingCallback>,
+        streaming_callback: Option<&StreamingCallback>,
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
         let accept_value = if let Some(_) = streaming_callback {
             "text/event-stream"
@@ -405,7 +402,7 @@ impl AnthropicClient {
                 line_buffer: &mut String,
                 blocks: &mut Vec<ContentBlock>,
                 current_content: &mut String,
-                callback: StreamingCallback,
+                callback: &StreamingCallback,
             ) -> Result<()> {
                 let chunk_str = str::from_utf8(chunk)?;
 
@@ -426,7 +423,7 @@ impl AnthropicClient {
                 line: &str,
                 blocks: &mut Vec<ContentBlock>,
                 current_content: &mut String,
-                callback: StreamingCallback,
+                callback: &StreamingCallback,
             ) -> Result<()> {
                 if let Some(data) = line.strip_prefix("data: ") {
                     if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
@@ -473,7 +470,6 @@ impl AnthropicClient {
                                         // Accumulate JSON parts as string
                                         current_content.push_str(partial_json);
                                     }
-                                    _ => {} // Ignore mismatched block/delta types
                                 }
                             }
                             StreamEvent::ContentBlockStop { .. } => {
@@ -531,7 +527,7 @@ impl LLMProvider for AnthropicClient {
     async fn send_message(
         &self,
         request: LLMRequest,
-        streaming_callback: Option<StreamingCallback>,
+        streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
         let anthropic_request = AnthropicRequest {
             model: self.model.clone(),

@@ -313,7 +313,7 @@ impl LLMProvider for OpenAIClient {
     async fn send_message(
         &self,
         request: LLMRequest,
-        _streaming_callback: Option<StreamingCallback>,
+        _streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
         let mut messages: Vec<OpenAIChatMessage> = Vec::new();
 
