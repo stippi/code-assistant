@@ -39,6 +39,49 @@ struct OpenAIChoice {
 }
 
 #[derive(Debug, Deserialize)]
+struct OpenAIStreamResponse {
+    choices: Vec<OpenAIStreamChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamChoice {
+    delta: OpenAIDelta,
+    #[serde(rename = "finish_reason")]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIDelta {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<OpenAIToolCallDelta>>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct OpenAIToolCallDelta {
+    #[serde(default)]
+    index: usize,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(rename = "type")]
+    #[serde(default)]
+    call_type: Option<String>,
+    #[serde(default)]
+    function: Option<OpenAIFunctionDelta>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct OpenAIFunctionDelta {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct OpenAIErrorResponse {
     error: OpenAIError,
 }
@@ -185,12 +228,17 @@ impl OpenAIClient {
     async fn send_with_retry(
         &self,
         request: &OpenAIRequest,
+        streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
     ) -> Result<LLMResponse> {
         let mut attempts = 0;
 
         loop {
-            match self.try_send_request(request).await {
+            match if let Some(callback) = streaming_callback {
+                self.try_send_request_streaming(request, callback).await
+            } else {
+                self.try_send_request(request).await
+            } {
                 Ok((response, rate_limits)) => {
                     rate_limits.log_status();
                     return Ok(response);
@@ -306,6 +354,107 @@ impl OpenAIClient {
 
         Ok((response, rate_limits))
     }
+
+    async fn try_send_request_streaming(
+        &self,
+        request: &OpenAIRequest,
+        streaming_callback: &StreamingCallback,
+    ) -> Result<(LLMResponse, OpenAIRateLimitInfo)> {
+        let mut response = self
+            .client
+            .post(&self.base_url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+
+        let mut accumulated_content: Option<String> = None;
+        let mut accumulated_tool_calls: Vec<ContentBlock> = Vec::new();
+        let mut current_tool: Option<OpenAIToolCallDelta> = None;
+
+        while let Some(chunk) = response.chunk().await? {
+            if let Ok(chunk_str) = std::str::from_utf8(&chunk) {
+                if let Ok(chunk_response) = serde_json::from_str::<OpenAIStreamResponse>(chunk_str)
+                {
+                    if let Some(delta) = chunk_response.choices.get(0) {
+                        // Handle content streaming
+                        if let Some(content) = &delta.delta.content {
+                            streaming_callback(content)?;
+                            accumulated_content =
+                                Some(accumulated_content.unwrap_or_default() + content);
+                        }
+
+                        // Handle tool calls
+                        if let Some(tool_calls) = &delta.delta.tool_calls {
+                            for tool_call in tool_calls {
+                                if let Some(function) = &tool_call.function {
+                                    if tool_call.id.is_some() {
+                                        // New tool call
+                                        if let Some(prev_tool) = current_tool.take() {
+                                            accumulated_tool_calls
+                                                .push(Self::build_tool_block(prev_tool)?);
+                                        }
+                                        current_tool = Some(tool_call.clone());
+                                    } else if let Some(curr_tool) = &mut current_tool {
+                                        // Update existing tool
+                                        if let Some(args) = &function.arguments {
+                                            if let Some(ref mut curr_func) = curr_tool.function {
+                                                curr_func.arguments = Some(
+                                                    curr_func
+                                                        .arguments
+                                                        .as_ref()
+                                                        .unwrap_or(&String::new())
+                                                        .clone()
+                                                        + args,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Handle completion
+                        if delta.finish_reason.is_some() {
+                            if let Some(tool) = current_tool.take() {
+                                accumulated_tool_calls.push(Self::build_tool_block(tool)?);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut content = Vec::new();
+        if let Some(text) = accumulated_content {
+            content.push(ContentBlock::Text { text });
+        }
+        content.extend(accumulated_tool_calls);
+
+        Ok((
+            LLMResponse { content },
+            OpenAIRateLimitInfo::from_response(&response),
+        ))
+    }
+
+    fn build_tool_block(tool: OpenAIToolCallDelta) -> Result<ContentBlock> {
+        let function = tool
+            .function
+            .ok_or_else(|| anyhow::anyhow!("Tool call without function"))?;
+        let name = function
+            .name
+            .ok_or_else(|| anyhow::anyhow!("Function without name"))?;
+        let args = function.arguments.unwrap_or_default();
+
+        Ok(ContentBlock::ToolUse {
+            id: tool.id.unwrap_or_default(),
+            name,
+            input: serde_json::from_str(&args)
+                .map_err(|e| anyhow::anyhow!("Invalid JSON in arguments: {}", e))?,
+        })
+    }
 }
 
 #[async_trait]
@@ -313,7 +462,7 @@ impl LLMProvider for OpenAIClient {
     async fn send_message(
         &self,
         request: LLMRequest,
-        _streaming_callback: Option<&StreamingCallback>,
+        streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
         let mut messages: Vec<OpenAIChatMessage> = Vec::new();
 
@@ -330,7 +479,7 @@ impl LLMProvider for OpenAIClient {
             model: self.model.clone(),
             messages,
             temperature: 1.0,
-            stream: None,
+            stream: streaming_callback.map(|_| true),
             tool_choice: match &request.tools {
                 Some(_) => Some(serde_json::json!({
                     "type": "any",
@@ -354,6 +503,7 @@ impl LLMProvider for OpenAIClient {
             }),
         };
 
-        self.send_with_retry(&openai_request, 3).await
+        self.send_with_retry(&openai_request, streaming_callback, 3)
+            .await
     }
 }
