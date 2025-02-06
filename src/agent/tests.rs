@@ -124,6 +124,7 @@ impl CommandExecutor for MockCommandExecutor {
 #[derive(Default, Clone)]
 struct MockUI {
     messages: Arc<Mutex<Vec<UIMessage>>>,
+    streaming: Arc<Mutex<Vec<String>>>,
     responses: Arc<Mutex<Vec<Result<String, UIError>>>>,
 }
 
@@ -131,6 +132,7 @@ impl MockUI {
     fn new(responses: Vec<Result<String, UIError>>) -> Self {
         Self {
             messages: Arc::new(Mutex::new(Vec::new())),
+            streaming: Arc::new(Mutex::new(Vec::new())),
             responses: Arc::new(Mutex::new(responses)),
         }
     }
@@ -138,6 +140,10 @@ impl MockUI {
     fn get_messages(&self) -> Vec<UIMessage> {
         self.messages.lock().unwrap().clone()
     }
+
+    // fn get_streaming(&self) -> Vec<String> {
+    //     self.streaming.lock().unwrap().clone()
+    // }
 }
 
 #[async_trait]
@@ -158,7 +164,8 @@ impl UserInterface for MockUI {
             ))))
     }
 
-    fn display_streaming(&self, _text: &str) -> Result<(), UIError> {
+    fn display_streaming(&self, text: &str) -> Result<(), UIError> {
+        self.streaming.lock().unwrap().push(text.to_string());
         Ok(())
     }
 }
