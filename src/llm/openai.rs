@@ -288,6 +288,47 @@ impl OpenAIClient {
         }
     }
 
+    async fn check_response_error(response: Response) -> Result<Response> {
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+
+        let rate_limits = OpenAIRateLimitInfo::from_response(&response);
+        let response_text = response
+            .text()
+            .await
+            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+
+        let error = if let Ok(error_response) =
+            serde_json::from_str::<OpenAIErrorResponse>(&response_text)
+        {
+            match (status, error_response.error.code.as_deref()) {
+                (StatusCode::TOO_MANY_REQUESTS, _) => {
+                    ApiError::RateLimit(error_response.error.message)
+                }
+                (StatusCode::UNAUTHORIZED, _) => {
+                    ApiError::Authentication(error_response.error.message)
+                }
+                (StatusCode::BAD_REQUEST, _) => {
+                    ApiError::InvalidRequest(error_response.error.message)
+                }
+                (status, _) if status.is_server_error() => {
+                    ApiError::ServiceError(error_response.error.message)
+                }
+                _ => ApiError::Unknown(error_response.error.message),
+            }
+        } else {
+            ApiError::Unknown(format!("Status {}: {}", status, response_text))
+        };
+
+        Err(ApiErrorContext {
+            error,
+            rate_limits: Some(rate_limits),
+        }
+        .into())
+    }
+
     async fn try_send_request(
         &self,
         request: &OpenAIRequest,
@@ -302,43 +343,13 @@ impl OpenAIClient {
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
+        let response = Self::check_response_error(response).await?;
         let rate_limits = OpenAIRateLimitInfo::from_response(&response);
 
-        let status = response.status();
         let response_text = response
             .text()
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
-
-        if !status.is_success() {
-            let error = if let Ok(error_response) =
-                serde_json::from_str::<OpenAIErrorResponse>(&response_text)
-            {
-                match (status, error_response.error.code.as_deref()) {
-                    (StatusCode::TOO_MANY_REQUESTS, _) => {
-                        ApiError::RateLimit(error_response.error.message)
-                    }
-                    (StatusCode::UNAUTHORIZED, _) => {
-                        ApiError::Authentication(error_response.error.message)
-                    }
-                    (StatusCode::BAD_REQUEST, _) => {
-                        ApiError::InvalidRequest(error_response.error.message)
-                    }
-                    (status, _) if status.is_server_error() => {
-                        ApiError::ServiceError(error_response.error.message)
-                    }
-                    _ => ApiError::Unknown(error_response.error.message),
-                }
-            } else {
-                ApiError::Unknown(format!("Status {}: {}", status, response_text))
-            };
-
-            return Err(ApiErrorContext {
-                error,
-                rate_limits: Some(rate_limits),
-            }
-            .into());
-        }
 
         // Parse the successful response
         let openai_response: OpenAIResponse = serde_json::from_str(&response_text)
@@ -346,13 +357,14 @@ impl OpenAIClient {
 
         // Convert to our generic LLMResponse format
         // TODO: Handle tools
-        let response = LLMResponse {
-            content: vec![ContentBlock::Text {
-                text: openai_response.choices[0].message.content.clone(),
-            }],
-        };
-
-        Ok((response, rate_limits))
+        Ok((
+            LLMResponse {
+                content: vec![ContentBlock::Text {
+                    text: openai_response.choices[0].message.content.clone(),
+                }],
+            },
+            rate_limits,
+        ))
     }
 
     async fn try_send_request_streaming(
@@ -360,7 +372,7 @@ impl OpenAIClient {
         request: &OpenAIRequest,
         streaming_callback: &StreamingCallback,
     ) -> Result<(LLMResponse, OpenAIRateLimitInfo)> {
-        let mut response = self
+        let response = self
             .client
             .post(&self.base_url)
             .header("Authorization", format!("Bearer {}", self.api_key))
@@ -369,6 +381,8 @@ impl OpenAIClient {
             .send()
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+
+        let mut response = Self::check_response_error(response).await?;
 
         let mut accumulated_content: Option<String> = None;
         let mut accumulated_tool_calls: Vec<ContentBlock> = Vec::new();
