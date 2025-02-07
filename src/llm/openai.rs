@@ -291,6 +291,7 @@ impl OpenAIClient {
     async fn check_response_error(response: Response) -> Result<Response> {
         let status = response.status();
         if status.is_success() {
+            debug!("Response status is success");
             return Ok(response);
         }
 
@@ -372,6 +373,7 @@ impl OpenAIClient {
         request: &OpenAIRequest,
         streaming_callback: &StreamingCallback,
     ) -> Result<(LLMResponse, OpenAIRateLimitInfo)> {
+        debug!("Sending streaming request");
         let response = self
             .client
             .post(&self.base_url)
