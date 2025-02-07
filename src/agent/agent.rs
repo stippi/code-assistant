@@ -2,7 +2,6 @@ use crate::llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
 };
 use crate::persistence::StatePersistence;
-use crate::tool_definitions::Tools;
 use crate::tools::{
     parse_tool_json, parse_tool_xml, AgentToolHandler, ReplayToolHandler, ToolExecutor,
     TOOL_TAG_PREFIX,

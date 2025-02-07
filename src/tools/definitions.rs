@@ -1,9 +1,5 @@
-use crate::types::ToolDefinition;
+use crate::types::{ToolDefinition, Tools};
 use serde_json::json;
-
-/// Collection of all available tool definitions
-#[derive(Debug, Clone)]
-pub struct Tools;
 
 impl Tools {
     /// Returns all available tool definitions

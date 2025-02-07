@@ -1,8 +1,7 @@
 use super::types::*;
 use crate::explorer::Explorer;
-use crate::tool_definitions::Tools;
 use crate::tools::{parse_tool_json, MCPToolHandler, ToolExecutor};
-use crate::types::CodeExplorer;
+use crate::types::{CodeExplorer, Tools};
 use crate::utils::{CommandExecutor, DefaultCommandExecutor};
 use anyhow::Result;
 use std::path::PathBuf;

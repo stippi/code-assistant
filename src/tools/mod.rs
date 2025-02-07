@@ -1,9 +1,11 @@
 use crate::types::ToolResult;
 use anyhow::Result;
 
+mod definitions;
 mod executor;
 mod handlers;
 mod parse;
+mod result;
 
 pub use executor::ToolExecutor;
 pub use handlers::{AgentToolHandler, MCPToolHandler, ReplayToolHandler};
