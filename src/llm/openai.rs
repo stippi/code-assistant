@@ -390,16 +390,62 @@ impl OpenAIClient {
         let mut accumulated_tool_calls: Vec<ContentBlock> = Vec::new();
         let mut current_tool: Option<OpenAIToolCallDelta> = None;
 
-        while let Some(chunk) = response.chunk().await? {
-            if let Ok(chunk_str) = std::str::from_utf8(&chunk) {
-                if let Ok(chunk_response) = serde_json::from_str::<OpenAIStreamResponse>(chunk_str)
-                {
+        let mut line_buffer = String::new();
+
+        fn process_chunk(
+            chunk: &[u8],
+            line_buffer: &mut String,
+            accumulated_content: &mut Option<String>,
+            current_tool: &mut Option<OpenAIToolCallDelta>,
+            accumulated_tool_calls: &mut Vec<ContentBlock>,
+            callback: &StreamingCallback,
+        ) -> Result<()> {
+            let chunk_str = std::str::from_utf8(chunk)?;
+
+            for c in chunk_str.chars() {
+                if c == '\n' {
+                    if !line_buffer.is_empty() {
+                        process_sse_line(
+                            line_buffer,
+                            accumulated_content,
+                            current_tool,
+                            accumulated_tool_calls,
+                            callback,
+                        )?;
+                        line_buffer.clear();
+                    }
+                } else {
+                    line_buffer.push(c);
+                }
+            }
+            Ok(())
+        }
+
+        fn process_sse_line(
+            line: &str,
+            accumulated_content: &mut Option<String>,
+            current_tool: &mut Option<OpenAIToolCallDelta>,
+            accumulated_tool_calls: &mut Vec<ContentBlock>,
+            callback: &StreamingCallback,
+        ) -> Result<()> {
+            if let Some(data) = line.strip_prefix("data: ") {
+                // Skip "[DONE]" message
+                if data == "[DONE]" {
+                    return Ok(());
+                }
+
+                if let Ok(chunk_response) = serde_json::from_str::<OpenAIStreamResponse>(data) {
                     if let Some(delta) = chunk_response.choices.get(0) {
                         // Handle content streaming
                         if let Some(content) = &delta.delta.content {
-                            streaming_callback(content)?;
-                            accumulated_content =
-                                Some(accumulated_content.unwrap_or_default() + content);
+                            callback(content)?;
+                            *accumulated_content = Some(
+                                accumulated_content
+                                    .as_ref()
+                                    .unwrap_or(&String::new())
+                                    .clone()
+                                    + content,
+                            );
                         }
 
                         // Handle tool calls
@@ -410,10 +456,10 @@ impl OpenAIClient {
                                         // New tool call
                                         if let Some(prev_tool) = current_tool.take() {
                                             accumulated_tool_calls
-                                                .push(Self::build_tool_block(prev_tool)?);
+                                                .push(OpenAIClient::build_tool_block(prev_tool)?);
                                         }
-                                        current_tool = Some(tool_call.clone());
-                                    } else if let Some(curr_tool) = &mut current_tool {
+                                        *current_tool = Some(tool_call.clone());
+                                    } else if let Some(curr_tool) = current_tool {
                                         // Update existing tool
                                         if let Some(args) = &function.arguments {
                                             if let Some(ref mut curr_func) = curr_tool.function {
@@ -435,12 +481,35 @@ impl OpenAIClient {
                         // Handle completion
                         if delta.finish_reason.is_some() {
                             if let Some(tool) = current_tool.take() {
-                                accumulated_tool_calls.push(Self::build_tool_block(tool)?);
+                                accumulated_tool_calls.push(OpenAIClient::build_tool_block(tool)?);
                             }
                         }
                     }
                 }
             }
+            Ok(())
+        }
+
+        while let Some(chunk) = response.chunk().await? {
+            process_chunk(
+                &chunk,
+                &mut line_buffer,
+                &mut accumulated_content,
+                &mut current_tool,
+                &mut accumulated_tool_calls,
+                streaming_callback,
+            )?;
+        }
+
+        // Process any remaining data in the buffer
+        if !line_buffer.is_empty() {
+            process_sse_line(
+                &line_buffer,
+                &mut accumulated_content,
+                &mut current_tool,
+                &mut accumulated_tool_calls,
+                streaming_callback,
+            )?;
         }
 
         let mut content = Vec::new();
