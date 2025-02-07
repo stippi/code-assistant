@@ -54,6 +54,7 @@ struct OpenAIStreamChoice {
 struct OpenAIDelta {
     #[serde(default)]
     content: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     role: Option<String>,
     #[serde(default)]
@@ -62,10 +63,12 @@ struct OpenAIDelta {
 
 #[derive(Debug, Deserialize, Clone)]
 struct OpenAIToolCallDelta {
+    #[allow(dead_code)]
     #[serde(default)]
     index: usize,
     #[serde(default)]
     id: Option<String>,
+    #[allow(dead_code)]
     #[serde(rename = "type")]
     #[serde(default)]
     call_type: Option<String>,

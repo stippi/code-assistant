@@ -92,6 +92,7 @@ struct VertexError {
 struct VertexRateLimitInfo {
     // TODO: Add actual rate limit fields once we know what headers Vertex AI uses
     requests_remaining: Option<u32>,
+    #[allow(dead_code)]
     requests_reset: Option<Duration>,
 }
 

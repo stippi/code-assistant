@@ -152,6 +152,7 @@ struct StreamEventCommon {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum StreamEvent {
+    #[allow(dead_code)]
     #[serde(rename = "message_start")]
     MessageStart { message: MessageStart },
     #[serde(rename = "content_block_start")]
@@ -181,10 +182,14 @@ enum StreamEvent {
 
 #[derive(Debug, Deserialize)]
 struct MessageStart {
+    #[allow(dead_code)]
     id: String,
+    #[allow(dead_code)]
     #[serde(rename = "type")]
     message_type: String,
+    #[allow(dead_code)]
     role: String,
+    #[allow(dead_code)]
     model: String,
 }
 
