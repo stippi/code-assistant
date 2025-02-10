@@ -393,8 +393,8 @@ impl VertexClient {
 
         let rate_limits = VertexRateLimitInfo::from_response(&response);
 
-        let mut accumulated_content = String::new();
-        let mut tool_call: Option<ContentBlock> = None;
+        let mut content_blocks = Vec::new();
+        let mut current_text = String::new();
         let mut last_usage: Option<VertexUsageMetadata> = None;
         let mut line_buffer = String::new();
 
@@ -407,12 +407,20 @@ impl VertexClient {
                         if let Some(data) = line_buffer.strip_prefix("data: ") {
                             if let Ok(response) = serde_json::from_str::<VertexResponse>(data) {
                                 if let Some(candidate) = response.candidates.first() {
-                                    if let Some(part) = candidate.content.parts.first() {
+                                    for part in &candidate.content.parts {
                                         if let Some(text) = &part.text {
                                             streaming_callback(text)?;
-                                            accumulated_content.push_str(text);
+                                            current_text.push_str(text);
                                         } else if let Some(function_call) = &part.function_call {
-                                            tool_call = Some(ContentBlock::ToolUse {
+                                            // If we have accumulated text, push it as a content block
+                                            if !current_text.is_empty() {
+                                                content_blocks.push(ContentBlock::Text {
+                                                    text: current_text.clone(),
+                                                });
+                                                current_text.clear();
+                                            }
+
+                                            content_blocks.push(ContentBlock::ToolUse {
                                                 id: format!("vertex-{}", function_call.name),
                                                 name: function_call.name.clone(),
                                                 input: function_call.args.clone(),
@@ -444,19 +452,14 @@ impl VertexClient {
             }
         }
 
-        let mut content = Vec::new();
-        if !accumulated_content.is_empty() {
-            content.push(ContentBlock::Text {
-                text: accumulated_content,
-            });
-        }
-        if let Some(tool) = tool_call {
-            content.push(tool);
+        // Push any remaining text as a final content block
+        if !current_text.is_empty() {
+            content_blocks.push(ContentBlock::Text { text: current_text });
         }
 
         Ok((
             LLMResponse {
-                content,
+                content: content_blocks,
                 usage: Usage {
                     input_tokens: last_usage
                         .as_ref()
