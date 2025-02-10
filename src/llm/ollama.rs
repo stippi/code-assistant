@@ -28,6 +28,8 @@ struct OllamaMessage {
 #[derive(Debug, Deserialize)]
 struct OllamaResponse {
     message: OllamaResponseMessage,
+    prompt_eval_count: u32,
+    eval_count: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,6 +136,10 @@ impl LLMProvider for OllamaClient {
             content: vec![ContentBlock::Text {
                 text: response.message.content,
             }],
+            usage: Usage {
+                input_tokens: response.prompt_eval_count,
+                output_tokens: response.eval_count,
+            },
         })
     }
 }

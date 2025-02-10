@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct OpenAIRequest {
     model: String,
     messages: Vec<OpenAIChatMessage>,
@@ -20,9 +20,32 @@ struct OpenAIRequest {
     tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Clone)]
+struct StreamOptions {
+    include_usage: bool,
+}
+
+impl OpenAIRequest {
+    fn into_streaming(mut self) -> Self {
+        self.stream = Some(true);
+        self.stream_options = Some(StreamOptions {
+            include_usage: true,
+        });
+        self
+    }
+
+    fn into_non_streaming(mut self) -> Self {
+        self.stream = None;
+        self.stream_options = None;
+        self
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct OpenAIChatMessage {
     role: String,
     content: String,
@@ -31,6 +54,7 @@ struct OpenAIChatMessage {
 #[derive(Debug, Deserialize)]
 struct OpenAIResponse {
     choices: Vec<OpenAIChoice>,
+    usage: OpenAIUsage,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,6 +65,8 @@ struct OpenAIChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAIStreamResponse {
     choices: Vec<OpenAIStreamChoice>,
+    #[serde(default)]
+    usage: Option<OpenAIUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +100,13 @@ struct OpenAIToolCallDelta {
     call_type: Option<String>,
     #[serde(default)]
     function: Option<OpenAIFunctionDelta>,
+}
+#[derive(Debug, Deserialize)]
+struct OpenAIUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    #[allow(dead_code)]
+    total_tokens: u32,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -337,12 +370,13 @@ impl OpenAIClient {
         &self,
         request: &OpenAIRequest,
     ) -> Result<(LLMResponse, OpenAIRateLimitInfo)> {
+        let request = request.clone().into_non_streaming();
         let response = self
             .client
             .post(&self.base_url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(request)
+            .json(&request)
             .send()
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
@@ -366,6 +400,10 @@ impl OpenAIClient {
                 content: vec![ContentBlock::Text {
                     text: openai_response.choices[0].message.content.clone(),
                 }],
+                usage: Usage {
+                    input_tokens: openai_response.usage.prompt_tokens,
+                    output_tokens: openai_response.usage.completion_tokens,
+                },
             },
             rate_limits,
         ))
@@ -377,6 +415,7 @@ impl OpenAIClient {
         streaming_callback: &StreamingCallback,
     ) -> Result<(LLMResponse, OpenAIRateLimitInfo)> {
         debug!("Sending streaming request");
+        let request = request.clone().into_streaming();
         let response = self
             .client
             .post(&self.base_url)
@@ -394,6 +433,7 @@ impl OpenAIClient {
         let mut current_tool: Option<OpenAIToolCallDelta> = None;
 
         let mut line_buffer = String::new();
+        let mut usage = None;
 
         fn process_chunk(
             chunk: &[u8],
@@ -402,6 +442,7 @@ impl OpenAIClient {
             current_tool: &mut Option<OpenAIToolCallDelta>,
             accumulated_tool_calls: &mut Vec<ContentBlock>,
             callback: &StreamingCallback,
+            usage: &mut Option<OpenAIUsage>,
         ) -> Result<()> {
             let chunk_str = std::str::from_utf8(chunk)?;
 
@@ -414,6 +455,7 @@ impl OpenAIClient {
                             current_tool,
                             accumulated_tool_calls,
                             callback,
+                            usage,
                         )?;
                         line_buffer.clear();
                     }
@@ -430,6 +472,7 @@ impl OpenAIClient {
             current_tool: &mut Option<OpenAIToolCallDelta>,
             accumulated_tool_calls: &mut Vec<ContentBlock>,
             callback: &StreamingCallback,
+            usage: &mut Option<OpenAIUsage>,
         ) -> Result<()> {
             if let Some(data) = line.strip_prefix("data: ") {
                 // Skip "[DONE]" message
@@ -488,6 +531,10 @@ impl OpenAIClient {
                             }
                         }
                     }
+                    // Capture usage data from final chunk
+                    if let Some(chunk_usage) = chunk_response.usage {
+                        *usage = Some(chunk_usage);
+                    }
                 }
             }
             Ok(())
@@ -501,6 +548,7 @@ impl OpenAIClient {
                 &mut current_tool,
                 &mut accumulated_tool_calls,
                 streaming_callback,
+                &mut usage,
             )?;
         }
 
@@ -512,6 +560,7 @@ impl OpenAIClient {
                 &mut current_tool,
                 &mut accumulated_tool_calls,
                 streaming_callback,
+                &mut usage,
             )?;
         }
 
@@ -522,7 +571,18 @@ impl OpenAIClient {
         content.extend(accumulated_tool_calls);
 
         Ok((
-            LLMResponse { content },
+            LLMResponse {
+                content,
+                usage: usage
+                    .map(|u| Usage {
+                        input_tokens: u.prompt_tokens,
+                        output_tokens: u.completion_tokens,
+                    })
+                    .unwrap_or(Usage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    }),
+            },
             OpenAIRateLimitInfo::from_response(&response),
         ))
     }
@@ -567,7 +627,7 @@ impl LLMProvider for OpenAIClient {
             model: self.model.clone(),
             messages,
             temperature: 1.0,
-            stream: streaming_callback.map(|_| true),
+            stream: None,
             tool_choice: match &request.tools {
                 Some(_) => Some(serde_json::json!({
                     "type": "any",
@@ -589,6 +649,7 @@ impl LLMProvider for OpenAIClient {
                     })
                     .collect()
             }),
+            stream_options: None,
         };
 
         self.send_with_retry(&openai_request, streaming_callback, 3)

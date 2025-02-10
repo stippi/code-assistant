@@ -3,6 +3,15 @@ use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+/// Tracks token usage for a request/response pair
+#[derive(Debug, Deserialize)]
+pub struct Usage {
+    /// Number of tokens in the input (prompt)
+    pub input_tokens: u32,
+    /// Number of tokens in the output (completion)
+    pub output_tokens: u32,
+}
+
 /// Generic request structure that can be mapped to different providers
 #[derive(Debug)]
 pub struct LLMRequest {
@@ -53,6 +62,7 @@ pub enum ContentBlock {
 #[derive(Debug, Deserialize)]
 pub struct LLMResponse {
     pub content: Vec<ContentBlock>,
+    pub usage: Usage,
 }
 
 /// Common error types for all LLM providers

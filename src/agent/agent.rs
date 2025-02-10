@@ -205,6 +205,10 @@ impl Agent {
                 _ => {}
             }
         }
+        debug!(
+            "==== Token usage: Input: {}, Output: {}",
+            response.usage.input_tokens, response.usage.output_tokens
+        );
 
         parse_llm_response(&response)
     }

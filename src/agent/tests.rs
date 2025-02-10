@@ -397,6 +397,10 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
                 input: tool_input,
             },
         ],
+        usage: Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+        },
     }
 }
 
@@ -738,6 +742,10 @@ fn test_flexible_xml_parsing() -> Result<()> {
 </tool:search_files>"#
                 .to_string(),
         }],
+        usage: Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+        },
     };
 
     let actions = parse_llm_response(&response)?;
@@ -785,6 +793,10 @@ const x = 42;
 </tool:replace_in_file>"#
                 .to_string(),
         }],
+        usage: Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+        },
     };
 
     let actions = parse_llm_response(&response)?;

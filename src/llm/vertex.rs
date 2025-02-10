@@ -315,6 +315,10 @@ impl VertexClient {
                         .collect::<Vec<_>>()
                 })
                 .collect(),
+            usage: Usage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
         };
 
         Ok((response, rate_limits))

@@ -537,7 +537,16 @@ impl AnthropicClient {
                 process_sse_line(&line_buffer, &mut blocks, &mut current_content, callback)?;
             }
 
-            Ok((LLMResponse { content: blocks }, rate_limits))
+            Ok((
+                LLMResponse {
+                    content: blocks,
+                    usage: Usage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    },
+                },
+                rate_limits,
+            ))
         } else {
             let response_text = response
                 .text()
