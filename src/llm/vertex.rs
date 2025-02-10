@@ -57,6 +57,19 @@ struct GenerationConfig {
 #[derive(Debug, Deserialize)]
 struct VertexResponse {
     candidates: Vec<VertexCandidate>,
+    #[serde(rename = "usageMetadata")]
+    usage_metadata: Option<VertexUsageMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VertexUsageMetadata {
+    #[serde(rename = "promptTokenCount")]
+    prompt_token_count: u32,
+    #[serde(rename = "candidatesTokenCount")]
+    candidates_token_count: u32,
+    #[allow(dead_code)]
+    #[serde(rename = "totalTokenCount")]
+    total_token_count: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,6 +146,19 @@ impl VertexClient {
             model,
         }
     }
+    fn get_url(&self, streaming: bool) -> String {
+        if streaming {
+            format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent",
+                self.model
+            )
+        } else {
+            format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+                self.model
+            )
+        }
+    }
 
     fn convert_message(message: &Message) -> VertexMessage {
         let text = match &message.content {
@@ -155,12 +181,17 @@ impl VertexClient {
     async fn send_with_retry(
         &self,
         request: &VertexRequest,
+        streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
     ) -> Result<LLMResponse> {
         let mut attempts = 0;
 
         loop {
-            match self.try_send_request(request).await {
+            match if let Some(callback) = streaming_callback {
+                self.try_send_request_streaming(request, callback).await
+            } else {
+                self.try_send_request(request).await
+            } {
                 Ok((response, rate_limits)) => {
                     rate_limits.log_status();
                     return Ok(response);
@@ -210,14 +241,51 @@ impl VertexClient {
         }
     }
 
+    async fn handle_error_response(
+        &self,
+        response: Response,
+    ) -> Result<(LLMResponse, VertexRateLimitInfo)> {
+        let rate_limits = VertexRateLimitInfo::from_response(&response);
+        let status = response.status();
+        let response_text = response
+            .text()
+            .await
+            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+
+        let error = if let Ok(error_response) =
+            serde_json::from_str::<VertexErrorResponse>(&response_text)
+        {
+            match (status, error_response.error.code) {
+                (StatusCode::TOO_MANY_REQUESTS, _) => {
+                    ApiError::RateLimit(error_response.error.message)
+                }
+                (StatusCode::UNAUTHORIZED, _) => {
+                    ApiError::Authentication(error_response.error.message)
+                }
+                (StatusCode::BAD_REQUEST, _) => {
+                    ApiError::InvalidRequest(error_response.error.message)
+                }
+                (status, _) if status.is_server_error() => {
+                    ApiError::ServiceError(error_response.error.message)
+                }
+                _ => ApiError::Unknown(error_response.error.message),
+            }
+        } else {
+            ApiError::Unknown(format!("Status {}: {}", status, response_text))
+        };
+
+        Err(ApiErrorContext {
+            error,
+            rate_limits: Some(rate_limits),
+        }
+        .into())
+    }
+
     async fn try_send_request(
         &self,
         request: &VertexRequest,
     ) -> Result<(LLMResponse, VertexRateLimitInfo)> {
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
-            self.model
-        );
+        let url = self.get_url(false);
 
         trace!(
             "Sending Vertex request to {}:\n{}",
@@ -235,53 +303,25 @@ impl VertexClient {
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
+        if !response.status().is_success() {
+            return self.handle_error_response(response).await;
+        }
+
         let rate_limits = VertexRateLimitInfo::from_response(&response);
 
         trace!("Response headers: {:?}", response.headers());
 
-        let status = response.status();
         let response_text = response
             .text()
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
         trace!(
-            "Vertex response (status={}): {}",
-            status,
+            "Vertex response: {}",
             serde_json::to_string_pretty(&serde_json::from_str::<serde_json::Value>(
                 &response_text
             )?)?
         );
-
-        if !status.is_success() {
-            let error = if let Ok(error_response) =
-                serde_json::from_str::<VertexErrorResponse>(&response_text)
-            {
-                match (status, error_response.error.code) {
-                    (StatusCode::TOO_MANY_REQUESTS, _) => {
-                        ApiError::RateLimit(error_response.error.message)
-                    }
-                    (StatusCode::UNAUTHORIZED, _) => {
-                        ApiError::Authentication(error_response.error.message)
-                    }
-                    (StatusCode::BAD_REQUEST, _) => {
-                        ApiError::InvalidRequest(error_response.error.message)
-                    }
-                    (status, _) if status.is_server_error() => {
-                        ApiError::ServiceError(error_response.error.message)
-                    }
-                    _ => ApiError::Unknown(error_response.error.message),
-                }
-            } else {
-                ApiError::Unknown(format!("Status {}: {}", status, response_text))
-            };
-
-            return Err(ApiErrorContext {
-                error,
-                rate_limits: Some(rate_limits),
-            }
-            .into());
-        }
 
         let vertex_response: VertexResponse = serde_json::from_str(&response_text)
             .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
@@ -316,12 +356,120 @@ impl VertexClient {
                 })
                 .collect(),
             usage: Usage {
-                input_tokens: 0,
-                output_tokens: 0,
+                input_tokens: vertex_response
+                    .usage_metadata
+                    .as_ref()
+                    .map(|u| u.prompt_token_count)
+                    .unwrap_or(0),
+                output_tokens: vertex_response
+                    .usage_metadata
+                    .as_ref()
+                    .map(|u| u.candidates_token_count)
+                    .unwrap_or(0),
             },
         };
 
         Ok((response, rate_limits))
+    }
+
+    async fn try_send_request_streaming(
+        &self,
+        request: &VertexRequest,
+        streaming_callback: &StreamingCallback,
+    ) -> Result<(LLMResponse, VertexRateLimitInfo)> {
+        let mut response = self
+            .client
+            .post(&self.get_url(true))
+            .query(&[("key", &self.api_key), ("alt", &"sse".to_string())])
+            .header("Content-Type", "application/json")
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return self.handle_error_response(response).await;
+        }
+
+        let rate_limits = VertexRateLimitInfo::from_response(&response);
+
+        let mut accumulated_content = String::new();
+        let mut tool_call: Option<ContentBlock> = None;
+        let mut last_usage: Option<VertexUsageMetadata> = None;
+        let mut line_buffer = String::new();
+
+        while let Some(chunk) = response.chunk().await? {
+            let chunk_str = std::str::from_utf8(&chunk)?;
+
+            for c in chunk_str.chars() {
+                if c == '\n' {
+                    if !line_buffer.is_empty() {
+                        if let Some(data) = line_buffer.strip_prefix("data: ") {
+                            if let Ok(response) = serde_json::from_str::<VertexResponse>(data) {
+                                if let Some(candidate) = response.candidates.first() {
+                                    if let Some(part) = candidate.content.parts.first() {
+                                        if let Some(text) = &part.text {
+                                            streaming_callback(text)?;
+                                            accumulated_content.push_str(text);
+                                        } else if let Some(function_call) = &part.function_call {
+                                            tool_call = Some(ContentBlock::ToolUse {
+                                                id: format!("vertex-{}", function_call.name),
+                                                name: function_call.name.clone(),
+                                                input: function_call.args.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                                if let Some(usage) = response.usage_metadata {
+                                    last_usage = Some(usage);
+                                }
+                            }
+                        }
+                        line_buffer.clear();
+                    }
+                } else {
+                    line_buffer.push(c);
+                }
+            }
+        }
+
+        // Process any remaining data in the buffer
+        if !line_buffer.is_empty() {
+            if let Some(data) = line_buffer.strip_prefix("data: ") {
+                if let Ok(response) = serde_json::from_str::<VertexResponse>(data) {
+                    if let Some(usage) = response.usage_metadata {
+                        last_usage = Some(usage);
+                    }
+                }
+            }
+        }
+
+        let mut content = Vec::new();
+        if !accumulated_content.is_empty() {
+            content.push(ContentBlock::Text {
+                text: accumulated_content,
+            });
+        }
+        if let Some(tool) = tool_call {
+            content.push(tool);
+        }
+
+        Ok((
+            LLMResponse {
+                content,
+                usage: Usage {
+                    input_tokens: last_usage
+                        .as_ref()
+                        .map(|u| u.prompt_token_count)
+                        .unwrap_or(0),
+                    output_tokens: last_usage
+                        .as_ref()
+                        .map(|u| u.candidates_token_count)
+                        .unwrap_or(0),
+                },
+            },
+            rate_limits,
+        ))
     }
 }
 
@@ -330,7 +478,7 @@ impl LLMProvider for VertexClient {
     async fn send_message(
         &self,
         request: LLMRequest,
-        _streaming_callback: Option<&StreamingCallback>,
+        streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
         let mut contents = Vec::new();
 
@@ -366,6 +514,7 @@ impl LLMProvider for VertexClient {
             })),
         };
 
-        self.send_with_retry(&vertex_request, 3).await
+        self.send_with_retry(&vertex_request, streaming_callback, 3)
+            .await
     }
 }
