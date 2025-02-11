@@ -48,7 +48,24 @@ impl OpenAIRequest {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct OpenAIChatMessage {
     role: String,
+    #[serde(default)]
     content: String,
+    #[serde(default)]
+    tool_calls: Option<Vec<OpenAIToolCall>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct OpenAIToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    call_type: String,
+    function: OpenAIFunction,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct OpenAIFunction {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -268,6 +285,7 @@ impl OpenAIClient {
                     "[Structured content not supported]".to_string()
                 }
             },
+            tool_calls: None,
         }
     }
 
@@ -404,12 +422,38 @@ impl OpenAIClient {
             .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
 
         // Convert to our generic LLMResponse format
-        // TODO: Handle tools
         Ok((
             LLMResponse {
-                content: vec![ContentBlock::Text {
-                    text: openai_response.choices[0].message.content.clone(),
-                }],
+                content: {
+                    let mut blocks = Vec::new();
+
+                    // Add text content if present
+                    if !openai_response.choices[0].message.content.is_empty() {
+                        blocks.push(ContentBlock::Text {
+                            text: openai_response.choices[0].message.content.clone(),
+                        });
+                    }
+
+                    // Add tool calls if present
+                    if let Some(ref tool_calls) = openai_response.choices[0].message.tool_calls {
+                        for call in tool_calls {
+                            let input =
+                                serde_json::from_str(&call.function.arguments).map_err(|e| {
+                                    ApiError::Unknown(format!(
+                                        "Failed to parse tool arguments: {}",
+                                        e
+                                    ))
+                                })?;
+                            blocks.push(ContentBlock::ToolUse {
+                                id: call.id.clone(),
+                                name: call.function.name.clone(),
+                                input,
+                            });
+                        }
+                    }
+
+                    blocks
+                },
                 usage: Usage {
                     input_tokens: openai_response.usage.prompt_tokens,
                     output_tokens: openai_response.usage.completion_tokens,
@@ -628,6 +672,7 @@ impl LLMProvider for OpenAIClient {
         messages.push(OpenAIChatMessage {
             role: "system".to_string(),
             content: request.system_prompt,
+            tool_calls: None,
         });
 
         // Add conversation messages

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Tracks token usage for a request/response pair
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Clone)]
 pub struct Usage {
     /// Number of tokens in the input (prompt)
     pub input_tokens: u32,
@@ -59,7 +59,7 @@ pub enum ContentBlock {
 }
 
 /// Generic response structure
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct LLMResponse {
     pub content: Vec<ContentBlock>,
     pub usage: Usage,
