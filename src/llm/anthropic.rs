@@ -230,6 +230,16 @@ impl AnthropicClient {
         }
     }
 
+    #[cfg(test)]
+    pub fn new_with_base_url(api_key: String, model: String, base_url: String) -> Self {
+        Self {
+            client: Client::new(),
+            api_key,
+            base_url,
+            model,
+        }
+    }
+
     async fn send_with_retry(
         &self,
         request: &AnthropicRequest,

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Tracks token usage for a request/response pair
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 pub struct Usage {
     /// Number of tokens in the input (prompt)
     pub input_tokens: u32,
@@ -13,34 +13,34 @@ pub struct Usage {
 }
 
 /// Generic request structure that can be mapped to different providers
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LLMRequest {
     pub messages: Vec<Message>,
     pub system_prompt: String,
     pub tools: Option<Vec<ToolDefinition>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
     pub role: MessageRole,
     pub content: MessageContent,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     User,
     Assistant,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum MessageContent {
     Text(String),
     Structured(Vec<ContentBlock>),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
     #[serde(rename = "text")]

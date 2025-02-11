@@ -244,6 +244,16 @@ impl OpenAIClient {
         }
     }
 
+    #[cfg(test)]
+    pub fn new_with_base_url(api_key: String, model: String, base_url: String) -> Self {
+        Self {
+            client: Client::new(),
+            api_key,
+            base_url,
+            model,
+        }
+    }
+
     fn convert_message(message: &Message) -> OpenAIChatMessage {
         OpenAIChatMessage {
             role: match message.role {

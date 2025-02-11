@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 pub mod anthropic;
 pub mod ollama;
 pub mod openai;
