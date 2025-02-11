@@ -688,6 +688,7 @@ impl LLMProvider for OpenAIClient {
             messages,
             temperature: 1.0,
             stream: None,
+            stream_options: None,
             tool_choice: match &request.tools {
                 Some(_) => Some(serde_json::json!("required")),
                 _ => None,
@@ -707,7 +708,6 @@ impl LLMProvider for OpenAIClient {
                     })
                     .collect()
             }),
-            stream_options: None,
         };
 
         self.send_with_retry(&openai_request, streaming_callback, 3)
