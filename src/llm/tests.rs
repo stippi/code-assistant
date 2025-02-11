@@ -176,11 +176,30 @@ impl MockResponseGenerator for OpenAIMockGenerator {
                 b"data: [DONE]\n\n".to_vec(),
             ],
             Some(_) => vec![
-                // Tool call start
-                b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"tool-0\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\"}}]},\"finish_reason\":null}]}\n\n".to_vec(),
-                // Tool call arguments
-                b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"location\\\":\\\"current\\\"\"}}]},\"finish_reason\":null}]}\n\n".to_vec(),
-                b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":15,\"completion_tokens\":12,\"total_tokens\":27}}\n\n".to_vec(),
+                // Initial delta with function declaration
+                format!(
+                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{{\"index\":0,\"id\":\"tool-0\",\"type\":\"function\",\"function\":{{\"name\":\"get_weather\",\"arguments\":\"\"}}}}]}}}}]}}\n\n"
+                ).into_bytes(),
+                // Arguments streaming in chunks
+                format!(
+                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"{{\\\"\"}}}}]}}}}]}}\n\n"
+                ).into_bytes(),
+                format!(
+                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"location\\\"\"}}}}]}}}}]}}\n\n"
+                ).into_bytes(),
+                format!(
+                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\":\\\"\"}}}}]}}}}]}}\n\n"
+                ).into_bytes(),
+                format!(
+                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"current\"}}}}]}}}}]}}\n\n"
+                ).into_bytes(),
+                format!(
+                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"\\\"}}\"}}}}]}}}}]}}\n\n"
+                ).into_bytes(),
+                // Empty delta with finish reason
+                format!(
+                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n"
+                ).into_bytes(),
                 b"data: [DONE]\n\n".to_vec(),
             ],
         }

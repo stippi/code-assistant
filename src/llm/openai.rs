@@ -689,9 +689,7 @@ impl LLMProvider for OpenAIClient {
             temperature: 1.0,
             stream: None,
             tool_choice: match &request.tools {
-                Some(_) => Some(serde_json::json!({
-                    "type": "any",
-                })),
+                Some(_) => Some(serde_json::json!("required")),
                 _ => None,
             },
             tools: request.tools.map(|tools| {
