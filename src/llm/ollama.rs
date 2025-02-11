@@ -66,7 +66,7 @@ impl OllamaClient {
     pub fn new(model: String, num_ctx: usize) -> Self {
         Self {
             client: Client::new(),
-            base_url: "http://localhost:11434/api/chat".to_string(),
+            base_url: "http://localhost:11434".to_string(),
             model,
             num_ctx,
         }
@@ -80,6 +80,10 @@ impl OllamaClient {
             model,
             num_ctx,
         }
+    }
+
+    fn get_url(&self) -> String {
+        format!("{}/api/chat", self.base_url)
     }
 
     fn convert_message(message: &Message) -> OllamaMessage {
@@ -98,7 +102,7 @@ impl OllamaClient {
     async fn try_send_request(&self, request: &OllamaRequest) -> Result<LLMResponse> {
         let response = self
             .client
-            .post(&self.base_url)
+            .post(&self.get_url())
             .json(request)
             .send()
             .await
@@ -158,7 +162,7 @@ impl OllamaClient {
     ) -> Result<LLMResponse> {
         let response = self
             .client
-            .post(&self.base_url)
+            .post(&self.get_url())
             .json(request)
             .send()
             .await

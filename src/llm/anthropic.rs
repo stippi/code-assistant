@@ -225,7 +225,7 @@ impl AnthropicClient {
         Self {
             client: Client::new(),
             api_key,
-            base_url: "https://api.anthropic.com/v1/messages".to_string(),
+            base_url: "https://api.anthropic.com/v1".to_string(),
             model,
         }
     }
@@ -238,6 +238,10 @@ impl AnthropicClient {
             base_url,
             model,
         }
+    }
+
+    fn get_url(&self) -> String {
+        format!("{}/messages", self.base_url)
     }
 
     async fn send_with_retry(
@@ -341,7 +345,7 @@ impl AnthropicClient {
 
         let mut response = self
             .client
-            .post(&self.base_url)
+            .post(&self.get_url())
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("accept", accept_value)

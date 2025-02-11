@@ -145,7 +145,7 @@ impl VertexClient {
             client: Client::new(),
             api_key,
             model,
-            base_url: "".to_string(),
+            base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
         }
     }
 
@@ -160,20 +160,13 @@ impl VertexClient {
     }
 
     fn get_url(&self, streaming: bool) -> String {
-        #[cfg(test)]
-        return self.base_url.clone();
-
-        #[cfg(not(test))]
         if streaming {
             format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent",
-                self.model
+                "{}/models/{}:streamGenerateContent",
+                self.base_url, self.model
             )
         } else {
-            format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
-                self.model
-            )
+            format!("{}/models/{}:generateContent", self.base_url, self.model)
         }
     }
 
@@ -353,10 +346,11 @@ impl VertexClient {
                         .content
                         .parts
                         .into_iter()
-                        .map(|part| {
+                        .enumerate()
+                        .map(|(index, part)| {
                             if let Some(function_call) = part.function_call {
                                 ContentBlock::ToolUse {
-                                    id: format!("tool-{}", function_call.name), // Generate a unique ID
+                                    id: format!("tool-{}", index), // Generate a unique ID
                                     name: function_call.name,
                                     input: function_call.args,
                                 }
@@ -438,7 +432,7 @@ impl VertexClient {
                                             }
 
                                             content_blocks.push(ContentBlock::ToolUse {
-                                                id: format!("vertex-{}", function_call.name),
+                                                id: format!("tool-{}", content_blocks.len()),
                                                 name: function_call.name.clone(),
                                                 input: function_call.args.clone(),
                                             });

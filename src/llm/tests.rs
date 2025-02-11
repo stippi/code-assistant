@@ -2,6 +2,7 @@ use super::*;
 use crate::types::ToolDefinition;
 use crate::{AnthropicClient, LLMProvider, OpenAIClient};
 use anyhow::Result;
+use axum::extract::Path;
 use axum::{response::IntoResponse, routing::post, Router};
 use bytes::Bytes;
 use futures::stream;
@@ -232,7 +233,8 @@ impl MockResponseGenerator for AnthropicMockGenerator {
             Some(_) => vec![
                 b"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3\"}}\n\n".to_vec(),
                 b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool-0\",\"name\":\"get_weather\"}}\n\n".to_vec(),
-                b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"location\\\":\\\"current\\\"}\"}}\n\n".to_vec(),
+                b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"location\\\":\"}}\n\n".to_vec(),
+                b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"current\\\"}\"}}\n\n".to_vec(),
                 b"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n".to_vec(),
                 b"data: {\"type\":\"message_stop\"}\n\n".to_vec(),
             ],
@@ -432,40 +434,43 @@ async fn create_mock_server(
     generator: impl MockResponseGenerator + Clone + 'static,
 ) -> String {
     let app = Router::new().route(
-        "/chat/completions",
-        post(move |req: axum::extract::Json<serde_json::Value>| {
-            let generator = generator.clone();
-            let test_case = test_case.clone();
-            async move {
-                let is_streaming = req.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+        "/*path",
+        post(
+            move |Path(path): Path<String>, req: axum::extract::Json<serde_json::Value>| {
+                let generator = generator.clone();
+                let test_case = test_case.clone();
+                async move {
+                    let is_streaming = path.contains("stream")
+                        || req.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
-                if is_streaming {
-                    let chunks = generator.generate_chunks(&test_case);
-                    let stream = stream::iter(
-                        chunks
-                            .into_iter()
-                            .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
-                    );
+                    if is_streaming {
+                        let chunks = generator.generate_chunks(&test_case);
+                        let stream = stream::iter(
+                            chunks
+                                .into_iter()
+                                .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
+                        );
 
-                    axum::response::Response::builder()
-                        .status(axum::http::StatusCode::OK)
-                        .header("content-type", "text/event-stream")
-                        .body(axum::body::Body::from_stream(stream))
-                        .unwrap()
-                } else {
-                    (
-                        axum::http::StatusCode::OK,
-                        axum::Json(
-                            serde_json::from_str::<serde_json::Value>(
-                                &generator.generate_response(&test_case),
-                            )
-                            .unwrap(),
-                        ),
-                    )
-                        .into_response()
+                        axum::response::Response::builder()
+                            .status(axum::http::StatusCode::OK)
+                            .header("content-type", "text/event-stream")
+                            .body(axum::body::Body::from_stream(stream))
+                            .unwrap()
+                    } else {
+                        (
+                            axum::http::StatusCode::OK,
+                            axum::Json(
+                                serde_json::from_str::<serde_json::Value>(
+                                    &generator.generate_response(&test_case),
+                                )
+                                .unwrap(),
+                            ),
+                        )
+                            .into_response()
+                    }
                 }
-            }
-        }),
+            },
+        ),
     );
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 0));
@@ -535,7 +540,7 @@ async fn test_openai_provider() -> Result<()> {
             Box::new(OpenAIClient::new_with_base_url(
                 "test-key".to_string(),
                 "gpt-4".to_string(),
-                format!("{}/chat/completions", url),
+                url.to_string(),
             ))
         },
         OpenAIMockGenerator,
@@ -551,7 +556,7 @@ async fn test_anthropic_provider() -> Result<()> {
             Box::new(AnthropicClient::new_with_base_url(
                 "test-key".to_string(),
                 "claude-3".to_string(),
-                format!("{}/chat/completions", url),
+                url.to_string(),
             ))
         },
         AnthropicMockGenerator,
@@ -567,7 +572,7 @@ async fn test_vertex_provider() -> Result<()> {
             Box::new(VertexClient::new_with_base_url(
                 "test-key".to_string(),
                 "gemini-pro".to_string(),
-                format!("{}/chat/completions", url),
+                url.to_string(),
             ))
         },
         VertexMockGenerator,
@@ -583,7 +588,7 @@ async fn test_ollama_provider() -> Result<()> {
             Box::new(OllamaClient::new_with_base_url(
                 "llama2".to_string(),
                 4096,
-                format!("{}/chat/completions", url),
+                url.to_string(),
             ))
         },
         OllamaMockGenerator,

@@ -118,6 +118,7 @@ struct OpenAIToolCallDelta {
     #[serde(default)]
     function: Option<OpenAIFunctionDelta>,
 }
+
 #[derive(Debug, Deserialize)]
 struct OpenAIUsage {
     prompt_tokens: u32,
@@ -256,7 +257,7 @@ impl OpenAIClient {
         Self {
             client: Client::new(),
             api_key,
-            base_url: "https://api.openai.com/v1/chat/completions".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
             model,
         }
     }
@@ -269,6 +270,10 @@ impl OpenAIClient {
             base_url,
             model,
         }
+    }
+
+    fn get_url(&self) -> String {
+        format!("{}/chat/completions", self.base_url)
     }
 
     fn convert_message(message: &Message) -> OpenAIChatMessage {
@@ -401,7 +406,7 @@ impl OpenAIClient {
         let request = request.clone().into_non_streaming();
         let response = self
             .client
-            .post(&self.base_url)
+            .post(&self.get_url())
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&request)
@@ -472,7 +477,7 @@ impl OpenAIClient {
         let request = request.clone().into_streaming();
         let response = self
             .client
-            .post(&self.base_url)
+            .post(&self.get_url())
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&request)
