@@ -136,6 +136,7 @@ pub struct VertexClient {
     client: Client,
     api_key: String,
     model: String,
+    base_url: String,
 }
 
 impl VertexClient {
@@ -144,9 +145,25 @@ impl VertexClient {
             client: Client::new(),
             api_key,
             model,
+            base_url: "".to_string(),
         }
     }
+
+    #[cfg(test)]
+    pub fn new_with_base_url(api_key: String, model: String, base_url: String) -> Self {
+        Self {
+            client: Client::new(),
+            api_key,
+            model,
+            base_url,
+        }
+    }
+
     fn get_url(&self, streaming: bool) -> String {
+        #[cfg(test)]
+        return self.base_url.clone();
+
+        #[cfg(not(test))]
         if streaming {
             format!(
                 "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent",
@@ -339,7 +356,7 @@ impl VertexClient {
                         .map(|part| {
                             if let Some(function_call) = part.function_call {
                                 ContentBlock::ToolUse {
-                                    id: format!("vertex-{}", function_call.name), // Generate a unique ID
+                                    id: format!("tool-{}", function_call.name), // Generate a unique ID
                                     name: function_call.name,
                                     input: function_call.args,
                                 }

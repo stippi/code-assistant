@@ -72,6 +72,16 @@ impl OllamaClient {
         }
     }
 
+    #[cfg(test)]
+    pub fn new_with_base_url(model: String, num_ctx: usize, base_url: String) -> Self {
+        Self {
+            client: Client::new(),
+            base_url,
+            model,
+            num_ctx,
+        }
+    }
+
     fn convert_message(message: &Message) -> OllamaMessage {
         OllamaMessage {
             role: match message.role {
@@ -125,7 +135,7 @@ impl OllamaClient {
         if let Some(tool_calls) = ollama_response.message.tool_calls {
             for (index, tool_call) in tool_calls.into_iter().enumerate() {
                 content.push(ContentBlock::ToolUse {
-                    id: format!("ollama-{}", index),
+                    id: format!("tool-{}", index),
                     name: tool_call.function.name,
                     input: tool_call.function.arguments,
                 });
@@ -209,15 +219,17 @@ impl OllamaClient {
         // Build final response
         let mut content = Vec::new();
 
+        // Add accumulated text content if present
         if !accumulated_content.is_empty() {
             content.push(ContentBlock::Text {
                 text: accumulated_content,
             });
         }
 
+        // Add tool calls if present
         for (index, tool_call) in tool_calls.into_iter().enumerate() {
             content.push(ContentBlock::ToolUse {
-                id: format!("ollama-{}", index),
+                id: format!("tool-{}", index),
                 name: tool_call.function.name,
                 input: tool_call.function.arguments,
             });

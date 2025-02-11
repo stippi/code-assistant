@@ -72,7 +72,7 @@ impl TestCase {
             expected_chunks: vec![], // Tool calls typically don't stream text
             expected_response: LLMResponse {
                 content: vec![ContentBlock::ToolUse {
-                    id: "test-1".to_string(),
+                    id: "tool-0".to_string(),
                     name: "get_weather".to_string(),
                     input: json!({"location": "current"}),
                 }],
@@ -144,7 +144,7 @@ impl MockResponseGenerator for OpenAIMockGenerator {
                     "message": {
                         "role": "assistant",
                         "tool_calls": [{
-                            "id": "test-1",
+                            "id": "tool-0",
                             "type": "function",
                             "function": {
                                 "name": "get_weather",
@@ -176,7 +176,7 @@ impl MockResponseGenerator for OpenAIMockGenerator {
             ],
             Some(_) => vec![
                 // Tool call start
-                b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"test-1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\"}}]},\"finish_reason\":null}]}\n\n".to_vec(),
+                b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"tool-0\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\"}}]},\"finish_reason\":null}]}\n\n".to_vec(),
                 // Tool call arguments
                 b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"location\\\":\\\"current\\\"\"}}]},\"finish_reason\":null}]}\n\n".to_vec(),
                 b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":15,\"completion_tokens\":12,\"total_tokens\":27}}\n\n".to_vec(),
@@ -206,7 +206,7 @@ impl MockResponseGenerator for AnthropicMockGenerator {
             Some(_) => json!({
                 "content": [{
                     "type": "tool_use",
-                    "id": "test-1",
+                    "id": "tool-0",
                     "name": "get_weather",
                     "input": {"location": "current"}
                 }],
@@ -231,11 +231,197 @@ impl MockResponseGenerator for AnthropicMockGenerator {
             ],
             Some(_) => vec![
                 b"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3\"}}\n\n".to_vec(),
-                b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"test-1\",\"name\":\"get_weather\"}}\n\n".to_vec(),
+                b"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool-0\",\"name\":\"get_weather\"}}\n\n".to_vec(),
                 b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"location\\\":\\\"current\\\"}\"}}\n\n".to_vec(),
                 b"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n".to_vec(),
                 b"data: {\"type\":\"message_stop\"}\n\n".to_vec(),
             ],
+        }
+    }
+}
+
+// Vertex implementation
+#[derive(Clone)]
+struct VertexMockGenerator;
+
+impl MockResponseGenerator for VertexMockGenerator {
+    fn generate_response(&self, case: &TestCase) -> String {
+        match case.request.tools {
+            None => json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": "Hi! How can I help you today?"
+                        }],
+                        "role": "model"
+                    }
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 8,
+                    "totalTokenCount": 18
+                }
+            }),
+            Some(_) => json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "functionCall": {
+                                "name": "get_weather",
+                                "args": {"location": "current"}
+                            }
+                        }],
+                        "role": "model"
+                    }
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 15,
+                    "candidatesTokenCount": 12,
+                    "totalTokenCount": 27
+                }
+            }),
+        }
+        .to_string()
+    }
+
+    fn generate_chunks(&self, case: &TestCase) -> Vec<Vec<u8>> {
+        match case.request.tools {
+            None => vec![
+                format!(
+                    "data: {}\n\n",
+                    json!({
+                        "candidates": [{
+                            "content": {
+                                "parts": [{"text": "Hi!"}],
+                                "role": "model"
+                            }
+                        }]
+                    })
+                )
+                .into_bytes(),
+                format!(
+                    "data: {}\n\n",
+                    json!({
+                        "candidates": [{
+                            "content": {
+                                "parts": [{"text": " How can I help you today?"}],
+                                "role": "model"
+                            }
+                        }],
+                        "usageMetadata": {
+                            "promptTokenCount": 10,
+                            "candidatesTokenCount": 8,
+                            "totalTokenCount": 18
+                        }
+                    })
+                )
+                .into_bytes(),
+            ],
+            Some(_) => vec![format!(
+                "data: {}\n\n",
+                json!({
+                    "candidates": [{
+                        "content": {
+                            "parts": [{
+                                "functionCall": {
+                                    "name": "get_weather",
+                                    "args": {"location": "current"}
+                                }
+                            }],
+                            "role": "model"
+                        }
+                    }],
+                    "usageMetadata": {
+                        "promptTokenCount": 15,
+                        "candidatesTokenCount": 12,
+                        "totalTokenCount": 27
+                    }
+                })
+            )
+            .into_bytes()],
+        }
+    }
+}
+
+// Ollama implementation
+#[derive(Clone)]
+struct OllamaMockGenerator;
+
+impl MockResponseGenerator for OllamaMockGenerator {
+    fn generate_response(&self, case: &TestCase) -> String {
+        match case.request.tools {
+            None => json!({
+                "message": {
+                    "content": "Hi! How can I help you today?"
+                },
+                "done": true,
+                "prompt_eval_count": 10,
+                "eval_count": 8
+            }),
+            Some(_) => json!({
+                "message": {
+                    "content": "",
+                    "tool_calls": [{
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": { "location": "current" }
+                        }
+                    }]
+                },
+                "done": true,
+                "prompt_eval_count": 15,
+                "eval_count": 12
+            }),
+        }
+        .to_string()
+    }
+
+    fn generate_chunks(&self, case: &TestCase) -> Vec<Vec<u8>> {
+        match case.request.tools {
+            None => vec![
+                format!(
+                    "{}\n",
+                    json!({
+                        "message": {
+                            "content": "Hi!"
+                        },
+                        "done": false,
+                        "prompt_eval_count": 10,
+                        "eval_count": 4
+                    })
+                )
+                .into_bytes(),
+                format!(
+                    "{}\n",
+                    json!({
+                        "message": {
+                            "content": " How can I help you today?"
+                        },
+                        "done": true,
+                        "prompt_eval_count": 10,
+                        "eval_count": 8
+                    })
+                )
+                .into_bytes(),
+            ],
+            Some(_) => vec![format!(
+                "{}\n",
+                json!({
+                    "message": {
+                        "content": "",
+                        "tool_calls": [{
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": { "location": "current" }
+                            }
+                        }]
+                    },
+                    "done": true,
+                    "prompt_eval_count": 15,
+                    "eval_count": 12
+                })
+            )
+            .into_bytes()],
         }
     }
 }
@@ -369,6 +555,38 @@ async fn test_anthropic_provider() -> Result<()> {
             ))
         },
         AnthropicMockGenerator,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn test_vertex_provider() -> Result<()> {
+    run_provider_tests(
+        "Vertex",
+        |url| {
+            Box::new(VertexClient::new_with_base_url(
+                "test-key".to_string(),
+                "gemini-pro".to_string(),
+                format!("{}/chat/completions", url),
+            ))
+        },
+        VertexMockGenerator,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn test_ollama_provider() -> Result<()> {
+    run_provider_tests(
+        "Ollama",
+        |url| {
+            Box::new(OllamaClient::new_with_base_url(
+                "llama2".to_string(),
+                4096,
+                format!("{}/chat/completions", url),
+            ))
+        },
+        OllamaMockGenerator,
     )
     .await
 }
