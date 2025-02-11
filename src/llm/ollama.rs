@@ -11,7 +11,8 @@ struct OllamaRequest {
     messages: Vec<OllamaMessage>,
     stream: bool,
     options: OllamaOptions,
-    format: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -28,13 +29,29 @@ struct OllamaMessage {
 #[derive(Debug, Deserialize)]
 struct OllamaResponse {
     message: OllamaResponseMessage,
+    #[allow(dead_code)]
+    done_reason: Option<String>,
+    #[allow(dead_code)]
+    done: bool,
     prompt_eval_count: u32,
     eval_count: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OllamaToolCall {
+    function: OllamaFunction,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OllamaFunction {
+    name: String,
+    arguments: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
 struct OllamaResponseMessage {
     content: String,
+    tool_calls: Option<Vec<OllamaToolCall>>,
 }
 
 pub struct OllamaClient {
@@ -122,20 +139,50 @@ impl LLMProvider for OllamaClient {
             model: self.model.clone(),
             messages,
             stream: false,
-            format: "json".to_string(),
             options: OllamaOptions {
                 num_ctx: self.num_ctx,
             },
+            tools: request.tools.map(|tools| {
+                tools
+                    .into_iter()
+                    .map(|tool| {
+                        serde_json::json!({
+                            "type": "function",
+                            "function": {
+                                "name": tool.name,
+                                "description": tool.description,
+                                "parameters": tool.parameters
+                            }
+                        })
+                    })
+                    .collect()
+            }),
         };
 
         debug!("Sending request to Ollama: {:?}", ollama_request);
 
         let response = self.try_send_request(&ollama_request).await?;
 
-        Ok(LLMResponse {
-            content: vec![ContentBlock::Text {
+        let mut content = Vec::new();
+
+        if !response.message.content.is_empty() {
+            content.push(ContentBlock::Text {
                 text: response.message.content,
-            }],
+            });
+        }
+
+        if let Some(tool_calls) = response.message.tool_calls {
+            for (index, tool_call) in tool_calls.into_iter().enumerate() {
+                content.push(ContentBlock::ToolUse {
+                    id: format!("ollama-{}", index),
+                    name: tool_call.function.name,
+                    input: tool_call.function.arguments,
+                });
+            }
+        }
+
+        Ok(LLMResponse {
+            content,
             usage: Usage {
                 input_tokens: response.prompt_eval_count,
                 output_tokens: response.eval_count,
