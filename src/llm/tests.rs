@@ -70,7 +70,7 @@ impl TestCase {
                     }),
                 }]),
             },
-            expected_chunks: vec![], // Tool calls typically don't stream text
+            expected_chunks: vec![],
             expected_response: LLMResponse {
                 content: vec![ContentBlock::ToolUse {
                     id: "tool-0".to_string(),
@@ -251,12 +251,12 @@ impl MockResponseGenerator for AnthropicMockGenerator {
                 b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".to_vec(),
             ],
             Some(_) => vec![
-                b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":15,\"output_tokens\":12}}}\n\n".to_vec(),
+                b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":15,\"output_tokens\":2}}}\n\n".to_vec(),
                 b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool-0\",\"name\":\"get_weather\"}}\n\n".to_vec(),
                 b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"location\\\":\"}}\n\n".to_vec(),
                 b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"current\\\"}\"}}\n\n".to_vec(),
                 b"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n".to_vec(),
-                b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":12}}\n\n".to_vec(),
+                b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":12}}\n\n".to_vec(),
                 b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".to_vec(),
             ],
         }

@@ -532,3 +532,61 @@ impl LLMProvider for VertexClient {
             .await
     }
 }
+
+/*
+Communicating tool call results back to LLM (including parallel function calls):
+Note, there is no ID associated with each function call/result, only the order.
+
+```json
+{
+    "role": "user",
+    "parts": {
+        "text": "What is difference in temperature in New Delhi and San Francisco?"
+    }
+},
+{
+    "role": "model",
+    "parts": [
+        {
+            "functionCall": {
+                "name": "get_current_weather",
+                "args": {
+                    "location": "New Delhi"
+                }
+            }
+        },
+        {
+            "functionCall": {
+                "name": "get_current_weather",
+                "args": {
+                    "location": "San Francisco"
+                }
+            }
+        }
+    ]
+},
+{
+    "role": "user",
+    "parts": [
+        {
+            "functionResponse": {
+                "name": "get_current_weather",
+                "response": {
+                    "temperature": 30.5,
+                    "unit": "C"
+                }
+            }
+        },
+        {
+            "functionResponse": {
+                "name": "get_current_weather",
+                "response": {
+                    "temperature": 20,
+                    "unit": "C"
+                }
+            }
+        }
+    ]
+}
+```
+*/
