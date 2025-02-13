@@ -23,7 +23,7 @@ pub fn apply_replacements(
                 );
             },
             _ => anyhow::bail!(
-                "Found {} occurrences of search content:\n{}\nSearch text must match exactly one location",
+                "Found {} occurrences of search content:\n```\n{}\n```\nSearch text must match exactly one location. Try enlarging the section to replace.",
                 matches.len(),
                 replacement.search
             ),

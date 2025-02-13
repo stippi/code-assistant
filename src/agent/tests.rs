@@ -212,7 +212,7 @@ impl CodeExplorer for MockExplorer {
         Ok(())
     }
 
-    fn create_initial_tree(&self, _max_depth: usize) -> Result<FileTreeEntry, anyhow::Error> {
+    fn create_initial_tree(&mut self, _max_depth: usize) -> Result<FileTreeEntry, anyhow::Error> {
         self.file_tree
             .lock()
             .unwrap()
@@ -221,7 +221,7 @@ impl CodeExplorer for MockExplorer {
     }
 
     fn list_files(
-        &self,
+        &mut self,
         path: &PathBuf,
         _max_depth: Option<usize>,
     ) -> Result<FileTreeEntry, anyhow::Error> {

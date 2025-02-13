@@ -153,7 +153,7 @@ impl Agent {
 
                 if let Ok((_, result)) = ToolExecutor::execute(
                     &mut replay_handler,
-                    Some(&self.explorer),
+                    Some(&mut self.explorer),
                     &self.command_executor,
                     Some(&self.ui),
                     &action.tool,
@@ -303,7 +303,7 @@ impl Agent {
         // Execute the tool and get both the output and result
         let (output, tool_result) = ToolExecutor::execute(
             &mut handler,
-            Some(&self.explorer),
+            Some(&mut self.explorer),
             &self.command_executor,
             Some(&self.ui),
             &action.tool,

@@ -231,8 +231,8 @@ pub trait CodeExplorer: Send + Sync {
     /// Write the content of a file
     fn write_file(&self, path: &PathBuf, content: &String) -> Result<()>;
     fn delete_file(&self, path: &PathBuf) -> Result<()>;
-    fn create_initial_tree(&self, max_depth: usize) -> Result<FileTreeEntry>;
-    fn list_files(&self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry>;
+    fn create_initial_tree(&mut self, max_depth: usize) -> Result<FileTreeEntry>;
+    fn list_files(&mut self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry>;
     /// Applies FileReplacements to a file
     fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String>;
     /// Search for text in files with advanced options

@@ -5,7 +5,7 @@ use crate::types::{
 use anyhow::Result;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use tracing::debug;
@@ -13,6 +13,8 @@ use tracing::debug;
 /// Handles file system operations for code exploration
 pub struct Explorer {
     root_dir: PathBuf,
+    // Track which paths were explicitly listed
+    expanded_paths: HashSet<PathBuf>,
 }
 
 impl FileTreeEntry {
@@ -89,17 +91,25 @@ impl Explorer {
     /// # Arguments
     /// * `root_dir` - The root directory to explore
     pub fn new(root_dir: PathBuf) -> Self {
-        Self { root_dir }
+        Self {
+            root_dir,
+            expanded_paths: HashSet::new(),
+        }
     }
 
     fn expand_directory(
-        &self,
+        &mut self,
         path: &Path,
         entry: &mut FileTreeEntry,
         current_depth: usize,
         max_depth: usize,
     ) -> Result<()> {
-        if current_depth >= max_depth {
+        // Expand if either:
+        // - Within max_depth during initial load
+        // - The path was explicitly listed before
+        let should_expand = current_depth < max_depth || self.expanded_paths.contains(path);
+
+        if !should_expand {
             entry.is_expanded = false;
             return Ok(());
         }
@@ -178,7 +188,7 @@ impl CodeExplorer for Explorer {
         self.root_dir.clone()
     }
 
-    fn create_initial_tree(&self, max_depth: usize) -> Result<FileTreeEntry> {
+    fn create_initial_tree(&mut self, max_depth: usize) -> Result<FileTreeEntry> {
         let mut root = FileTreeEntry {
             name: self
                 .root_dir
@@ -191,7 +201,8 @@ impl CodeExplorer for Explorer {
             is_expanded: true, // Root is always expanded
         };
 
-        self.expand_directory(&self.root_dir, &mut root, 0, max_depth)?;
+        let root_dir = &self.root_dir.clone();
+        self.expand_directory(&root_dir, &mut root, 0, max_depth)?;
         Ok(root)
     }
 
@@ -214,7 +225,10 @@ impl CodeExplorer for Explorer {
         Ok(())
     }
 
-    fn list_files(&self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry> {
+    fn list_files(&mut self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry> {
+        // Remember that this path was explicitly listed
+        self.expanded_paths.insert(path.clone());
+
         let mut entry = FileTreeEntry {
             name: path
                 .file_name()
@@ -511,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_create_initial_tree() -> Result<()> {
-        let (temp_dir, explorer) = setup_test_directory()?;
+        let (temp_dir, mut explorer) = setup_test_directory()?;
 
         // Create a simple file system structure
         fs::create_dir(temp_dir.path().join("dir1"))?;

@@ -11,7 +11,7 @@ pub struct ToolExecutor {}
 impl ToolExecutor {
     pub async fn execute<H: ToolResultHandler>(
         handler: &mut H,
-        explorer: Option<&Box<dyn CodeExplorer>>,
+        explorer: Option<&mut Box<dyn CodeExplorer>>,
         command_executor: &Box<dyn CommandExecutor>,
         ui: Option<&Box<dyn UserInterface>>,
         tool: &Tool,
@@ -122,6 +122,7 @@ impl ToolExecutor {
                     }
 
                     Tool::ListFiles { paths, max_depth } => {
+                        let explorer = explorer; // Shadow with non-ref binding
                         let mut expanded_paths = Vec::new();
                         let mut failed_paths = Vec::new();
 
@@ -193,8 +194,25 @@ impl ToolExecutor {
                         command_line,
                         working_dir,
                     } => {
+                        let effective_working_dir = match working_dir {
+                            Some(dir) if dir.is_absolute() => {
+                                return Ok((
+                                    String::new(),
+                                    ToolResult::ExecuteCommand {
+                                        success: false,
+                                        stdout: String::new(),
+                                        stderr:
+                                            "Working directory must be relative to project root"
+                                                .to_string(),
+                                    },
+                                ));
+                            }
+                            Some(dir) => explorer.root_dir().join(dir),
+                            None => explorer.root_dir(),
+                        };
+
                         match command_executor
-                            .execute(command_line, working_dir.as_ref())
+                            .execute(command_line, Some(&effective_working_dir))
                             .await
                         {
                             Ok(output) => ToolResult::ExecuteCommand {

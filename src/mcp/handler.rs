@@ -231,7 +231,7 @@ impl MessageHandler {
 
         match ToolExecutor::execute(
             &mut handler,
-            self.explorer.as_ref(),
+            self.explorer.as_mut(),
             &self.command_executor,
             None,
             &tool,
@@ -243,14 +243,14 @@ impl MessageHandler {
                     if let Some(path) = path {
                         self.explorer = Some(Box::new(Explorer::new(path.clone())));
                         self.send_tools_changed_notification().await?;
+
+                        self.update_file_tree().await?;
                     }
                 }
 
-                // if let ToolResult::ListFiles { .. } = &result {
-                //     if let Some(explorer) = &self.explorer {
-                //         self.resources.update_file_tree(explorer.);
-                //     }
-                // }
+                if let ToolResult::ListFiles { .. } = &result {
+                    self.update_file_tree().await?;
+                }
 
                 self.send_response(
                     id,
@@ -275,6 +275,16 @@ impl MessageHandler {
                 .await
             }
         }
+    }
+
+    async fn update_file_tree(&mut self) -> Result<()> {
+        if let Some(ref mut explorer) = self.explorer {
+            if let Ok(tree) = explorer.create_initial_tree(2) {
+                self.resources.update_file_tree(tree);
+                self.send_resource_updated_notification("tree:///").await?;
+            }
+        }
+        Ok(())
     }
 
     /// Handle prompts/list request
