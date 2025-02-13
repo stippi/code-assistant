@@ -201,7 +201,7 @@ impl Tools {
     pub fn replace_in_file() -> ToolDefinition {
         ToolDefinition {
             name: "replace_in_file".to_string(),
-            description: "Replace sections in a file using search/replace blocks".to_string(),
+            description: "Replace sections in a file using search/replace blocks. Each search text must appear exactly once in the file - otherwise the operation will fail.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -217,7 +217,7 @@ impl Tools {
                             "properties": {
                                 "search": {
                                     "type": "string",
-                                    "description": "Exact content to find. Make sure it is unique in the file."
+                                    "description": "Exact content to find. Make sure it is unique in the file by providing a large enough search string!"
                                 },
                                 "replace": {
                                     "type": "string",

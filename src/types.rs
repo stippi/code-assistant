@@ -33,9 +33,12 @@ pub struct WorkingMemory {
     pub notes: Vec<String>,
 }
 
+/// Details for a text replacement operation
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileReplacement {
+    /// The text to search for. Must match exactly one location in the file.
     pub search: String,
+    /// The text to replace it with
     pub replace: String,
 }
 
@@ -59,7 +62,8 @@ pub enum Tool {
     ReadFiles { paths: Vec<PathBuf> },
     /// Write content to a file
     WriteFile { path: PathBuf, content: String },
-    /// Replace parts within a file
+    /// Replace parts within a file. Each search text must match exactly once.
+    /// Returns an error if any search text matches zero or multiple times.
     ReplaceInFile {
         path: PathBuf,
         replacements: Vec<FileReplacement>,
