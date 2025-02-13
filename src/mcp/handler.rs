@@ -220,38 +220,44 @@ impl MessageHandler {
     async fn handle_tool_call(&mut self, id: RequestId, params: ToolCallParams) -> Result<()> {
         debug!("Handling tool call for {}", params.name);
 
-        let arguments = params
-            .arguments
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Missing parameters"))?;
+        let result = async {
+            let arguments = params
+                .arguments
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Missing parameters"))?;
 
-        let tool = parse_tool_json(&params.name, arguments)?;
+            let tool = parse_tool_json(&params.name, arguments)?;
+            let mut handler = MCPToolHandler::new();
 
-        let mut handler = MCPToolHandler::new();
+            let (output, result) = ToolExecutor::execute(
+                &mut handler,
+                self.explorer.as_mut(),
+                &self.command_executor,
+                None,
+                &tool,
+            )
+            .await?;
 
-        match ToolExecutor::execute(
-            &mut handler,
-            self.explorer.as_mut(),
-            &self.command_executor,
-            None,
-            &tool,
-        )
-        .await
-        {
-            Ok((output, result)) => {
-                if let ToolResult::OpenProject { path, .. } = &result {
-                    if let Some(path) = path {
-                        self.explorer = Some(Box::new(Explorer::new(path.clone())));
-                        self.send_tools_changed_notification().await?;
-
-                        self.update_file_tree().await?;
-                    }
-                }
-
-                if let ToolResult::ListFiles { .. } = &result {
+            // Handle special tool results
+            if let ToolResult::OpenProject { path, .. } = &result {
+                if let Some(path) = path {
+                    self.explorer = Some(Box::new(Explorer::new(path.clone())));
+                    self.send_tools_changed_notification().await?;
                     self.update_file_tree().await?;
                 }
+            }
 
+            if let ToolResult::ListFiles { .. } = &result {
+                self.update_file_tree().await?;
+            }
+
+            Ok::<_, anyhow::Error>(output)
+        }
+        .await;
+
+        // Convert the result into a ToolCallResult response
+        match result {
+            Ok(output) => {
                 self.send_response(
                     id,
                     ToolCallResult {
@@ -262,7 +268,6 @@ impl MessageHandler {
                 .await
             }
             Err(e) => {
-                // Return error as Tool-Result
                 self.send_response(
                     id,
                     ToolCallResult {
@@ -343,8 +348,23 @@ impl MessageHandler {
                     }
 
                     ("tools/call", Some(id)) => {
-                        let params: ToolCallParams = serde_json::from_value(request.params)?;
-                        self.handle_tool_call(id, params).await?;
+                        match serde_json::from_value::<ToolCallParams>(request.params) {
+                            Ok(params) => {
+                                self.handle_tool_call(id, params).await?;
+                            }
+                            Err(e) => {
+                                self.send_response(
+                                    id,
+                                    ToolCallResult {
+                                        content: vec![ToolResultContent::Text {
+                                            text: format!("Invalid tool parameters: {}", e),
+                                        }],
+                                        is_error: Some(true),
+                                    },
+                                )
+                                .await?;
+                            }
+                        }
                     }
 
                     ("prompts/list", Some(id)) => {
