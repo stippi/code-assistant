@@ -98,8 +98,10 @@ impl ToolResult {
                     let mut msg = format!("Found matches for '{}':\n", query);
                     for result in results {
                         msg.push_str(&format!(
-                            "{}:\n",
+                            "{}:{}-{}:\n",
                             result.file.display(),
+                            result.start_line + 1,
+                            result.start_line + result.line_content.len()
                         ));
                         for (i, line) in result.line_content.iter().enumerate() {
                             let line_prefix = if result.match_lines.contains(&i) {
@@ -107,11 +109,7 @@ impl ToolResult {
                             } else {
                                 " "
                             };
-                            msg.push_str(&format!("{}│ {:4} │ {}\n",
-                                line_prefix,
-                                result.start_line + i + 1,
-                                line
-                            ));
+                            msg.push_str(&format!("{} {}\n", line_prefix, line));
                         }
                         msg.push('\n');
                     }
