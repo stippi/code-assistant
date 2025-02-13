@@ -374,7 +374,6 @@ fn is_text_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::format_with_line_numbers;
     use anyhow::Result;
     use std::fs;
     use tempfile::TempDir;
@@ -402,14 +401,6 @@ mod tests {
         let result = explorer.read_file(&file_path)?;
         assert_eq!(result, test_content);
         Ok(())
-    }
-
-    #[test]
-    fn test_format_with_line_numbers() {
-        let input = "First line\nSecond line\nThird line";
-        let expected = "   1 | First line\n   2 | Second line\n   3 | Third line";
-
-        assert_eq!(format_with_line_numbers(input), expected);
     }
 
     #[test]

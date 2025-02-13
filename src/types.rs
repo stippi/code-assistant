@@ -103,7 +103,6 @@ pub enum ToolResult {
         projects: HashMap<String, Project>,
     },
     OpenProject {
-        success: bool,
         name: String,
         path: Option<PathBuf>,
         error: Option<String>,
@@ -121,9 +120,9 @@ pub enum ToolResult {
         query: String,
     },
     ExecuteCommand {
-        success: bool,
         stdout: String,
         stderr: String,
+        error: Option<String>,
     },
     WriteFile {
         path: PathBuf,

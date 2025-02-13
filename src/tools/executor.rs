@@ -26,13 +26,11 @@ impl ToolExecutor {
                 let projects = config::load_projects()?;
                 match projects.get(name) {
                     Some(project) => ToolResult::OpenProject {
-                        success: true,
                         name: name.clone(),
                         path: Some(project.path.to_path_buf()),
                         error: None,
                     },
                     None => ToolResult::OpenProject {
-                        success: false,
                         name: name.clone(),
                         path: None,
                         error: Some("Project not found".to_string()),
@@ -199,11 +197,9 @@ impl ToolExecutor {
                                 return Ok((
                                     String::new(),
                                     ToolResult::ExecuteCommand {
-                                        success: false,
                                         stdout: String::new(),
-                                        stderr:
-                                            "Working directory must be relative to project root"
-                                                .to_string(),
+                                        stderr: String::new(),
+                                        error: Some("Working directory must be relative to project root".to_string()),
                                     },
                                 ));
                             }
@@ -216,14 +212,14 @@ impl ToolExecutor {
                             .await
                         {
                             Ok(output) => ToolResult::ExecuteCommand {
-                                success: output.success,
                                 stdout: output.stdout,
                                 stderr: output.stderr,
+                                error: if output.success { None } else { Some("Command failed".to_string()) },
                             },
                             Err(e) => ToolResult::ExecuteCommand {
-                                success: false,
                                 stdout: String::new(),
-                                stderr: e.to_string(),
+                                stderr: String::new(),
+                                error: Some(e.to_string()),
                             },
                         }
                     }

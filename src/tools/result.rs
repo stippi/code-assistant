@@ -16,12 +16,11 @@ impl ToolResult {
                 }
             }
             ToolResult::OpenProject {
-                success,
                 name,
                 error,
                 ..
             } => {
-                if *success {
+                if error.is_none() {
                     format!("Successfully opened project '{}'", name)
                 } else {
                     format!(
@@ -109,9 +108,9 @@ impl ToolResult {
                 }
             }
             ToolResult::ExecuteCommand {
-                success,
                 stdout,
                 stderr,
+                error,
             } => {
                 let mut msg = String::new();
                 if !stdout.is_empty() {
@@ -125,11 +124,11 @@ impl ToolResult {
                     msg.push_str("Errors:\n");
                     msg.push_str(stderr);
                 }
-                if !success {
+                if error.is_some() {
                     if !msg.is_empty() {
                         msg.push_str("\n");
                     }
-                    msg.push_str("Command failed");
+                    msg.push_str(&format!("Command failed: {}", error.as_ref().unwrap()));
                 }
                 msg
             }
@@ -190,11 +189,11 @@ impl ToolResult {
     pub fn is_success(&self) -> bool {
         match self {
             ToolResult::ListProjects { .. } => true,
-            ToolResult::OpenProject { success, .. } => *success,
+            ToolResult::OpenProject { error, .. } => error.is_none(),
             ToolResult::ReadFiles { loaded_files, .. } => !loaded_files.is_empty(),
             ToolResult::ListFiles { .. } => true,
             ToolResult::SearchFiles { .. } => true,
-            ToolResult::ExecuteCommand { success, .. } => *success,
+            ToolResult::ExecuteCommand { error, .. } => error.is_none(),
             ToolResult::WriteFile { error, .. } => error.is_none(),
             ToolResult::ReplaceInFile { error, .. } => error.is_none(),
             ToolResult::DeleteFiles { deleted, .. } => !deleted.is_empty(),
