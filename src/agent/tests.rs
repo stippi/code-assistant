@@ -289,11 +289,21 @@ impl CodeExplorer for MockExplorer {
             for (line_idx, line) in content.lines().enumerate() {
                 let matches: Vec<_> = regex.find_iter(line).collect();
                 if !matches.is_empty() {
+                    let context_lines = 2;
+                    let start_line = line_idx.saturating_sub(context_lines);
+                    let section_end = (line_idx + context_lines + 1).min(content.lines().count());
+                    
+                    let mut section_lines = Vec::new();
+                    for i in start_line..section_end {
+                        section_lines.push(content.lines().nth(i).unwrap().to_string());
+                    }
+                    
                     results.push(SearchResult {
                         file: file_path.clone(),
-                        line_number: line_idx + 1,
-                        line_content: line.to_string(),
-                        match_ranges: matches.iter().map(|m| (m.start(), m.end())).collect(),
+                        start_line,
+                        line_content: section_lines,
+                        match_lines: vec![line_idx - start_line],
+                        match_ranges: vec![matches.iter().map(|m| (m.start(), m.end())).collect()],
                     });
 
                     if results.len() >= max_results {
@@ -494,9 +504,10 @@ fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
     )?;
     // When searching for whole words, matches should not be part of other words
     assert!(results.iter().all(|r| {
-        let line = &r.line_content;
-        // Check that "line" is not part of another word
-        !line.contains("inline") && !line.contains("pipeline") && !line.contains("airline")
+        r.line_content.iter().all(|line| {
+            // Check that "line" is not part of another word
+            !line.contains(&"inline".to_string()) && !line.contains(&"pipeline".to_string()) && !line.contains(&"airline".to_string())
+        })
     }));
 
     // Test regex mode
@@ -508,7 +519,7 @@ fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
             ..Default::default()
         },
     )?;
-    assert!(results.iter().any(|r| r.line_content.contains("line 1")));
+    assert!(results.iter().any(|r| r.line_content.iter().any(|line| line.contains(&"line 1".to_string()))));
 
     // Test regex search
     let results = explorer.search(
@@ -519,7 +530,7 @@ fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
             ..Default::default()
         },
     )?;
-    assert!(results.iter().any(|r| r.line_content.contains("line 1")));
+    assert!(results.iter().any(|r| r.line_content.iter().any(|line| line.contains(&"line 1".to_string()))));
 
     // Test with max_results
     let results = explorer.search(
@@ -727,7 +738,7 @@ async fn test_execute_command() -> Result<()> {
     let captured_commands = mock_command_executor_ref.get_captured_commands();
     assert_eq!(captured_commands.len(), 1);
     assert_eq!(captured_commands[0].0, "test command");
-    assert_eq!(captured_commands[0].1, None);
+    assert_eq!(captured_commands[0].1.as_ref().map(|p| p.to_str().unwrap()), Some("./root"));
 
     Ok(())
 }

@@ -222,9 +222,10 @@ pub struct SearchOptions {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SearchResult {
     pub file: PathBuf,
-    pub line_number: usize,
-    pub line_content: String,
-    pub match_ranges: Vec<(usize, usize)>, // Start and end positions of matches in the line
+    pub start_line: usize,         // First line in the section (including context)
+    pub line_content: Vec<String>, // All lines in the section
+    pub match_lines: Vec<usize>,   // Line numbers with matches (relative to start_line)
+    pub match_ranges: Vec<Vec<(usize, usize)>>, // Match positions for each line, aligned with match_lines
 }
 
 pub trait CodeExplorer: Send + Sync {

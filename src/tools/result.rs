@@ -95,14 +95,25 @@ impl ToolResult {
                 if results.is_empty() {
                     format!("No matches found for '{}'", query)
                 } else {
-                    let mut msg = format!("Found {} matches for '{}':\n", results.len(), query);
+                    let mut msg = format!("Found matches for '{}':\n", query);
                     for result in results {
                         msg.push_str(&format!(
-                            "{}:{}: {}\n",
+                            "{}:\n",
                             result.file.display(),
-                            result.line_number,
-                            result.line_content
                         ));
+                        for (i, line) in result.line_content.iter().enumerate() {
+                            let line_prefix = if result.match_lines.contains(&i) {
+                                ">"
+                            } else {
+                                " "
+                            };
+                            msg.push_str(&format!("{}│ {:4} │ {}\n",
+                                line_prefix,
+                                result.start_line + i + 1,
+                                line
+                            ));
+                        }
+                        msg.push('\n');
                     }
                     msg
                 }

@@ -6,7 +6,7 @@ use anyhow::Result;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader};
+// Removed unused imports
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
@@ -266,11 +266,11 @@ impl CodeExplorer for Explorer {
     fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>> {
         let mut results = Vec::new();
         let max_results = options.max_results.unwrap_or(usize::MAX);
+        let context_lines = 2; // Lines of context before and after
 
         // Prepare regex for different search modes
         let regex = match options.mode {
             SearchMode::Exact => {
-                // For exact search, escape regex special characters and optionally add word boundaries
                 let pattern = if options.whole_words {
                     format!(r"\b{}\b", regex::escape(&options.query))
                 } else {
@@ -281,7 +281,6 @@ impl CodeExplorer for Explorer {
                     .build()?
             }
             SearchMode::Regex => {
-                // For regex search, optionally add word boundaries to user's pattern
                 let pattern = if options.whole_words {
                     format!(r"\b{}\b", options.query)
                 } else {
@@ -307,25 +306,61 @@ impl CodeExplorer for Explorer {
                 continue;
             }
 
-            let file = std::fs::File::open(path)?;
-            let reader = BufReader::new(file);
+            // Read entire file at once for context lines
+            let content = std::fs::read_to_string(path)?;
+            let lines: Vec<_> = content.lines().collect();
+            let mut current_section: Option<SearchResult> = None;
 
-            for (line_idx, line) in reader.lines().enumerate() {
-                let line = line?;
-
-                // Find all matches in the line
-                let matches: Vec<_> = regex.find_iter(&line).collect();
+            for (line_idx, line) in lines.iter().enumerate() {
+                let matches: Vec<_> = regex.find_iter(line).collect();
+                
                 if !matches.is_empty() {
-                    results.push(SearchResult {
-                        file: path.to_path_buf(),
-                        line_number: line_idx + 1,
-                        line_content: line.to_string(),
-                        match_ranges: matches.iter().map(|m| (m.start(), m.end())).collect(),
-                    });
-
-                    if results.len() >= max_results {
-                        return Ok(results);
+                    let match_ranges: Vec<_> = matches.iter().map(|m| (m.start(), m.end())).collect();
+                    let section_start = line_idx.saturating_sub(context_lines);
+                    let section_end = (line_idx + context_lines + 1).min(lines.len());
+                    
+                    match &mut current_section {
+                        // Extend section if close enough to previous match
+                        Some(section) if line_idx <= section.start_line + section.line_content.len() + context_lines => {
+                            while section.line_content.len() < section_end - section.start_line {
+                                section.line_content.push(
+                                    lines[section.start_line + section.line_content.len()].to_string()
+                                );
+                            }
+                            section.match_lines.push(line_idx - section.start_line);
+                            section.match_ranges.push(match_ranges);
+                        }
+                        _ => {
+                            // Start new section
+                            if let Some(section) = current_section.take() {
+                                results.push(section);
+                                if results.len() >= max_results {
+                                    return Ok(results);
+                                }
+                            }
+                            
+                            let mut section_lines = Vec::new();
+                            for i in section_start..section_end {
+                                section_lines.push(lines[i].to_string());
+                            }
+                            
+                            current_section = Some(SearchResult {
+                                file: path.to_path_buf(),
+                                start_line: section_start,
+                                line_content: section_lines,
+                                match_lines: vec![line_idx - section_start],
+                                match_ranges: vec![match_ranges],
+                            });
+                        }
                     }
+                }
+            }
+            
+            // Add final section if we have one
+            if let Some(section) = current_section {
+                results.push(section);
+                if results.len() >= max_results {
+                    return Ok(results);
                 }
             }
         }
@@ -482,13 +517,13 @@ mod tests {
         assert_eq!(results.len(), 3);
         assert!(results
             .iter()
-            .any(|r| r.line_content.contains("This is line 2")));
+            .any(|r| r.line_content.iter().any(|l| l.contains("This is line 2"))));
         assert!(results
             .iter()
-            .any(|r| r.line_content.contains("Another file line 2")));
+            .any(|r| r.line_content.iter().any(|l| l.contains("Another file line 2"))));
         assert!(results
             .iter()
-            .any(|r| r.line_content.contains("Subdir line 2")));
+            .any(|r| r.line_content.iter().any(|l| l.contains("Subdir line 2"))));
 
         // Test with max_results
         let results = explorer.search(
