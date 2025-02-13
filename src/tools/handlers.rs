@@ -50,7 +50,12 @@ impl<'a> ToolResultHandler for AgentToolHandler<'a> {
                             .insert(path.clone(), content.clone());
                     }
                 }
-                ToolResult::WriteFile { path, content, .. } => {
+                ToolResult::WriteFile {
+                    path,
+                    content,
+                    error: None,
+                    ..
+                } => {
                     // Remove any existing summary since file is new/overwritten
                     self.working_memory.file_summaries.remove(path);
                     // Make this file part of the loaded files
@@ -83,7 +88,7 @@ impl MCPToolHandler {
 #[async_trait]
 impl ToolResultHandler for MCPToolHandler {
     async fn handle_result(&mut self, result: &ToolResult) -> Result<String> {
-        match &result {
+        match result {
             ToolResult::ListFiles { expanded_paths, .. } => {
                 let mut output = String::new();
                 for (path, entry) in expanded_paths {
@@ -99,11 +104,7 @@ impl ToolResultHandler for MCPToolHandler {
                 // Format detailed output with file contents
                 let mut output = String::new();
                 for (path, content) in loaded_files {
-                    output.push_str(&format!(
-                        "File: {}\n{}\n",
-                        path.display(),
-                        format_with_line_numbers(content)
-                    ));
+                    output.push_str(&format!("File: {}\n{}\n", path.display(), content));
                 }
                 Ok(output)
             }
@@ -149,7 +150,7 @@ impl ToolResultHandler for ReplayToolHandler {
                 ToolResult::ReplaceInFile {
                     path,
                     content,
-                    success: true,
+                    error: None,
                     ..
                 } => {
                     if self.working_memory.loaded_files.contains_key(path) {
@@ -158,7 +159,9 @@ impl ToolResultHandler for ReplayToolHandler {
                             .insert(path.clone(), content.clone());
                     }
                 }
-                ToolResult::WriteFile { path, .. } => {
+                ToolResult::WriteFile {
+                    path, error: None, ..
+                } => {
                     // Just remove from working memory if files were loaded
                     self.working_memory.loaded_files.remove(path);
                     self.working_memory.file_summaries.remove(path);

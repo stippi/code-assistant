@@ -238,13 +238,13 @@ impl ToolExecutor {
                         match explorer.write_file(&full_path, content) {
                             Ok(_) => ToolResult::WriteFile {
                                 path: path.clone(),
-                                success: true,
                                 content: content.clone(),
+                                error: None,
                             },
-                            Err(_) => ToolResult::WriteFile {
+                            Err(e) => ToolResult::WriteFile {
                                 path: path.clone(),
-                                success: false,
-                                content: content.clone(),
+                                content: String::new(),  // Empty content on error
+                                error: Some(e.to_string()),
                             },
                         }
                     }
@@ -259,13 +259,13 @@ impl ToolExecutor {
                         match explorer.apply_replacements(&full_path, replacements) {
                             Ok(new_content) => ToolResult::ReplaceInFile {
                                 path: path.clone(),
-                                success: true,
                                 content: new_content,
+                                error: None,
                             },
                             Err(e) => ToolResult::ReplaceInFile {
                                 path: path.clone(),
-                                success: false,
-                                content: e.to_string(),
+                                content: String::new(), // Empty content on error
+                                error: Some(e.to_string()),
                             },
                         }
                     }

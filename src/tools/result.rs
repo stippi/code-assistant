@@ -133,18 +133,22 @@ impl ToolResult {
                 }
                 msg
             }
-            ToolResult::WriteFile { path, success, .. } => {
-                if *success {
-                    format!("Successfully wrote file: {}", path.display())
+            ToolResult::WriteFile { path, error, .. } => {
+                if error.is_some() {
+                    format!("Failed to write file {}: {}", path.display(), error.as_ref().unwrap())
                 } else {
-                    format!("Failed to write file: {}", path.display())
+                    format!("Successfully wrote file: {}", path.display())
                 }
             }
-            ToolResult::ReplaceInFile { path, success, .. } => {
-                if *success {
-                    format!("Successfully replaced in file: {}", path.display())
+            ToolResult::ReplaceInFile { path, error, .. } => {
+                if error.is_some() {
+                    format!(
+                        "Failed to replace in file {}: {}",
+                        path.display(),
+                        error.as_ref().unwrap()
+                    )
                 } else {
-                    format!("Failed to replaced in file: {}", path.display())
+                    format!("Successfully replaced in file: {}", path.display())
                 }
             }
             ToolResult::DeleteFiles { deleted, failed } => {
@@ -191,8 +195,8 @@ impl ToolResult {
             ToolResult::ListFiles { .. } => true,
             ToolResult::SearchFiles { .. } => true,
             ToolResult::ExecuteCommand { success, .. } => *success,
-            ToolResult::WriteFile { success, .. } => *success,
-            ToolResult::ReplaceInFile { success, .. } => *success,
+            ToolResult::WriteFile { error, .. } => error.is_none(),
+            ToolResult::ReplaceInFile { error, .. } => error.is_none(),
             ToolResult::DeleteFiles { deleted, .. } => !deleted.is_empty(),
             ToolResult::Summarize { .. } => true,
             ToolResult::AskUser { .. } => true,

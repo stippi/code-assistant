@@ -127,13 +127,13 @@ pub enum ToolResult {
     },
     WriteFile {
         path: PathBuf,
-        success: bool,
         content: String,
+        error: Option<String>,
     },
     ReplaceInFile {
         path: PathBuf,
-        success: bool,
         content: String,
+        error: Option<String>,
     },
     DeleteFiles {
         deleted: Vec<PathBuf>,
