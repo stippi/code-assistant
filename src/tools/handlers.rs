@@ -1,6 +1,5 @@
 use crate::tools::ToolResultHandler;
 use crate::types::{FileTreeEntry, ToolResult, WorkingMemory};
-use crate::utils::format_with_line_numbers;
 use crate::PathBuf;
 use anyhow::Result;
 use async_trait::async_trait;
