@@ -1,4 +1,5 @@
 mod agent;
+mod config;
 mod explorer;
 mod llm;
 mod mcp;
@@ -80,10 +81,6 @@ enum Mode {
     },
     /// Run as MCP server
     Server {
-        /// Path to the code directory to serve
-        #[arg(long, default_value = ".")]
-        path: PathBuf,
-
         /// Enable verbose logging
         #[arg(short, long)]
         verbose: bool,
@@ -233,22 +230,12 @@ async fn main() -> Result<()> {
             }
         }
 
-        Mode::Server { path, verbose } => {
+        Mode::Server { verbose } => {
             // Setup logging based on verbose flag
             setup_logging(verbose, false);
 
-            // Canonicalize the path to get absolute path
-            let root_path = path
-                .canonicalize()
-                .context("Failed to resolve project path")?;
-
-            // Ensure the path exists and is a directory
-            if !root_path.is_dir() {
-                anyhow::bail!("Path '{}' is not a directory", root_path.display());
-            }
-
             // Initialize server
-            let mut server = MCPServer::new(root_path)?;
+            let mut server = MCPServer::new()?;
             server.run().await?;
         }
     }

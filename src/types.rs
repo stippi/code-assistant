@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub path: PathBuf,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileTreeEntry {
     pub name: String,
@@ -38,6 +43,10 @@ pub struct FileReplacement {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "tool", content = "params")]
 pub enum Tool {
+    /// List available projects
+    ListProjects,
+    /// Open a project by name
+    OpenProject { name: String },
     /// Delete one or more files
     DeleteFiles { paths: Vec<PathBuf> },
     /// List contents of directories
@@ -90,6 +99,15 @@ pub enum Tool {
 /// Specific results for each tool type
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum ToolResult {
+    ListProjects {
+        projects: HashMap<String, Project>,
+    },
+    OpenProject {
+        success: bool,
+        name: String,
+        path: Option<PathBuf>,
+        error: Option<String>,
+    },
     ReadFiles {
         loaded_files: HashMap<PathBuf, String>,
         failed_files: Vec<(PathBuf, String)>,
@@ -206,7 +224,7 @@ pub struct SearchResult {
     pub match_ranges: Vec<(usize, usize)>, // Start and end positions of matches in the line
 }
 
-pub trait CodeExplorer {
+pub trait CodeExplorer: Send + Sync {
     fn root_dir(&self) -> PathBuf;
     /// Reads the content of a file
     fn read_file(&self, path: &PathBuf) -> Result<String>;

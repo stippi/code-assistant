@@ -4,6 +4,33 @@ impl ToolResult {
     // Format a user-facing message describing the result
     pub fn format_message(&self) -> String {
         match self {
+            ToolResult::ListProjects { projects } => {
+                if projects.is_empty() {
+                    "No projects configured.".to_string()
+                } else {
+                    let mut msg = String::from("Available projects:\n");
+                    for (name, project) in projects {
+                        msg.push_str(&format!("- {}: {}\n", name, project.path.display()));
+                    }
+                    msg
+                }
+            }
+            ToolResult::OpenProject {
+                success,
+                name,
+                error,
+                ..
+            } => {
+                if *success {
+                    format!("Successfully opened project '{}'", name)
+                } else {
+                    format!(
+                        "Failed to open project '{}': {}",
+                        name,
+                        error.as_ref().unwrap_or(&"unknown error".to_string())
+                    )
+                }
+            }
             ToolResult::ReadFiles {
                 loaded_files,
                 failed_files,
@@ -158,6 +185,8 @@ impl ToolResult {
 
     pub fn is_success(&self) -> bool {
         match self {
+            ToolResult::ListProjects { .. } => true,
+            ToolResult::OpenProject { success, .. } => *success,
             ToolResult::ReadFiles { loaded_files, .. } => !loaded_files.is_empty(),
             ToolResult::ListFiles { .. } => true,
             ToolResult::SearchFiles { .. } => true,

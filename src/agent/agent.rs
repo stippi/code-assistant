@@ -54,24 +54,49 @@ impl Agent {
     async fn run_agent_loop(&mut self) -> Result<()> {
         // Main agent loop
         loop {
-            let actions = self.get_next_actions().await?;
+            // Start with just the working memory message
+            let mut messages = self.prepare_messages();
 
-            for action in actions {
-                let result = self.execute_action(&action).await?;
-                self.working_memory.action_history.push(result);
+            // Keep trying until all actions succeed
+            let mut all_actions_succeeded = false;
+            while !all_actions_succeeded {
+                let (actions, assistant_msg) = self.get_next_actions(messages.clone()).await?;
+                messages.push(assistant_msg);
 
-                // Save state after each action
-                self.state_persistence.save_state(
-                    self.working_memory.current_task.clone(),
-                    self.working_memory.action_history.clone(),
-                )?;
+                all_actions_succeeded = true; // Will be set to false if any action fails
 
-                // Check if this was a CompleteTask action
-                if let Tool::CompleteTask { .. } = action.tool {
-                    // Clean up state file on successful completion
-                    self.state_persistence.cleanup()?;
-                    debug!("Task completed");
-                    return Ok(());
+                for action in actions {
+                    let result = self.execute_action(&action).await?;
+
+                    if !result.result.is_success() {
+                        all_actions_succeeded = false;
+                        // Add error message to conversation
+                        messages.push(Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Text(format!(
+                                "Error executing action: {}\n{}",
+                                result.reasoning,
+                                result.result.format_message()
+                            )),
+                        });
+                        break; // Stop processing remaining actions
+                    }
+
+                    self.working_memory.action_history.push(result);
+
+                    // Save state after each successful action
+                    self.state_persistence.save_state(
+                        self.working_memory.current_task.clone(),
+                        self.working_memory.action_history.clone(),
+                    )?;
+
+                    // Check if this was a CompleteTask action
+                    if let Tool::CompleteTask { .. } = action.tool {
+                        // Clean up state file on successful completion
+                        self.state_persistence.cleanup()?;
+                        debug!("Task completed");
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -128,7 +153,7 @@ impl Agent {
 
                 if let Ok((_, result)) = ToolExecutor::execute(
                     &mut replay_handler,
-                    &self.explorer,
+                    Some(&self.explorer),
                     &self.command_executor,
                     Some(&self.ui),
                     &action.tool,
@@ -161,9 +186,10 @@ impl Agent {
     }
 
     /// Get next actions from LLM
-    async fn get_next_actions(&self) -> Result<Vec<AgentAction>> {
-        let messages = self.prepare_messages();
-
+    async fn get_next_actions(
+        &self,
+        messages: Vec<Message>,
+    ) -> Result<(Vec<AgentAction>, Message)> {
         let request = LLMRequest {
             messages,
             system_prompt: match self.tool_mode {
@@ -210,7 +236,12 @@ impl Agent {
             response.usage.input_tokens, response.usage.output_tokens
         );
 
-        parse_llm_response(&response)
+        let actions = parse_llm_response(&response)?;
+        let assistant_msg = Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Structured(response.content),
+        };
+        Ok((actions, assistant_msg))
     }
 
     pub fn render_working_memory(&self) -> String {
@@ -272,7 +303,7 @@ impl Agent {
         // Execute the tool and get both the output and result
         let (output, tool_result) = ToolExecutor::execute(
             &mut handler,
-            &self.explorer,
+            Some(&self.explorer),
             &self.command_executor,
             Some(&self.ui),
             &action.tool,

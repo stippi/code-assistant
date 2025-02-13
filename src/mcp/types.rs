@@ -94,7 +94,9 @@ pub struct InitializeParams {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ServerCapabilities {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolsCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<ResourcesCapability>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental: Option<serde_json::Map<String, serde_json::Value>>,
@@ -111,6 +113,54 @@ pub struct InitializeResult {
     pub instructions: Option<String>,
 }
 
+// Resource types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Resource {
+    pub uri: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListResourcesResult {
+    pub resources: Vec<Resource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReadResourceRequest {
+    pub uri: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubscribeResourceRequest {
+    pub uri: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UnsubscribeResourceRequest {
+    pub uri: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReadResourceResult {
+    pub contents: Vec<ResourceContent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceContent {
+    pub uri: String,
+    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+// Tool types
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ListToolsResult {
     pub tools: Vec<serde_json::Value>,

@@ -1,6 +1,5 @@
 use crate::mcp::handler::MessageHandler;
 use anyhow::Result;
-use std::path::PathBuf;
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tracing::{debug, error, trace};
 
@@ -9,9 +8,9 @@ pub struct MCPServer {
 }
 
 impl MCPServer {
-    pub fn new(root_path: PathBuf) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         Ok(Self {
-            handler: MessageHandler::new(root_path, tokio::io::stdout())?,
+            handler: MessageHandler::new(tokio::io::stdout())?,
         })
     }
 

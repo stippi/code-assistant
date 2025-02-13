@@ -310,6 +310,8 @@ impl CodeExplorer for MockExplorer {
 // Helper function to create a test response
 fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
     let tool_name = match &tool {
+        Tool::ListProjects { .. } => "list_projects",
+        Tool::OpenProject { .. } => "open_project",
         Tool::SearchFiles { .. } => "search_files",
         Tool::ExecuteCommand { .. } => "execute_command",
         Tool::ListFiles { .. } => "list_files",
@@ -323,6 +325,10 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         Tool::CompleteTask { .. } => "complete_task",
     };
     let tool_input = match &tool {
+        Tool::ListProjects {} => serde_json::json!({}),
+        Tool::OpenProject { name } => serde_json::json!({
+            "name": name
+        }),
         Tool::SearchFiles {
             query,
             path,

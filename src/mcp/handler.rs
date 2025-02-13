@@ -1,24 +1,26 @@
+use super::resources::ResourceManager;
 use super::types::*;
 use crate::explorer::Explorer;
 use crate::tools::{parse_tool_json, MCPToolHandler, ToolExecutor};
-use crate::types::{CodeExplorer, Tools};
+use crate::types::{CodeExplorer, ToolResult, Tools};
 use crate::utils::{CommandExecutor, DefaultCommandExecutor};
 use anyhow::Result;
-use std::path::PathBuf;
 use tokio::io::{AsyncWriteExt, Stdout};
 use tracing::{debug, error, trace};
 
 pub struct MessageHandler {
-    explorer: Box<dyn CodeExplorer>,
+    explorer: Option<Box<dyn CodeExplorer>>,
     command_executor: Box<dyn CommandExecutor>,
+    resources: ResourceManager,
     stdout: Stdout,
 }
 
 impl MessageHandler {
-    pub fn new(root_path: PathBuf, stdout: Stdout) -> Result<Self> {
+    pub fn new(stdout: Stdout) -> Result<Self> {
         Ok(Self {
-            explorer: Box::new(Explorer::new(root_path.clone())),
+            explorer: None,
             command_executor: Box::new(DefaultCommandExecutor),
+            resources: ResourceManager::new(),
             stdout,
         })
     }
@@ -72,6 +74,27 @@ impl MessageHandler {
         Ok(())
     }
 
+    /// Sends a notification
+    async fn send_notification(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let notification = if let Some(params) = params {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params
+            })
+        } else {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": method
+            })
+        };
+        self.send_message(&notification).await
+    }
+
     /// Handle initialize request
     async fn handle_initialize(&mut self, id: RequestId, params: InitializeParams) -> Result<()> {
         debug!("Initialize params: {:?}", params);
@@ -80,9 +103,12 @@ impl MessageHandler {
             id,
             InitializeResult {
                 capabilities: ServerCapabilities {
-                    resources: None,
+                    resources: Some(ResourcesCapability {
+                        list_changed: Some(true),
+                        subscribe: Some(true),
+                    }),
                     tools: Some(ToolsCapability {
-                        list_changed: Some(false),
+                        list_changed: Some(true),
                     }),
                     experimental: None,
                 },
@@ -97,6 +123,71 @@ impl MessageHandler {
         .await
     }
 
+    /// Notify clients that a specific resource has been updated
+    async fn send_resource_updated_notification(&mut self, uri: &str) -> Result<()> {
+        if !self.resources.is_subscribed(uri) {
+            debug!("Resource changed, but is not subscribed: {}", uri);
+            return Ok(());
+        }
+        self.send_notification(
+            "notifications/resources/updated",
+            Some(serde_json::json!({ "uri": uri })),
+        )
+        .await
+    }
+
+    /// Handle resources/list request
+    async fn handle_resources_list(&mut self, id: RequestId) -> Result<()> {
+        trace!("Handling resources/list request");
+        self.send_response(
+            id,
+            ListResourcesResult {
+                resources: self.resources.list_resources(),
+                next_cursor: None,
+            },
+        )
+        .await
+    }
+
+    /// Handle resources/read request
+    async fn handle_resources_read(&mut self, id: RequestId, uri: String) -> Result<()> {
+        debug!("Handling resources/read request for {}", uri);
+        match self.resources.read_resource(&uri) {
+            Some(content) => {
+                self.send_response(
+                    id,
+                    ReadResourceResult {
+                        contents: vec![content],
+                    },
+                )
+                .await
+            }
+            None => {
+                self.send_error(id, -32001, format!("Resource not found: {}", uri), None)
+                    .await
+            }
+        }
+    }
+
+    /// Handle resources/subscribe request
+    async fn handle_resources_subscribe(&mut self, id: RequestId, uri: String) -> Result<()> {
+        debug!("Handling resources/subscribe request for {}", uri);
+        if self.resources.read_resource(&uri).is_none() {
+            return self
+                .send_error(id, -32001, format!("Resource not found: {}", uri), None)
+                .await;
+        }
+        self.resources.subscribe(&uri);
+        self.send_response(id, EmptyResult { meta: None }).await
+    }
+
+    /// Handle resources/unsubscribe request
+    async fn handle_resources_unsubscribe(&mut self, id: RequestId, uri: String) -> Result<()> {
+        debug!("Handling resources/unsubscribe request for {}", uri);
+        self.resources.unsubscribe(&uri);
+        self.send_response(id, EmptyResult { meta: None }).await
+    }
+
     /// Handle tools/list request
     async fn handle_tools_list(&mut self, id: RequestId) -> Result<()> {
         debug!("Handling tools/list request");
@@ -109,7 +200,7 @@ impl MessageHandler {
                         serde_json::json!({
                             "name": tool.name,
                             "description": tool.description,
-                            "input_schema": tool.parameters
+                            "inputSchema": tool.parameters
                         })
                     })
                     .collect(),
@@ -117,6 +208,12 @@ impl MessageHandler {
             },
         )
         .await
+    }
+
+    /// Notify clients that the tools list has changed
+    async fn send_tools_changed_notification(&mut self) -> Result<()> {
+        self.send_notification("notifications/tools/list_changed", None)
+            .await
     }
 
     /// Handle tools/call request
@@ -132,23 +229,52 @@ impl MessageHandler {
 
         let mut handler = MCPToolHandler::new();
 
-        let (output, _) = ToolExecutor::execute(
+        match ToolExecutor::execute(
             &mut handler,
-            &self.explorer,
+            self.explorer.as_ref(),
             &self.command_executor,
             None,
             &tool,
         )
-        .await?;
-
-        self.send_response(
-            id,
-            ToolCallResult {
-                content: vec![ToolResultContent::Text { text: output }],
-                is_error: None,
-            },
-        )
         .await
+        {
+            Ok((output, result)) => {
+                if let ToolResult::OpenProject { path, .. } = &result {
+                    if let Some(path) = path {
+                        self.explorer = Some(Box::new(Explorer::new(path.clone())));
+                        self.send_tools_changed_notification().await?;
+                    }
+                }
+
+                // if let ToolResult::ListFiles { .. } = &result {
+                //     if let Some(explorer) = &self.explorer {
+                //         self.resources.update_file_tree(explorer.);
+                //     }
+                // }
+
+                self.send_response(
+                    id,
+                    ToolCallResult {
+                        content: vec![ToolResultContent::Text { text: output }],
+                        is_error: None,
+                    },
+                )
+                .await
+            }
+            Err(e) => {
+                // Return error as Tool-Result
+                self.send_response(
+                    id,
+                    ToolCallResult {
+                        content: vec![ToolResultContent::Text {
+                            text: e.to_string(),
+                        }],
+                        is_error: Some(true),
+                    },
+                )
+                .await
+            }
+        }
     }
 
     /// Handle prompts/list request
@@ -182,6 +308,24 @@ impl MessageHandler {
                     ("initialize", Some(id)) => {
                         let params: InitializeParams = serde_json::from_value(request.params)?;
                         self.handle_initialize(id, params).await?;
+                    }
+
+                    ("resources/list", Some(id)) => {
+                        self.handle_resources_list(id).await?;
+                    }
+                    ("resources/read", Some(id)) => {
+                        let params: ReadResourceRequest = serde_json::from_value(request.params)?;
+                        self.handle_resources_read(id, params.uri).await?;
+                    }
+                    ("resources/subscribe", Some(id)) => {
+                        let params: SubscribeResourceRequest =
+                            serde_json::from_value(request.params)?;
+                        self.handle_resources_subscribe(id, params.uri).await?;
+                    }
+                    ("resources/unsubscribe", Some(id)) => {
+                        let params: UnsubscribeResourceRequest =
+                            serde_json::from_value(request.params)?;
+                        self.handle_resources_unsubscribe(id, params.uri).await?;
                     }
 
                     ("tools/list", Some(id)) => {

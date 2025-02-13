@@ -254,6 +254,13 @@ pub fn parse_tool_from_params(
 
 pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool> {
     match name {
+        "list_projects" => Ok(Tool::ListProjects),
+        "open_project" => Ok(Tool::OpenProject {
+            name: params["name"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing project name"))?
+                .to_string(),
+        }),
         "execute_command" => Ok(Tool::ExecuteCommand {
             command_line: params["command_line"]
                 .as_str()

@@ -1,4 +1,5 @@
 use super::ToolResultHandler;
+use crate::config;
 use crate::types::{CodeExplorer, SearchMode, SearchOptions, Tool, ToolResult};
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
@@ -10,165 +11,31 @@ pub struct ToolExecutor {}
 impl ToolExecutor {
     pub async fn execute<H: ToolResultHandler>(
         handler: &mut H,
-        explorer: &Box<dyn CodeExplorer>,
+        explorer: Option<&Box<dyn CodeExplorer>>,
         command_executor: &Box<dyn CommandExecutor>,
         ui: Option<&Box<dyn UserInterface>>,
         tool: &Tool,
     ) -> Result<(String, ToolResult)> {
         let result = match tool {
-            Tool::ReadFiles { paths } => {
-                let mut loaded_files = HashMap::new();
-                let mut failed_files = Vec::new();
-
-                for path in paths {
-                    let full_path = if path.is_absolute() {
-                        path.clone()
-                    } else {
-                        explorer.root_dir().join(path)
-                    };
-                    match explorer.read_file(&full_path) {
-                        Ok(content) => {
-                            loaded_files.insert(path.clone(), content);
-                        }
-                        Err(e) => {
-                            failed_files.push((path.clone(), e.to_string()));
-                        }
-                    }
-                }
-
-                ToolResult::ReadFiles {
-                    loaded_files,
-                    failed_files,
-                }
+            Tool::ListProjects => {
+                let projects = config::load_projects()?;
+                ToolResult::ListProjects { projects }
             }
 
-            Tool::ListFiles { paths, max_depth } => {
-                let mut expanded_paths = Vec::new();
-                let mut failed_paths = Vec::new();
-
-                for path in paths {
-                    let full_path = if path.is_absolute() {
-                        path.clone()
-                    } else {
-                        explorer.root_dir().join(path)
-                    };
-                    match explorer.list_files(&full_path, *max_depth) {
-                        Ok(tree_entry) => {
-                            expanded_paths.push((path.clone(), tree_entry));
-                        }
-                        Err(e) => {
-                            failed_paths.push((path.display().to_string(), e.to_string()));
-                        }
-                    }
-                }
-
-                ToolResult::ListFiles {
-                    expanded_paths,
-                    failed_paths,
-                }
-            }
-
-            Tool::SearchFiles {
-                query,
-                path,
-                case_sensitive,
-                whole_words,
-                regex_mode,
-                max_results,
-            } => {
-                let options = SearchOptions {
-                    query: query.clone(),
-                    case_sensitive: *case_sensitive,
-                    whole_words: *whole_words,
-                    mode: if *regex_mode {
-                        SearchMode::Regex
-                    } else {
-                        SearchMode::Exact
-                    },
-                    max_results: *max_results,
-                };
-
-                let search_path = if let Some(p) = path {
-                    if p.is_absolute() {
-                        p.clone()
-                    } else {
-                        explorer.root_dir().join(p)
-                    }
-                } else {
-                    explorer.root_dir()
-                };
-
-                match explorer.search(&search_path, options) {
-                    Ok(results) => ToolResult::SearchFiles {
-                        results,
-                        query: query.clone(),
-                    },
-                    Err(e) => ToolResult::SearchFiles {
-                        results: Vec::new(),
-                        query: format!("Search failed: {}", e),
-                    },
-                }
-            }
-
-            Tool::ExecuteCommand {
-                command_line,
-                working_dir,
-            } => {
-                match command_executor
-                    .execute(command_line, working_dir.as_ref())
-                    .await
-                {
-                    Ok(output) => ToolResult::ExecuteCommand {
-                        success: output.success,
-                        stdout: output.stdout,
-                        stderr: output.stderr,
-                    },
-                    Err(e) => ToolResult::ExecuteCommand {
-                        success: false,
-                        stdout: String::new(),
-                        stderr: e.to_string(),
-                    },
-                }
-            }
-
-            Tool::WriteFile { path, content } => {
-                let full_path = if path.is_absolute() {
-                    path.clone()
-                } else {
-                    explorer.root_dir().join(path)
-                };
-
-                match explorer.write_file(&full_path, content) {
-                    Ok(_) => ToolResult::WriteFile {
-                        path: path.clone(),
+            Tool::OpenProject { name } => {
+                let projects = config::load_projects()?;
+                match projects.get(name) {
+                    Some(project) => ToolResult::OpenProject {
                         success: true,
-                        content: content.clone(),
+                        name: name.clone(),
+                        path: Some(project.path.to_path_buf()),
+                        error: None,
                     },
-                    Err(_) => ToolResult::WriteFile {
-                        path: path.clone(),
+                    None => ToolResult::OpenProject {
                         success: false,
-                        content: content.clone(),
-                    },
-                }
-            }
-
-            Tool::ReplaceInFile { path, replacements } => {
-                let full_path = if path.is_absolute() {
-                    path.clone()
-                } else {
-                    explorer.root_dir().join(path)
-                };
-
-                match explorer.apply_replacements(&full_path, replacements) {
-                    Ok(new_content) => ToolResult::ReplaceInFile {
-                        path: path.clone(),
-                        success: true,
-                        content: new_content,
-                    },
-                    Err(e) => ToolResult::ReplaceInFile {
-                        path: path.clone(),
-                        success: false,
-                        content: e.to_string(),
+                        name: name.clone(),
+                        path: None,
+                        error: Some("Project not found".to_string()),
                     },
                 }
             }
@@ -223,18 +90,184 @@ impl ToolExecutor {
                 },
             },
 
-            Tool::DeleteFiles { paths } => {
-                let mut deleted = Vec::new();
-                let mut failed = Vec::new();
+            _ => {
+                let explorer = explorer.ok_or_else(|| {
+                    anyhow::anyhow!("This tool requires an active project. Use open_project first.")
+                })?;
+                match tool {
+                    Tool::ReadFiles { paths } => {
+                        let mut loaded_files = HashMap::new();
+                        let mut failed_files = Vec::new();
 
-                for path in paths {
-                    match explorer.delete_file(path) {
-                        Ok(_) => deleted.push(path.clone()),
-                        Err(e) => failed.push((path.clone(), e.to_string())),
+                        for path in paths {
+                            let full_path = if path.is_absolute() {
+                                path.clone()
+                            } else {
+                                explorer.root_dir().join(path)
+                            };
+                            match explorer.read_file(&full_path) {
+                                Ok(content) => {
+                                    loaded_files.insert(path.clone(), content);
+                                }
+                                Err(e) => {
+                                    failed_files.push((path.clone(), e.to_string()));
+                                }
+                            }
+                        }
+
+                        ToolResult::ReadFiles {
+                            loaded_files,
+                            failed_files,
+                        }
                     }
-                }
 
-                ToolResult::DeleteFiles { deleted, failed }
+                    Tool::ListFiles { paths, max_depth } => {
+                        let mut expanded_paths = Vec::new();
+                        let mut failed_paths = Vec::new();
+
+                        for path in paths {
+                            let full_path = if path.is_absolute() {
+                                path.clone()
+                            } else {
+                                explorer.root_dir().join(path)
+                            };
+                            match explorer.list_files(&full_path, *max_depth) {
+                                Ok(tree_entry) => {
+                                    expanded_paths.push((path.clone(), tree_entry));
+                                }
+                                Err(e) => {
+                                    failed_paths.push((path.display().to_string(), e.to_string()));
+                                }
+                            }
+                        }
+
+                        ToolResult::ListFiles {
+                            expanded_paths,
+                            failed_paths,
+                        }
+                    }
+
+                    Tool::SearchFiles {
+                        query,
+                        path,
+                        case_sensitive,
+                        whole_words,
+                        regex_mode,
+                        max_results,
+                    } => {
+                        let options = SearchOptions {
+                            query: query.clone(),
+                            case_sensitive: *case_sensitive,
+                            whole_words: *whole_words,
+                            mode: if *regex_mode {
+                                SearchMode::Regex
+                            } else {
+                                SearchMode::Exact
+                            },
+                            max_results: *max_results,
+                        };
+
+                        let search_path = if let Some(p) = path {
+                            if p.is_absolute() {
+                                p.clone()
+                            } else {
+                                explorer.root_dir().join(p)
+                            }
+                        } else {
+                            explorer.root_dir()
+                        };
+
+                        match explorer.search(&search_path, options) {
+                            Ok(results) => ToolResult::SearchFiles {
+                                results,
+                                query: query.clone(),
+                            },
+                            Err(e) => ToolResult::SearchFiles {
+                                results: Vec::new(),
+                                query: format!("Search failed: {}", e),
+                            },
+                        }
+                    }
+
+                    Tool::ExecuteCommand {
+                        command_line,
+                        working_dir,
+                    } => {
+                        match command_executor
+                            .execute(command_line, working_dir.as_ref())
+                            .await
+                        {
+                            Ok(output) => ToolResult::ExecuteCommand {
+                                success: output.success,
+                                stdout: output.stdout,
+                                stderr: output.stderr,
+                            },
+                            Err(e) => ToolResult::ExecuteCommand {
+                                success: false,
+                                stdout: String::new(),
+                                stderr: e.to_string(),
+                            },
+                        }
+                    }
+
+                    Tool::WriteFile { path, content } => {
+                        let full_path = if path.is_absolute() {
+                            path.clone()
+                        } else {
+                            explorer.root_dir().join(path)
+                        };
+
+                        match explorer.write_file(&full_path, content) {
+                            Ok(_) => ToolResult::WriteFile {
+                                path: path.clone(),
+                                success: true,
+                                content: content.clone(),
+                            },
+                            Err(_) => ToolResult::WriteFile {
+                                path: path.clone(),
+                                success: false,
+                                content: content.clone(),
+                            },
+                        }
+                    }
+
+                    Tool::ReplaceInFile { path, replacements } => {
+                        let full_path = if path.is_absolute() {
+                            path.clone()
+                        } else {
+                            explorer.root_dir().join(path)
+                        };
+
+                        match explorer.apply_replacements(&full_path, replacements) {
+                            Ok(new_content) => ToolResult::ReplaceInFile {
+                                path: path.clone(),
+                                success: true,
+                                content: new_content,
+                            },
+                            Err(e) => ToolResult::ReplaceInFile {
+                                path: path.clone(),
+                                success: false,
+                                content: e.to_string(),
+                            },
+                        }
+                    }
+
+                    Tool::DeleteFiles { paths } => {
+                        let mut deleted = Vec::new();
+                        let mut failed = Vec::new();
+
+                        for path in paths {
+                            match explorer.delete_file(path) {
+                                Ok(_) => deleted.push(path.clone()),
+                                Err(e) => failed.push((path.clone(), e.to_string())),
+                            }
+                        }
+
+                        ToolResult::DeleteFiles { deleted, failed }
+                    }
+
+                    _ => unreachable!(),
+                }
             }
         };
 
