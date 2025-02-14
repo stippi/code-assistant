@@ -292,12 +292,12 @@ impl CodeExplorer for MockExplorer {
                     let context_lines = 2;
                     let start_line = line_idx.saturating_sub(context_lines);
                     let section_end = (line_idx + context_lines + 1).min(content.lines().count());
-                    
+
                     let mut section_lines = Vec::new();
                     for i in start_line..section_end {
                         section_lines.push(content.lines().nth(i).unwrap().to_string());
                     }
-                    
+
                     results.push(SearchResult {
                         file: file_path.clone(),
                         start_line,
@@ -506,7 +506,9 @@ fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
     assert!(results.iter().all(|r| {
         r.line_content.iter().all(|line| {
             // Check that "line" is not part of another word
-            !line.contains(&"inline".to_string()) && !line.contains(&"pipeline".to_string()) && !line.contains(&"airline".to_string())
+            !line.contains(&"inline".to_string())
+                && !line.contains(&"pipeline".to_string())
+                && !line.contains(&"airline".to_string())
         })
     }));
 
@@ -519,7 +521,10 @@ fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
             ..Default::default()
         },
     )?;
-    assert!(results.iter().any(|r| r.line_content.iter().any(|line| line.contains(&"line 1".to_string()))));
+    assert!(results.iter().any(|r| r
+        .line_content
+        .iter()
+        .any(|line| line.contains(&"line 1".to_string()))));
 
     // Test regex search
     let results = explorer.search(
@@ -530,7 +535,10 @@ fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
             ..Default::default()
         },
     )?;
-    assert!(results.iter().any(|r| r.line_content.iter().any(|line| line.contains(&"line 1".to_string()))));
+    assert!(results.iter().any(|r| r
+        .line_content
+        .iter()
+        .any(|line| line.contains(&"line 1".to_string()))));
 
     // Test with max_results
     let results = explorer.search(
@@ -738,7 +746,10 @@ async fn test_execute_command() -> Result<()> {
     let captured_commands = mock_command_executor_ref.get_captured_commands();
     assert_eq!(captured_commands.len(), 1);
     assert_eq!(captured_commands[0].0, "test command");
-    assert_eq!(captured_commands[0].1.as_ref().map(|p| p.to_str().unwrap()), Some("./root"));
+    assert_eq!(
+        captured_commands[0].1.as_ref().map(|p| p.to_str().unwrap()),
+        Some("./root")
+    );
 
     Ok(())
 }
@@ -864,5 +875,108 @@ fn test_apply_replacements() -> Result<(), anyhow::Error> {
     let result = explorer.apply_replacements(&PathBuf::from("./root/test.txt"), &replacements)?;
 
     assert_eq!(result, "Hi there\nThis is a test\nSee you");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_tool_error_handling() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
+    // Setup a scenario where a file replacement fails first (wrong search string),
+    // then succeeds with corrected search string
+    let initial_content = "function test() {\n    console.log(\"test\");\n}\n";
+
+    // First a read action to get the file into working memory
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response(
+            Tool::ReplaceInFile {
+                path: PathBuf::from("test.rs"),
+                replacements: vec![FileReplacement {
+                    search: "function test()".to_string(), // correct
+                    replace: "fn test()".to_string(),
+                }],
+            },
+            "Trying with correct search string",
+        )),
+        Ok(create_test_response(
+            Tool::ReplaceInFile {
+                path: PathBuf::from("test.rs"),
+                replacements: vec![FileReplacement {
+                    search: "wrong search".to_string(), // will fail
+                    replace: "fn test()".to_string(),
+                }],
+            },
+            "Initial attempt to replace",
+        )),
+        Ok(create_test_response(
+            Tool::ReadFiles {
+                paths: vec![PathBuf::from("test.rs")],
+            },
+            "Reading test file",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+
+    // File exists and has content
+    let mock_explorer = MockExplorer::new(
+        HashMap::from([(PathBuf::from("./root/test.rs"), initial_content.to_string())]),
+        Some(FileTreeEntry {
+            name: "./root".to_string(),
+            entry_type: FileSystemEntryType::Directory,
+            children: HashMap::new(),
+            is_expanded: true,
+        }),
+    );
+
+    let mut agent = Agent::new(
+        Box::new(mock_llm),
+        ToolMode::Native,
+        Box::new(mock_explorer),
+        Box::new(create_command_executor_mock()),
+        Box::new(MockUI::default()),
+        Box::new(MockStatePersistence::new()),
+    );
+
+    // Run the agent
+    agent
+        .start_with_task("Convert JavaScript function to Rust".to_string())
+        .await?;
+
+    // Check that error was communicated to LLM
+    let requests = mock_llm_ref.requests.lock().unwrap();
+
+    // Should see four requests:
+    // 1. ReadFiles (initial load)
+    // 2. ReplaceInFile (fails)
+    // 3. Message about failure
+    // 4. ReplaceInFile (succeeds)
+    assert_eq!(requests.len(), 4);
+
+    // The error message should be a user message in the third request
+    let error_request = &requests[2];
+    assert_eq!(error_request.messages.len(), 3); // Working Memory + Tool Response + Error
+    if let MessageContent::Text(content) = &error_request.messages[2].content {
+        assert!(
+            content.contains("Could not find search content"),
+            "Expected error message about missing search content, got:\n{}",
+            content
+        );
+    } else {
+        panic!("Expected error message to be text content");
+    }
+
+    // The final request should show successful replacement
+    let final_request = &requests[3];
+    if let MessageContent::Text(content) = &final_request.messages[0].content {
+        assert!(
+            content.contains("fn test() {"), // Replaced content
+            "Transformed content not found in working memory:\n{}",
+            content
+        );
+    } else {
+        panic!("Expected text content in message");
+    }
+
     Ok(())
 }
