@@ -26,6 +26,9 @@ impl ToolResult {
                     )
                 }
             }
+            ToolResult::AbsolutePathError { path } => {
+                format!("Path must be relative to project root: {}", path.display())
+            }
             ToolResult::ReadFiles {
                 loaded_files,
                 failed_files,
@@ -199,6 +202,7 @@ impl ToolResult {
         match self {
             ToolResult::ListProjects { .. } => true,
             ToolResult::OpenProject { error, .. } => error.is_none(),
+            ToolResult::AbsolutePathError { .. } => false,
             ToolResult::ReadFiles {
                 loaded_files,
                 failed_files,

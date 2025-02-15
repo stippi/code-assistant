@@ -111,6 +111,9 @@ pub enum ToolResult {
         path: Option<PathBuf>,
         error: Option<String>,
     },
+    AbsolutePathError {
+        path: PathBuf,
+    },
     ReadFiles {
         loaded_files: HashMap<PathBuf, String>,
         failed_files: Vec<(PathBuf, String)>,
@@ -222,9 +225,9 @@ pub struct SearchOptions {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SearchResult {
     pub file: PathBuf,
-    pub start_line: usize,         // First line in the section (including context)
+    pub start_line: usize, // First line in the section (including context)
     pub line_content: Vec<String>, // All lines in the section
-    pub match_lines: Vec<usize>,   // Line numbers with matches (relative to start_line)
+    pub match_lines: Vec<usize>, // Line numbers with matches (relative to start_line)
     pub match_ranges: Vec<Vec<(usize, usize)>>, // Match positions for each line, aligned with match_lines
 }
 

@@ -5,8 +5,19 @@ use crate::ui::{UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
 use std::collections::HashMap;
+use std::path::Path;
 
 pub struct ToolExecutor {}
+
+fn check_absolute_path(path: &Path) -> Option<ToolResult> {
+    if path.is_absolute() {
+        Some(ToolResult::AbsolutePathError {
+            path: path.to_path_buf(),
+        })
+    } else {
+        None
+    }
+}
 
 impl ToolExecutor {
     pub async fn execute<H: ToolResultHandler>(
@@ -94,15 +105,17 @@ impl ToolExecutor {
                 })?;
                 match tool {
                     Tool::ReadFiles { paths } => {
+                        // Check for absolute paths
+                        for path in paths {
+                            if let Some(error) = check_absolute_path(path) {
+                                return Ok((String::new(), error));
+                            }
+                        }
                         let mut loaded_files = HashMap::new();
                         let mut failed_files = Vec::new();
 
                         for path in paths {
-                            let full_path = if path.is_absolute() {
-                                path.clone()
-                            } else {
-                                explorer.root_dir().join(path)
-                            };
+                            let full_path = explorer.root_dir().join(path);
                             match explorer.read_file(&full_path) {
                                 Ok(content) => {
                                     loaded_files.insert(path.clone(), content);
@@ -120,16 +133,18 @@ impl ToolExecutor {
                     }
 
                     Tool::ListFiles { paths, max_depth } => {
+                        // Check for absolute paths
+                        for path in paths {
+                            if let Some(error) = check_absolute_path(path) {
+                                return Ok((String::new(), error));
+                            }
+                        }
                         let explorer = explorer; // Shadow with non-ref binding
                         let mut expanded_paths = Vec::new();
                         let mut failed_paths = Vec::new();
 
                         for path in paths {
-                            let full_path = if path.is_absolute() {
-                                path.clone()
-                            } else {
-                                explorer.root_dir().join(path)
-                            };
+                            let full_path = explorer.root_dir().join(path);
                             match explorer.list_files(&full_path, *max_depth) {
                                 Ok(tree_entry) => {
                                     expanded_paths.push((path.clone(), tree_entry));
@@ -199,7 +214,10 @@ impl ToolExecutor {
                                     ToolResult::ExecuteCommand {
                                         stdout: String::new(),
                                         stderr: String::new(),
-                                        error: Some("Working directory must be relative to project root".to_string()),
+                                        error: Some(
+                                            "Working directory must be relative to project root"
+                                                .to_string(),
+                                        ),
                                     },
                                 ));
                             }
@@ -214,7 +232,11 @@ impl ToolExecutor {
                             Ok(output) => ToolResult::ExecuteCommand {
                                 stdout: output.stdout,
                                 stderr: output.stderr,
-                                error: if output.success { None } else { Some("Command failed".to_string()) },
+                                error: if output.success {
+                                    None
+                                } else {
+                                    Some("Command failed".to_string())
+                                },
                             },
                             Err(e) => ToolResult::ExecuteCommand {
                                 stdout: String::new(),
@@ -225,11 +247,10 @@ impl ToolExecutor {
                     }
 
                     Tool::WriteFile { path, content } => {
-                        let full_path = if path.is_absolute() {
-                            path.clone()
-                        } else {
-                            explorer.root_dir().join(path)
-                        };
+                        if let Some(error) = check_absolute_path(path) {
+                            return Ok((String::new(), error));
+                        }
+                        let full_path = explorer.root_dir().join(path);
 
                         match explorer.write_file(&full_path, content) {
                             Ok(_) => ToolResult::WriteFile {
@@ -239,18 +260,17 @@ impl ToolExecutor {
                             },
                             Err(e) => ToolResult::WriteFile {
                                 path: path.clone(),
-                                content: String::new(),  // Empty content on error
+                                content: String::new(), // Empty content on error
                                 error: Some(e.to_string()),
                             },
                         }
                     }
 
                     Tool::ReplaceInFile { path, replacements } => {
-                        let full_path = if path.is_absolute() {
-                            path.clone()
-                        } else {
-                            explorer.root_dir().join(path)
-                        };
+                        if let Some(error) = check_absolute_path(path) {
+                            return Ok((String::new(), error));
+                        }
+                        let full_path = explorer.root_dir().join(path);
 
                         match explorer.apply_replacements(&full_path, replacements) {
                             Ok(new_content) => ToolResult::ReplaceInFile {
@@ -267,11 +287,18 @@ impl ToolExecutor {
                     }
 
                     Tool::DeleteFiles { paths } => {
+                        // Check for absolute paths
+                        for path in paths {
+                            if let Some(error) = check_absolute_path(path) {
+                                return Ok((String::new(), error));
+                            }
+                        }
                         let mut deleted = Vec::new();
                         let mut failed = Vec::new();
 
                         for path in paths {
-                            match explorer.delete_file(path) {
+                            let full_path = explorer.root_dir().join(path);
+                            match explorer.delete_file(&full_path) {
                                 Ok(_) => deleted.push(path.clone()),
                                 Err(e) => failed.push((path.clone(), e.to_string())),
                             }
