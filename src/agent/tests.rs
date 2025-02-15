@@ -42,7 +42,8 @@ impl MockLLMProvider {
         }
     }
 
-    pub fn print_requests(&self) {
+    #[allow(dead_code)]
+    fn print_requests(&self) {
         let requests = self.requests.lock().unwrap();
         println!("\nTotal number of requests: {}", requests.len());
         for (i, request) in requests.iter().enumerate() {
@@ -211,15 +212,9 @@ impl CodeExplorer for MockExplorer {
     }
 
     fn write_file(&self, path: &PathBuf, content: &String) -> Result<()> {
-        // Check for absolute paths
-        if path.is_absolute() {
-            return Err(anyhow::anyhow!("Absolute paths are not allowed"));
-        }
-
         // Check parent directories
-        let mut current = PathBuf::from("./root");
         for component in path.parent().unwrap_or(path).components() {
-            current.push(component.as_os_str());
+            let current = PathBuf::from(component.as_os_str());
             if let Some(_) = self.files.lock().unwrap().get(&current) {
                 // If any parent is a file (has content), that's an error
                 return Err(anyhow::anyhow!(
@@ -1174,7 +1169,6 @@ async fn test_write_file_error_handling() -> Result<()> {
         .start_with_task("Write file contents".to_string())
         .await?;
 
-    mock_llm_ref.print_requests();
     let requests = mock_llm_ref.requests.lock().unwrap();
 
     // Should see three requests:
