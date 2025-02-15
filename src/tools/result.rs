@@ -15,11 +15,7 @@ impl ToolResult {
                     msg
                 }
             }
-            ToolResult::OpenProject {
-                name,
-                error,
-                ..
-            } => {
+            ToolResult::OpenProject { name, error, .. } => {
                 if error.is_none() {
                     format!("Successfully opened project '{}'", name)
                 } else {
@@ -143,7 +139,11 @@ impl ToolResult {
             }
             ToolResult::WriteFile { path, error, .. } => {
                 if error.is_some() {
-                    format!("Failed to write file {}: {}", path.display(), error.as_ref().unwrap())
+                    format!(
+                        "Failed to write file {}: {}",
+                        path.display(),
+                        error.as_ref().unwrap()
+                    )
                 } else {
                     format!("Successfully wrote file: {}", path.display())
                 }
@@ -199,13 +199,22 @@ impl ToolResult {
         match self {
             ToolResult::ListProjects { .. } => true,
             ToolResult::OpenProject { error, .. } => error.is_none(),
-            ToolResult::ReadFiles { loaded_files, .. } => !loaded_files.is_empty(),
-            ToolResult::ListFiles { .. } => true,
+            ToolResult::ReadFiles {
+                loaded_files,
+                failed_files,
+            } => !loaded_files.is_empty() && failed_files.is_empty(),
+            ToolResult::ListFiles {
+                expanded_paths,
+                failed_paths,
+                ..
+            } => !expanded_paths.is_empty() && failed_paths.is_empty(),
             ToolResult::SearchFiles { .. } => true,
             ToolResult::ExecuteCommand { error, .. } => error.is_none(),
             ToolResult::WriteFile { error, .. } => error.is_none(),
             ToolResult::ReplaceInFile { error, .. } => error.is_none(),
-            ToolResult::DeleteFiles { deleted, .. } => !deleted.is_empty(),
+            ToolResult::DeleteFiles {
+                deleted, failed, ..
+            } => !deleted.is_empty() && failed.is_empty(),
             ToolResult::Summarize { .. } => true,
             ToolResult::AskUser { .. } => true,
             ToolResult::MessageUser { .. } => true,

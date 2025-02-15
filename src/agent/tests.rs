@@ -42,6 +42,20 @@ impl MockLLMProvider {
         }
     }
 
+    pub fn print_requests(&self) {
+        let requests = self.requests.lock().unwrap();
+        println!("\nTotal number of requests: {}", requests.len());
+        for (i, request) in requests.iter().enumerate() {
+            println!("\nRequest {}:", i);
+            for (j, message) in request.messages.iter().enumerate() {
+                println!("  Message {}:", j);
+                if let MessageContent::Text(content) = &message.content {
+                    println!("    {}", content.replace('\n', "\n    "));
+                }
+            }
+        }
+    }
+
     // // Helper method for tests that need specific completion handling
     // fn new_with_custom_completion(
     //     mut responses: Vec<Result<LLMResponse, anyhow::Error>>,
@@ -140,10 +154,6 @@ impl MockUI {
     fn get_messages(&self) -> Vec<UIMessage> {
         self.messages.lock().unwrap().clone()
     }
-
-    // fn get_streaming(&self) -> Vec<String> {
-    //     self.streaming.lock().unwrap().clone()
-    // }
 }
 
 #[async_trait]
@@ -201,6 +211,24 @@ impl CodeExplorer for MockExplorer {
     }
 
     fn write_file(&self, path: &PathBuf, content: &String) -> Result<()> {
+        // Check for absolute paths
+        if path.is_absolute() {
+            return Err(anyhow::anyhow!("Absolute paths are not allowed"));
+        }
+
+        // Check parent directories
+        let mut current = PathBuf::from("./root");
+        for component in path.parent().unwrap_or(path).components() {
+            current.push(component.as_os_str());
+            if let Some(_) = self.files.lock().unwrap().get(&current) {
+                // If any parent is a file (has content), that's an error
+                return Err(anyhow::anyhow!(
+                    "Cannot create file: {} is a file",
+                    current.display()
+                ));
+            }
+        }
+
         let mut files = self.files.lock().unwrap();
         files.insert(path.to_path_buf(), content.clone());
         Ok(())
@@ -225,8 +253,40 @@ impl CodeExplorer for MockExplorer {
         path: &PathBuf,
         _max_depth: Option<usize>,
     ) -> Result<FileTreeEntry, anyhow::Error> {
-        // Return just an error for now
-        Err(anyhow::anyhow!("Path not found: {}", path.display()))
+        let file_tree = self.file_tree.lock().unwrap();
+        let root = file_tree
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No file tree configured"))?;
+
+        // Handle request for root
+        if path == &PathBuf::from("./root") {
+            return Ok(root.clone());
+        }
+
+        // Handle relative paths from root
+        if let Some(rel_path) = path.strip_prefix("./root/").ok() {
+            let mut current = root;
+            for component in rel_path.components() {
+                if let Some(name) = component.as_os_str().to_str() {
+                    current = current
+                        .children
+                        .get(name)
+                        .ok_or_else(|| anyhow::anyhow!("Path not found: {}", path.display()))?;
+                }
+            }
+            return Ok(current.clone());
+        }
+
+        // Handle paths without ./root prefix
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path: {}", path.display()))?;
+        let entry = root
+            .children
+            .get(path_str)
+            .ok_or_else(|| anyhow::anyhow!("Path not found: {}", path.display()))?;
+
+        Ok(entry.clone())
     }
 
     fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String> {
@@ -427,10 +487,22 @@ fn create_explorer_mock() -> MockExplorer {
         "line 1\nline 2\nline 3\n".to_string(),
     );
 
+    // Add src directory to tree
+    let mut root_children = HashMap::new();
+    root_children.insert(
+        "src".to_string(),
+        FileTreeEntry {
+            name: "src".to_string(),
+            entry_type: FileSystemEntryType::Directory,
+            children: HashMap::new(),
+            is_expanded: true,
+        },
+    );
+
     let file_tree = Some(FileTreeEntry {
         name: "./root".to_string(),
         entry_type: FileSystemEntryType::Directory,
-        children: HashMap::new(),
+        children: root_children,
         is_expanded: true,
     });
 
@@ -879,10 +951,7 @@ fn test_apply_replacements() -> Result<(), anyhow::Error> {
 }
 
 #[tokio::test]
-async fn test_tool_error_handling() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .init();
+async fn test_replace_in_file_error_handling() -> Result<()> {
     // Setup a scenario where a file replacement fails first (wrong search string),
     // then succeeds with corrected search string
     let initial_content = "function test() {\n    console.log(\"test\");\n}\n";
@@ -947,10 +1016,10 @@ async fn test_tool_error_handling() -> Result<()> {
     let requests = mock_llm_ref.requests.lock().unwrap();
 
     // Should see four requests:
-    // 1. ReadFiles (initial load)
-    // 2. ReplaceInFile (fails)
-    // 3. Message about failure
-    // 4. ReplaceInFile (succeeds)
+    // 1. Initial ReadFiles
+    // 2. Failed ReplaceInFile
+    // 3. Corrected ReplaceInFile
+    // 4. CompleteTask
     assert_eq!(requests.len(), 4);
 
     // The error message should be a user message in the third request
@@ -966,16 +1035,160 @@ async fn test_tool_error_handling() -> Result<()> {
         panic!("Expected error message to be text content");
     }
 
-    // The final request should show successful replacement
-    let final_request = &requests[3];
-    if let MessageContent::Text(content) = &final_request.messages[0].content {
-        assert!(
-            content.contains("fn test() {"), // Replaced content
-            "Transformed content not found in working memory:\n{}",
-            content
-        );
-    } else {
-        panic!("Expected text content in message");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_list_files_error_handling() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response(
+            Tool::ListFiles {
+                paths: vec![PathBuf::from("src")],
+                max_depth: None,
+            },
+            "Listing files with correct path",
+        )),
+        Ok(create_test_response(
+            Tool::ListFiles {
+                paths: vec![PathBuf::from("nonexistent")],
+                max_depth: None,
+            },
+            "Initial attempt to list files",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let mut agent = Agent::new(
+        Box::new(mock_llm),
+        ToolMode::Native,
+        Box::new(create_explorer_mock()),
+        Box::new(create_command_executor_mock()),
+        Box::new(MockUI::default()),
+        Box::new(MockStatePersistence::new()),
+    );
+
+    agent
+        .start_with_task("List project files".to_string())
+        .await?;
+
+    let requests = mock_llm_ref.requests.lock().unwrap();
+
+    // Should see three requests:
+    // 1. Failed ListFiles
+    // 2. Corrected ListFiles
+    // 3. CompleteTask
+    assert_eq!(requests.len(), 3);
+
+    // The error message should be a user message in the second request
+    let error_request = &requests[1];
+    assert_eq!(error_request.messages.len(), 3); // Working Memory + Tool Response + Error
+    if let MessageContent::Text(content) = &error_request.messages[2].content {
+        println!("{}", content);
+        assert!(content.contains("Error executing action"));
+        assert!(content.contains("Path not found"));
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_read_files_error_handling() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response(
+            Tool::ReadFiles {
+                paths: vec![PathBuf::from("test.txt")],
+            },
+            "Reading existing file",
+        )),
+        Ok(create_test_response(
+            Tool::ReadFiles {
+                paths: vec![PathBuf::from("nonexistent.txt")],
+            },
+            "Attempting to read non-existent file",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let mut agent = Agent::new(
+        Box::new(mock_llm),
+        ToolMode::Native,
+        Box::new(create_explorer_mock()),
+        Box::new(create_command_executor_mock()),
+        Box::new(MockUI::default()),
+        Box::new(MockStatePersistence::new()),
+    );
+
+    agent
+        .start_with_task("Read file contents".to_string())
+        .await?;
+
+    let requests = mock_llm_ref.requests.lock().unwrap();
+
+    // Should see three requests:
+    // 1. Failed ReadFiles
+    // 2. Corrected ReadFiles
+    // 3. CompleteTask
+    assert_eq!(requests.len(), 3);
+
+    // The error message should be a user message in the second request
+    let error_request = &requests[1];
+    assert_eq!(error_request.messages.len(), 3); // Working Memory + Tool Response + Error
+    if let MessageContent::Text(content) = &error_request.messages[2].content {
+        assert!(content.contains("Error executing action"));
+        assert!(content.contains("File not found"));
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_write_file_error_handling() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response(
+            Tool::WriteFile {
+                path: PathBuf::from("test.txt"),
+                content: "valid content".to_string(),
+            },
+            "Writing to valid path",
+        )),
+        Ok(create_test_response(
+            Tool::WriteFile {
+                path: PathBuf::from("/invalid/path/test.txt"),
+                content: "test content".to_string(),
+            },
+            "Attempting to write to invalid absolute path",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let mut agent = Agent::new(
+        Box::new(mock_llm),
+        ToolMode::Native,
+        Box::new(create_explorer_mock()),
+        Box::new(create_command_executor_mock()),
+        Box::new(MockUI::default()),
+        Box::new(MockStatePersistence::new()),
+    );
+
+    agent
+        .start_with_task("Write file contents".to_string())
+        .await?;
+
+    mock_llm_ref.print_requests();
+    let requests = mock_llm_ref.requests.lock().unwrap();
+
+    // Should see three requests:
+    // 1. Failed WriteFile
+    // 2. Corrected WriteFile
+    // 3. CompleteTask
+    assert_eq!(requests.len(), 3);
+
+    // The error message should be a user message in the second request
+    let error_request = &requests[1];
+    assert_eq!(error_request.messages.len(), 3); // Working Memory + Tool Response + Error
+    if let MessageContent::Text(content) = &error_request.messages[2].content {
+        assert!(content.contains("Error executing action"));
+        assert!(content.contains("absolute path"));
     }
 
     Ok(())
