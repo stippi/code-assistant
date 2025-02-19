@@ -195,12 +195,34 @@ impl ToolResult {
             ToolResult::AskUser { response } => response.clone(),
             ToolResult::MessageUser { result } => result.clone(),
             ToolResult::CompleteTask { result } => result.clone(),
+            ToolResult::WebSearch { results, error } => {
+                if let Some(e) = error {
+                    format!("Search failed: {}", e)
+                } else if results.is_empty() {
+                    "No search results found.".to_string()
+                } else {
+                    let mut msg = String::from("Search results:\n");
+                    for result in results {
+                        msg.push_str(&format!(
+                            "- Title: {}\n  URL: {}\n  Snippet: {}\n\n",
+                            result.title, result.url, result.snippet
+                        ));
+                    }
+                    msg
+                }
+            }
+            ToolResult::WebFetch { page, error } => {
+                if let Some(e) = error {
+                    format!("Failed to fetch page: {}", e)
+                } else {
+                    format!("Content from {}:\n{}", page.url, page.content)
+                }
+            }
         }
     }
 
     pub fn is_success(&self) -> bool {
         match self {
-            ToolResult::ListProjects { .. } => true,
             ToolResult::OpenProject { error, .. } => error.is_none(),
             ToolResult::AbsolutePathError { .. } => false,
             ToolResult::ReadFiles {
@@ -212,7 +234,6 @@ impl ToolResult {
                 failed_paths,
                 ..
             } => !expanded_paths.is_empty() && failed_paths.is_empty(),
-            ToolResult::SearchFiles { .. } => true,
             ToolResult::ExecuteCommand { error, .. } => error.is_none(),
             ToolResult::WriteFile { error, .. } => error.is_none(),
             ToolResult::ReplaceInFile { error, .. } => error.is_none(),
@@ -220,9 +241,7 @@ impl ToolResult {
                 deleted, failed, ..
             } => !deleted.is_empty() && failed.is_empty(),
             ToolResult::Summarize { .. } => true,
-            ToolResult::AskUser { .. } => true,
-            ToolResult::MessageUser { .. } => true,
-            ToolResult::CompleteTask { .. } => true,
+            _ => true,
         }
     }
 }

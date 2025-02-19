@@ -8,6 +8,7 @@ mod tools;
 mod types;
 mod ui;
 mod utils;
+mod web;
 
 use crate::agent::{Agent, ToolMode};
 use crate::explorer::Explorer;

@@ -3,6 +3,7 @@ use crate::config;
 use crate::types::{CodeExplorer, SearchMode, SearchOptions, Tool, ToolResult};
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
+use crate::web::{WebClient, WebPage};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -98,6 +99,36 @@ impl ToolExecutor {
                     result: "Messaging user not available".to_string(),
                 },
             },
+
+            Tool::WebSearch {
+                query,
+                hits_page_number,
+            } => {
+                // Create new client for each request
+                let client = WebClient::new().await?;
+                match client.search(query, *hits_page_number).await {
+                    Ok(results) => ToolResult::WebSearch {
+                        results,
+                        error: None,
+                    },
+                    Err(e) => ToolResult::WebSearch {
+                        results: vec![],
+                        error: Some(e.to_string()),
+                    },
+                }
+            }
+
+            Tool::WebFetch { url, selectors: _ } => {
+                // Create new client for each request
+                let client = WebClient::new().await?;
+                match client.fetch(url).await {
+                    Ok(page) => ToolResult::WebFetch { page, error: None },
+                    Err(e) => ToolResult::WebFetch {
+                        page: WebPage::default(),
+                        error: Some(e.to_string()),
+                    },
+                }
+            }
 
             _ => {
                 let explorer = explorer.ok_or_else(|| {

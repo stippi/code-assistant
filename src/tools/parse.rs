@@ -410,6 +410,27 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool> {
                 .ok_or_else(|| anyhow::anyhow!("Missing message parameter"))?
                 .to_string(),
         }),
+        "web_search" => Ok(Tool::WebSearch {
+            query: params["query"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing query"))?
+                .to_string(),
+            hits_page_number: params["hits_page_number"]
+                .as_u64()
+                .ok_or_else(|| anyhow::anyhow!("Missing or invalid hits_page_number"))?
+                as u32,
+        }),
+        "web_fetch" => Ok(Tool::WebFetch {
+            url: params["url"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing url"))?
+                .to_string(),
+            selectors: params["selectors"].as_array().map(|arr| {
+                arr.iter()
+                    .map(|v| v.as_str().unwrap_or_default().to_string())
+                    .collect()
+            }),
+        }),
         _ => Err(anyhow::anyhow!("Unknown tool: {}", name)),
     }
 }

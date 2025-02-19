@@ -388,6 +388,8 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         Tool::AskUser { .. } => "ask_user",
         Tool::MessageUser { .. } => "message_user",
         Tool::CompleteTask { .. } => "complete_task",
+        Tool::WebSearch { .. } => "web_search",
+        Tool::WebFetch { .. } => "web_fetch",
     };
     let tool_input = match &tool {
         Tool::ListProjects {} => serde_json::json!({}),
@@ -454,6 +456,17 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         }),
         Tool::CompleteTask { message } => serde_json::json!({
             "message": message
+        }),
+        Tool::WebSearch {
+            query,
+            hits_page_number,
+        } => serde_json::json!({
+            "query": query,
+            "hits_page_number": hits_page_number
+        }),
+        Tool::WebFetch { url, selectors } => serde_json::json!({
+            "url": url,
+            "selectors": selectors
         }),
     };
 

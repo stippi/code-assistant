@@ -16,6 +16,8 @@ impl Tools {
             Self::ask_user(),
             Self::message_user(),
             Self::complete_task(),
+            Self::web_search(),
+            Self::web_fetch(),
         ]
     }
 
@@ -31,6 +33,8 @@ impl Tools {
             Self::replace_in_file(),
             Self::write_file(),
             Self::delete_files(),
+            Self::web_search(),
+            Self::web_fetch(),
         ]
     }
 
@@ -327,6 +331,52 @@ impl Tools {
                     }
                 },
                 "required": ["message"]
+            }),
+        }
+    }
+
+    pub fn web_search() -> ToolDefinition {
+        ToolDefinition {
+            name: "web_search".to_string(),
+            description: "Search the web using DuckDuckGo".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query"
+                    },
+                    "hits_page_number": {
+                        "type": "integer",
+                        "description": "Page number for pagination (1-based)",
+                        "minimum": 1
+                    }
+                },
+                "required": ["query", "hits_page_number"]
+            }),
+        }
+    }
+
+    pub fn web_fetch() -> ToolDefinition {
+        ToolDefinition {
+            name: "web_fetch".to_string(),
+            description: "Fetch and extract content from a web page".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL of the web page to fetch"
+                    },
+                    "selectors": {
+                        "type": "array",
+                        "description": "Optional CSS selectors to extract specific content",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "required": ["url"]
             }),
         }
     }

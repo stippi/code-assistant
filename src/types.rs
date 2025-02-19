@@ -1,3 +1,4 @@
+use crate::web::{WebPage, WebSearchResult};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -98,6 +99,16 @@ pub enum Tool {
         /// Maximum number of results to return
         max_results: Option<usize>,
     },
+    /// Web search using DuckDuckGo
+    WebSearch {
+        query: String,
+        hits_page_number: u32,
+    },
+    /// Fetch and extract content from a web page
+    WebFetch {
+        url: String,
+        selectors: Option<Vec<String>>,
+    },
 }
 
 /// Specific results for each tool type
@@ -156,6 +167,15 @@ pub enum ToolResult {
     },
     CompleteTask {
         result: String,
+    },
+    WebSearch {
+        results: Vec<WebSearchResult>,
+        error: Option<String>,
+    },
+
+    WebFetch {
+        page: WebPage,
+        error: Option<String>,
     },
 }
 
