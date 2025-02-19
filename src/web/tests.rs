@@ -28,8 +28,6 @@ mod tests {
 
         println!("\nContent: {}", page.content);
 
-        sleep(Duration::from_secs(2)).await;
-
         assert!(page.content.len() > 0);
         assert!(page.content.contains("Rust"));
     }
