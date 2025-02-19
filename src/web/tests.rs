@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
     use super::super::WebClient;
-    use tokio::time::{sleep, Duration};
 
     #[tokio::test]
     async fn test_web_search() {
