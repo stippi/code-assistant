@@ -26,6 +26,8 @@ mod tests {
         let client = WebClient::new().await.unwrap();
         let page = client.fetch("https://www.rust-lang.org").await.unwrap();
 
+        println!("\nContent: {}", page.content);
+
         sleep(Duration::from_secs(2)).await;
 
         assert!(page.content.len() > 0);

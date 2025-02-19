@@ -99,20 +99,20 @@ impl WebClient {
 
         // Wait for page to load
         let page = page.wait_for_navigation().await?;
-        let content = page.content().await?;
 
-        // Basic content extraction - we'll improve this later
-        let document = Html::parse_document(&content);
-        let body_selector = Selector::parse("body").unwrap();
-        let main_content = document
-            .select(&body_selector)
-            .next()
-            .map(|el| el.text().collect::<String>())
-            .unwrap_or_default();
+        // Try to find main content first
+        let content = if let Ok(main) = page.find_element("main, article, #content, .content").await
+        {
+            main.inner_text().await?.unwrap_or_default()
+        } else {
+            // Fallback: get full body content
+            let body = page.find_element("body").await?;
+            body.inner_text().await?.unwrap_or_default()
+        };
 
         Ok(WebPage {
             url: url.to_string(),
-            content: main_content,
+            content,
             metadata: PageMetadata::default(),
         })
     }
