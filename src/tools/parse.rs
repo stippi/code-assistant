@@ -248,6 +248,31 @@ pub fn parse_tool_from_params(
                 .map(|v| PathBuf::from(v)),
         }),
 
+        "web_search" => Ok(Tool::WebSearch {
+            query: params
+                .get("query")
+                .and_then(|v| v.first())
+                .ok_or_else(|| anyhow::anyhow!("Missing query parameter"))?
+                .to_string(),
+            hits_page_number: params
+                .get("hits_page_number")
+                .and_then(|v| v.first())
+                .map(|v| v.trim().parse::<u32>())
+                .transpose()?
+                .ok_or_else(|| anyhow::anyhow!("Missing hits_page_number parameter"))?,
+        }),
+
+        "web_fetch" => Ok(Tool::WebFetch {
+            url: params
+                .get("url")
+                .and_then(|v| v.first())
+                .ok_or_else(|| anyhow::anyhow!("Missing url parameter"))?
+                .to_string(),
+            selectors: params
+                .get("selector")
+                .map(|selectors| selectors.iter().map(|s| s.to_string()).collect()),
+        }),
+
         _ => Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
     }
 }

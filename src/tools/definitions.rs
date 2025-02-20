@@ -29,7 +29,6 @@ impl Tools {
             Self::search_files(),
             Self::list_files(),
             Self::read_files(),
-            Self::summarize(),
             Self::replace_in_file(),
             Self::write_file(),
             Self::delete_files(),
