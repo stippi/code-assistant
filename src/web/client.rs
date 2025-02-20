@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chromiumoxide::{Browser, BrowserConfig};
 use futures::StreamExt;
-use htmd::HtmlToMarkdown;
+use htmd::{Element, HtmlToMarkdown};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use regex::Regex;
 use reqwest::Client;
@@ -111,11 +111,15 @@ impl WebClient {
         };
 
         // Convert HTML to Markdown
-        let content = HtmlToMarkdown::new().convert(&html).unwrap();
+        let converter = HtmlToMarkdown::builder()
+            .skip_tags(vec!["script", "style"])
+            .add_handler(vec!["svg"], |_: Element| Some("[Svg Image]".to_string()))
+            .build();
+        let content = converter.convert(&html).unwrap();
 
         // Remove image links and empty headings
         let image_pattern = Regex::new(r"!\[.*?\]\([^)]*\)\n?").unwrap();
-        let empty_heading_pattern = Regex::new(r"#+ *\n").unwrap();
+        let empty_heading_pattern = Regex::new(r"\n*#+ *\n+").unwrap();
         // Match markdown links with relative URLs
         let relative_link_pattern = Regex::new(r"\[([^\]]+)\]\(/[^)]+\)").unwrap();
 
