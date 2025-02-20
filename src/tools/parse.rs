@@ -156,7 +156,7 @@ pub fn parse_tool_from_params(
         }),
 
         "summarize" => Ok(Tool::Summarize {
-            files: params
+            resources: params
                 .get("file")
                 .ok_or_else(|| anyhow::anyhow!("Missing file parameter"))?
                 .iter()
@@ -350,20 +350,20 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool> {
                 .collect::<Result<Vec<_>>>()?,
         }),
         "summarize" => Ok(Tool::Summarize {
-            files: params["files"]
+            resources: params["resources"]
                 .as_array()
-                .ok_or_else(|| anyhow::anyhow!("Missing or invalid files array"))?
+                .ok_or_else(|| anyhow::anyhow!("Missing or invalid resources array"))?
                 .iter()
                 .map(|f| {
                     Ok((
                         PathBuf::from(
                             f["path"]
                                 .as_str()
-                                .ok_or_else(|| anyhow::anyhow!("Missing path in file entry"))?,
+                                .ok_or_else(|| anyhow::anyhow!("Missing path in resource entry"))?,
                         ),
                         f["summary"]
                             .as_str()
-                            .ok_or_else(|| anyhow::anyhow!("Missing summary in file entry"))?
+                            .ok_or_else(|| anyhow::anyhow!("Missing summary in resource entry"))?
                             .to_string(),
                     ))
                 })

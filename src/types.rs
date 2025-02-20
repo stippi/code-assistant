@@ -17,21 +17,66 @@ pub struct FileTreeEntry {
     pub is_expanded: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LoadedResource {
+    File(String), // File content
+    WebSearch {
+        query: String,
+        results: Vec<WebSearchResult>,
+    },
+    WebPage(WebPage),
+}
+
 /// Represents the agent's working memory during execution
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct WorkingMemory {
-    /// Currently loaded file contents
-    pub loaded_files: HashMap<PathBuf, String>,
-    /// Summaries of previously seen files
-    pub file_summaries: HashMap<PathBuf, String>,
+    /// Currently loaded resources (files, web search results, web pages)
+    pub loaded_resources: HashMap<PathBuf, LoadedResource>,
+    /// Summaries of previously seen resources
+    pub summaries: HashMap<PathBuf, String>,
     /// Complete file tree of the repository
     pub file_tree: Option<FileTreeEntry>,
     /// Current task description
     pub current_task: String,
     /// Memory of previous actions and their results
     pub action_history: Vec<ActionResult>,
-    /// Additional context or notes the agent has generated
-    pub notes: Vec<String>,
+}
+
+impl std::fmt::Display for LoadedResource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadedResource::File(content) => write!(f, "{}", content),
+            LoadedResource::WebSearch { query, results } => {
+                writeln!(f, "Web search results for: '{}'", query)?;
+                for result in results {
+                    writeln!(f, "- {} ({})", result.title, result.url)?;
+                    writeln!(f, "  {}", result.snippet)?;
+                }
+                Ok(())
+            }
+            LoadedResource::WebPage(page) => {
+                writeln!(f, "Content from: {}", page.url)?;
+                write!(f, "{}", page.content)
+            }
+        }
+    }
+}
+
+impl WorkingMemory {
+    /// Add a new resource to working memory
+    pub fn add_resource(&mut self, path: PathBuf, resource: LoadedResource) {
+        self.loaded_resources.insert(path, resource);
+    }
+
+    /// Update an existing resource if it exists
+    pub fn update_resource(&mut self, path: &PathBuf, resource: LoadedResource) -> bool {
+        if self.loaded_resources.contains_key(path) {
+            self.loaded_resources.insert(path.clone(), resource);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Details for a text replacement operation
@@ -69,8 +114,8 @@ pub enum Tool {
         path: PathBuf,
         replacements: Vec<FileReplacement>,
     },
-    /// Replace file content with summaries in working memory
-    Summarize { files: Vec<(PathBuf, String)> },
+    /// Replace contents of resources with summaries in working memory
+    Summarize { resources: Vec<(PathBuf, String)> },
     /// Ask user a question and wait for response
     AskUser { question: String },
     /// Message the user
@@ -157,7 +202,7 @@ pub enum ToolResult {
         failed: Vec<(PathBuf, String)>,
     },
     Summarize {
-        files: Vec<(PathBuf, String)>,
+        resources: Vec<(PathBuf, String)>,
     },
     AskUser {
         response: String,
@@ -169,10 +214,10 @@ pub enum ToolResult {
         result: String,
     },
     WebSearch {
+        query: String,
         results: Vec<WebSearchResult>,
         error: Option<String>,
     },
-
     WebFetch {
         page: WebPage,
         error: Option<String>,

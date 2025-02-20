@@ -173,23 +173,23 @@ impl Tools {
         ToolDefinition {
             name: "summarize".to_string(),
             description:
-                "Replace file content with a summary in working memory, unloading the full content."
+                "Replace resource content with a summary in working memory, unloading the full content. The purpose of this tool is to free up precious space in the working memory by keeping only relevant information from a resource."
                     .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "files": {
+                    "resources": {
                         "type": "array",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "path": {
                                     "type": "string",
-                                    "description": "Path to the file to summarize"
+                                    "description": "Path to the resource to summarize"
                                 },
                                 "summary": {
                                     "type": "string",
-                                    "description": "Your summary of the file contents"
+                                    "description": "Your summary of the resource contents"
                                 }
                             },
                             "required": ["path", "summary"]

@@ -189,13 +189,13 @@ impl ToolResult {
                 }
                 msg
             }
-            ToolResult::Summarize { files } => {
-                format!("Created summaries for {} files", files.len())
+            ToolResult::Summarize { resources } => {
+                format!("Created summaries for {} resources", resources.len())
             }
             ToolResult::AskUser { response } => response.clone(),
             ToolResult::MessageUser { result } => result.clone(),
             ToolResult::CompleteTask { result } => result.clone(),
-            ToolResult::WebSearch { results, error } => {
+            ToolResult::WebSearch { results, error, .. } => {
                 if let Some(e) = error {
                     format!("Search failed: {}", e)
                 } else if results.is_empty() {

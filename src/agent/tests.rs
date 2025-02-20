@@ -440,8 +440,8 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         Tool::DeleteFiles { paths } => serde_json::json!({
             "paths": paths
         }),
-        Tool::Summarize { files } => serde_json::json!({
-            "files": files.iter().map(|(path, summary)| {
+        Tool::Summarize { resources } => serde_json::json!({
+            "resources": resources.iter().map(|(path, summary)| {
                 serde_json::json!({
                     "path": path,
                     "summary": summary
@@ -777,7 +777,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     if let MessageContent::Text(content) = &second_request.messages[0].content {
         assert!(
             content.contains(
-                "Loaded files and their contents:\n\n-----test.txt:\nline 1\nline 2\nline 3\n"
+                "Loaded resources and their contents:\n\n-----test.txt:\nline 1\nline 2\nline 3\n"
             ),
             "File content not found in working memory message:\n{}",
             content

@@ -258,14 +258,14 @@ impl Agent {
 
         // Add loaded files with their contents
         memory.push_str("Current Working Memory:\n");
-        memory.push_str("- Loaded files and their contents:\n");
-        for (path, content) in &self.working_memory.loaded_files {
-            memory.push_str(&format!("\n-----{}:\n{}\n", path.display(), content));
+        memory.push_str("- Loaded resources and their contents:\n");
+        for (path, resource) in &self.working_memory.loaded_resources {
+            memory.push_str(&format!("\n-----{}:\n{}\n", path.display(), resource));
         }
 
         // Add file summaries
         memory.push_str("\n- File summaries:\n");
-        for (path, summary) in &self.working_memory.file_summaries {
+        for (path, summary) in &self.working_memory.summaries {
             memory.push_str(&format!("  {}: {}\n", path.display(), summary));
         }
 

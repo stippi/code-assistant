@@ -50,8 +50,8 @@ impl ToolExecutor {
                 }
             }
 
-            Tool::Summarize { files } => ToolResult::Summarize {
-                files: files.clone(),
+            Tool::Summarize { resources } => ToolResult::Summarize {
+                resources: resources.clone(),
             },
 
             Tool::MessageUser { message } => match &ui {
@@ -108,10 +108,12 @@ impl ToolExecutor {
                 let client = WebClient::new().await?;
                 match client.search(query, *hits_page_number).await {
                     Ok(results) => ToolResult::WebSearch {
+                        query: query.to_string(),
                         results,
                         error: None,
                     },
                     Err(e) => ToolResult::WebSearch {
+                        query: query.to_string(),
                         results: vec![],
                         error: Some(e.to_string()),
                     },

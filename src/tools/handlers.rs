@@ -1,5 +1,5 @@
 use crate::tools::ToolResultHandler;
-use crate::types::{FileTreeEntry, ToolResult, WorkingMemory};
+use crate::types::{FileTreeEntry, LoadedResource, ToolResult, WorkingMemory};
 use crate::PathBuf;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -29,25 +29,51 @@ impl<'a> ToolResultHandler for AgentToolHandler<'a> {
                     }
                 }
                 ToolResult::ReadFiles { loaded_files, .. } => {
-                    self.working_memory
-                        .loaded_files
-                        .extend(loaded_files.clone());
-                }
-                ToolResult::Summarize { files } => {
-                    for (path, summary) in files {
-                        self.working_memory.loaded_files.remove(path);
+                    for (path, content) in loaded_files {
                         self.working_memory
-                            .file_summaries
+                            .add_resource(path.clone(), LoadedResource::File(content.clone()));
+                    }
+                }
+                ToolResult::WebSearch {
+                    results,
+                    query,
+                    error: None,
+                } => {
+                    // Use a synthetic path that includes the query
+                    let path = PathBuf::from(format!(
+                        "web-search-{}",
+                        percent_encoding::utf8_percent_encode(
+                            &query,
+                            percent_encoding::NON_ALPHANUMERIC
+                        )
+                    ));
+                    self.working_memory.loaded_resources.insert(
+                        path,
+                        LoadedResource::WebSearch {
+                            query: query.clone(),
+                            results: results.clone(),
+                        },
+                    );
+                }
+                ToolResult::WebFetch { page, error: None } => {
+                    // Use the URL as path (normalized)
+                    let path = PathBuf::from(page.url.replace([':', '/', '?', '#'], "_"));
+                    self.working_memory
+                        .loaded_resources
+                        .insert(path, LoadedResource::WebPage(page.clone()));
+                }
+                ToolResult::Summarize { resources } => {
+                    for (path, summary) in resources {
+                        self.working_memory.loaded_resources.remove(path);
+                        self.working_memory
+                            .summaries
                             .insert(path.clone(), summary.clone());
                     }
                 }
                 ToolResult::ReplaceInFile { path, content, .. } => {
                     // Update working memory if file was loaded
-                    if self.working_memory.loaded_files.contains_key(path) {
-                        self.working_memory
-                            .loaded_files
-                            .insert(path.clone(), content.clone());
-                    }
+                    self.working_memory
+                        .update_resource(path, LoadedResource::File(content.clone()));
                 }
                 ToolResult::WriteFile {
                     path,
@@ -56,16 +82,15 @@ impl<'a> ToolResultHandler for AgentToolHandler<'a> {
                     ..
                 } => {
                     // Remove any existing summary since file is new/overwritten
-                    self.working_memory.file_summaries.remove(path);
+                    self.working_memory.summaries.remove(path);
                     // Make this file part of the loaded files
                     self.working_memory
-                        .loaded_files
-                        .insert(path.clone(), content.clone());
+                        .add_resource(path.clone(), LoadedResource::File(content.clone()));
                 }
                 ToolResult::DeleteFiles { deleted, .. } => {
                     for path in deleted {
-                        self.working_memory.loaded_files.remove(path);
-                        self.working_memory.file_summaries.remove(path);
+                        self.working_memory.loaded_resources.remove(path);
+                        self.working_memory.summaries.remove(path);
                     }
                 }
                 _ => {}
@@ -134,15 +159,16 @@ impl ToolResultHandler for ReplayToolHandler {
         if result.is_success() {
             match &result {
                 ToolResult::ReadFiles { loaded_files, .. } => {
-                    self.working_memory
-                        .loaded_files
-                        .extend(loaded_files.clone());
-                }
-                ToolResult::Summarize { files } => {
-                    for (path, summary) in files {
-                        self.working_memory.loaded_files.remove(path);
+                    for (path, content) in loaded_files {
                         self.working_memory
-                            .file_summaries
+                            .add_resource(path.clone(), LoadedResource::File(content.clone()));
+                    }
+                }
+                ToolResult::Summarize { resources } => {
+                    for (path, summary) in resources {
+                        self.working_memory.loaded_resources.remove(path);
+                        self.working_memory
+                            .summaries
                             .insert(path.clone(), summary.clone());
                     }
                 }
@@ -152,18 +178,15 @@ impl ToolResultHandler for ReplayToolHandler {
                     error: None,
                     ..
                 } => {
-                    if self.working_memory.loaded_files.contains_key(path) {
-                        self.working_memory
-                            .loaded_files
-                            .insert(path.clone(), content.clone());
-                    }
+                    self.working_memory
+                        .update_resource(path, LoadedResource::File(content.clone()));
                 }
                 ToolResult::WriteFile {
                     path, error: None, ..
                 } => {
                     // Just remove from working memory if files were loaded
-                    self.working_memory.loaded_files.remove(path);
-                    self.working_memory.file_summaries.remove(path);
+                    self.working_memory.loaded_resources.remove(path);
+                    self.working_memory.summaries.remove(path);
                 }
                 ToolResult::ListFiles { expanded_paths, .. } => {
                     // Update file tree with the entries
