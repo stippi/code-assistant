@@ -150,6 +150,30 @@ Usage:
 <param:path>Another file path here</param:path>
 </tool:delete_files>
 
+## web_search
+Description: Search the web using DuckDuckGo. Use this tool when you need to gather current information that might not be in your knowledge base. The search results will be added to your working memory. Common use cases include:
+- Finding up-to-date documentation for APIs, libraries and dependencies
+- Looking up current best practices and code examples
+- Exploring GitHub repositories for reference implementations
+- Gathering information about recent developments or changes in technology
+Parameters:
+- query: (required) The search query to perform. Be specific and use relevant keywords.
+- hits_page_number: (required) The page number for pagination, starting at 1
+Usage:
+<tool:web_search>
+<param:query>Your search query here</param:query>
+<param:hits_page_number>1</param:hits_page_number>
+</tool:web_search>
+
+## web_fetch
+Description: Fetch and extract content from a web page. Use this after web_search to load the full content of interesting pages, or to follow relevant links found in previously fetched pages. The fetched content will be added to your working memory. Combine with summarize to keep only the relevant information and manage memory efficiently.
+Parameters:
+- url: (required) The URL of the web page to fetch
+Usage:
+<tool:web_fetch>
+<param:url>https://example.com/docs</param:url>
+</tool:web_fetch>
+
 ## ask_user
 Description: Ask the user a question to gather additional information needed to complete the task. This tool should be used when you encounter ambiguities, need clarification, or require more details to proceed effectively. It allows for interactive problem-solving by enabling direct communication with the user. Use this tool judiciously to maintain a balance between gathering necessary information and avoiding excessive back-and-forth.
 Parameters:
@@ -335,6 +359,33 @@ By thoughtfully selecting between write_file and replace_in_file, you can make y
 
 ====
 
+WEB RESEARCH
+
+When conducting web research, follow these steps:
+
+1. Initial Search
+   - Start with web_search using specific, targeted queries
+   - Review search results to identify promising pages, taking into account the credibility and relevance of each source
+   - Use summarize to discard irrelevant search results from working memory
+
+2. Deep Dive
+   - Use web_fetch to load full content of relevant pages
+   - Look for links to additional relevant resources within fetched pages
+   - Use web_fetch again to follow those links if needed
+   - Combine information from multiple sources
+
+3. Memory Management
+   - Regularly use summarize to remove irrelevant content from working memory
+   - Keep only the most relevant and useful information
+   - Create concise summaries that capture key points
+
+Example scenarios when to use web research:
+- Fetching the latest API or library documentation
+- Reading source code on GitHub or other version control platforms
+- Compiling accurate information from multiple sources
+
+====
+
 WORKING MEMORY
 
 The working memory reflects your use of tools. It is always updated with the most recent information.
@@ -342,7 +393,7 @@ The working memory reflects your use of tools. It is always updated with the mos
 - All path parameters are expected relative to the project root directory
 - Use list_files to expand collapsed directories (marked with ' [...]') in the repository structure
 - Use read_files to load important files into working memory
-- Use summarize to remove files that turned out to be less relevant
+- Use summarize to remove resources that turned out to be less relevant
 - Keep only information that's necessary for the current task
 - Files that have been changed using replace_in_file will always reflect the newest changes
 
