@@ -115,36 +115,12 @@ impl ToolResult {
                     msg
                 }
             }
-            ToolResult::ExecuteCommand {
-                stdout,
-                stderr,
-                error,
-            } => {
-                let mut msg = String::new();
-                // Only add stdout without prefix if there are no errors
-                if error.is_none() && stderr.is_empty() {
-                    msg.push_str(stdout);
+            ToolResult::ExecuteCommand { output, success } => {
+                if !success {
+                    format!("Command failed:\n{}", output)
                 } else {
-                    // In case of errors, add more detailed output
-                    if !stdout.is_empty() {
-                        msg.push_str("Output:\n");
-                        msg.push_str(stdout);
-                    }
-                    if !stderr.is_empty() {
-                        if !msg.is_empty() {
-                            msg.push_str("\n");
-                        }
-                        msg.push_str("Errors:\n");
-                        msg.push_str(stderr);
-                    }
-                    if let Some(err) = error {
-                        if !msg.is_empty() {
-                            msg.push_str("\n");
-                        }
-                        msg.push_str(&format!("Command failed: {}", err));
-                    }
+                    output.to_string()
                 }
-                msg
             }
             ToolResult::WriteFile { path, error, .. } => {
                 if error.is_some() {
@@ -240,7 +216,7 @@ impl ToolResult {
                 failed_paths,
                 ..
             } => !expanded_paths.is_empty() && failed_paths.is_empty(),
-            ToolResult::ExecuteCommand { error, .. } => error.is_none(),
+            ToolResult::ExecuteCommand { success, .. } => *success,
             ToolResult::WriteFile { error, .. } => error.is_none(),
             ToolResult::ReplaceInFile { error, .. } => error.is_none(),
             ToolResult::DeleteFiles {

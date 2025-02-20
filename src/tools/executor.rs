@@ -245,12 +245,8 @@ impl ToolExecutor {
                                 return Ok((
                                     String::new(),
                                     ToolResult::ExecuteCommand {
-                                        stdout: String::new(),
-                                        stderr: String::new(),
-                                        error: Some(
-                                            "Working directory must be relative to project root"
-                                                .to_string(),
-                                        ),
+                                        output: "Working directory must be relative to project root".to_string(),
+                                        success: false,
                                     },
                                 ));
                             }
@@ -263,18 +259,12 @@ impl ToolExecutor {
                             .await
                         {
                             Ok(output) => ToolResult::ExecuteCommand {
-                                stdout: output.stdout,
-                                stderr: output.stderr,
-                                error: if output.success {
-                                    None
-                                } else {
-                                    Some("Command failed".to_string())
-                                },
+                                output: output.output,
+                                success: output.success,
                             },
                             Err(e) => ToolResult::ExecuteCommand {
-                                stdout: String::new(),
-                                stderr: String::new(),
-                                error: Some(e.to_string()),
+                                output: e.to_string(),
+                                success: false,
                             },
                         }
                     }

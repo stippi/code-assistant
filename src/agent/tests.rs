@@ -793,8 +793,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
 async fn test_execute_command() -> Result<()> {
     let test_output = CommandOutput {
         success: true,
-        stdout: "command output".to_string(),
-        stderr: "".to_string(),
+        output: "command output".to_string(),
     };
 
     let mock_command_executor = MockCommandExecutor::new(vec![Ok(test_output)]);

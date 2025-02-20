@@ -3,8 +3,7 @@ use std::path::PathBuf;
 
 pub struct CommandOutput {
     pub success: bool,
-    pub stdout: String,
-    pub stderr: String,
+    pub output: String,
 }
 
 #[async_trait::async_trait]
@@ -40,18 +39,19 @@ impl CommandExecutor for DefaultCommandExecutor {
                 ));
             }
         }
+
         // Create shell command using login shell or fallback
         #[cfg(target_family = "unix")]
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         #[cfg(target_family = "unix")]
         let mut cmd = std::process::Command::new(shell);
         #[cfg(target_family = "unix")]
-        cmd.args(["-c", command_line]);
+        cmd.args(["-c", &format!("{} 2>&1", command_line)]);
 
         #[cfg(target_family = "windows")]
         let mut cmd = std::process::Command::new("cmd");
         #[cfg(target_family = "windows")]
-        cmd.args(["/C", command_line]);
+        cmd.args(["/C", &format!("{} 2>&1", command_line)]);
 
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
@@ -60,8 +60,7 @@ impl CommandExecutor for DefaultCommandExecutor {
 
         Ok(CommandOutput {
             success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            output: String::from_utf8_lossy(&output.stdout).into_owned(),
         })
     }
 }

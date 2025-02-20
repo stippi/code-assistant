@@ -183,9 +183,8 @@ pub enum ToolResult {
         query: String,
     },
     ExecuteCommand {
-        stdout: String,
-        stderr: String,
-        error: Option<String>,
+        output: String,
+        success: bool,
     },
     WriteFile {
         path: PathBuf,
