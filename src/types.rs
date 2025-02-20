@@ -1,3 +1,4 @@
+use crate::utils::{hash_map_to_markdown, vec_to_markdown};
 use crate::web::{WebPage, WebSearchResult};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,61 @@ impl std::fmt::Display for LoadedResource {
 }
 
 impl WorkingMemory {
+    /// Convert working memory to markdown format
+    pub fn to_markdown(&self) -> String {
+        let template = include_str!("../resources/working_memory.md");
+
+        // Format action history
+        let action_history = self
+            .action_history
+            .iter()
+            .map(|a| {
+                format!(
+                    "{:?}\n  Reasoning: {}\n  Result: {}",
+                    a.tool,
+                    a.reasoning,
+                    a.result.format_message()
+                )
+            })
+            .collect::<Vec<_>>();
+
+        // Format loaded resources
+        let resources: Vec<String> = self
+            .loaded_resources
+            .iter()
+            .map(|(path, resource)| format!("{}:\n{}", path.display(), resource))
+            .collect();
+
+        let replacements = [
+            ("{task}", self.current_task.as_str()),
+            (
+                "{action_history}",
+                &vec_to_markdown(&action_history, "No actions performed yet"),
+            ),
+            (
+                "{resources}",
+                &vec_to_markdown(&resources, "No resources loaded"),
+            ),
+            (
+                "{file_tree}",
+                &self
+                    .file_tree
+                    .as_ref()
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "No file tree available".to_string()),
+            ),
+            (
+                "{summaries}",
+                &hash_map_to_markdown(&self.summaries, "No summaries created"),
+            ),
+        ];
+
+        let mut result = template.to_string();
+        for (placeholder, value) in replacements.iter() {
+            result = result.replace(placeholder, value);
+        }
+        result
+    }
     /// Add a new resource to working memory
     pub fn add_resource(&mut self, path: PathBuf, resource: LoadedResource) {
         self.loaded_resources.insert(path, resource);

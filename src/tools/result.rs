@@ -197,7 +197,7 @@ impl ToolResult {
                 if let Some(e) = error {
                     format!("Failed to fetch page: {}", e)
                 } else {
-                    format!("Content from {}:\n{}", page.url, page.content)
+                    format!("Page fetched successfully: {}", page.url)
                 }
             }
         }

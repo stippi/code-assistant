@@ -244,48 +244,12 @@ impl Agent {
         Ok((actions, assistant_msg))
     }
 
-    pub fn render_working_memory(&self) -> String {
-        let mut memory = format!("Task: {}\n\n", self.working_memory.current_task);
-
-        // Add repository structure with proper indentation
-        memory.push_str("Repository structure:\n");
-        if let Some(tree) = &self.working_memory.file_tree {
-            memory.push_str(&tree.to_string());
-        } else {
-            memory.push_str("No file tree available");
-        }
-        memory.push_str("\n\n");
-
-        // Add loaded files with their contents
-        memory.push_str("Current Working Memory:\n");
-        memory.push_str("- Loaded resources and their contents:\n");
-        for (path, resource) in &self.working_memory.loaded_resources {
-            memory.push_str(&format!("\n-----{}:\n{}\n", path.display(), resource));
-        }
-
-        // Add file summaries
-        memory.push_str("\n- File summaries:\n");
-        for (path, summary) in &self.working_memory.summaries {
-            memory.push_str(&format!("  {}: {}\n", path.display(), summary));
-        }
-
-        // Add action history
-        memory.push_str("\nPrevious actions:\n");
-        for (i, action) in self.working_memory.action_history.iter().enumerate() {
-            memory.push_str(&format!("\n{}. Tool: {:?}\n", i + 1, action.tool));
-            memory.push_str(&format!("   Reasoning: {}\n", action.reasoning));
-            memory.push_str(&format!("   Result: {}\n", action.result.format_message()));
-        }
-
-        memory
-    }
-
     /// Prepare messages for LLM request - currently returns a single user message
     /// but kept as Vec<Message> for flexibility to change the format later
     fn prepare_messages(&self) -> Vec<Message> {
         vec![Message {
             role: MessageRole::User,
-            content: MessageContent::Text(self.render_working_memory()),
+            content: MessageContent::Text(self.working_memory.to_markdown()),
         }]
     }
 

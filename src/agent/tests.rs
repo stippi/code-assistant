@@ -776,9 +776,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
 
     if let MessageContent::Text(content) = &second_request.messages[0].content {
         assert!(
-            content.contains(
-                "Loaded resources and their contents:\n\n-----test.txt:\nline 1\nline 2\nline 3\n"
-            ),
+            content.contains("test.txt:\nline 1\nline 2\nline 3\n"),
             "File content not found in working memory message:\n{}",
             content
         );
