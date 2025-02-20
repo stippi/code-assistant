@@ -121,22 +121,28 @@ impl ToolResult {
                 error,
             } => {
                 let mut msg = String::new();
-                if !stdout.is_empty() {
-                    msg.push_str("Output:\n");
+                // Only add stdout without prefix if there are no errors
+                if error.is_none() && stderr.is_empty() {
                     msg.push_str(stdout);
-                }
-                if !stderr.is_empty() {
-                    if !msg.is_empty() {
-                        msg.push_str("\n");
+                } else {
+                    // In case of errors, add more detailed output
+                    if !stdout.is_empty() {
+                        msg.push_str("Output:\n");
+                        msg.push_str(stdout);
                     }
-                    msg.push_str("Errors:\n");
-                    msg.push_str(stderr);
-                }
-                if error.is_some() {
-                    if !msg.is_empty() {
-                        msg.push_str("\n");
+                    if !stderr.is_empty() {
+                        if !msg.is_empty() {
+                            msg.push_str("\n");
+                        }
+                        msg.push_str("Errors:\n");
+                        msg.push_str(stderr);
                     }
-                    msg.push_str(&format!("Command failed: {}", error.as_ref().unwrap()));
+                    if let Some(err) = error {
+                        if !msg.is_empty() {
+                            msg.push_str("\n");
+                        }
+                        msg.push_str(&format!("Command failed: {}", err));
+                    }
                 }
                 msg
             }
