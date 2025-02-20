@@ -1,7 +1,9 @@
 use anyhow::Result;
 use chromiumoxide::{Browser, BrowserConfig};
 use futures::StreamExt;
+use htmd::HtmlToMarkdown;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use regex::Regex;
 use reqwest::Client;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
@@ -100,15 +102,34 @@ impl WebClient {
         // Wait for page to load
         let page = page.wait_for_navigation().await?;
 
-        // Try to find main content first
-        let content = if let Ok(main) = page.find_element("main, article, #content, .content").await
-        {
-            main.inner_text().await?.unwrap_or_default()
+        // Get content either from main content or body
+        let html = if let Ok(main) = page.find_element("main, article, #content, .content").await {
+            main.inner_html().await?.unwrap_or_default()
         } else {
-            // Fallback: get full body content
             let body = page.find_element("body").await?;
-            body.inner_text().await?.unwrap_or_default()
+            body.inner_html().await?.unwrap_or_default()
         };
+
+        // Convert HTML to Markdown
+        let content = HtmlToMarkdown::new().convert(&html).unwrap();
+
+        // Remove image links and empty headings
+        let image_pattern = Regex::new(r"!\[.*?\]\([^)]*\)\n?").unwrap();
+        let empty_heading_pattern = Regex::new(r"#+ *\n").unwrap();
+        // Match markdown links with relative URLs
+        let relative_link_pattern = Regex::new(r"\[([^\]]+)\]\(/[^)]+\)").unwrap();
+
+        let content = image_pattern.replace_all(&content, "");
+        let content = empty_heading_pattern.replace_all(&content, "");
+        // Replace relative with absolute URLs
+        let base_url = url.origin().ascii_serialization();
+        let content = relative_link_pattern
+            .replace_all(&content, |caps: &regex::Captures| {
+                let link_text = &caps[1];
+                let link_url = &caps[0][caps[1].len() + 3..].trim_end_matches(')');
+                format!("[{}]({}{})", link_text, base_url, link_url)
+            })
+            .into_owned();
 
         Ok(WebPage {
             url: url.to_string(),
