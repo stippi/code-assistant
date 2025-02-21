@@ -163,7 +163,11 @@ pub enum Tool {
     /// Read content of one or multiple files into working memory
     ReadFiles { paths: Vec<PathBuf> },
     /// Write content to a file
-    WriteFile { path: PathBuf, content: String },
+    WriteFile {
+        path: PathBuf,
+        content: String,
+        // TODO: add 'append' here
+    },
     /// Replace parts within a file. Each search text must match exactly once.
     /// Returns an error if any search text matches zero or multiple times.
     ReplaceInFile {

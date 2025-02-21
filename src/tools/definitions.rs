@@ -240,8 +240,9 @@ impl Tools {
         ToolDefinition {
             name: "write_file".to_string(),
             description:
-                "Creates or overwrites a file. Use for new files or when updating most of a file. \
-                         For smaller updates prefer to use update-file."
+                "Creates or overwrites a file. Use for new files or when updating most content of a file. \
+                         For smaller updates, prefer to use replace_in_file. ALWAYS provide the contents \
+                         of the COMPLETE file, especially when overwriting existing files!!"
                     .to_string(),
             parameters: json!({
                 "type": "object",
@@ -252,7 +253,11 @@ impl Tools {
                     },
                     "content": {
                         "type": "string",
-                        "description": "Content to write"
+                        "description": "Content to write (make sure it's the complete file)"
+                    },
+                    "append": {
+                        "type": "boolean",
+                        "description": "Whether to append to the file in case it already exists. Useful when writing a file in multiple turns."
                     }
                 },
                 "required": ["path", "content"]

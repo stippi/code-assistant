@@ -116,16 +116,23 @@ Usage:
 </tool:summarize>
 
 ## search_files
-Description: Request to perform a regex search across files in a specified directory, providing context-rich results. This tool searches for patterns or specific content across multiple files, displaying each match with encapsulating context.
+Description: Search for text in files with advanced options. This tool searches for specific content across multiple files, displaying each match with context.
 Parameters:
-- path: (required) The path of the directory to search in (relative to the project root directory). This directory will be recursively searched.
-- regex: (required) The regular expression pattern to search for. Uses Rust regex syntax.
-- file_pattern: (optional) Glob pattern to filter files (e.g., '*.ts' for TypeScript files). If not provided, it will search all files (*).
+- query: (required) The text to search for. Supports regular expressions.
+- path: (optional) Directory path to search in (relative to project root). If not provided, searches from the root.
+- case_sensitive: (optional) Whether the search should be case-sensitive (default: false)
+- whole_words: (optional) Match whole words only (default: false)
+- mode: (optional) Search mode - 'exact' (default) for standard text search, or 'regex' for regular expressions
+- max_results: (optional) Maximum number of results to return
+
 Usage:
 <tool:search_files>
-<param:path>Directory path here</param:path>
-<param:regex>Your regex pattern here</param:regex>
-<param:file_pattern>file pattern here (optional)</param:file_pattern>
+<param:query>Your search text or regex pattern here</param:query>
+<param:path>Directory path here (optional)</param:path>
+<param:case_sensitive>true or false (optional)</param:case_sensitive>
+<param:whole_words>true or false (optional)</param:whole_words>
+<param:mode>exact or regex (optional)</param:mode>
+<param:max_results>number (optional)</param:max_results>
 </tool:search_files>
 
 ## list_files

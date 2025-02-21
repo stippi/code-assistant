@@ -157,8 +157,8 @@ pub fn parse_tool_from_params(
 
         "summarize" => Ok(Tool::Summarize {
             resources: params
-                .get("file")
-                .ok_or_else(|| anyhow::anyhow!("Missing file parameter"))?
+                .get("resource")
+                .ok_or_else(|| anyhow::anyhow!("Missing resource parameter"))?
                 .iter()
                 .filter_map(|line| {
                     let mut parts = line.splitn(2, ':');
