@@ -68,6 +68,7 @@ Usage:
 <param:content>
 Your file content here
 </param:content>
+<param:append>boolean (optional)</param:append>
 </tool:write_file>
 
 ## replace_in_file
@@ -107,24 +108,24 @@ Search and replace blocks here
 </tool:replace_in_file>
 
 ## summarize
-Description: Summarize file contents to free up working memory.
+Description: Summarize loaded resource contents to free up working memory.
 Parameters:
-- file: (required, multiple) Each file parameter contains a path and summary separated by ':'
+- resource: (required, multiple) Each resource parameter contains a path and summary separated by ':'. Use the path as seen in the loaded resources section.
 Usage:
 <tool:summarize>
-<param:file>path/to/file1.rs: A brief summary of file1</param:file>
-<param:file>path/to/file2.rs: A brief summary of file2</param:file>
+<param:resource>path/to/file1.rs:A summary of file1</param:resource>
+<param:resource>web/page/url:Relevant content only of a web page</param:resource>
 </tool:summarize>
 
 ## search_files
 Description: Search for text in files with advanced options. This tool searches for specific content across multiple files, displaying each match with context.
 Parameters:
 - query: (required) The text to search for. Supports regular expressions.
-- path: (optional) Directory path to search in (relative to project root). If not provided, searches from the root.
+- path: (optional) Directory path to search in (relative to project root). If not provided, searches from the root. Avoid providing this parameter unless you are sure you need to restrict results to a folder.
 - case_sensitive: (optional) Whether the search should be case-sensitive (default: false)
 - whole_words: (optional) Match whole words only (default: false)
 - mode: (optional) Search mode - 'exact' (default) for standard text search, or 'regex' for regular expressions
-- max_results: (optional) Maximum number of results to return
+- max_results: (optional) Maximum number of results to return. Usually, it
 
 Usage:
 <tool:search_files>
