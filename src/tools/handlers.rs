@@ -1,5 +1,6 @@
+use crate::explorer::Explorer;
 use crate::tools::ToolResultHandler;
-use crate::types::{FileTreeEntry, LoadedResource, ToolResult, WorkingMemory};
+use crate::types::{CodeExplorer, FileTreeEntry, LoadedResource, ToolResult, WorkingMemory};
 use crate::PathBuf;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -113,6 +114,30 @@ impl MCPToolHandler {
 impl ToolResultHandler for MCPToolHandler {
     async fn handle_result(&mut self, result: &ToolResult) -> Result<String> {
         match result {
+            ToolResult::OpenProject { path, name, .. } => {
+                if let Some(project_path) = path {
+                    // Create a temporary Explorer to list the root folder
+                    let mut explorer = Explorer::new(project_path.clone());
+                    match explorer.create_initial_tree(1) {
+                        Ok(tree) => {
+                            // Use the listing as part of the result
+                            let mut output = format!("Successfully opened project '{}'\n\n", name);
+                            output.push_str(&format!(
+                                "Project root directory: {}\n\n",
+                                project_path.display()
+                            ));
+                            output.push_str(&tree.to_string());
+                            Ok(output)
+                        }
+                        Err(_) => {
+                            // Return the standard message when listing fails
+                            Ok(result.format_message())
+                        }
+                    }
+                } else {
+                    Ok(result.format_message())
+                }
+            }
             ToolResult::ListFiles { expanded_paths, .. } => {
                 let mut output = String::new();
                 for (path, entry) in expanded_paths {
