@@ -211,7 +211,7 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))
     }
 
-    fn write_file(&self, path: &PathBuf, content: &String) -> Result<()> {
+    fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()> {
         // Check parent directories
         for component in path.parent().unwrap_or(path).components() {
             let current = PathBuf::from(component.as_os_str());
@@ -225,7 +225,17 @@ impl CodeExplorer for MockExplorer {
         }
 
         let mut files = self.files.lock().unwrap();
-        files.insert(path.to_path_buf(), content.clone());
+        
+        if append && files.contains_key(path) {
+            // Append content to existing file
+            if let Some(existing) = files.get_mut(path) {
+                *existing = format!("{}{}", existing, content);
+            }
+        } else {
+            // Write or overwrite file
+            files.insert(path.to_path_buf(), content.clone());
+        }
+        
         Ok(())
     }
 
@@ -429,9 +439,10 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         Tool::ReadFiles { paths } => serde_json::json!({
             "paths": paths
         }),
-        Tool::WriteFile { path, content } => serde_json::json!({
+        Tool::WriteFile { path, content, append } => serde_json::json!({
             "path": path,
-            "content": content
+            "content": content,
+            "append": append
         }),
         Tool::ReplaceInFile { path, replacements } => serde_json::json!({
             "path": path,
@@ -1153,6 +1164,7 @@ async fn test_write_file_error_handling() -> Result<()> {
             Tool::WriteFile {
                 path: PathBuf::from("test.txt"),
                 content: "valid content".to_string(),
+                append: false,
             },
             "Writing to valid path",
         )),
@@ -1160,6 +1172,7 @@ async fn test_write_file_error_handling() -> Result<()> {
             Tool::WriteFile {
                 path: PathBuf::from("/invalid/path/test.txt"),
                 content: "test content".to_string(),
+                append: false,
             },
             "Attempting to write to invalid absolute path",
         )),

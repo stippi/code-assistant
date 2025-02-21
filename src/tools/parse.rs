@@ -185,19 +185,26 @@ pub fn parse_tool_from_params(
             )?,
         }),
 
-        "write_file" => Ok(Tool::WriteFile {
-            path: PathBuf::from(
-                params
-                    .get("path")
+        "write_file" => {
+            let append = params
+                .get("append")
+                .map_or(false, |v| v.first().map_or(false, |s| s == "true"));
+
+            Ok(Tool::WriteFile {
+                path: PathBuf::from(
+                    params
+                        .get("path")
+                        .and_then(|v| v.first())
+                        .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
+                ),
+                content: params
+                    .get("content")
                     .and_then(|v| v.first())
-                    .ok_or_else(|| anyhow::anyhow!("Missing path parameter"))?,
-            ),
-            content: params
-                .get("content")
-                .and_then(|v| v.first())
-                .ok_or_else(|| anyhow::anyhow!("Missing content parameter"))?
-                .to_string(),
-        }),
+                    .ok_or_else(|| anyhow::anyhow!("Missing content parameter"))?
+                    .to_string(),
+                append,
+            })
+        },
 
         "delete_files" => Ok(Tool::DeleteFiles {
             paths: params
@@ -403,6 +410,10 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool> {
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing content parameter"))?
                 .to_string(),
+            append: params
+                .get("append")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false),
         }),
         "delete_files" => Ok(Tool::DeleteFiles {
             paths: params["paths"]

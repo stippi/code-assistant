@@ -215,20 +215,29 @@ impl ToolExecutor {
                         };
 
                         let search_path = if let Some(p) = path {
-                            if p.is_absolute() {
-                                p.clone()
-                            } else {
-                                explorer.root_dir().join(p)
+                            if let Some(error) = check_absolute_path(p) {
+                                return Ok((String::new(), error));
                             }
+                            explorer.root_dir().join(p)
                         } else {
                             explorer.root_dir()
                         };
 
                         match explorer.search(&search_path, options) {
-                            Ok(results) => ToolResult::SearchFiles {
-                                results,
-                                query: query.clone(),
-                            },
+                            Ok(mut results) => {
+                                // Convert absolute paths to relative paths
+                                let root_dir = explorer.root_dir();
+                                for result in &mut results {
+                                    if let Ok(rel_path) = result.file.strip_prefix(&root_dir) {
+                                        result.file = rel_path.to_path_buf();
+                                    }
+                                }
+
+                                ToolResult::SearchFiles {
+                                    results,
+                                    query: query.clone(),
+                                }
+                            }
                             Err(e) => ToolResult::SearchFiles {
                                 results: Vec::new(),
                                 query: format!("Search failed: {}", e),
@@ -245,7 +254,9 @@ impl ToolExecutor {
                                 return Ok((
                                     String::new(),
                                     ToolResult::ExecuteCommand {
-                                        output: "Working directory must be relative to project root".to_string(),
+                                        output:
+                                            "Working directory must be relative to project root"
+                                                .to_string(),
                                         success: false,
                                     },
                                 ));
@@ -269,13 +280,13 @@ impl ToolExecutor {
                         }
                     }
 
-                    Tool::WriteFile { path, content } => {
+                    Tool::WriteFile { path, content, append } => {
                         if let Some(error) = check_absolute_path(path) {
                             return Ok((String::new(), error));
                         }
                         let full_path = explorer.root_dir().join(path);
 
-                        match explorer.write_file(&full_path, content) {
+                        match explorer.write_file(&full_path, content, *append) {
                             Ok(_) => ToolResult::WriteFile {
                                 path: path.clone(),
                                 content: content.clone(),

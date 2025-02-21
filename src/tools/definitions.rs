@@ -242,7 +242,9 @@ impl Tools {
             description:
                 "Creates or overwrites a file. Use for new files or when updating most content of a file. \
                          For smaller updates, prefer to use replace_in_file. ALWAYS provide the contents \
-                         of the COMPLETE file, especially when overwriting existing files!!"
+                         of the COMPLETE file, especially when overwriting existing files!! \
+                         If the file to write is large, write it in chunks making use of the 'append' parameter. \
+                         This avoids hitting an output token limit when replying (only write the equivalent of roughly 1000 words at once)."
                     .to_string(),
             parameters: json!({
                 "type": "object",

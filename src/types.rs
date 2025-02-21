@@ -166,7 +166,7 @@ pub enum Tool {
     WriteFile {
         path: PathBuf,
         content: String,
-        // TODO: add 'append' here
+        append: bool,
     },
     /// Replace parts within a file. Each search text must match exactly once.
     /// Returns an error if any search text matches zero or multiple times.
@@ -360,7 +360,7 @@ pub trait CodeExplorer: Send + Sync {
     /// Reads the content of a file
     fn read_file(&self, path: &PathBuf) -> Result<String>;
     /// Write the content of a file
-    fn write_file(&self, path: &PathBuf, content: &String) -> Result<()>;
+    fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()>;
     fn delete_file(&self, path: &PathBuf) -> Result<()>;
     fn create_initial_tree(&mut self, max_depth: usize) -> Result<FileTreeEntry>;
     fn list_files(&mut self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry>;

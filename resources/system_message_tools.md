@@ -57,10 +57,11 @@ Usage:
 </tool:read_files>
 
 ## write_file
-Description: Request to write content to a file at the specified path. If the file exists, it will be overwritten with the provided content. If the file doesn't exist, it will be created. This tool will automatically create any directories needed to write the file.
+Description: Creates or overwrites a file. Use for new files or when updating most content of a file. For smaller updates, prefer to use replace_in_file. ALWAYS provide the contents of the COMPLETE file, especially when overwriting existing files!! If the file to write is large, write it in chunks making use of the 'append' parameter. This avoids hitting an output token limit when replying (only write the equivalent of roughly 1000 words at once).
 Parameters:
 - path: (required) The path of the file to write to (relative to the project root directory)
 - content: (required) The content to write to the file. ALWAYS provide the COMPLETE intended content of the file, without any truncation or omissions. You MUST include ALL parts of the file, even if they haven't been modified.
+- append: (optional) Whether to append to the file in case it already exists. Useful when writing a file in multiple turns. Default is false.
 Usage:
 <tool:write_file>
 <param:path>File path here</param:path>

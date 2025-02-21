@@ -211,13 +211,23 @@ impl CodeExplorer for Explorer {
         Ok(std::fs::read_to_string(path)?)
     }
 
-    fn write_file(&self, path: &PathBuf, content: &String) -> Result<()> {
-        debug!("Writing file: {}", path.display());
+    fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()> {
+        debug!("Writing file: {}, append: {}", path.display(), append);
         // Ensure the parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        Ok(std::fs::write(path, content)?)
+
+        if append && path.exists() {
+            // Append content to existing file
+            let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+            use std::io::Write;
+            write!(file, "{}", content)?;
+            Ok(())
+        } else {
+            // Write or overwrite file
+            Ok(std::fs::write(path, content)?)
+        }
     }
 
     fn delete_file(&self, path: &PathBuf) -> Result<()> {
@@ -313,18 +323,25 @@ impl CodeExplorer for Explorer {
 
             for (line_idx, line) in lines.iter().enumerate() {
                 let matches: Vec<_> = regex.find_iter(line).collect();
-                
+
                 if !matches.is_empty() {
-                    let match_ranges: Vec<_> = matches.iter().map(|m| (m.start(), m.end())).collect();
+                    let match_ranges: Vec<_> =
+                        matches.iter().map(|m| (m.start(), m.end())).collect();
                     let section_start = line_idx.saturating_sub(context_lines);
                     let section_end = (line_idx + context_lines + 1).min(lines.len());
-                    
+
                     match &mut current_section {
                         // Extend section if close enough to previous match
-                        Some(section) if line_idx <= section.start_line + section.line_content.len() + context_lines => {
+                        Some(section)
+                            if line_idx
+                                <= section.start_line
+                                    + section.line_content.len()
+                                    + context_lines =>
+                        {
                             while section.line_content.len() < section_end - section.start_line {
                                 section.line_content.push(
-                                    lines[section.start_line + section.line_content.len()].to_string()
+                                    lines[section.start_line + section.line_content.len()]
+                                        .to_string(),
                                 );
                             }
                             section.match_lines.push(line_idx - section.start_line);
@@ -338,12 +355,12 @@ impl CodeExplorer for Explorer {
                                     return Ok(results);
                                 }
                             }
-                            
+
                             let mut section_lines = Vec::new();
                             for i in section_start..section_end {
                                 section_lines.push(lines[i].to_string());
                             }
-                            
+
                             current_section = Some(SearchResult {
                                 file: path.to_path_buf(),
                                 start_line: section_start,
@@ -355,7 +372,7 @@ impl CodeExplorer for Explorer {
                     }
                 }
             }
-            
+
             // Add final section if we have one
             if let Some(section) = current_section {
                 results.push(section);
@@ -518,9 +535,10 @@ mod tests {
         assert!(results
             .iter()
             .any(|r| r.line_content.iter().any(|l| l.contains("This is line 2"))));
-        assert!(results
+        assert!(results.iter().any(|r| r
+            .line_content
             .iter()
-            .any(|r| r.line_content.iter().any(|l| l.contains("Another file line 2"))));
+            .any(|l| l.contains("Another file line 2"))));
         assert!(results
             .iter()
             .any(|r| r.line_content.iter().any(|l| l.contains("Subdir line 2"))));
