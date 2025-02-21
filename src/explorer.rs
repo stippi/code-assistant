@@ -3,10 +3,11 @@ use crate::types::{
     SearchResult,
 };
 use anyhow::Result;
+use content_inspector::{self, ContentType};
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 use std::collections::{HashMap, HashSet};
-// Removed unused imports
+use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
@@ -387,7 +388,9 @@ impl CodeExplorer for Explorer {
 }
 
 /// Helper function to determine if a file is likely to be a text file
+/// by checking both extension and content
 fn is_text_file(path: &Path) -> bool {
+    // Common text file extensions for quick filtering
     let text_extensions = [
         "txt",
         "md",
@@ -417,10 +420,37 @@ fn is_text_file(path: &Path) -> bool {
         "env",
     ];
 
-    path.extension()
+    // Fast path: first check the extension
+    let is_known_text_extension = path
+        .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| text_extensions.contains(&ext.to_lowercase().as_str()))
-        .unwrap_or(false)
+        .unwrap_or(false);
+
+    if is_known_text_extension {
+        return true;
+    }
+
+    // If the extension doesn't match, check the content
+    // Only read a small piece of the file for efficiency
+    match fs::read(path) {
+        Ok(buffer) => {
+            // Only examine the first 1024 bytes for performance
+            let sample = if buffer.len() > 1024 {
+                &buffer[..1024]
+            } else {
+                &buffer
+            };
+
+            // Use content_inspector to check content type
+            // Consider all text formats (UTF-8, UTF-16) as text files
+            match content_inspector::inspect(sample) {
+                ContentType::BINARY => false,
+                _ => true, // UTF8, UTF16LE, UTF16BE are all text
+            }
+        }
+        Err(_) => false, // Couldn't read the file
+    }
 }
 
 #[cfg(test)]

@@ -45,6 +45,9 @@ dirs = "5.0"
 # Date and time handling
 chrono = { version = "0.4", features = ["serde"] }
 
+# File content inspection
+content_inspector = "0.2"
+
 [dev-dependencies]
 axum = "0.7"
 bytes = "1.5"
