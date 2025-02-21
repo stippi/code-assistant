@@ -293,7 +293,7 @@ impl Agent {
                 _ => {}
             }
         }
-        debug!(
+        print!(
             "==== Token usage: Input: {}, Output: {}",
             response.usage.input_tokens, response.usage.output_tokens
         );
