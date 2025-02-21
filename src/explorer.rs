@@ -11,6 +11,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
+/// Helper struct for grouping search matches into sections
+struct SearchSection {
+    start_line: usize,
+    end_line: usize,
+    matches: Vec<(usize, usize, usize, usize)>, // (start_line, end_line, match_start, match_end)
+}
+
 /// Handles file system operations for code exploration
 pub struct Explorer {
     root_dir: PathBuf,
@@ -317,66 +324,152 @@ impl CodeExplorer for Explorer {
                 continue;
             }
 
-            // Read entire file at once for context lines
+            // Read entire file at once
             let content = std::fs::read_to_string(path)?;
-            let lines: Vec<_> = content.lines().collect();
-            let mut current_section: Option<SearchResult> = None;
 
-            for (line_idx, line) in lines.iter().enumerate() {
-                let matches: Vec<_> = regex.find_iter(line).collect();
+            // Find all matches in the entire content
+            let matches: Vec<_> = regex.find_iter(&content).collect();
+            if matches.is_empty() {
+                continue;
+            }
 
-                if !matches.is_empty() {
-                    let match_ranges: Vec<_> =
-                        matches.iter().map(|m| (m.start(), m.end())).collect();
-                    let section_start = line_idx.saturating_sub(context_lines);
-                    let section_end = (line_idx + context_lines + 1).min(lines.len());
+            // Build an index of line start positions
+            let mut line_indices = Vec::new();
+            let mut pos = 0;
+            for line in content.lines() {
+                line_indices.push(pos);
+                pos += line.len() + 1; // +1 for the newline character
+            }
 
-                    match &mut current_section {
-                        // Extend section if close enough to previous match
-                        Some(section)
-                            if line_idx
-                                <= section.start_line
-                                    + section.line_content.len()
-                                    + context_lines =>
-                        {
-                            while section.line_content.len() < section_end - section.start_line {
-                                section.line_content.push(
-                                    lines[section.start_line + section.line_content.len()]
-                                        .to_string(),
-                                );
-                            }
-                            section.match_lines.push(line_idx - section.start_line);
-                            section.match_ranges.push(match_ranges);
-                        }
-                        _ => {
-                            // Start new section
-                            if let Some(section) = current_section.take() {
-                                results.push(section);
-                                if results.len() >= max_results {
-                                    return Ok(results);
-                                }
-                            }
+            // Add final position at the end of content
+            if line_indices.is_empty() {
+                line_indices.push(0);
+            }
+            if pos <= content.len() {
+                line_indices.push(content.len());
+            }
 
-                            let mut section_lines = Vec::new();
-                            for i in section_start..section_end {
-                                section_lines.push(lines[i].to_string());
-                            }
+            // Group matches that are close to each other into sections
+            let mut sections: Vec<SearchSection> = Vec::new();
 
-                            current_section = Some(SearchResult {
-                                file: path.to_path_buf(),
-                                start_line: section_start,
-                                line_content: section_lines,
-                                match_lines: vec![line_idx - section_start],
-                                match_ranges: vec![match_ranges],
-                            });
-                        }
+            for m in matches {
+                let match_start = m.start();
+                let match_end = m.end();
+
+                // Find which lines this match spans
+                let start_line_idx = match line_indices.binary_search(&match_start) {
+                    Ok(idx) => idx,
+                    Err(idx) => idx.saturating_sub(1),
+                };
+
+                let end_line_idx = match line_indices.binary_search(&match_end) {
+                    Ok(idx) => idx,
+                    Err(idx) => idx.saturating_sub(1),
+                };
+
+                // Determine section bounds with context
+                let section_start = start_line_idx.saturating_sub(context_lines);
+                let section_end = (end_line_idx + context_lines + 1).min(line_indices.len() - 1);
+
+                // Check if this match can be merged with an existing section
+                let mut merged = false;
+                for section in &mut sections {
+                    if section_start <= section.end_line + context_lines
+                        && section_end >= section.start_line.saturating_sub(context_lines)
+                    {
+                        // Expand the section if needed
+                        section.start_line = section.start_line.min(section_start);
+                        section.end_line = section.end_line.max(section_end);
+
+                        // Add this match's info to the section
+                        section.matches.push((
+                            start_line_idx,
+                            end_line_idx,
+                            match_start,
+                            match_end,
+                        ));
+                        merged = true;
+                        break;
                     }
+                }
+
+                if !merged {
+                    // Create a new section
+                    sections.push(SearchSection {
+                        start_line: section_start,
+                        end_line: section_end,
+                        matches: vec![(start_line_idx, end_line_idx, match_start, match_end)],
+                    });
                 }
             }
 
-            // Add final section if we have one
-            if let Some(section) = current_section {
-                results.push(section);
+            // Convert sections to SearchResults
+            for section in sections {
+                let mut section_lines = Vec::new();
+                for i in section.start_line..=section.end_line {
+                    let line_start = line_indices[i];
+                    let line_end = if i + 1 < line_indices.len() {
+                        line_indices[i + 1] - 1 // -1 to exclude the newline
+                    } else {
+                        content.len()
+                    };
+
+                    let line = content[line_start..line_end].to_string();
+                    section_lines.push(line);
+                }
+
+                let mut match_lines = Vec::new();
+                let mut match_ranges = Vec::new();
+
+                for (start_line, end_line, match_start, match_end) in section.matches {
+                    for line_idx in start_line..=end_line {
+                        if line_idx < section.start_line || line_idx > section.end_line {
+                            continue; // Skip if outside the final section bounds
+                        }
+
+                        let rel_line_idx = line_idx - section.start_line;
+                        let line_start = line_indices[line_idx];
+                        let line_end = if line_idx + 1 < line_indices.len() {
+                            line_indices[line_idx + 1] - 1
+                        } else {
+                            content.len()
+                        };
+
+                        // Calculate highlight positions relative to the line
+                        if match_start <= line_end && match_end >= line_start {
+                            let highlight_start =
+                                match_start.max(line_start).saturating_sub(line_start);
+                            let highlight_end =
+                                (match_end.min(line_end)).saturating_sub(line_start);
+
+                            // Check for index bounds
+                            if highlight_end > highlight_start
+                                && highlight_end <= (line_end - line_start)
+                            {
+                                if !match_lines.contains(&rel_line_idx) {
+                                    match_lines.push(rel_line_idx);
+                                    match_ranges.push(vec![(highlight_start, highlight_end)]);
+                                } else {
+                                    // Find the index of this line in match_lines
+                                    if let Some(idx) =
+                                        match_lines.iter().position(|&x| x == rel_line_idx)
+                                    {
+                                        match_ranges[idx].push((highlight_start, highlight_end));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                results.push(SearchResult {
+                    file: path.to_path_buf(),
+                    start_line: section.start_line,
+                    line_content: section_lines,
+                    match_lines,
+                    match_ranges,
+                });
+
                 if results.len() >= max_results {
                     return Ok(results);
                 }
@@ -593,6 +686,16 @@ mod tests {
             },
         )?;
         assert_eq!(results.len(), 0);
+
+        // Test with query containing a line break
+        let results = explorer.search(
+            temp_dir.path(),
+            SearchOptions {
+                query: "line 1\nAnother".to_string(),
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(results.len(), 1);
 
         Ok(())
     }
