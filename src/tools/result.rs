@@ -9,8 +9,8 @@ impl ToolResult {
                     "No projects configured.".to_string()
                 } else {
                     let mut msg = String::from("Available projects:\n");
-                    for (name, project) in projects {
-                        msg.push_str(&format!("- {}: {}\n", name, project.path.display()));
+                    for (name, _) in projects {
+                        msg.push_str(&format!("- {}\n", name));
                     }
                     msg
                 }
