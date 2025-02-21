@@ -8,7 +8,7 @@ mod parse;
 mod result;
 
 pub use executor::ToolExecutor;
-pub use handlers::{AgentToolHandler, MCPToolHandler, ReplayToolHandler};
+pub use handlers::{AgentToolHandler, MCPToolHandler};
 pub use parse::{parse_tool_json, parse_tool_xml, TOOL_TAG_PREFIX};
 
 #[async_trait::async_trait]

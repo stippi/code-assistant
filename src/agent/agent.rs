@@ -3,13 +3,14 @@ use crate::llm::{
 };
 use crate::persistence::StatePersistence;
 use crate::tools::{
-    parse_tool_json, parse_tool_xml, AgentToolHandler, ReplayToolHandler, ToolExecutor,
-    TOOL_TAG_PREFIX,
+    parse_tool_json, parse_tool_xml, AgentToolHandler, ToolExecutor, TOOL_TAG_PREFIX,
 };
 use crate::types::*;
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
+use percent_encoding;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::debug;
 
@@ -127,62 +128,123 @@ impl Agent {
         if let Some(state) = self.state_persistence.load_state()? {
             debug!("Continuing task: {}", state.task);
 
-            // Create fresh working memory for replay
-            let mut replay_memory = WorkingMemory::default();
-            replay_memory.current_task = state.task.clone();
-            replay_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
+            // Initialize working memory
+            self.working_memory.current_task = state.task.clone();
+            self.working_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
 
-            // Create replay executor
-            let mut replay_handler = ReplayToolHandler::new(replay_memory);
+            // Restore action history from saved state
+            self.working_memory.action_history = state.actions.clone();
+
+            // Load current state of files into memory
+            self.load_current_files_to_memory().await?;
 
             self.ui
                 .display(UIMessage::Action(format!(
-                    "Continuing task: {}, replaying {} actions",
+                    "Continuing task: {}, loaded {} previous actions",
                     state.task,
                     state.actions.len()
                 )))
                 .await?;
 
-            // Replay actions into replay memory
-            for original_action in state.actions {
-                debug!("Replaying action: {:?}", original_action.tool);
-                let action = AgentAction {
-                    tool: original_action.tool.clone(),
-                    reasoning: original_action.reasoning.clone(),
-                };
-
-                if let Ok((_, result)) = ToolExecutor::execute(
-                    &mut replay_handler,
-                    Some(&mut self.explorer),
-                    &self.command_executor,
-                    Some(&self.ui),
-                    &action.tool,
-                )
-                .await
-                {
-                    if result.is_success() {
-                        self.working_memory.action_history.push(ActionResult {
-                            tool: action.tool,
-                            result,
-                            reasoning: action.reasoning,
-                        });
-                    } else {
-                        // On failure use original result
-                        self.working_memory.action_history.push(original_action);
-                    }
-                } else {
-                    // On error use original result
-                    self.working_memory.action_history.push(original_action);
-                }
-            }
-
-            // Take the replayed memory
-            self.working_memory = replay_handler.into_memory();
-
             self.run_agent_loop().await
         } else {
             anyhow::bail!("No saved state found")
         }
+    }
+
+    /// Load all currently existing files and web resources into working memory based on action history
+    async fn load_current_files_to_memory(&mut self) -> Result<()> {
+        // Collect all file paths that should currently exist
+        let mut existing_files = std::collections::HashSet::new();
+        let root_dir = self.explorer.root_dir();
+
+        // First pass: Handle files
+        for action in &self.working_memory.action_history {
+            match &action.tool {
+                Tool::WriteFile { path, .. } | Tool::ReplaceInFile { path, .. } => {
+                    // Convert relative to absolute path
+                    let abs_path = if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        root_dir.join(path)
+                    };
+                    existing_files.insert(abs_path);
+                }
+                Tool::ReadFiles { paths } => {
+                    for path in paths {
+                        // Convert relative to absolute path
+                        let abs_path = if path.is_absolute() {
+                            path.clone()
+                        } else {
+                            root_dir.join(path)
+                        };
+                        existing_files.insert(abs_path);
+                    }
+                }
+                Tool::DeleteFiles { paths } => {
+                    for path in paths {
+                        // Convert relative to absolute path
+                        let abs_path = if path.is_absolute() {
+                            path.clone()
+                        } else {
+                            root_dir.join(path)
+                        };
+                        existing_files.remove(&abs_path);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Load all existing files into working memory
+        for path in existing_files {
+            if let Ok(content) = self.explorer.read_file(&path) {
+                debug!("Loading existing file: {}", path.display());
+                self.working_memory
+                    .add_resource(path, LoadedResource::File(content));
+            }
+        }
+
+        // Second pass: Handle web resources from action results
+        // This must be done after the file processing to avoid losing web resources
+        // that were added in the same continuation session
+        for action in &self.working_memory.action_history {
+            match &action.result {
+                ToolResult::WebSearch {
+                    query,
+                    results,
+                    error: None,
+                } => {
+                    // Use a synthetic path that includes the query (same as in AgentToolHandler)
+                    let path = PathBuf::from(format!(
+                        "web-search-{}",
+                        percent_encoding::utf8_percent_encode(
+                            &query,
+                            percent_encoding::NON_ALPHANUMERIC
+                        )
+                    ));
+                    debug!("Loading web search results for: {}", query);
+                    self.working_memory.loaded_resources.insert(
+                        path,
+                        LoadedResource::WebSearch {
+                            query: query.clone(),
+                            results: results.clone(),
+                        },
+                    );
+                }
+                ToolResult::WebFetch { page, error: None } => {
+                    // Use the URL as path (normalized, same as in AgentToolHandler)
+                    let path = PathBuf::from(page.url.replace([':', '/', '?', '#'], "_"));
+                    debug!("Loading web page content: {}", page.url);
+                    self.working_memory
+                        .loaded_resources
+                        .insert(path, LoadedResource::WebPage(page.clone()));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
     }
 
     /// Get next actions from LLM
