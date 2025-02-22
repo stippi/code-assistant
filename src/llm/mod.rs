@@ -1,3 +1,12 @@
+//! LLM integration module providing abstraction over different LLM providers
+//! 
+//! This module implements:
+//! - Common interface for LLM interactions via the LLMProvider trait
+//! - Support for multiple providers (Anthropic, OpenAI, Ollama, Vertex)
+//! - Message streaming capabilities
+//! - Provider-specific implementations and optimizations
+//! - Shared types and utilities for LLM interactions
+
 #[cfg(test)]
 mod tests;
 
