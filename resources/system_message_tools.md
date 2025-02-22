@@ -38,12 +38,12 @@ Always adhere to this format for the tool use to ensure proper parsing and execu
 ## execute_command
 Description: Request to execute a CLI command on the system. Use this when you need to perform system operations or run specific commands to accomplish any step in the user's task. You must tailor your command to the user's system and provide a clear explanation of what the command does. Prefer to execute complex CLI commands over creating executable scripts, as they are more flexible and easier to run. Commands will be executed in the project root directory.
 Parameters:
-- command: (required) The CLI command to execute. This should be valid for the current operating system. Ensure the command is properly formatted and does not contain any harmful instructions.
-- requires_approval: (required) A boolean indicating whether this command requires explicit user approval before execution in case the user has auto-approve mode enabled. Set to 'true' for potentially impactful operations like installing/uninstalling packages, deleting/overwriting files, system configuration changes, network operations, or any commands that could have unintended side effects. Set to 'false' for safe operations like reading files/directories, running development servers, building projects, and other non-destructive operations.
+- command_line: (required) The CLI command to execute. This should be valid for the current operating system. Ensure the command is properly formatted and does not contain any harmful instructions.
+- working_dir: (optional) The working directory where to execute the command. Must be relative to the project root.
 Usage:
 <tool:execute_command>
-<param:command>Your command here</param:command>
-<param:requires_approval>true or false</param:requires_approval>
+<param:command_line>Your command here</param:command_line>
+<param:working_dir>Working directory here (optional)</param:working_dir>
 </tool:execute_command>
 
 ## read_files
@@ -407,4 +407,5 @@ The working memory reflects your use of tools. It is always updated with the mos
 - Files that have been changed using replace_in_file will always reflect the newest changes
 
 ALWAYS respond with your thoughts about what to do next first, then call the appropriate tool according to your reasoning.
+Finish your turn after you have called one tool.
 Think step by step. When you have finished your task, use the 'complete_task' tool.
