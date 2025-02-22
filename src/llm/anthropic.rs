@@ -324,7 +324,12 @@ impl AnthropicClient {
                                 continue;
                             }
                         }
-                        _ => {} // Don't retry other types of errors
+                        _ => {
+                            warn!(
+                                "Unhandled error (attempt {}/{}): {:?}",
+                                attempts, max_retries, e
+                            );
+                        } // Don't retry other types of errors
                     }
                     return Err(e);
                 }
@@ -400,7 +405,10 @@ impl AnthropicClient {
                     }
                 }
             } else {
-                ApiError::Unknown(format!("Status {}: {}", status, response_text))
+                ApiError::Unknown(format!(
+                    "Failed to parse error response. Status {}: {}",
+                    status, response_text
+                ))
             };
 
             // Wrap the error with rate limit context
