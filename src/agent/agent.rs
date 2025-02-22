@@ -327,12 +327,10 @@ impl Agent {
                 _ => {}
             }
         }
-        if response.usage.input_tokens > 0 {
-            println!(
-                "==== Token usage: Input: {}, Output: {}",
-                response.usage.input_tokens, response.usage.output_tokens
-            );
-        }
+        println!(
+            "[End of turn] ==== Token usage: Input: {}, Output: {} ====",
+            response.usage.input_tokens, response.usage.output_tokens
+        );
 
         let assistant_msg = Message {
             role: MessageRole::Assistant,
