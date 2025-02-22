@@ -1,6 +1,5 @@
 /target
 mcp-config.json
 .code-assistant.state.json
-resources/system_message_cline.md
 tarpaulin-report.html
 .DS_Store
