@@ -1,3 +1,4 @@
+use crate::llm::Message;
 use crate::utils::{hash_map_to_markdown, vec_to_markdown};
 use crate::web::{WebPage, WebSearchResult};
 use anyhow::Result;
@@ -317,6 +318,18 @@ pub struct ActionResult {
     pub tool: Tool,
     pub result: ToolResult,
     pub reasoning: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AgentError {
+    #[error("LLM error: {0}")]
+    LLMError(#[from] anyhow::Error),
+
+    #[error("Action error: {error}")]
+    ActionError {
+        error: anyhow::Error,
+        message: Message,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

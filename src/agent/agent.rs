@@ -63,33 +63,38 @@ impl Agent {
             while !all_actions_succeeded {
                 let (actions, assistant_msg) = match self.get_next_actions(messages.clone()).await {
                     Ok(result) => result,
-                    Err(e) => {
-                        if let Some(tool_error) = e.downcast_ref::<ToolError>() {
-                            match tool_error {
-                                ToolError::UnknownTool(t) => {
-                                    messages.push(Message {
-                                        role: MessageRole::User,
-                                        content: MessageContent::Text(format!(
-                                            "Unknown tool '{}'. Please use only available tools.",
-                                            t
-                                        )),
-                                    });
-                                    continue; // Try again with error message
-                                }
-                                ToolError::ParseError(msg) => {
-                                    messages.push(Message {
-                                        role: MessageRole::User,
-                                        content: MessageContent::Text(format!(
-                                            "Tool parameter error: {}. Please try again.",
-                                            msg
-                                        )),
-                                    });
-                                    continue; // Try again with error message
+                    Err(e) => match e {
+                        AgentError::LLMError(e) => return Err(e),
+                        AgentError::ActionError { error, message } => {
+                            messages.push(message);
+
+                            if let Some(tool_error) = error.downcast_ref::<ToolError>() {
+                                match tool_error {
+                                    ToolError::UnknownTool(t) => {
+                                        messages.push(Message {
+                                            role: MessageRole::User,
+                                            content: MessageContent::Text(format!(
+                                                "Unknown tool '{}'. Please use only available tools.",
+                                                t
+                                            )),
+                                        });
+                                        continue;
+                                    }
+                                    ToolError::ParseError(msg) => {
+                                        messages.push(Message {
+                                            role: MessageRole::User,
+                                            content: MessageContent::Text(format!(
+                                                "Tool parameter error: {}. Please try again.",
+                                                msg
+                                            )),
+                                        });
+                                        continue;
+                                    }
                                 }
                             }
+                            return Err(error);
                         }
-                        return Err(e); // Other errors still terminate
-                    }
+                    },
                 };
                 messages.push(assistant_msg);
 
@@ -280,7 +285,7 @@ impl Agent {
     async fn get_next_actions(
         &self,
         messages: Vec<Message>,
-    ) -> Result<(Vec<AgentAction>, Message)> {
+    ) -> Result<(Vec<AgentAction>, Message), AgentError> {
         let request = LLMRequest {
             messages,
             system_prompt: match self.tool_mode {
@@ -322,17 +327,25 @@ impl Agent {
                 _ => {}
             }
         }
-        print!(
-            "==== Token usage: Input: {}, Output: {}",
-            response.usage.input_tokens, response.usage.output_tokens
-        );
+        if response.usage.input_tokens > 0 {
+            println!(
+                "==== Token usage: Input: {}, Output: {}",
+                response.usage.input_tokens, response.usage.output_tokens
+            );
+        }
 
-        let actions = parse_llm_response(&response)?;
         let assistant_msg = Message {
             role: MessageRole::Assistant,
-            content: MessageContent::Structured(response.content),
+            content: MessageContent::Structured(response.content.clone()),
         };
-        Ok((actions, assistant_msg))
+
+        match parse_llm_response(&response) {
+            Ok(actions) => Ok((actions, assistant_msg)),
+            Err(e) => Err(AgentError::ActionError {
+                error: e,
+                message: assistant_msg,
+            }),
+        }
     }
 
     /// Prepare messages for LLM request - currently returns a single user message

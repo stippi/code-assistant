@@ -225,7 +225,7 @@ impl CodeExplorer for MockExplorer {
         }
 
         let mut files = self.files.lock().unwrap();
-        
+
         if append && files.contains_key(path) {
             // Append content to existing file
             if let Some(existing) = files.get_mut(path) {
@@ -235,7 +235,7 @@ impl CodeExplorer for MockExplorer {
             // Write or overwrite file
             files.insert(path.to_path_buf(), content.clone());
         }
-        
+
         Ok(())
     }
 
@@ -439,7 +439,11 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         Tool::ReadFiles { paths } => serde_json::json!({
             "paths": paths
         }),
-        Tool::WriteFile { path, content, append } => serde_json::json!({
+        Tool::WriteFile {
+            path,
+            content,
+            append,
+        } => serde_json::json!({
             "path": path,
             "content": content,
             "append": append
@@ -1192,6 +1196,7 @@ async fn test_write_file_error_handling() -> Result<()> {
         .start_with_task("Write file contents".to_string())
         .await?;
 
+    mock_llm_ref.print_requests();
     let requests = mock_llm_ref.requests.lock().unwrap();
 
     // Should see three requests:
@@ -1206,6 +1211,121 @@ async fn test_write_file_error_handling() -> Result<()> {
     if let MessageContent::Text(content) = &error_request.messages[2].content {
         assert!(content.contains("Error executing action"));
         assert!(content.contains("absolute path"));
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_unknown_tool_error_handling() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response(
+            Tool::ReadFiles {
+                paths: vec![PathBuf::from("test.txt")],
+            },
+            "Reading file after getting unknown tool error",
+        )),
+        // Simulate LLM attempting to use unknown tool
+        Ok(LLMResponse {
+            content: vec![ContentBlock::ToolUse {
+                id: "test-id".to_string(),
+                name: "unknown_tool".to_string(),
+                input: serde_json::json!({}),
+            }],
+            usage: Usage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+        }),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let mut agent = Agent::new(
+        Box::new(mock_llm),
+        ToolMode::Native,
+        Box::new(create_explorer_mock()),
+        Box::new(create_command_executor_mock()),
+        Box::new(MockUI::default()),
+        Box::new(MockStatePersistence::new()),
+    );
+
+    agent.start_with_task("Test task".to_string()).await?;
+
+    let requests = mock_llm_ref.requests.lock().unwrap();
+
+    // Should see three requests:
+    // 1. Failed unknown tool
+    // 2. Corrected ReadFiles
+    // 3. CompleteTask
+    assert_eq!(requests.len(), 3);
+
+    // Check error was communicated to LLM
+    let error_request = &requests[1];
+    assert_eq!(error_request.messages.len(), 3); // Working Memory + Tool Response + Error
+    if let MessageContent::Text(content) = &error_request.messages[2].content {
+        assert!(content.contains("Unknown tool"));
+        assert!(content.contains("Please use only available tools"));
+    } else {
+        panic!("Expected error message to be text content");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parse_error_handling() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response(
+            Tool::ReadFiles {
+                paths: vec![PathBuf::from("test.txt")],
+            },
+            "Reading with correct parameters",
+        )),
+        // Simulate LLM sending invalid params
+        Ok(LLMResponse {
+            content: vec![ContentBlock::ToolUse {
+                id: "test-id".to_string(),
+                name: "read_files".to_string(),
+                input: serde_json::json!({
+                    // Missing required 'paths' parameter
+                    "wrong_param": "value"
+                }),
+            }],
+            usage: Usage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+        }),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let mut agent = Agent::new(
+        Box::new(mock_llm),
+        ToolMode::Native,
+        Box::new(create_explorer_mock()),
+        Box::new(create_command_executor_mock()),
+        Box::new(MockUI::default()),
+        Box::new(MockStatePersistence::new()),
+    );
+
+    agent.start_with_task("Test task".to_string()).await?;
+
+    let requests = mock_llm_ref.requests.lock().unwrap();
+
+    // Should see three requests:
+    // 1. Failed parse
+    // 2. Corrected ReadFiles
+    // 3. CompleteTask
+    assert_eq!(requests.len(), 3);
+
+    // Check error was communicated to LLM
+    let error_request = &requests[1];
+    assert_eq!(error_request.messages.len(), 3); // Working Memory + Tool Response + Error
+    if let MessageContent::Text(content) = &error_request.messages[2].content {
+        assert!(content.contains("Tool parameter error"));
+        assert!(content.contains("Please try again"));
+    } else {
+        panic!("Expected error message to be text content");
     }
 
     Ok(())
