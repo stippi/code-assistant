@@ -61,7 +61,36 @@ impl Agent {
             // Keep trying until all actions succeed
             let mut all_actions_succeeded = false;
             while !all_actions_succeeded {
-                let (actions, assistant_msg) = self.get_next_actions(messages.clone()).await?;
+                let (actions, assistant_msg) = match self.get_next_actions(messages.clone()).await {
+                    Ok(result) => result,
+                    Err(e) => {
+                        if let Some(tool_error) = e.downcast_ref::<ToolError>() {
+                            match tool_error {
+                                ToolError::UnknownTool(t) => {
+                                    messages.push(Message {
+                                        role: MessageRole::User,
+                                        content: MessageContent::Text(format!(
+                                            "Unknown tool '{}'. Please use only available tools.",
+                                            t
+                                        )),
+                                    });
+                                    continue; // Try again with error message
+                                }
+                                ToolError::ParseError(msg) => {
+                                    messages.push(Message {
+                                        role: MessageRole::User,
+                                        content: MessageContent::Text(format!(
+                                            "Tool parameter error: {}. Please try again.",
+                                            msg
+                                        )),
+                                    });
+                                    continue; // Try again with error message
+                                }
+                            }
+                        }
+                        return Err(e); // Other errors still terminate
+                    }
+                };
                 messages.push(assistant_msg);
 
                 all_actions_succeeded = true; // Will be set to false if any action fails

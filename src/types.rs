@@ -288,6 +288,15 @@ pub enum ToolResult {
 pub struct Tools;
 
 /// Tool description for LLM
+#[derive(Debug, thiserror::Error)]
+pub enum ToolError {
+    #[error("Unknown tool: {0}")]
+    UnknownTool(String),
+
+    #[error("Failed to parse tool parameters: {0}")]
+    ParseError(String),
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolDefinition {
     pub name: String,
