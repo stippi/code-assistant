@@ -6,6 +6,7 @@
 //! - Message streaming capabilities
 //! - Provider-specific implementations and optimizations
 //! - Shared types and utilities for LLM interactions
+//! - Common streaming and rate limiting functionality
 
 #[cfg(test)]
 mod tests;
@@ -13,6 +14,8 @@ mod tests;
 pub mod anthropic;
 pub mod ollama;
 pub mod openai;
+pub mod rate_limits;
+pub mod streaming;
 pub mod types;
 pub mod vertex;
 

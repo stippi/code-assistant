@@ -96,7 +96,7 @@ pub struct ApiErrorContext<T> {
 }
 
 /// Base trait for rate limit information
-pub trait RateLimitHandler: Sized {
+pub trait RateLimitHandler: Sized + std::fmt::Debug + Send + Sync {
     /// Create a new instance from response headers
     fn from_response(response: &Response) -> Self;
 
