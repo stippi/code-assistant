@@ -284,13 +284,43 @@ impl OpenAIClient {
             },
             content: match &message.content {
                 MessageContent::Text(text) => text.clone(),
-                MessageContent::Structured(_) => {
-                    // For now, we'll just convert structured content to a simple text message
-                    // This could be enhanced to handle OpenAI's specific formats
-                    "[Structured content not supported]".to_string()
+                MessageContent::Structured(blocks) => {
+                    // Concatenate all text blocks into the content string
+                    blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Text { text } => Some(text),
+                            _ => None,
+                        })
+                        .cloned()
+                        .collect::<Vec<String>>()
+                        .join("")
                 }
             },
-            tool_calls: None,
+            tool_calls: match &message.content {
+                MessageContent::Structured(blocks) => {
+                    let tool_calls: Vec<OpenAIToolCall> = blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::ToolUse { id, name, input } => Some(OpenAIToolCall {
+                                id: id.clone(),
+                                call_type: "function".to_string(),
+                                function: OpenAIFunction {
+                                    name: name.clone(),
+                                    arguments: serde_json::to_string(input).unwrap_or_default(),
+                                },
+                            }),
+                            _ => None,
+                        })
+                        .collect();
+                    if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls)
+                    }
+                }
+                _ => None,
+            },
         }
     }
 
