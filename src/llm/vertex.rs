@@ -44,7 +44,8 @@ struct VertexMessage {
 struct VertexPart {
     #[serde(rename = "functionCall")]
     function_call: Option<VertexFunctionCall>,
-    // Optional text field could be added if we get text responses
+    #[serde(rename = "functionResponse")]
+    function_response: Option<VertexFunctionResponse>,
     text: Option<String>,
 }
 
@@ -87,6 +88,12 @@ struct VertexContent {
 struct VertexFunctionCall {
     name: String,
     args: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct VertexFunctionResponse {
+    name: String,
+    response: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,21 +178,49 @@ impl VertexClient {
     }
 
     fn convert_message(message: &Message) -> VertexMessage {
-        let text = match &message.content {
-            MessageContent::Text(text) => text.clone(),
-            MessageContent::Structured(_) => "[Structured content not supported]".to_string(),
+        let role = Some(match message.role {
+            MessageRole::User => "user".to_string(),
+            MessageRole::Assistant => "model".to_string(),
+        });
+
+        let parts = match &message.content {
+            MessageContent::Text(text) => vec![VertexPart {
+                text: Some(text.clone()),
+                function_call: None,
+                function_response: None,
+            }],
+            MessageContent::Structured(blocks) => blocks
+                .iter()
+                .map(|block| match block {
+                    ContentBlock::Text { text } => VertexPart {
+                        text: Some(text.clone()),
+                        function_call: None,
+                        function_response: None,
+                    },
+                    ContentBlock::ToolUse { name, input, .. } => VertexPart {
+                        text: None,
+                        function_call: Some(VertexFunctionCall {
+                            name: name.clone(),
+                            args: input.clone(),
+                        }),
+                        function_response: None,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                    } => VertexPart {
+                        text: None,
+                        function_call: None,
+                        function_response: Some(VertexFunctionResponse {
+                            name: tool_use_id.clone(), // TODO: Should be function name
+                            response: serde_json::Value::String(content.clone()),
+                        }),
+                    },
+                })
+                .collect(),
         };
 
-        VertexMessage {
-            role: Some(match message.role {
-                MessageRole::User => "user".to_string(),
-                MessageRole::Assistant => "model".to_string(),
-            }),
-            parts: vec![VertexPart {
-                text: Some(text),
-                function_call: None,
-            }],
-        }
+        VertexMessage { role, parts }
     }
 
     async fn send_with_retry(
