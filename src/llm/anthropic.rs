@@ -260,76 +260,59 @@ impl AnthropicClient {
                     return Ok(response);
                 }
                 Err(e) => {
-                    // Extract rate limit info if available in the error context
-                    let rate_limits = e
-                        .downcast_ref::<ApiErrorContext<AnthropicRateLimitInfo>>()
-                        .and_then(|ctx| ctx.rate_limits.as_ref());
-
-                    match e.downcast_ref::<ApiError>() {
-                        Some(ApiError::RateLimit(_)) => {
-                            if let Some(rate_limits) = rate_limits {
-                                if attempts < max_retries {
-                                    attempts += 1;
-                                    let delay = rate_limits.get_retry_delay();
-                                    warn!(
+                    if let Some(ctx) = e.downcast_ref::<ApiErrorContext<AnthropicRateLimitInfo>>() {
+                        match &ctx.error {
+                            ApiError::RateLimit(_) => {
+                                if let Some(rate_limits) = &ctx.rate_limits {
+                                    if attempts < max_retries {
+                                        attempts += 1;
+                                        let delay = rate_limits.get_retry_delay();
+                                        warn!(
                                             "Rate limit hit (attempt {}/{}), waiting {} seconds before retry",
                                             attempts,
                                             max_retries,
                                             delay.as_secs()
                                         );
-                                    sleep(delay).await;
-                                    continue;
-                                }
-                            } else {
-                                // Fallback if no rate limit info available
-                                if attempts < max_retries {
-                                    attempts += 1;
-                                    let delay = Duration::from_secs(2u64.pow(attempts - 1));
-                                    warn!(
+                                        sleep(delay).await;
+                                        continue;
+                                    }
+                                } else {
+                                    // Fallback if no rate limit info available
+                                    if attempts < max_retries {
+                                        attempts += 1;
+                                        let delay = Duration::from_secs(2u64.pow(attempts - 1));
+                                        warn!(
                                             "Rate limit hit but no timing info available (attempt {}/{}), using exponential backoff: {} seconds",
                                             attempts,
                                             max_retries,
                                             delay.as_secs()
                                         );
+                                        sleep(delay).await;
+                                        continue;
+                                    }
+                                }
+                            }
+                            ApiError::ServiceError(_) | ApiError::NetworkError(_) => {
+                                if attempts < max_retries {
+                                    attempts += 1;
+                                    let delay = Duration::from_secs(2u64.pow(attempts - 1));
+                                    warn!(
+                                        "Error (attempt {}/{}), retrying in {} seconds",
+                                        attempts,
+                                        max_retries,
+                                        delay.as_secs()
+                                    );
                                     sleep(delay).await;
                                     continue;
                                 }
                             }
-                        }
-                        Some(ApiError::ServiceError(_)) => {
-                            if attempts < max_retries {
-                                attempts += 1;
-                                let delay = Duration::from_secs(2u64.pow(attempts - 1));
+                            _ => {
                                 warn!(
-                                    "Service error (attempt {}/{}), retrying in {} seconds",
-                                    attempts,
-                                    max_retries,
-                                    delay.as_secs()
+                                    "Unhandled error (attempt {}/{}): {:?}",
+                                    attempts, max_retries, e
                                 );
-                                sleep(delay).await;
-                                continue;
                             }
                         }
-                        Some(ApiError::NetworkError(_)) => {
-                            if attempts < max_retries {
-                                attempts += 1;
-                                let delay = Duration::from_secs(2u64.pow(attempts - 1));
-                                warn!(
-                                    "Network error (attempt {}/{}), retrying in {} seconds",
-                                    attempts,
-                                    max_retries,
-                                    delay.as_secs()
-                                );
-                                sleep(delay).await;
-                                continue;
-                            }
-                        }
-                        _ => {
-                            warn!(
-                                "Unhandled error (attempt {}/{}): {:?}",
-                                attempts, max_retries, e
-                            );
-                        } // Don't retry other types of errors
                     }
                     return Err(e);
                 }

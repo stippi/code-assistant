@@ -5,6 +5,7 @@ use anyhow::Result;
 use axum::extract::Path;
 use axum::{response::IntoResponse, routing::post, Router};
 use bytes::Bytes;
+use chrono::Utc;
 use futures::stream;
 use serde_json::json;
 use std::net::SocketAddr;
@@ -505,6 +506,72 @@ async fn create_mock_server(
     format!("http://{}", server_addr)
 }
 
+// Helper to create a rate-limited mock server
+async fn create_rate_limited_mock_server(
+    attempts_until_success: usize,
+    error_response: serde_json::Value,
+    rate_limit_headers: std::collections::HashMap<String, String>,
+) -> String {
+    let attempts = Arc::new(Mutex::new(0));
+
+    let app = Router::new().route(
+        "/*path",
+        post(move |_req: axum::extract::Json<serde_json::Value>| {
+            let attempts = attempts.clone();
+            let error_response = error_response.clone();
+            let rate_limit_headers = rate_limit_headers.clone();
+            async move {
+                let mut current_attempts = attempts.lock().unwrap();
+                *current_attempts += 1;
+
+                if *current_attempts > attempts_until_success {
+                    // After specified attempts, return success
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(json!({
+                            "content": [{
+                                "type": "text",
+                                "text": "Success after retry!"
+                            }],
+                            "usage": {
+                                "input_tokens": 10,
+                                "output_tokens": 8
+                            }
+                        })),
+                    )
+                        .into_response()
+                } else {
+                    // Return rate limit error with headers
+                    let mut response = axum::response::Response::builder()
+                        .status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+
+                    // Add rate limit headers
+                    for (key, value) in rate_limit_headers.iter() {
+                        response = response.header(key, value);
+                    }
+
+                    response
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            serde_json::to_string(&error_response).unwrap(),
+                        ))
+                        .unwrap()
+                }
+            }
+        }),
+    );
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 0));
+    let listener = TcpListener::bind(addr).await.unwrap();
+    let server_addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    format!("http://{}", server_addr)
+}
+
 // Run all test cases for a given provider configuration
 async fn run_provider_tests<T: MockResponseGenerator + Clone + 'static>(
     provider_name: &str,
@@ -615,4 +682,57 @@ async fn test_ollama_provider() -> Result<()> {
         OllamaMockGenerator,
     )
     .await
+}
+
+#[tokio::test]
+async fn test_anthropic_rate_limit_retry() -> Result<()> {
+    // Configure rate limit error response
+    let error_response = json!({
+        "type": "error",
+        "error": {
+            "type": "rate_limit_error",
+            "message": "Rate limit exceeded. Please retry after 5 seconds."
+        }
+    });
+
+    // Configure rate limit headers
+    let mut headers = std::collections::HashMap::new();
+    headers.insert(
+        "anthropic-ratelimit-requests-reset".to_string(),
+        (Utc::now() + chrono::Duration::seconds(1)).to_rfc3339(),
+    );
+    headers.insert("retry-after".to_string(), "1".to_string());
+
+    // Create a mock server that will fail with rate limit errors 3 times before succeeding
+    let base_url = create_rate_limited_mock_server(2, error_response, headers).await;
+
+    // Create client with fast retry timings for test
+    let client = AnthropicClient::new_with_base_url(
+        "test-key".to_string(),
+        "claude-3".to_string(),
+        base_url,
+    );
+
+    // Send a test message that should trigger retries
+    let request = LLMRequest {
+        messages: vec![Message {
+            role: MessageRole::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }],
+        system_prompt: "You are a helpful assistant.".to_string(),
+        tools: None,
+    };
+
+    // The request should eventually succeed after retries
+    let response = client.send_message(request, None).await?;
+
+    // Verify we got the success response
+    assert_eq!(
+        response.content,
+        vec![ContentBlock::Text {
+            text: "Success after retry!".to_string()
+        }]
+    );
+
+    Ok(())
 }
