@@ -20,15 +20,16 @@ struct OllamaOptions {
     num_ctx: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct OllamaMessage {
     role: String,
     content: String,
+    tool_calls: Option<Vec<OllamaToolCall>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OllamaResponse {
-    message: OllamaResponseMessage,
+    message: OllamaMessage,
     #[allow(dead_code)]
     done_reason: Option<String>,
     done: bool,
@@ -47,12 +48,6 @@ struct OllamaToolCall {
 struct OllamaFunction {
     name: String,
     arguments: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaResponseMessage {
-    content: String,
-    tool_calls: Option<Vec<OllamaToolCall>>,
 }
 
 pub struct OllamaClient {
@@ -94,7 +89,40 @@ impl OllamaClient {
             },
             content: match &message.content {
                 MessageContent::Text(text) => text.clone(),
-                MessageContent::Structured(_) => "[Structured content not supported]".to_string(),
+                MessageContent::Structured(blocks) => {
+                    // Concatenate all text blocks into the content string
+                    blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Text { text } => Some(text),
+                            _ => None,
+                        })
+                        .cloned()
+                        .collect::<Vec<String>>()
+                        .join("")
+                }
+            },
+            tool_calls: match &message.content {
+                MessageContent::Structured(blocks) => {
+                    let tool_calls: Vec<OllamaToolCall> = blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::ToolUse { name, input, .. } => Some(OllamaToolCall {
+                                function: OllamaFunction {
+                                    name: name.clone(),
+                                    arguments: input.clone(),
+                                },
+                            }),
+                            _ => None,
+                        })
+                        .collect();
+                    if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls)
+                    }
+                }
+                _ => None,
             },
         }
     }
@@ -262,6 +290,7 @@ impl LLMProvider for OllamaClient {
         messages.push(OllamaMessage {
             role: "system".to_string(),
             content: request.system_prompt,
+            tool_calls: None,
         });
 
         // Add conversation messages
