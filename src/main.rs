@@ -77,7 +77,7 @@ enum Mode {
         num_ctx: usize,
 
         /// Type of tool declaration ('native' = tools via API, 'xml' = custom system message)
-        #[arg(long)]
+        #[arg(long, default_value = "xml")]
         tools_type: ToolsType,
     },
     /// Run as MCP server
