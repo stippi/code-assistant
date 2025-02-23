@@ -107,8 +107,10 @@ impl AnthropicStreamHandler {
                     match content_block.block_type.as_str() {
                         "text" => {
                             if let Some(text) = content_block.text {
-                                callback(&text)?;
-                                self.content_accumulator.append(&text)?;
+                                if !text.is_empty() {
+                                    callback(&text)?;
+                                    self.content_accumulator.append(&text)?;
+                                }
                             }
                         }
                         "tool_use" => {
