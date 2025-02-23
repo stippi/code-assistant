@@ -1,5 +1,5 @@
 use crate::llm::{
-    types::*, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
+    types::*, utils, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -8,8 +8,7 @@ use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::str::{self};
 use std::time::Duration;
-use tokio::time::sleep;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 /// Response structure for Anthropic error messages
 #[derive(Debug, Serialize, serde::Deserialize)]
@@ -260,59 +259,15 @@ impl AnthropicClient {
                     return Ok(response);
                 }
                 Err(e) => {
-                    if let Some(ctx) = e.downcast_ref::<ApiErrorContext<AnthropicRateLimitInfo>>() {
-                        match &ctx.error {
-                            ApiError::RateLimit(_) => {
-                                if let Some(rate_limits) = &ctx.rate_limits {
-                                    if attempts < max_retries {
-                                        attempts += 1;
-                                        let delay = rate_limits.get_retry_delay();
-                                        warn!(
-                                            "Rate limit hit (attempt {}/{}), waiting {} seconds before retry",
-                                            attempts,
-                                            max_retries,
-                                            delay.as_secs()
-                                        );
-                                        sleep(delay).await;
-                                        continue;
-                                    }
-                                } else {
-                                    // Fallback if no rate limit info available
-                                    if attempts < max_retries {
-                                        attempts += 1;
-                                        let delay = Duration::from_secs(2u64.pow(attempts - 1));
-                                        warn!(
-                                            "Rate limit hit but no timing info available (attempt {}/{}), using exponential backoff: {} seconds",
-                                            attempts,
-                                            max_retries,
-                                            delay.as_secs()
-                                        );
-                                        sleep(delay).await;
-                                        continue;
-                                    }
-                                }
-                            }
-                            ApiError::ServiceError(_) | ApiError::NetworkError(_) => {
-                                if attempts < max_retries {
-                                    attempts += 1;
-                                    let delay = Duration::from_secs(2u64.pow(attempts - 1));
-                                    warn!(
-                                        "Error (attempt {}/{}), retrying in {} seconds",
-                                        attempts,
-                                        max_retries,
-                                        delay.as_secs()
-                                    );
-                                    sleep(delay).await;
-                                    continue;
-                                }
-                            }
-                            _ => {
-                                warn!(
-                                    "Unhandled error (attempt {}/{}): {:?}",
-                                    attempts, max_retries, e
-                                );
-                            }
-                        }
+                    if utils::handle_retryable_error::<AnthropicRateLimitInfo>(
+                        &e,
+                        attempts,
+                        max_retries,
+                    )
+                    .await
+                    {
+                        attempts += 1;
+                        continue;
                     }
                     return Err(e);
                 }

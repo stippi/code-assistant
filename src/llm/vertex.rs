@@ -1,5 +1,5 @@
 use crate::llm::{
-    types::*, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
+    types::*, utils, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -7,8 +7,7 @@ use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
-use tokio::time::sleep;
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 #[derive(Debug, Serialize)]
 struct VertexRequest {
@@ -242,43 +241,15 @@ impl VertexClient {
                     return Ok(response);
                 }
                 Err(e) => {
-                    let rate_limits = e
-                        .downcast_ref::<ApiErrorContext<VertexRateLimitInfo>>()
-                        .and_then(|ctx| ctx.rate_limits.as_ref());
-
-                    match e.downcast_ref::<ApiError>() {
-                        Some(ApiError::RateLimit(_)) => {
-                            if attempts < max_retries {
-                                attempts += 1;
-                                let delay = rate_limits
-                                    .map(|r| r.get_retry_delay())
-                                    .unwrap_or_else(|| Duration::from_secs(2u64.pow(attempts)));
-                                warn!(
-                                    "Vertex AI rate limit hit (attempt {}/{}), waiting {} seconds before retry",
-                                    attempts,
-                                    max_retries,
-                                    delay.as_secs()
-                                );
-                                sleep(delay).await;
-                                continue;
-                            }
-                        }
-                        Some(ApiError::ServiceError(_)) | Some(ApiError::NetworkError(_)) => {
-                            if attempts < max_retries {
-                                attempts += 1;
-                                let delay = Duration::from_secs(2u64.pow(attempts - 1));
-                                warn!(
-                                    "Error: {} (attempt {}/{}), retrying in {} seconds",
-                                    e,
-                                    attempts,
-                                    max_retries,
-                                    delay.as_secs()
-                                );
-                                sleep(delay).await;
-                                continue;
-                            }
-                        }
-                        _ => {} // Don't retry other types of errors
+                    if utils::handle_retryable_error::<VertexRateLimitInfo>(
+                        &e,
+                        attempts,
+                        max_retries,
+                    )
+                    .await
+                    {
+                        attempts += 1;
+                        continue;
                     }
                     return Err(e);
                 }
