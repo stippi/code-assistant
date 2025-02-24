@@ -141,6 +141,40 @@ struct AnthropicRequest {
     stream: Option<bool>,
 }
 
+/// Response structure for Anthropic API responses
+#[derive(Debug, Deserialize)]
+struct AnthropicResponse {
+    content: Vec<ContentBlock>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    id: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    model: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    role: String,
+    #[serde(rename = "type", default)]
+    #[allow(dead_code)]
+    response_type: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    stop_reason: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    stop_sequence: Option<String>,
+    usage: AnthropicUsage,
+}
+
+/// Usage information from Anthropic API
+#[derive(Debug, Deserialize)]
+struct AnthropicUsage {
+    #[serde(default)]
+    input_tokens: u32,
+    #[serde(default)]
+    output_tokens: u32,
+}
+
 #[derive(Debug, Deserialize)]
 struct StreamEventCommon {
     index: usize,
@@ -170,7 +204,7 @@ enum StreamEvent {
         common: StreamEventCommon,
     },
     #[serde(rename = "message_delta")]
-    MessageDelta,
+    MessageDelta { usage: AnthropicUsage },
     #[serde(rename = "message_stop")]
     MessageStop,
     #[serde(rename = "ping")]
@@ -188,6 +222,7 @@ struct MessageStart {
     role: String,
     #[allow(dead_code)]
     model: String,
+    usage: AnthropicUsage,
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,11 +343,16 @@ impl AnthropicClient {
             let mut blocks: Vec<ContentBlock> = Vec::new();
             let mut current_content = String::new();
             let mut line_buffer = String::new();
+            let mut usage = AnthropicUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+            };
 
             fn process_chunk(
                 chunk: &[u8],
                 line_buffer: &mut String,
                 blocks: &mut Vec<ContentBlock>,
+                usage: &mut AnthropicUsage,
                 current_content: &mut String,
                 callback: &StreamingCallback,
             ) -> Result<()> {
@@ -321,7 +361,13 @@ impl AnthropicClient {
                 for c in chunk_str.chars() {
                     if c == '\n' {
                         if !line_buffer.is_empty() {
-                            process_sse_line(line_buffer, blocks, current_content, callback)?;
+                            process_sse_line(
+                                line_buffer,
+                                blocks,
+                                usage,
+                                current_content,
+                                callback,
+                            )?;
                             line_buffer.clear();
                         }
                     } else {
@@ -334,6 +380,7 @@ impl AnthropicClient {
             fn process_sse_line(
                 line: &str,
                 blocks: &mut Vec<ContentBlock>,
+                usage: &mut AnthropicUsage,
                 current_content: &mut String,
                 callback: &StreamingCallback,
             ) -> Result<()> {
@@ -365,6 +412,15 @@ impl AnthropicClient {
                                         blocks.len() - 1
                                     ));
                                 }
+                            }
+                            StreamEvent::MessageStart { message } => {
+                                usage.input_tokens = message.usage.input_tokens;
+                                usage.output_tokens = message.usage.output_tokens;
+                                return Ok(());
+                            }
+                            StreamEvent::MessageDelta { usage: delta_usage } => {
+                                usage.output_tokens = delta_usage.output_tokens;
+                                return Ok(());
                             }
                             _ => return Ok(()), // Early return for events without index
                         }
@@ -434,6 +490,7 @@ impl AnthropicClient {
                     &chunk,
                     &mut line_buffer,
                     &mut blocks,
+                    &mut usage,
                     &mut current_content,
                     callback,
                 )?;
@@ -441,15 +498,21 @@ impl AnthropicClient {
 
             // Process any remaining data in the buffer
             if !line_buffer.is_empty() {
-                process_sse_line(&line_buffer, &mut blocks, &mut current_content, callback)?;
+                process_sse_line(
+                    &line_buffer,
+                    &mut blocks,
+                    &mut usage,
+                    &mut current_content,
+                    callback,
+                )?;
             }
 
             Ok((
                 LLMResponse {
                     content: blocks,
                     usage: Usage {
-                        input_tokens: 0,
-                        output_tokens: 0,
+                        input_tokens: usage.input_tokens,
+                        output_tokens: usage.output_tokens,
                     },
                 },
                 rate_limits,
@@ -460,8 +523,17 @@ impl AnthropicClient {
                 .await
                 .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
-            let llm_response = serde_json::from_str(&response_text)
+            let anthropic_response: AnthropicResponse = serde_json::from_str(&response_text)
                 .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
+
+            // Convert AnthropicResponse to LLMResponse
+            let llm_response = LLMResponse {
+                content: anthropic_response.content,
+                usage: Usage {
+                    input_tokens: anthropic_response.usage.input_tokens,
+                    output_tokens: anthropic_response.usage.output_tokens,
+                },
+            };
 
             Ok((llm_response, rate_limits))
         }

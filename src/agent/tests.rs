@@ -699,14 +699,7 @@ async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
     let messages = mock_ui.get_messages();
     assert!(!messages.is_empty());
 
-    // First message is about creating repository structure
-    if let UIMessage::Reasoning(msg) = &messages[1] {
-        assert!(msg.contains(test_reasoning));
-    } else {
-        panic!("Expected UIMessage::Reasoning");
-    }
-
-    if let UIMessage::Action(msg) = &messages[2] {
+    if let UIMessage::Action(msg) = &messages[1] {
         assert!(msg.contains(test_message));
     } else {
         panic!("Expected UIMessage::Action");

@@ -328,7 +328,7 @@ impl Agent {
             }
         }
         println!(
-            "[End of turn] ==== Token usage: Input: {}, Output: {} ====",
+            "\n==== Token usage: Input: {}, Output: {} ====",
             response.usage.input_tokens, response.usage.output_tokens
         );
 
@@ -358,11 +358,6 @@ impl Agent {
     /// Executes an action and returns the result
     async fn execute_action(&mut self, action: &AgentAction) -> Result<ActionResult> {
         debug!("Executing action: {:?}", action.tool);
-
-        // Display the agent's reasoning
-        self.ui
-            .display(UIMessage::Reasoning(action.reasoning.clone()))
-            .await?;
 
         let mut handler = AgentToolHandler::new(&mut self.working_memory);
 
