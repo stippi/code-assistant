@@ -102,7 +102,7 @@ fn create_llm_client(
                 api_key,
                 model
                     .clone()
-                    .unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string()),
+                    .unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string()),
             )))
         }
 
