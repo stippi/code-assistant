@@ -1,9 +1,7 @@
-use crate::llm::{
-    types::*, utils, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
-};
+use crate::llm::{types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback};
 use anyhow::Result;
 use async_trait::async_trait;
-use reqwest::{Client, Response, StatusCode};
+use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
@@ -93,17 +91,6 @@ struct VertexFunctionCall {
 struct VertexFunctionResponse {
     name: String,
     response: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize)]
-struct VertexErrorResponse {
-    error: VertexError,
-}
-
-#[derive(Debug, Deserialize)]
-struct VertexError {
-    message: String,
-    code: Option<i32>,
 }
 
 /// Rate limit information extracted from response headers
@@ -257,46 +244,6 @@ impl VertexClient {
         }
     }
 
-    async fn handle_error_response(
-        &self,
-        response: Response,
-    ) -> Result<(LLMResponse, VertexRateLimitInfo)> {
-        let rate_limits = VertexRateLimitInfo::from_response(&response);
-        let status = response.status();
-        let response_text = response
-            .text()
-            .await
-            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
-
-        let error = if let Ok(error_response) =
-            serde_json::from_str::<VertexErrorResponse>(&response_text)
-        {
-            match (status, error_response.error.code) {
-                (StatusCode::TOO_MANY_REQUESTS, _) => {
-                    ApiError::RateLimit(error_response.error.message)
-                }
-                (StatusCode::UNAUTHORIZED, _) => {
-                    ApiError::Authentication(error_response.error.message)
-                }
-                (StatusCode::BAD_REQUEST, _) => {
-                    ApiError::InvalidRequest(error_response.error.message)
-                }
-                (status, _) if status.is_server_error() => {
-                    ApiError::ServiceError(error_response.error.message)
-                }
-                _ => ApiError::Unknown(error_response.error.message),
-            }
-        } else {
-            ApiError::Unknown(format!("Status {}: {}", status, response_text))
-        };
-
-        Err(ApiErrorContext {
-            error,
-            rate_limits: Some(rate_limits),
-        }
-        .into())
-    }
-
     async fn try_send_request(
         &self,
         request: &VertexRequest,
@@ -319,10 +266,7 @@ impl VertexClient {
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
-        if !response.status().is_success() {
-            return self.handle_error_response(response).await;
-        }
-
+        let response = utils::check_response_error::<VertexRateLimitInfo>(response).await?;
         let rate_limits = VertexRateLimitInfo::from_response(&response);
 
         trace!("Response headers: {:?}", response.headers());
@@ -394,7 +338,7 @@ impl VertexClient {
         request: &VertexRequest,
         streaming_callback: &StreamingCallback,
     ) -> Result<(LLMResponse, VertexRateLimitInfo)> {
-        let mut response = self
+        let response = self
             .client
             .post(&self.get_url(true))
             .query(&[("key", &self.api_key), ("alt", &"sse".to_string())])
@@ -404,10 +348,7 @@ impl VertexClient {
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
-        if !response.status().is_success() {
-            return self.handle_error_response(response).await;
-        }
-
+        let mut response = utils::check_response_error::<VertexRateLimitInfo>(response).await?;
         let rate_limits = VertexRateLimitInfo::from_response(&response);
 
         let mut content_blocks = Vec::new();

@@ -1,9 +1,7 @@
-use crate::llm::{
-    types::*, utils, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
-};
+use crate::llm::{types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback};
 use anyhow::Result;
 use async_trait::async_trait;
-use reqwest::{Client, Response, StatusCode};
+use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::debug;
@@ -132,18 +130,6 @@ struct OpenAIFunctionDelta {
     name: Option<String>,
     #[serde(default)]
     arguments: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIErrorResponse {
-    error: OpenAIError,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIError {
-    message: String,
-    #[serde(rename = "type")]
-    code: Option<String>,
 }
 
 /// Rate limit information extracted from response headers
@@ -360,48 +346,6 @@ impl OpenAIClient {
         }
     }
 
-    async fn check_response_error(response: Response) -> Result<Response> {
-        let status = response.status();
-        if status.is_success() {
-            debug!("Response status is success");
-            return Ok(response);
-        }
-
-        let rate_limits = OpenAIRateLimitInfo::from_response(&response);
-        let response_text = response
-            .text()
-            .await
-            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
-
-        let error = if let Ok(error_response) =
-            serde_json::from_str::<OpenAIErrorResponse>(&response_text)
-        {
-            match (status, error_response.error.code.as_deref()) {
-                (StatusCode::TOO_MANY_REQUESTS, _) => {
-                    ApiError::RateLimit(error_response.error.message)
-                }
-                (StatusCode::UNAUTHORIZED, _) => {
-                    ApiError::Authentication(error_response.error.message)
-                }
-                (StatusCode::BAD_REQUEST, _) => {
-                    ApiError::InvalidRequest(error_response.error.message)
-                }
-                (status, _) if status.is_server_error() => {
-                    ApiError::ServiceError(error_response.error.message)
-                }
-                _ => ApiError::Unknown(error_response.error.message),
-            }
-        } else {
-            ApiError::Unknown(format!("Status {}: {}", status, response_text))
-        };
-
-        Err(ApiErrorContext {
-            error,
-            rate_limits: Some(rate_limits),
-        }
-        .into())
-    }
-
     async fn try_send_request(
         &self,
         request: &OpenAIRequest,
@@ -417,7 +361,7 @@ impl OpenAIClient {
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
-        let response = Self::check_response_error(response).await?;
+        let response = utils::check_response_error::<OpenAIRateLimitInfo>(response).await?;
         let rate_limits = OpenAIRateLimitInfo::from_response(&response);
 
         let response_text = response
@@ -488,7 +432,7 @@ impl OpenAIClient {
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
-        let mut response = Self::check_response_error(response).await?;
+        let mut response = utils::check_response_error::<OpenAIRateLimitInfo>(response).await?;
 
         let mut accumulated_content: Option<String> = None;
         let mut accumulated_tool_calls: Vec<ContentBlock> = Vec::new();

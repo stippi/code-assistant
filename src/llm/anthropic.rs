@@ -1,14 +1,12 @@
-use crate::llm::{
-    types::*, utils, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
-};
+use crate::llm::{types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reqwest::{Client, Response, StatusCode};
+use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use std::str::{self};
 use std::time::Duration;
-use tracing::{debug, error};
+use tracing::debug;
 
 /// Response structure for Anthropic error messages
 #[derive(Debug, Serialize, serde::Deserialize)]
@@ -286,7 +284,7 @@ impl AnthropicClient {
             "application/json"
         };
 
-        let mut response = self
+        let response = self
             .client
             .post(&self.get_url())
             .header("x-api-key", &self.api_key)
@@ -300,62 +298,11 @@ impl AnthropicClient {
         // Log raw headers for debugging
         debug!("Response headers: {:?}", response.headers());
 
-        // Extract rate limit information from response headers
+        let mut response = utils::check_response_error::<AnthropicRateLimitInfo>(response).await?;
         let rate_limits = AnthropicRateLimitInfo::from_response(&response);
 
         // Log parsed rate limits
         debug!("Parsed rate limits: {:?}", rate_limits);
-
-        let status = response.status();
-        if !status.is_success() {
-            let response_text = response
-                .text()
-                .await
-                .map_err(|e| ApiError::NetworkError(e.to_string()))?;
-
-            // Try to parse the error response
-            let error = if let Ok(error_response) =
-                serde_json::from_str::<AnthropicErrorResponse>(&response_text)
-            {
-                match (status, error_response.error.error_type.as_str()) {
-                    (StatusCode::TOO_MANY_REQUESTS, _) | (_, "rate_limit_error") => {
-                        error!(
-                            "Rate limit error detected: status={}, type={}, message={}",
-                            status, error_response.error.error_type, error_response.error.message
-                        );
-                        ApiError::RateLimit(error_response.error.message)
-                    }
-                    (StatusCode::UNAUTHORIZED, _) => {
-                        ApiError::Authentication(error_response.error.message)
-                    }
-                    (StatusCode::BAD_REQUEST, _) => {
-                        ApiError::InvalidRequest(error_response.error.message)
-                    }
-                    (status, _) if status.is_server_error() => {
-                        ApiError::ServiceError(error_response.error.message)
-                    }
-                    _ => {
-                        error!(
-                            "Unknown error detected: status={}, type={}, message={}",
-                            status, error_response.error.error_type, error_response.error.message
-                        );
-                        ApiError::Unknown(error_response.error.message)
-                    }
-                }
-            } else {
-                ApiError::Unknown(format!(
-                    "Failed to parse error response. Status {}: {}",
-                    status, response_text
-                ))
-            };
-
-            // Wrap the error with rate limit context
-            return Err(ApiErrorContext {
-                error,
-                rate_limits: Some(rate_limits),
-            }
-            .into());
-        }
 
         if let Some(callback) = streaming_callback {
             let mut blocks: Vec<ContentBlock> = Vec::new();

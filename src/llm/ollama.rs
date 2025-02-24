@@ -22,6 +22,7 @@ struct OllamaOptions {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OllamaMessage {
+    #[serde(default)]
     role: String,
     content: String,
     tool_calls: Option<Vec<OllamaToolCall>>,
