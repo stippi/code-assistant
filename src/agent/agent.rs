@@ -453,6 +453,17 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
         }
     }
 
+    // If we have reasoning but no actions, auto-create a CompleteTask action
+    if actions.is_empty() && !reasoning.is_empty() {
+        // Substantial text response detected, convert to CompleteTask
+        actions.push(AgentAction {
+            tool: Tool::CompleteTask {
+                message: reasoning.clone(),
+            },
+            reasoning: "Auto-generated task completion from text response".to_string(),
+        });
+    }
+
     Ok(actions)
 }
 
