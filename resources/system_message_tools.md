@@ -57,7 +57,7 @@ Usage:
 </tool:read_files>
 
 ## write_file
-Description: Creates or overwrites a file. Use for new files or when updating most content of a file. For smaller updates, prefer to use replace_in_file. ALWAYS provide the contents of the COMPLETE file, especially when overwriting existing files!! If the file to write is large, write it in chunks making use of the 'append' parameter. This avoids hitting an output token limit when replying (only write the equivalent of roughly 1000 words at once).
+Description: Creates or overwrites a file. Use for new files or when updating most content of a file. For smaller updates, prefer to use replace_in_file. ALWAYS provide the contents of the COMPLETE file, especially when overwriting existing files!! If the file to write is large, write it in chunks making use of the 'append' parameter. Always end your turn after using this tool! This avoids hitting an output token limit when replying.
 Parameters:
 - path: (required) The path of the file to write to (relative to the project root directory)
 - content: (required) The content to write to the file. ALWAYS provide the COMPLETE intended content of the file, without any truncation or omissions. You MUST include ALL parts of the file, even if they haven't been modified.

@@ -244,7 +244,8 @@ impl Tools {
                          For smaller updates, prefer to use replace_in_file. ALWAYS provide the contents \
                          of the COMPLETE file, especially when overwriting existing files!! \
                          If the file to write is large, write it in chunks making use of the 'append' parameter. \
-                         This avoids hitting an output token limit when replying (only write the equivalent of roughly 1000 words at once)."
+                         Always end your turn after using this tool, especially when using 'append'. \
+                         This avoids hitting an output token limit when replying."
                     .to_string(),
             parameters: json!({
                 "type": "object",
