@@ -149,11 +149,40 @@ impl ToolResultHandler for MCPToolHandler {
                 }
                 Ok(output)
             }
-            ToolResult::ReadFiles { loaded_files, .. } => {
+            ToolResult::ReadFiles {
+                loaded_files,
+                failed_files,
+            } => {
                 // Format detailed output with file contents
                 let mut output = String::new();
-                for (path, content) in loaded_files {
-                    output.push_str(&format!("File: {}\n{}\n", path.display(), content));
+                if !failed_files.is_empty() {
+                    for (path, error) in failed_files {
+                        output.push_str(&format!(
+                            "Failed to load '{}': {}\n",
+                            path.display(),
+                            error
+                        ));
+                    }
+                }
+                if !loaded_files.is_empty() {
+                    output.push_str(&format!("Successfully loaded the following file(s):\n"));
+                    for (path, content) in loaded_files {
+                        output.push_str(&format!(
+                            "-----[ {} ]-----\n{}\n",
+                            path.display(),
+                            content
+                        ));
+                    }
+                }
+                Ok(output)
+            }
+            ToolResult::WebFetch { page, error } => {
+                // Format detailed output with page contents
+                let mut output = String::new();
+                if let Some(e) = error {
+                    output.push_str(&format!("Failed to fetch page: {}", e));
+                } else {
+                    output.push_str(&format!("Page fetched successfully:\n{}\n", page.content));
                 }
                 Ok(output)
             }
