@@ -73,7 +73,13 @@ jobs:
         run: |
           git add Cargo.toml
           git commit -m "Bump version to ${{ steps.release_version.outputs.new_version }}"
-          git remote set-url origin https://x-access-token:${{ secrets.GH_PUSH_TOKEN }}@github.com/${{ github.repository }}
+          # Debug info
+          echo "Repository: ${{ github.repository }}"
+          # Use token for authentication - the @ is important!
+          git remote set-url origin "https://x-access-token:${{ secrets.GH_PUSH_TOKEN }}@github.com/${{ github.repository }}.git"
+          # Debug (safe version without showing token)
+          git remote -v
+          # Push changes
           git push origin main
 
       - name: Create Release
