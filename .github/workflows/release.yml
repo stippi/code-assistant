@@ -73,20 +73,16 @@ jobs:
         run: |
           git add Cargo.toml
           git commit -m "Bump version to ${{ steps.release_version.outputs.new_version }}"
-          # Debug info
-          echo "Repository: ${{ github.repository }}"
-          # Use token for authentication - the @ is important!
-          git remote set-url origin "https://x-access-token:${{ secrets.GH_PUSH_TOKEN }}@github.com/${{ github.repository }}.git"
-          # Debug (safe version without showing token)
-          git remote -v
-          # Push changes
-          git push origin main
+          
+          # Method 1: Using PAT directly with git command
+          echo "Using PAT for pushing changes"
+          git push https://${{ secrets.GH_PUSH_TOKEN }}@github.com/${{ github.repository }}.git main
 
       - name: Create Release
         id: create_release
         uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
         with:
           tag_name: v${{ steps.release_version.outputs.new_version }}
           release_name: Release v${{ steps.release_version.outputs.new_version }}
@@ -149,7 +145,7 @@ jobs:
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
         with:
           upload_url: ${{ needs.prepare-version.outputs.upload_url }}
           asset_path: release/code-assistant-${{ matrix.name }}.zip
