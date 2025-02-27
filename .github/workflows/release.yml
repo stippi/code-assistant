@@ -66,14 +66,19 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "Release version: $NEW_VERSION"
 
-      - name: Update Cargo.toml
+      - name: Update Cargo.toml and Cargo.lock
         run: |
+          # Update version in Cargo.toml
           sed -i "s/^version = \"${{ steps.cargo_version.outputs.current_version }}\"/version = \"${{ steps.release_version.outputs.new_version }}\"/" Cargo.toml
           cat Cargo.toml | grep "^version = "
+          
+          # Update Cargo.lock
+          cargo update --package code-assistant
 
       - name: Commit and push version update
         run: |
-          git add Cargo.toml
+          # Stage both Cargo.toml and Cargo.lock
+          git add Cargo.toml Cargo.lock
           git commit -m "Bump version to ${{ steps.release_version.outputs.new_version }}"
           git push
 
