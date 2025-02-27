@@ -110,24 +110,38 @@ impl WebClient {
             body.inner_html().await?.unwrap_or_default()
         };
 
-        // Convert HTML to Markdown
+        // Convert HTML to Markdown with improved handlers
         let converter = HtmlToMarkdown::builder()
-            .skip_tags(vec!["script", "style"])
-            .add_handler(vec!["svg"], |_: Element| Some("[Svg Image]".to_string()))
+            .skip_tags(vec!["script", "style", "noscript"])
+            .add_handler(vec!["svg"], |_: Element| Some("".to_string()))
+            // .add_handler(vec!["img"], |elem: Element| {
+            //     elem.attrs.
+            //     let alt = elem.attr("alt").unwrap_or("Image");
+            //     if !alt.is_empty() {
+            //         Some(format!("[{}]", alt))
+            //     } else {
+            //         Some("".to_string())
+            //     }
+            // })
             .build();
         let content = converter.convert(&html).unwrap();
 
-        // Remove image links and empty headings
+        // Clean up the markdown
         let image_pattern = Regex::new(r"!\[.*?\]\([^)]*\)\n?").unwrap();
         let empty_heading_pattern = Regex::new(r"\n*#+ *\n+").unwrap();
-        // Match markdown links with relative URLs
         let relative_link_pattern = Regex::new(r"\[([^\]]+)\]\(/[^)]+\)").unwrap();
+        let multiple_newlines = Regex::new(r"\n{3,}").unwrap();
+        let empty_brackets = Regex::new(r"\[\]").unwrap();
 
-        let content = image_pattern.replace_all(&content, "");
-        let content = empty_heading_pattern.replace_all(&content, "");
-        // Replace relative with absolute URLs
+        // Apply cleanup
+        let mut content = image_pattern.replace_all(&content, "").to_string();
+        content = empty_heading_pattern.replace_all(&content, "").to_string();
+        content = multiple_newlines.replace_all(&content, "\n\n").to_string();
+        content = empty_brackets.replace_all(&content, "").to_string();
+
+        // Handle relative links (preserve links as in original code)
         let base_url = url.origin().ascii_serialization();
-        let content = relative_link_pattern
+        content = relative_link_pattern
             .replace_all(&content, |caps: &regex::Captures| {
                 let link_text = &caps[1];
                 let link_url = &caps[0][caps[1].len() + 3..].trim_end_matches(')');
