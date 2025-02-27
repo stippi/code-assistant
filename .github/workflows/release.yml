@@ -73,10 +73,10 @@ jobs:
         run: |
           git add Cargo.toml
           git commit -m "Bump version to ${{ steps.release_version.outputs.new_version }}"
-          
+
           # Method 1: Using PAT directly with git command
           echo "Using PAT for pushing changes"
-          git push https://${{ secrets.GH_PUSH_TOKEN }}@github.com/${{ github.repository }}.git main
+          git push https://stippi:${{ secrets.GH_PUSH_TOKEN }}@github.com/${{ github.repository }}.git main
 
       - name: Create Release
         id: create_release
