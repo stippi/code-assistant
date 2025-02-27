@@ -139,7 +139,15 @@ jobs:
           mkdir -p release
           cp "target/${{ matrix.target }}/release/code-assistant${{ matrix.extension }}" release/
           cd release
-          zip code-assistant-${{ matrix.name }}.zip "code-assistant${{ matrix.extension }}"
+
+          # Windows runner has no 'zip' installed
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            # PowerShell Compress-Archive instead of zip
+            powershell -Command "Compress-Archive -Path ./code-assistant${{ matrix.extension }} -DestinationPath ./code-assistant-${{ matrix.name }}.zip"
+          else
+            # Linux/macOS: standard zip
+            zip code-assistant-${{ matrix.name }}.zip "code-assistant${{ matrix.extension }}"
+          fi
 
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
