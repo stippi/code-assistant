@@ -56,6 +56,8 @@ struct FormattingState {
     in_thinking: bool,
     // Track if we're inside tool tags
     in_tool: bool,
+    // Track if we're inside param tags
+    in_param: bool,
     // Current active tool name (if any)
     tool_name: String,
 }
@@ -63,6 +65,8 @@ struct FormattingState {
 pub struct TerminalUI {
     colors: Colors,
     state: Arc<Mutex<FormattingState>>,
+    // In production code, this isn't used
+    writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
 }
 
 impl TerminalUI {
@@ -73,8 +77,25 @@ impl TerminalUI {
                 buffer: String::new(),
                 in_thinking: false,
                 in_tool: false,
+                in_param: false,
                 tool_name: String::new(),
             })),
+            writer: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_test_writer(writer: Box<dyn Write + Send>) -> Self {
+        Self {
+            colors: Colors::new(),
+            state: Arc::new(Mutex::new(FormattingState {
+                buffer: String::new(),
+                in_thinking: false,
+                in_tool: false,
+                in_param: false,
+                tool_name: String::new(),
+            })),
+            writer: Some(Arc::new(Mutex::new(writer))),
         }
     }
 
@@ -202,7 +223,16 @@ impl UserInterface for TerminalUI {
 
     fn display_streaming(&self, text: &str) -> Result<(), UIError> {
         let mut state = self.state.lock().unwrap();
+
+        // Get the appropriate writer (stdout or test writer)
         let mut stdout = io::stdout().lock();
+        let writer: &mut dyn Write = if let Some(w) = &self.writer {
+            // We have a test writer
+            &mut *w.lock().unwrap()
+        } else {
+            // Use stdout in production
+            &mut stdout
+        };
 
         // Combine buffer with new text
         let current_text = format!("{}{}", state.buffer, text);
@@ -247,13 +277,13 @@ impl UserInterface for TerminalUI {
                     if state.in_thinking {
                         // Format thinking text
                         write!(
-                            stdout,
+                            writer,
                             "{}{}{}",
                             self.colors.dim, self.colors.italic, pre_tag_text
                         )?;
                     } else {
                         // Normal text, output as-is
-                        write!(stdout, "{}", pre_tag_text)?;
+                        write!(writer, "{}", pre_tag_text)?;
                     }
                 }
 
@@ -279,7 +309,7 @@ impl UserInterface for TerminalUI {
                     TagType::ThinkingEnd => {
                         // Exit thinking mode and reset formatting
                         state.in_thinking = false;
-                        write!(stdout, "{}", self.colors.reset)?;
+                        write!(writer, "{}", self.colors.reset)?;
 
                         // Skip past this tag
                         if absolute_tag_pos + 11 <= processing_text.len() {
@@ -303,7 +333,7 @@ impl UserInterface for TerminalUI {
                             // Output tool start
                             if !state.in_thinking {
                                 write!(
-                                    stdout,
+                                    writer,
                                     "\n{}⏺ {}{}{}",
                                     self.colors.cyan,
                                     self.colors.bold,
@@ -346,8 +376,11 @@ impl UserInterface for TerminalUI {
                         if let Some(end_pos) = tag_slice.find('>') {
                             // Format parameter start
                             if !state.in_thinking && state.in_tool {
-                                write!(stdout, "\n  {} ┃{} ", self.colors.cyan, self.colors.reset)?;
+                                write!(writer, "\n  {} ┃{} ", self.colors.cyan, self.colors.reset)?;
                             }
+
+                            // Mark that we're in a parameter
+                            state.in_param = true;
 
                             // Skip past this tag
                             current_pos = absolute_tag_pos + end_pos + 1;
@@ -361,7 +394,10 @@ impl UserInterface for TerminalUI {
                     TagType::ParamEnd => {
                         // Look for the end of this parameter end tag
                         if let Some(end_pos) = tag_slice.find('>') {
-                            // Skip past this tag (no special formatting needed)
+                            // We exit param mode but don't render the end tag
+                            state.in_param = false;
+
+                            // Skip past this tag without rendering it
                             current_pos = absolute_tag_pos + end_pos + 1;
                         } else {
                             // Incomplete tag, buffer the rest
@@ -374,7 +410,7 @@ impl UserInterface for TerminalUI {
                         // Not a recognized tag, treat as regular character
                         if state.in_thinking {
                             write!(
-                                stdout,
+                                writer,
                                 "{}{}{}",
                                 self.colors.dim,
                                 self.colors.italic,
@@ -382,7 +418,7 @@ impl UserInterface for TerminalUI {
                             )?;
                         } else {
                             write!(
-                                stdout,
+                                writer,
                                 "{}",
                                 &processing_text[absolute_tag_pos..absolute_tag_pos + 1]
                             )?;
@@ -395,12 +431,12 @@ impl UserInterface for TerminalUI {
                 let remaining = &processing_text[current_pos..];
                 if state.in_thinking {
                     write!(
-                        stdout,
+                        writer,
                         "{}{}{}",
                         self.colors.dim, self.colors.italic, remaining
                     )?;
                 } else {
-                    write!(stdout, "{}", remaining)?;
+                    write!(writer, "{}", remaining)?;
                 }
                 current_pos = processing_text.len();
             }
@@ -408,10 +444,10 @@ impl UserInterface for TerminalUI {
 
         // Apply appropriate styling reset if needed
         if state.in_thinking {
-            write!(stdout, "{}", self.colors.reset)?;
+            write!(writer, "{}", self.colors.reset)?;
         }
 
-        stdout.flush()?;
+        writer.flush()?;
         Ok(())
     }
 }

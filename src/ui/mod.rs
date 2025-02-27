@@ -31,3 +31,6 @@ pub trait UserInterface: Send + Sync {
     /// Display streaming output synchronously
     fn display_streaming(&self, text: &str) -> Result<(), UIError>;
 }
+
+#[cfg(test)]
+mod terminal_test;
