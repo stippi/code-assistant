@@ -75,7 +75,7 @@ jobs:
         run: |
           git add Cargo.toml
           git commit -m "Bump version to ${{ steps.release_version.outputs.new_version }}"
-          git push main
+          git push
 
       - name: Create Release
         id: create_release
