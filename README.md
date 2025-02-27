@@ -30,7 +30,7 @@ cargo build --release
 
 ## Configuration in Claude Desktop
 
-The `code-assistant` implements the [Model Context Protocol]() by Anthropic.
+The `code-assistant` implements the [Model Context Protocol](https://modelcontextprotocol.io/introduction) by Anthropic.
 This means it can be added as a plugin to MCP client applications such as **Claude Desktop**.
 
 ### Configure Your Projects
