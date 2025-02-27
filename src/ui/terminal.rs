@@ -140,11 +140,6 @@ impl TerminalUI {
         }
     }
 
-    // Find the closing > for a tag
-    fn find_tag_end(&self, text: &str, start: usize) -> Option<usize> {
-        text[start..].find('>').map(|pos| start + pos + 1)
-    }
-
     // Check if a string is a potential beginning of a tag
     fn is_potential_tag_start(&self, text: &str) -> bool {
         // Tag prefixes to check for
@@ -212,9 +207,6 @@ impl UserInterface for TerminalUI {
         // Combine buffer with new text
         let current_text = format!("{}{}", state.buffer, text);
 
-        // Clear buffer as we're processing it now
-        state.buffer.clear();
-
         // Check if the end of text could be a partial tag
         // If so, save it to buffer and only process the rest
         let mut processing_text = current_text.clone();
@@ -240,49 +232,72 @@ impl UserInterface for TerminalUI {
             state.buffer.clear();
         }
 
-        // Process text character by character for maximum control
-        let mut i = 0;
-        while i < processing_text.len() {
-            // Look for tag indicators < and </
-            if processing_text[i..].starts_with('<') {
-                let (tag_type, tag_name_offset) = self.detect_tag(&processing_text[i..]);
+        // Process the buffered text as chunks
+        let mut current_pos = 0;
+
+        // While we have content to process
+        while current_pos < processing_text.len() {
+            // Look for next tag
+            if let Some(tag_pos) = processing_text[current_pos..].find('<') {
+                let absolute_tag_pos = current_pos + tag_pos;
+
+                // Output all text before this tag if there is any
+                if tag_pos > 0 {
+                    let pre_tag_text = &processing_text[current_pos..absolute_tag_pos];
+                    if state.in_thinking {
+                        // Format thinking text
+                        write!(
+                            stdout,
+                            "{}{}{}",
+                            self.colors.dim, self.colors.italic, pre_tag_text
+                        )?;
+                    } else {
+                        // Normal text, output as-is
+                        write!(stdout, "{}", pre_tag_text)?;
+                    }
+                }
+
+                // Determine what kind of tag we're looking at
+                let tag_slice = &processing_text[absolute_tag_pos..];
+                let (tag_type, _) = self.detect_tag(tag_slice);
 
                 match tag_type {
                     TagType::ThinkingStart => {
-                        // Output text before tag
-                        if i > 0 {
-                            write!(stdout, "{}", &processing_text[..i])?;
-                        }
-
                         // Mark that we're in thinking mode
                         state.in_thinking = true;
 
-                        // Skip past the opening tag
-                        i += 10; // Length of "<thinking>"
+                        // Skip past this tag
+                        if absolute_tag_pos + 10 <= processing_text.len() {
+                            current_pos = absolute_tag_pos + 10;
+                        } else {
+                            // Incomplete tag, buffer the rest
+                            state.buffer = processing_text[absolute_tag_pos..].to_string();
+                            break;
+                        }
                     }
 
                     TagType::ThinkingEnd => {
-                        // Exit thinking mode
+                        // Exit thinking mode and reset formatting
                         state.in_thinking = false;
+                        write!(stdout, "{}", self.colors.reset)?;
 
-                        // Skip past the closing tag
-                        i += 11; // Length of "</thinking>"
+                        // Skip past this tag
+                        if absolute_tag_pos + 11 <= processing_text.len() {
+                            current_pos = absolute_tag_pos + 11;
+                        } else {
+                            // Incomplete tag, buffer the rest
+                            state.buffer = processing_text[absolute_tag_pos..].to_string();
+                            break;
+                        }
                     }
 
                     TagType::ToolStart => {
-                        // Look for the end of this tag
-                        if let Some(end_pos) = self.find_tag_end(&processing_text, i) {
-                            // Output text before tag if we're not in a thinking block
-                            if !state.in_thinking && i > 0 {
-                                write!(stdout, "{}", &processing_text[..i])?;
-                            }
-
-                            // Extract tool name
-                            let tag_content = &processing_text[i..end_pos];
-                            state.tool_name = if let Some(name_end) = tag_content[6..].find('>') {
-                                tag_content[6..6 + name_end].to_string()
+                        // See if we can find the end of this opening tag
+                        if let Some(end_pos) = tag_slice.find('>') {
+                            let tool_name = if end_pos > 6 {
+                                &tag_slice[6..end_pos]
                             } else {
-                                String::new()
+                                "unknown"
                             };
 
                             // Output tool start
@@ -292,106 +307,106 @@ impl UserInterface for TerminalUI {
                                     "\n{}⏺ {}{}{}",
                                     self.colors.cyan,
                                     self.colors.bold,
-                                    state.tool_name,
+                                    tool_name,
                                     self.colors.reset
                                 )?;
                             }
 
                             // Mark that we're inside a tool tag
                             state.in_tool = true;
+                            state.tool_name = tool_name.to_string();
 
                             // Skip past this tag
-                            i = end_pos;
+                            current_pos = absolute_tag_pos + end_pos + 1;
                         } else {
-                            // Incomplete tag, put in buffer and exit
-                            state.buffer = processing_text[i..].to_string();
+                            // Incomplete tag, buffer the rest
+                            state.buffer = processing_text[absolute_tag_pos..].to_string();
                             break;
                         }
                     }
 
                     TagType::ToolEnd => {
-                        // Look for the end of this tag
-                        if let Some(end_pos) = self.find_tag_end(&processing_text, i) {
+                        // Look for the end of this closing tag
+                        if let Some(end_pos) = tag_slice.find('>') {
                             // Exit tool mode
                             state.in_tool = false;
                             state.tool_name = String::new();
 
                             // Skip past this tag
-                            i = end_pos;
+                            current_pos = absolute_tag_pos + end_pos + 1;
                         } else {
-                            // Incomplete tag, put in buffer and exit
-                            state.buffer = processing_text[i..].to_string();
+                            // Incomplete tag, buffer the rest
+                            state.buffer = processing_text[absolute_tag_pos..].to_string();
                             break;
                         }
                     }
 
                     TagType::ParamStart => {
-                        // Look for the end of this tag
-                        if let Some(end_pos) = self.find_tag_end(&processing_text, i) {
+                        // Look for the end of this parameter start tag
+                        if let Some(end_pos) = tag_slice.find('>') {
                             // Format parameter start
                             if !state.in_thinking && state.in_tool {
                                 write!(stdout, "\n  {} ┃{} ", self.colors.cyan, self.colors.reset)?;
                             }
 
                             // Skip past this tag
-                            i = end_pos;
+                            current_pos = absolute_tag_pos + end_pos + 1;
                         } else {
-                            // Incomplete tag, put in buffer and exit
-                            state.buffer = processing_text[i..].to_string();
+                            // Incomplete tag, buffer the rest
+                            state.buffer = processing_text[absolute_tag_pos..].to_string();
                             break;
                         }
                     }
 
                     TagType::ParamEnd => {
-                        // Look for the end of this tag
-                        if let Some(end_pos) = self.find_tag_end(&processing_text, i) {
-                            // Skip past this tag
-                            i = end_pos;
+                        // Look for the end of this parameter end tag
+                        if let Some(end_pos) = tag_slice.find('>') {
+                            // Skip past this tag (no special formatting needed)
+                            current_pos = absolute_tag_pos + end_pos + 1;
                         } else {
-                            // Incomplete tag, put in buffer and exit
-                            state.buffer = processing_text[i..].to_string();
+                            // Incomplete tag, buffer the rest
+                            state.buffer = processing_text[absolute_tag_pos..].to_string();
                             break;
                         }
                     }
 
                     TagType::None => {
-                        // Not a tag, just output one character
+                        // Not a recognized tag, treat as regular character
                         if state.in_thinking {
-                            // In thinking mode, apply styling
                             write!(
                                 stdout,
                                 "{}{}{}",
                                 self.colors.dim,
                                 self.colors.italic,
-                                &processing_text[i..i + 1]
+                                &processing_text[absolute_tag_pos..absolute_tag_pos + 1]
                             )?;
                         } else {
-                            // Regular character, output directly
-                            write!(stdout, "{}", &processing_text[i..i + 1])?;
+                            write!(
+                                stdout,
+                                "{}",
+                                &processing_text[absolute_tag_pos..absolute_tag_pos + 1]
+                            )?;
                         }
-                        i += 1;
+                        current_pos = absolute_tag_pos + 1;
                     }
                 }
             } else {
-                // Regular character (not part of a tag)
+                // No more tags, output the rest of the text
+                let remaining = &processing_text[current_pos..];
                 if state.in_thinking {
-                    // In thinking mode, apply styling
                     write!(
                         stdout,
                         "{}{}{}",
-                        self.colors.dim,
-                        self.colors.italic,
-                        &processing_text[i..i + 1]
+                        self.colors.dim, self.colors.italic, remaining
                     )?;
                 } else {
-                    // Regular character, output directly
-                    write!(stdout, "{}", &processing_text[i..i + 1])?;
+                    write!(stdout, "{}", remaining)?;
                 }
-                i += 1;
+                current_pos = processing_text.len();
             }
         }
 
-        // Reset style at end of output
+        // Apply appropriate styling reset if needed
         if state.in_thinking {
             write!(stdout, "{}", self.colors.reset)?;
         }
