@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. v0.1.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          release_name: Release ${{ github.event.inputs.version }}
+          draft: true
+          prerelease: false
+      
+      - name: Output Release URL
+        run: echo "Release URL ${{ steps.create_release.outputs.upload_url }}"
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+  
+  build:
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+            extension: ""
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-x86_64
+            extension: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-aarch64
+            extension: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+            extension: ".exe"
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+      
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --target ${{ matrix.target }}
+      
+      - name: Package Binary
+        shell: bash
+        run: |
+          mkdir -p release
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp "target/${{ matrix.target }}/release/code-assistant${{ matrix.extension }}" release/
+          else
+            cp "target/${{ matrix.target }}/release/code-assistant" release/
+          fi
+          cd release
+          zip code-assistant-${{ matrix.name }}.zip "code-assistant${{ matrix.extension }}"
+      
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: release/code-assistant-${{ matrix.name }}.zip
+          asset_name: code-assistant-${{ matrix.name }}.zip
+          asset_content_type: application/zip
