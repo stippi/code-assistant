@@ -243,7 +243,7 @@ impl UserInterface for TerminalUI {
         let mut safe_length = processing_text.len();
 
         // Check backwards for potential tag starts
-        for j in (1..=processing_text.len().min(20)).rev() {
+        for j in (1..=processing_text.len().min(40)).rev() {
             // Check at most last 20 chars
             let suffix = &processing_text[processing_text.len() - j..];
             if self.is_potential_tag_start(suffix) {
