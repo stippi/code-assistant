@@ -144,6 +144,31 @@ impl TerminalUI {
     fn find_tag_end(&self, text: &str, start: usize) -> Option<usize> {
         text[start..].find('>').map(|pos| start + pos + 1)
     }
+
+    // Check if a string is a potential beginning of a tag
+    fn is_potential_tag_start(&self, text: &str) -> bool {
+        // Tag prefixes to check for
+        const TAG_PREFIXES: [&str; 6] = [
+            "<thinking>",
+            "</thinking>",
+            "<tool:",
+            "</tool:",
+            "<param:",
+            "</param:",
+        ];
+
+        // Check if the text could be the start of any tag
+        for prefix in &TAG_PREFIXES {
+            // Loop through all possible partial matches
+            for i in 1..=prefix.len() {
+                if i <= text.len() && &text[text.len() - i..] == &prefix[..i] {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
 }
 
 #[async_trait]
@@ -190,18 +215,43 @@ impl UserInterface for TerminalUI {
         // Clear buffer as we're processing it now
         state.buffer.clear();
 
+        // Check if the end of text could be a partial tag
+        // If so, save it to buffer and only process the rest
+        let mut processing_text = current_text.clone();
+        let mut safe_length = processing_text.len();
+
+        // Check backwards for potential tag starts
+        for j in (1..=processing_text.len().min(20)).rev() {
+            // Check at most last 20 chars
+            let suffix = &processing_text[processing_text.len() - j..];
+            if self.is_potential_tag_start(suffix) {
+                // We found a potential tag start, buffer this part
+                safe_length = processing_text.len() - j;
+                state.buffer = suffix.to_string();
+                break;
+            }
+        }
+
+        // Only process text up to safe_length
+        if safe_length < processing_text.len() {
+            processing_text = processing_text[..safe_length].to_string();
+        } else {
+            // No potential tag at end, clear buffer
+            state.buffer.clear();
+        }
+
         // Process text character by character for maximum control
         let mut i = 0;
-        while i < current_text.len() {
+        while i < processing_text.len() {
             // Look for tag indicators < and </
-            if current_text[i..].starts_with('<') {
-                let (tag_type, tag_name_offset) = self.detect_tag(&current_text[i..]);
+            if processing_text[i..].starts_with('<') {
+                let (tag_type, tag_name_offset) = self.detect_tag(&processing_text[i..]);
 
                 match tag_type {
                     TagType::ThinkingStart => {
                         // Output text before tag
                         if i > 0 {
-                            write!(stdout, "{}", &current_text[..i])?;
+                            write!(stdout, "{}", &processing_text[..i])?;
                         }
 
                         // Mark that we're in thinking mode
@@ -221,14 +271,14 @@ impl UserInterface for TerminalUI {
 
                     TagType::ToolStart => {
                         // Look for the end of this tag
-                        if let Some(end_pos) = self.find_tag_end(&current_text, i) {
+                        if let Some(end_pos) = self.find_tag_end(&processing_text, i) {
                             // Output text before tag if we're not in a thinking block
                             if !state.in_thinking && i > 0 {
-                                write!(stdout, "{}", &current_text[..i])?;
+                                write!(stdout, "{}", &processing_text[..i])?;
                             }
 
                             // Extract tool name
-                            let tag_content = &current_text[i..end_pos];
+                            let tag_content = &processing_text[i..end_pos];
                             state.tool_name = if let Some(name_end) = tag_content[6..].find('>') {
                                 tag_content[6..6 + name_end].to_string()
                             } else {
@@ -254,14 +304,14 @@ impl UserInterface for TerminalUI {
                             i = end_pos;
                         } else {
                             // Incomplete tag, put in buffer and exit
-                            state.buffer = current_text[i..].to_string();
+                            state.buffer = processing_text[i..].to_string();
                             break;
                         }
                     }
 
                     TagType::ToolEnd => {
                         // Look for the end of this tag
-                        if let Some(end_pos) = self.find_tag_end(&current_text, i) {
+                        if let Some(end_pos) = self.find_tag_end(&processing_text, i) {
                             // Exit tool mode
                             state.in_tool = false;
                             state.tool_name = String::new();
@@ -270,14 +320,14 @@ impl UserInterface for TerminalUI {
                             i = end_pos;
                         } else {
                             // Incomplete tag, put in buffer and exit
-                            state.buffer = current_text[i..].to_string();
+                            state.buffer = processing_text[i..].to_string();
                             break;
                         }
                     }
 
                     TagType::ParamStart => {
                         // Look for the end of this tag
-                        if let Some(end_pos) = self.find_tag_end(&current_text, i) {
+                        if let Some(end_pos) = self.find_tag_end(&processing_text, i) {
                             // Format parameter start
                             if !state.in_thinking && state.in_tool {
                                 write!(stdout, "\n  {} ┃{} ", self.colors.cyan, self.colors.reset)?;
@@ -287,19 +337,19 @@ impl UserInterface for TerminalUI {
                             i = end_pos;
                         } else {
                             // Incomplete tag, put in buffer and exit
-                            state.buffer = current_text[i..].to_string();
+                            state.buffer = processing_text[i..].to_string();
                             break;
                         }
                     }
 
                     TagType::ParamEnd => {
                         // Look for the end of this tag
-                        if let Some(end_pos) = self.find_tag_end(&current_text, i) {
+                        if let Some(end_pos) = self.find_tag_end(&processing_text, i) {
                             // Skip past this tag
                             i = end_pos;
                         } else {
                             // Incomplete tag, put in buffer and exit
-                            state.buffer = current_text[i..].to_string();
+                            state.buffer = processing_text[i..].to_string();
                             break;
                         }
                     }
@@ -313,11 +363,11 @@ impl UserInterface for TerminalUI {
                                 "{}{}{}",
                                 self.colors.dim,
                                 self.colors.italic,
-                                &current_text[i..i + 1]
+                                &processing_text[i..i + 1]
                             )?;
                         } else {
                             // Regular character, output directly
-                            write!(stdout, "{}", &current_text[i..i + 1])?;
+                            write!(stdout, "{}", &processing_text[i..i + 1])?;
                         }
                         i += 1;
                     }
@@ -331,11 +381,11 @@ impl UserInterface for TerminalUI {
                         "{}{}{}",
                         self.colors.dim,
                         self.colors.italic,
-                        &current_text[i..i + 1]
+                        &processing_text[i..i + 1]
                     )?;
                 } else {
                     // Regular character, output directly
-                    write!(stdout, "{}", &current_text[i..i + 1])?;
+                    write!(stdout, "{}", &processing_text[i..i + 1])?;
                 }
                 i += 1;
             }
