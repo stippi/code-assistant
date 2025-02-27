@@ -12,11 +12,11 @@ struct Colors {
     italic: &'static str,
     blue: &'static str,
     green: &'static str,
-    yellow: &'static str,
+    // yellow: &'static str,
     red: &'static str,
-    magenta: &'static str,
+    // magenta: &'static str,
     cyan: &'static str,
-    gray: &'static str,
+    // gray: &'static str,
 }
 
 impl Colors {
@@ -28,11 +28,11 @@ impl Colors {
             bold: "\x1b[1m",
             blue: "\x1b[34m",
             green: "\x1b[32m",
-            yellow: "\x1b[33m",
+            // yellow: "\x1b[33m",
             red: "\x1b[31m",
-            magenta: "\x1b[35m",
+            // magenta: "\x1b[35m",
             cyan: "\x1b[36m",
-            gray: "\x1b[90m",
+            // gray: "\x1b[90m",
         }
     }
 }
