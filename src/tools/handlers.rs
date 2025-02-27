@@ -122,10 +122,6 @@ impl ToolResultHandler for MCPToolHandler {
                         Ok(tree) => {
                             // Use the listing as part of the result
                             let mut output = format!("Successfully opened project '{}'\n\n", name);
-                            output.push_str(&format!(
-                                "Project root directory: {}\n\n",
-                                project_path.display()
-                            ));
                             output.push_str(&tree.to_string());
                             Ok(output)
                         }
