@@ -1,41 +1,12 @@
 use super::{UIError, UIMessage, UserInterface};
 use async_trait::async_trait;
+use crossterm::{
+    style::{self, Color, Stylize},
+    terminal::{self},
+};
+use rustyline::{error::ReadlineError, history::DefaultHistory, Config, Editor};
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncBufReadExt, BufReader};
-
-// ANSI color codes for terminal formatting
-struct Colors {
-    reset: &'static str,
-    dim: &'static str,
-    bold: &'static str,
-    italic: &'static str,
-    blue: &'static str,
-    green: &'static str,
-    // yellow: &'static str,
-    red: &'static str,
-    // magenta: &'static str,
-    cyan: &'static str,
-    // gray: &'static str,
-}
-
-impl Colors {
-    fn new() -> Self {
-        Colors {
-            reset: "\x1b[0m",
-            dim: "\x1b[2m",
-            italic: "\x1b[3m",
-            bold: "\x1b[1m",
-            blue: "\x1b[34m",
-            green: "\x1b[32m",
-            // yellow: "\x1b[33m",
-            red: "\x1b[31m",
-            // magenta: "\x1b[35m",
-            cyan: "\x1b[36m",
-            // gray: "\x1b[90m",
-        }
-    }
-}
 
 // Tag types we need to process
 enum TagType {
@@ -63,16 +34,24 @@ struct FormattingState {
 }
 
 pub struct TerminalUI {
-    colors: Colors,
     state: Arc<Mutex<FormattingState>>,
+    // For line editor - using just the default implementation without custom helper
+    line_editor: Arc<Mutex<Editor<(), DefaultHistory>>>,
     // In production code, this isn't used
     writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
 }
 
 impl TerminalUI {
     pub fn new() -> Self {
+        // Initialize rustyline with configuration
+        let config = Config::builder()
+            .edit_mode(rustyline::EditMode::Emacs)
+            .build();
+
+        // Create editor with default helper
+        let editor = Editor::with_config(config).expect("Failed to create line editor");
+
         Self {
-            colors: Colors::new(),
             state: Arc::new(Mutex::new(FormattingState {
                 buffer: String::new(),
                 in_thinking: false,
@@ -80,14 +59,22 @@ impl TerminalUI {
                 in_param: false,
                 tool_name: String::new(),
             })),
+            line_editor: Arc::new(Mutex::new(editor)),
             writer: None,
         }
     }
 
     #[cfg(test)]
     pub fn with_test_writer(writer: Box<dyn Write + Send>) -> Self {
+        // Similar to new() but with test writer
+        let config = Config::builder()
+            .edit_mode(rustyline::EditMode::Emacs)
+            .build();
+
+        // Create editor with default helper
+        let editor = Editor::with_config(config).expect("Failed to create line editor");
+
         Self {
-            colors: Colors::new(),
             state: Arc::new(Mutex::new(FormattingState {
                 buffer: String::new(),
                 in_thinking: false,
@@ -95,6 +82,7 @@ impl TerminalUI {
                 in_param: false,
                 tool_name: String::new(),
             })),
+            line_editor: Arc::new(Mutex::new(editor)),
             writer: Some(Arc::new(Mutex::new(writer))),
         }
     }
@@ -105,41 +93,85 @@ impl TerminalUI {
         Ok(())
     }
 
+    // Create a frame around content
+    fn frame_content(&self, content: &str, title: Option<&str>, color: Color) -> String {
+        // Get terminal width
+        let (width, _) = terminal::size().unwrap_or((80, 24));
+        let frame_width = (width as usize).min(100); // Cap at 100 columns
+
+        // Use the specified color
+        let border_color = color;
+
+        // Split content into lines
+        let lines: Vec<&str> = content.lines().collect();
+
+        // Build the frame
+        let mut result = String::new();
+
+        // Top border with optional title
+        result.push_str(&format!("{}╭", "─".repeat(2).with(border_color)));
+
+        if let Some(t) = title {
+            result.push_str(&format!(
+                "{}─{}",
+                "─".repeat(1).with(border_color),
+                format!(" {} ", t).bold().with(border_color)
+            ));
+            let remaining = frame_width.saturating_sub(t.len() + 6);
+            result.push_str(&format!("{}", "─".repeat(remaining).with(border_color)));
+        } else {
+            result.push_str(&format!(
+                "{}",
+                "─".repeat(frame_width - 3).with(border_color)
+            ));
+        }
+
+        result.push_str(&format!("{}╮\n", "─".repeat(1).with(border_color)));
+
+        // Content lines
+        for line in lines {
+            result.push_str(&format!(
+                "{} {} {}\n",
+                "│".with(border_color),
+                line,
+                "│".with(border_color)
+            ));
+        }
+
+        // Bottom border
+        result.push_str(&format!(
+            "{}╰{}╯\n",
+            "─".repeat(2).with(border_color),
+            "─".repeat(frame_width - 3).with(border_color)
+        ));
+
+        result
+    }
+
     fn format_tool_result(&self, text: &str) -> String {
-        // Determine result type and choose appropriate symbol and color
+        // Determine result type and choose appropriate color and symbol
         let (status_symbol, status_color) = if text.contains("Failed")
             || text.contains("Error")
             || text.contains("failed")
             || text.contains("error")
         {
-            ("✗", self.colors.red)
+            ("✗", Color::Red)
         } else if text.contains("Successfully")
             || text.starts_with("Available")
             || text.contains("success")
         {
-            ("✓", self.colors.green)
+            ("✓", Color::Green)
         } else {
-            ("•", self.colors.blue)
+            ("•", Color::Blue)
         };
-
-        // Format with clean header
-        let formatted = format!(
-            "\n{}{} {}Tool Result:{} ",
-            status_color, status_symbol, self.colors.bold, self.colors.reset
-        );
 
         // Apply highlighting to content
         let highlighted_text = text
-            .replace(
-                "- ",
-                &format!("{}• {}", self.colors.blue, self.colors.reset),
-            )
-            .replace(
-                "> ",
-                &format!("{}▶ {}", self.colors.cyan, self.colors.reset),
-            );
+            .replace("- ", &format!("{} ", "•".with(Color::Blue)))
+            .replace("> ", &format!("{} ", "▶".with(Color::Cyan)));
 
-        format!("{}{}", formatted, highlighted_text)
+        // Combine status symbol and content
+        format!("{} {}", status_symbol.with(status_color), highlighted_text)
     }
 
     // Detect what kind of tag we're seeing
@@ -197,28 +229,55 @@ impl UserInterface for TerminalUI {
                 self.write_line(&formatted_msg).await?
             }
             UIMessage::Question(msg) => {
-                // Format questions with a clear indicator
-                let formatted_question = format!(
-                    "\n{}{}Question:{} {}",
-                    self.colors.cyan, self.colors.bold, self.colors.reset, msg
-                );
+                // Format questions with a frame
+                let formatted_question = self.frame_content(&msg, Some("Question"), Color::Cyan);
                 self.write_line(&formatted_question).await?
             }
         }
         Ok(())
     }
 
-    async fn get_input(&self, _prompt: &str) -> Result<String, UIError> {
-        // Simple prompt character
-        print!("{}> {}", self.colors.green, self.colors.reset);
-        io::stdout().flush()?;
+    async fn get_input(&self, prompt: &str) -> Result<String, UIError> {
+        // Access the editor
+        let mut editor = self.line_editor.lock().unwrap();
 
-        let mut line = String::new();
-        let stdin = tokio::io::stdin();
-        let mut reader = BufReader::new(stdin);
-        reader.read_line(&mut line).await?;
+        // Set a prompt with color
+        let colored_prompt = format!(
+            "{}{} ",
+            if prompt.is_empty() {
+                ">".with(Color::Green)
+            } else {
+                prompt.with(Color::Green)
+            },
+            style::ResetColor
+        );
 
-        Ok(line.trim().to_string())
+        // Read a line
+        match editor.readline(&colored_prompt) {
+            Ok(line) => {
+                // Add to history
+                let _ = editor.add_history_entry(line.as_str());
+                Ok(line.trim().to_string())
+            }
+            Err(ReadlineError::Interrupted) => {
+                // Ctrl-C
+                Err(UIError::IOError(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Input interrupted",
+                )))
+            }
+            Err(ReadlineError::Eof) => {
+                // Ctrl-D
+                Err(UIError::IOError(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Input EOF",
+                )))
+            }
+            Err(e) => Err(UIError::IOError(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Input error: {}", e),
+            ))),
+        }
     }
 
     fn display_streaming(&self, text: &str) -> Result<(), UIError> {
@@ -244,7 +303,7 @@ impl UserInterface for TerminalUI {
 
         // Check backwards for potential tag starts
         for j in (1..=processing_text.len().min(40)).rev() {
-            // Check at most last 20 chars
+            // Check at most last 40 chars
             let suffix = &processing_text[processing_text.len() - j..];
             if self.is_potential_tag_start(suffix) {
                 // We found a potential tag start, buffer this part
@@ -275,12 +334,9 @@ impl UserInterface for TerminalUI {
                 if tag_pos > 0 {
                     let pre_tag_text = &processing_text[current_pos..absolute_tag_pos];
                     if state.in_thinking {
-                        // Format thinking text
-                        write!(
-                            writer,
-                            "{}{}{}",
-                            self.colors.dim, self.colors.italic, pre_tag_text
-                        )?;
+                        // Format thinking text with crossterm
+                        let styled_text = pre_tag_text.dark_grey().italic();
+                        write!(writer, "{}", styled_text)?;
                     } else {
                         // Normal text, output as-is
                         write!(writer, "{}", pre_tag_text)?;
@@ -309,7 +365,7 @@ impl UserInterface for TerminalUI {
                     TagType::ThinkingEnd => {
                         // Exit thinking mode and reset formatting
                         state.in_thinking = false;
-                        write!(writer, "{}", self.colors.reset)?;
+                        write!(writer, "{}", style::ResetColor)?;
 
                         // Skip past this tag
                         if absolute_tag_pos + 11 <= processing_text.len() {
@@ -330,16 +386,10 @@ impl UserInterface for TerminalUI {
                                 "unknown"
                             };
 
-                            // Output tool start
+                            // Output tool start with a clean format
                             if !state.in_thinking {
-                                write!(
-                                    writer,
-                                    "\n{}⏺ {}{}{}",
-                                    self.colors.cyan,
-                                    self.colors.bold,
-                                    tool_name,
-                                    self.colors.reset
-                                )?;
+                                // Bullet point and tool name in bold blue
+                                write!(writer, "\n• {}", format!("{}", tool_name).bold().blue())?;
                             }
 
                             // Mark that we're inside a tool tag
@@ -374,9 +424,16 @@ impl UserInterface for TerminalUI {
                     TagType::ParamStart => {
                         // Look for the end of this parameter start tag
                         if let Some(end_pos) = tag_slice.find('>') {
-                            // Format parameter start
+                            // Get param name if available
+                            let param_name = if end_pos > 7 {
+                                &tag_slice[7..end_pos]
+                            } else {
+                                "param"
+                            };
+
+                            // Format parameter start with indentation
                             if !state.in_thinking && state.in_tool {
-                                write!(writer, "\n  {} ┃{} ", self.colors.cyan, self.colors.reset)?;
+                                write!(writer, "  {}: ", param_name.cyan())?;
                             }
 
                             // Mark that we're in a parameter
@@ -411,10 +468,10 @@ impl UserInterface for TerminalUI {
                         if state.in_thinking {
                             write!(
                                 writer,
-                                "{}{}{}",
-                                self.colors.dim,
-                                self.colors.italic,
-                                &processing_text[absolute_tag_pos..absolute_tag_pos + 1]
+                                "{}",
+                                processing_text[absolute_tag_pos..absolute_tag_pos + 1]
+                                    .dark_grey()
+                                    .italic()
                             )?;
                         } else {
                             write!(
@@ -430,11 +487,7 @@ impl UserInterface for TerminalUI {
                 // No more tags, output the rest of the text
                 let remaining = &processing_text[current_pos..];
                 if state.in_thinking {
-                    write!(
-                        writer,
-                        "{}{}{}",
-                        self.colors.dim, self.colors.italic, remaining
-                    )?;
+                    write!(writer, "{}", remaining.dark_grey().italic())?;
                 } else {
                     write!(writer, "{}", remaining)?;
                 }
@@ -444,7 +497,7 @@ impl UserInterface for TerminalUI {
 
         // Apply appropriate styling reset if needed
         if state.in_thinking {
-            write!(writer, "{}", self.colors.reset)?;
+            write!(writer, "{}", style::ResetColor)?;
         }
 
         writer.flush()?;

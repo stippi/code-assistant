@@ -10,6 +10,10 @@ walkdir = "2.4"
 tokio = { version = "1.36", features = ["full"] }
 tempfile = "3.10"
 
+# Terminal UI
+rustyline = "12.0.0"
+crossterm = "0.27.0"
+
 # HTTP Requests
 chromiumoxide = { version = "0.5", features = ["tokio-runtime"] }
 reqwest = { version = "0.11", features = ["json", "stream"] }
