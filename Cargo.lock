@@ -614,6 +614,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "dotenv",
+ "encoding_rs",
  "futures",
  "glob",
  "htmd",

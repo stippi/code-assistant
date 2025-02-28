@@ -29,6 +29,22 @@ pub enum LoadedResource {
     WebPage(WebPage),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FileEncoding {
+    UTF8,
+    UTF16LE,
+    UTF16BE,
+    Windows1252,
+    ISO8859_2,
+    Other(String),
+}
+
+impl Default for FileEncoding {
+    fn default() -> Self {
+        Self::UTF8
+    }
+}
+
 /// Represents the agent's working memory during execution
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct WorkingMemory {

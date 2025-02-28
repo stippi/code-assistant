@@ -1,14 +1,13 @@
 use crate::types::{
-    CodeExplorer, FileReplacement, FileSystemEntryType, FileTreeEntry, SearchMode, SearchOptions,
-    SearchResult,
+    CodeExplorer, FileEncoding, FileReplacement, FileSystemEntryType, FileTreeEntry, SearchMode,
+    SearchOptions, SearchResult,
 };
 use anyhow::Result;
-use content_inspector::{self, ContentType};
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use tracing::debug;
 
 /// Helper struct for grouping search matches into sections
@@ -23,6 +22,8 @@ pub struct Explorer {
     root_dir: PathBuf,
     // Track which paths were explicitly listed
     expanded_paths: HashSet<PathBuf>,
+    // Track which files had which encoding
+    file_encodings: Arc<RwLock<HashMap<PathBuf, FileEncoding>>>,
 }
 
 impl FileTreeEntry {
@@ -102,6 +103,7 @@ impl Explorer {
         Self {
             root_dir,
             expanded_paths: HashSet::new(),
+            file_encodings: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -216,7 +218,19 @@ impl CodeExplorer for Explorer {
 
     fn read_file(&self, path: &PathBuf) -> Result<String> {
         debug!("Reading file: {}", path.display());
-        Ok(std::fs::read_to_string(path)?)
+        // Prüfe, ob die Datei ein Textfile ist
+        if !crate::utils::encoding::is_text_file(path) {
+            return Err(anyhow::anyhow!("Not a text file: {}", path.display()));
+        }
+
+        // Read with encoding dectection
+        let (content, encoding) = crate::utils::encoding::read_file_with_encoding(path)?;
+
+        // Store the detected encoding
+        let mut encodings = self.file_encodings.write().unwrap();
+        encodings.insert(path.clone(), encoding);
+
+        Ok(content)
     }
 
     fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()> {
@@ -226,16 +240,26 @@ impl CodeExplorer for Explorer {
             std::fs::create_dir_all(parent)?;
         }
 
-        if append && path.exists() {
-            // Append content to existing file
-            let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
-            use std::io::Write;
-            write!(file, "{}", content)?;
-            Ok(())
+        // Get encoding if known, otherwise use UTF-8
+        let encoding = {
+            let encodings = self.file_encodings.read().unwrap();
+            encodings.get(path).cloned().unwrap_or(FileEncoding::UTF8)
+        };
+
+        let content_to_write = if append && path.exists() {
+            // Try to read existing content and append new content
+            match crate::utils::encoding::read_file_with_encoding(path) {
+                Ok((existing, _)) => existing + content,
+                Err(_) => content.clone(), // Fallback if reading fails
+            }
         } else {
-            // Write or overwrite file
-            Ok(std::fs::write(path, content)?)
-        }
+            content.clone()
+        };
+
+        // Write the content (new or combined) with the right encoding
+        crate::utils::encoding::write_file_with_encoding(path, &content_to_write, &encoding)?;
+
+        Ok(())
     }
 
     fn delete_file(&self, path: &PathBuf) -> Result<()> {
@@ -320,17 +344,16 @@ impl CodeExplorer for Explorer {
             let path = entry.path();
 
             // Skip directories and non-text files
-            if path.is_dir() || !is_text_file(path) {
+            if path.is_dir() || !crate::utils::encoding::is_text_file(path) {
                 continue;
             }
 
-            // Try to read file content as UTF-8 text
-            let content = match std::fs::read_to_string(path) {
-                Ok(content) => content,
+            // Read with encoding detection
+            let (content, _encoding) = match crate::utils::encoding::read_file_with_encoding(path) {
+                Ok(result) => result,
                 Err(e) => {
-                    // Skip files that can't be read as valid UTF-8
                     debug!(
-                        "Skipping file with invalid UTF-8: {}: {}",
+                        "Skipping file with encoding issues: {}: {}",
                         path.display(),
                         e
                     );
@@ -488,71 +511,6 @@ impl CodeExplorer for Explorer {
         }
 
         Ok(results)
-    }
-}
-
-/// Helper function to determine if a file is likely to be a text file
-/// by checking both extension and content
-fn is_text_file(path: &Path) -> bool {
-    // Common text file extensions for quick filtering
-    let text_extensions = [
-        "txt",
-        "md",
-        "rs",
-        "js",
-        "py",
-        "java",
-        "c",
-        "cpp",
-        "h",
-        "hpp",
-        "css",
-        "html",
-        "xml",
-        "json",
-        "yaml",
-        "yml",
-        "toml",
-        "sh",
-        "bash",
-        "zsh",
-        "fish",
-        "conf",
-        "cfg",
-        "ini",
-        "properties",
-        "env",
-    ];
-
-    // Fast path: first check the extension
-    let is_known_text_extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| text_extensions.contains(&ext.to_lowercase().as_str()))
-        .unwrap_or(false);
-
-    if is_known_text_extension {
-        return true;
-    }
-
-    // For unknown extensions, we need to check the content more carefully
-    match fs::read(path) {
-        Ok(buffer) => {
-            // Only examine the first 1024 bytes for performance
-            let sample = if buffer.len() > 1024 {
-                &buffer[..1024]
-            } else {
-                &buffer
-            };
-
-            // Use content_inspector to check content type
-            // Consider all text formats (UTF-8, UTF-16) as text files
-            match content_inspector::inspect(sample) {
-                ContentType::BINARY => false,
-                _ => true, // UTF8, UTF16LE, UTF16BE are all text
-            }
-        }
-        Err(_) => false, // Couldn't read the file
     }
 }
 
