@@ -14,6 +14,17 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+impl Usage {
+    pub fn zero() -> Self {
+        Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }
+    }
+}
+
 // Mock LLM Provider
 #[derive(Default, Clone)]
 struct MockLLMProvider {
@@ -496,10 +507,7 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
                 input: tool_input,
             },
         ],
-        usage: Usage {
-            input_tokens: 0,
-            output_tokens: 0,
-        },
+        usage: Usage::zero(),
     }
 }
 
@@ -858,6 +866,8 @@ fn test_flexible_xml_parsing() -> Result<()> {
         usage: Usage {
             input_tokens: 0,
             output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
         },
     };
 
@@ -906,10 +916,7 @@ const x = 42;
 </tool:replace_in_file>"#
                 .to_string(),
         }],
-        usage: Usage {
-            input_tokens: 0,
-            output_tokens: 0,
-        },
+        usage: Usage::zero(),
     };
 
     let actions = parse_llm_response(&response)?;
@@ -1225,10 +1232,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
                 name: "unknown_tool".to_string(),
                 input: serde_json::json!({}),
             }],
-            usage: Usage {
-                input_tokens: 0,
-                output_tokens: 0,
-            },
+            usage: Usage::zero(),
         }),
     ]);
     let mock_llm_ref = mock_llm.clone();
@@ -1284,10 +1288,7 @@ async fn test_parse_error_handling() -> Result<()> {
                     "wrong_param": "value"
                 }),
             }],
-            usage: Usage {
-                input_tokens: 0,
-                output_tokens: 0,
-            },
+            usage: Usage::zero(),
         }),
     ]);
     let mock_llm_ref = mock_llm.clone();

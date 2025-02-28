@@ -42,6 +42,8 @@ impl TestCase {
                 usage: Usage {
                     input_tokens: 10,
                     output_tokens: 8,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
                 },
             },
         }
@@ -81,6 +83,8 @@ impl TestCase {
                 usage: Usage {
                     input_tokens: 15,
                     output_tokens: 12,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
                 },
             },
         }

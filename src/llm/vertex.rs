@@ -327,6 +327,9 @@ impl VertexClient {
                     .as_ref()
                     .map(|u| u.candidates_token_count)
                     .unwrap_or(0),
+                // Vertex doesn't support our caching markers, so these fields are 0
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
             },
         };
 
@@ -427,6 +430,9 @@ impl VertexClient {
                         .as_ref()
                         .map(|u| u.candidates_token_count)
                         .unwrap_or(0),
+                    // Vertex doesn't support our caching markers, so these fields are 0
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
                 },
             },
             rate_limits,

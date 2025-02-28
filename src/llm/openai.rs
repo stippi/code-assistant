@@ -409,6 +409,9 @@ impl OpenAIClient {
                 usage: Usage {
                     input_tokens: openai_response.usage.prompt_tokens,
                     output_tokens: openai_response.usage.completion_tokens,
+                    // OpenAI doesn't support our caching markers, so these fields are 0
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
                 },
             },
             rate_limits,
@@ -583,10 +586,15 @@ impl OpenAIClient {
                     .map(|u| Usage {
                         input_tokens: u.prompt_tokens,
                         output_tokens: u.completion_tokens,
+                        // OpenAI doesn't support our caching markers, so these fields are 0
+                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: 0,
                     })
                     .unwrap_or(Usage {
                         input_tokens: 0,
                         output_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: 0,
                     }),
             },
             OpenAIRateLimitInfo::from_response(&response),

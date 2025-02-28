@@ -10,6 +10,12 @@ pub struct Usage {
     pub input_tokens: u32,
     /// Number of tokens in the output (completion)
     pub output_tokens: u32,
+    /// Number of tokens written to cache
+    #[serde(default)]
+    pub cache_creation_input_tokens: u32,
+    /// Number of tokens read from cache
+    #[serde(default)]
+    pub cache_read_input_tokens: u32,
 }
 
 /// Generic request structure that can be mapped to different providers

@@ -328,8 +328,11 @@ impl Agent {
             }
         }
         println!(
-            "\n==== Token usage: Input: {}, Output: {} ====",
-            response.usage.input_tokens, response.usage.output_tokens
+            "\n==== Token usage: Input: {}, Output: {}, Cache: Created: {}, Read: {} ====",
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            response.usage.cache_creation_input_tokens,
+            response.usage.cache_read_input_tokens
         );
 
         let assistant_msg = Message {

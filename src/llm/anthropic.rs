@@ -124,6 +124,23 @@ impl RateLimitHandler for AnthropicRateLimitInfo {
     }
 }
 
+/// Cache control settings for Anthropic API request
+#[derive(Debug, Serialize)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    cache_type: String,
+}
+
+/// System content block with optional cache control
+#[derive(Debug, Serialize)]
+struct SystemBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
 /// Anthropic-specific request structure
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
@@ -132,7 +149,7 @@ struct AnthropicRequest {
     max_tokens: usize,
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<Vec<SystemBlock>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -173,6 +190,10 @@ struct AnthropicUsage {
     input_tokens: u32,
     #[serde(default)]
     output_tokens: u32,
+    #[serde(default)]
+    cache_creation_input_tokens: u32,
+    #[serde(default)]
+    cache_read_input_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -346,6 +367,8 @@ impl AnthropicClient {
             let mut usage = AnthropicUsage {
                 input_tokens: 0,
                 output_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
             };
 
             fn process_chunk(
@@ -416,6 +439,8 @@ impl AnthropicClient {
                             StreamEvent::MessageStart { message } => {
                                 usage.input_tokens = message.usage.input_tokens;
                                 usage.output_tokens = message.usage.output_tokens;
+                                usage.cache_creation_input_tokens = message.usage.cache_creation_input_tokens;
+                                usage.cache_read_input_tokens = message.usage.cache_read_input_tokens;
                                 return Ok(());
                             }
                             StreamEvent::MessageDelta { usage: delta_usage } => {
@@ -513,6 +538,8 @@ impl AnthropicClient {
                     usage: Usage {
                         input_tokens: usage.input_tokens,
                         output_tokens: usage.output_tokens,
+                        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                        cache_read_input_tokens: usage.cache_read_input_tokens,
                     },
                 },
                 rate_limits,
@@ -532,6 +559,8 @@ impl AnthropicClient {
                 usage: Usage {
                     input_tokens: anthropic_response.usage.input_tokens,
                     output_tokens: anthropic_response.usage.output_tokens,
+                    cache_creation_input_tokens: anthropic_response.usage.cache_creation_input_tokens,
+                    cache_read_input_tokens: anthropic_response.usage.cache_read_input_tokens,
                 },
             };
 
@@ -547,31 +576,61 @@ impl LLMProvider for AnthropicClient {
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
+        // Convert system prompt to system blocks with cache control
+        let system = Some(vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: request.system_prompt,
+            // Add cache_control to the system prompt to utilize Anthropic's caching
+            cache_control: Some(CacheControl {
+                cache_type: "ephemeral".to_string(),
+            }),
+        }]);
+
+        // Determine if we have tools and create tool_choice
+        let has_tools = request.tools.is_some();
+        let tool_choice = if has_tools {
+            Some(serde_json::json!({
+                "type": "any",
+            }))
+        } else {
+            None
+        };
+        
+        // Create tools array with cache control on the last tool if present
+        let tools = request.tools.map(|tools| {
+            let mut tools_json = tools
+                .into_iter()
+                .map(|tool| {
+                    serde_json::json!({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "input_schema": tool.parameters
+                    })
+                })
+                .collect::<Vec<serde_json::Value>>();
+            
+            // Add cache_control to the last tool if any exist
+            if let Some(last_tool) = tools_json.last_mut() {
+                if let Some(obj) = last_tool.as_object_mut() {
+                    obj.insert(
+                        "cache_control".to_string(),
+                        serde_json::json!({"type": "ephemeral"})
+                    );
+                }
+            }
+            
+            tools_json
+        });
+
         let anthropic_request = AnthropicRequest {
             model: self.model.clone(),
             messages: request.messages,
             max_tokens: 8192,
             temperature: 0.7,
-            system: Some(request.system_prompt),
+            system,
             stream: streaming_callback.map(|_| true),
-            tool_choice: match &request.tools {
-                Some(_) => Some(serde_json::json!({
-                    "type": "any",
-                })),
-                _ => None,
-            },
-            tools: request.tools.map(|tools| {
-                tools
-                    .into_iter()
-                    .map(|tool| {
-                        serde_json::json!({
-                            "name": tool.name,
-                            "description": tool.description,
-                            "input_schema": tool.parameters
-                        })
-                    })
-                    .collect()
-            }),
+            tool_choice,
+            tools,
         };
 
         self.send_with_retry(&anthropic_request, streaming_callback, 3)

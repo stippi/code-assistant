@@ -180,6 +180,9 @@ impl OllamaClient {
             usage: Usage {
                 input_tokens: ollama_response.prompt_eval_count,
                 output_tokens: ollama_response.eval_count,
+                // Ollama doesn't support caching, so these fields are 0
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
             },
         })
     }
@@ -273,6 +276,9 @@ impl OllamaClient {
             usage: Usage {
                 input_tokens: final_eval_counts.0,
                 output_tokens: final_eval_counts.1,
+                // Ollama doesn't support caching, so these fields are 0
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
             },
         })
     }
