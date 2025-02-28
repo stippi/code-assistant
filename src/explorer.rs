@@ -324,8 +324,19 @@ impl CodeExplorer for Explorer {
                 continue;
             }
 
-            // Read entire file at once
-            let content = std::fs::read_to_string(path)?;
+            // Try to read file content as UTF-8 text
+            let content = match std::fs::read_to_string(path) {
+                Ok(content) => content,
+                Err(e) => {
+                    // Skip files that can't be read as valid UTF-8
+                    debug!(
+                        "Skipping file with invalid UTF-8: {}: {}",
+                        path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
 
             // Find all matches in the entire content
             let matches: Vec<_> = regex.find_iter(&content).collect();
@@ -524,8 +535,7 @@ fn is_text_file(path: &Path) -> bool {
         return true;
     }
 
-    // If the extension doesn't match, check the content
-    // Only read a small piece of the file for efficiency
+    // For unknown extensions, we need to check the content more carefully
     match fs::read(path) {
         Ok(buffer) => {
             // Only examine the first 1024 bytes for performance

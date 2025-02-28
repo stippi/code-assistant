@@ -280,7 +280,11 @@ impl ToolExecutor {
                         }
                     }
 
-                    Tool::WriteFile { path, content, append } => {
+                    Tool::WriteFile {
+                        path,
+                        content,
+                        append,
+                    } => {
                         if let Some(error) = check_absolute_path(path) {
                             return Ok((String::new(), error));
                         }
