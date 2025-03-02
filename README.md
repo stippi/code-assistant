@@ -1,5 +1,7 @@
 # Code Assistant
 
+[![CI](https://github.com/stippi/code-assistant/actions/workflows/build.yml/badge.svg)](https://github.com/stippi/code-assistant/actions/workflows/build.yml)
+
 A CLI tool built in Rust for assisting with code-related tasks.
 
 ## Features
