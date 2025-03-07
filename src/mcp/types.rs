@@ -177,8 +177,7 @@ pub struct ToolCallParams {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ToolCallResult {
     pub content: Vec<ToolResultContent>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub is_error: Option<bool>,
+    pub is_error: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

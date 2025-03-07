@@ -251,34 +251,23 @@ impl MessageHandler {
                 self.update_file_tree().await?;
             }
 
-            Ok::<_, anyhow::Error>(output)
+            Ok::<_, anyhow::Error>((output, result.is_success()))
         }
         .await;
 
         // Convert the result into a ToolCallResult response
         match result {
-            Ok(output) => {
+            Ok((output, is_success)) => {
                 self.send_response(
                     id,
                     ToolCallResult {
                         content: vec![ToolResultContent::Text { text: output }],
-                        is_error: None,
+                        is_error: !is_success,
                     },
                 )
                 .await
             }
-            Err(e) => {
-                self.send_response(
-                    id,
-                    ToolCallResult {
-                        content: vec![ToolResultContent::Text {
-                            text: e.to_string(),
-                        }],
-                        is_error: Some(true),
-                    },
-                )
-                .await
-            }
+            Err(e) => self.send_error(id, -32602, e.to_string(), None).await,
         }
     }
 
@@ -359,7 +348,7 @@ impl MessageHandler {
                                         content: vec![ToolResultContent::Text {
                                             text: format!("Invalid tool parameters: {}", e),
                                         }],
-                                        is_error: Some(true),
+                                        is_error: true,
                                     },
                                 )
                                 .await?;
