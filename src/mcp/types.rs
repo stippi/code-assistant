@@ -127,7 +127,7 @@ pub struct Resource {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ListResourcesResult {
     pub resources: Vec<Resource>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
 
@@ -164,7 +164,7 @@ pub struct ResourceContent {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ListToolsResult {
     pub tools: Vec<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
 
@@ -192,7 +192,7 @@ pub enum ToolResultContent {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ListPromptsResult {
     pub prompts: Vec<Prompt>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
 
