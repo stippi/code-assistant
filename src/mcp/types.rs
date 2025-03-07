@@ -177,6 +177,7 @@ pub struct ToolCallParams {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ToolCallResult {
     pub content: Vec<ToolResultContent>,
+    #[serde(rename = "isError")]
     pub is_error: bool,
 }
 
