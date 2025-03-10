@@ -641,19 +641,16 @@ impl LLMProvider for AnthropicClient {
             tools_json
         });
 
-        let thinking = if self.model.starts_with("claude-3-7-sonnet") {
-            Some(ThinkingConfiguration {
-                thinking_type: "enabled".to_string(),
-                budget_tokens: 16000,
-            })
+        let (thinking, max_tokens) = if self.model.starts_with("claude-3-7-sonnet") {
+            (
+                Some(ThinkingConfiguration {
+                    thinking_type: "enabled".to_string(),
+                    budget_tokens: 16000,
+                }),
+                128000,
+            )
         } else {
-            None
-        };
-
-        let max_tokens = if self.model.starts_with("claude-3-7-sonnet") {
-            128000
-        } else {
-            8192
+            (None, 8192)
         };
 
         let anthropic_request = AnthropicRequest {
