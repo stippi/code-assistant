@@ -141,10 +141,19 @@ struct SystemBlock {
     cache_control: Option<CacheControl>,
 }
 
+#[derive(Debug, Serialize)]
+struct ThinkingConfiguration {
+    #[serde(rename = "type")]
+    thinking_type: String,
+    budget_tokens: usize,
+}
+
 /// Anthropic-specific request structure
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
     model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfiguration>,
     messages: Vec<Message>,
     max_tokens: usize,
     temperature: f32,
@@ -340,12 +349,18 @@ impl AnthropicClient {
             "application/json"
         };
 
-        let response = self
+        let mut request_builder = self
             .client
             .post(&self.get_url())
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("accept", accept_value)
+            .header("accept", accept_value);
+
+        if self.model.starts_with("claude-3-7-sonnet") {
+            request_builder = request_builder.header("anthropic-beta", "output-128k-2025-02-19");
+        }
+
+        let response = request_builder
             .json(request)
             .send()
             .await
@@ -439,8 +454,10 @@ impl AnthropicClient {
                             StreamEvent::MessageStart { message } => {
                                 usage.input_tokens = message.usage.input_tokens;
                                 usage.output_tokens = message.usage.output_tokens;
-                                usage.cache_creation_input_tokens = message.usage.cache_creation_input_tokens;
-                                usage.cache_read_input_tokens = message.usage.cache_read_input_tokens;
+                                usage.cache_creation_input_tokens =
+                                    message.usage.cache_creation_input_tokens;
+                                usage.cache_read_input_tokens =
+                                    message.usage.cache_read_input_tokens;
                                 return Ok(());
                             }
                             StreamEvent::MessageDelta { usage: delta_usage } => {
@@ -559,7 +576,9 @@ impl AnthropicClient {
                 usage: Usage {
                     input_tokens: anthropic_response.usage.input_tokens,
                     output_tokens: anthropic_response.usage.output_tokens,
-                    cache_creation_input_tokens: anthropic_response.usage.cache_creation_input_tokens,
+                    cache_creation_input_tokens: anthropic_response
+                        .usage
+                        .cache_creation_input_tokens,
                     cache_read_input_tokens: anthropic_response.usage.cache_read_input_tokens,
                 },
             };
@@ -595,7 +614,7 @@ impl LLMProvider for AnthropicClient {
         } else {
             None
         };
-        
+
         // Create tools array with cache control on the last tool if present
         let tools = request.tools.map(|tools| {
             let mut tools_json = tools
@@ -608,24 +627,40 @@ impl LLMProvider for AnthropicClient {
                     })
                 })
                 .collect::<Vec<serde_json::Value>>();
-            
+
             // Add cache_control to the last tool if any exist
             if let Some(last_tool) = tools_json.last_mut() {
                 if let Some(obj) = last_tool.as_object_mut() {
                     obj.insert(
                         "cache_control".to_string(),
-                        serde_json::json!({"type": "ephemeral"})
+                        serde_json::json!({"type": "ephemeral"}),
                     );
                 }
             }
-            
+
             tools_json
         });
 
+        let thinking = if self.model.starts_with("claude-3-7-sonnet") {
+            Some(ThinkingConfiguration {
+                thinking_type: "enabled".to_string(),
+                budget_tokens: 16000,
+            })
+        } else {
+            None
+        };
+
+        let max_tokens = if self.model.starts_with("claude-3-7-sonnet") {
+            128000
+        } else {
+            8192
+        };
+
         let anthropic_request = AnthropicRequest {
             model: self.model.clone(),
+            thinking,
             messages: request.messages,
-            max_tokens: 8192,
+            max_tokens,
             temperature: 0.7,
             system,
             stream: streaming_callback.map(|_| true),

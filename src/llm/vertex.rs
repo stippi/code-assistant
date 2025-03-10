@@ -177,31 +177,32 @@ impl VertexClient {
             }],
             MessageContent::Structured(blocks) => blocks
                 .iter()
-                .map(|block| match block {
-                    ContentBlock::Text { text } => VertexPart {
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(VertexPart {
                         text: Some(text.clone()),
                         function_call: None,
                         function_response: None,
-                    },
-                    ContentBlock::ToolUse { name, input, .. } => VertexPart {
+                    }),
+                    ContentBlock::ToolUse { name, input, .. } => Some(VertexPart {
                         text: None,
                         function_call: Some(VertexFunctionCall {
                             name: name.clone(),
                             args: input.clone(),
                         }),
                         function_response: None,
-                    },
+                    }),
                     ContentBlock::ToolResult {
                         tool_use_id,
                         content,
-                    } => VertexPart {
+                    } => Some(VertexPart {
                         text: None,
                         function_call: None,
                         function_response: Some(VertexFunctionResponse {
                             name: tool_use_id.clone(), // TODO: Should be function name
                             response: serde_json::Value::String(content.clone()),
                         }),
-                    },
+                    }),
+                    _ => None,
                 })
                 .collect(),
         };
