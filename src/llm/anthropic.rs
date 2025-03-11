@@ -259,7 +259,11 @@ struct MessageStart {
 struct StreamContentBlock {
     #[serde(rename = "type")]
     block_type: String,
+    // Fields for text blocks
     text: Option<String>,
+    // Fields for thinking blocks
+    thinking: Option<String>,
+    signature: Option<String>,
     // Fields for tool use blocks
     id: Option<String>,
     name: Option<String>,
@@ -269,6 +273,10 @@ struct StreamContentBlock {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum ContentDelta {
+    #[serde(rename = "thinking_delta")]
+    ThinkingDelta { thinking: String },
+    #[serde(rename = "signature_delta")]
+    SignatureDelta { signature: String },
     #[serde(rename = "text_delta")]
     TextDelta { text: String },
     #[serde(rename = "input_json_delta")]
@@ -471,12 +479,21 @@ impl AnthropicClient {
                             StreamEvent::ContentBlockStart { content_block, .. } => {
                                 current_content.clear();
                                 let block = match content_block.block_type.as_str() {
+                                    "thinking" => {
+                                        if let Some(thinking) = content_block.thinking {
+                                            current_content.push_str(&thinking);
+                                        }
+                                        ContentBlock::Thinking {
+                                            thinking: content_block.signature.unwrap_or_default(),
+                                            signature: String::new(),
+                                        }
+                                    }
                                     "text" => {
                                         if let Some(text) = content_block.text {
                                             current_content.push_str(&text);
                                         }
                                         ContentBlock::Text {
-                                            text: String::new(),
+                                            text: current_content.clone(),
                                         }
                                     }
                                     "tool_use" => {
@@ -497,6 +514,23 @@ impl AnthropicClient {
                             }
                             StreamEvent::ContentBlockDelta { delta, .. } => {
                                 match &delta {
+                                    ContentDelta::ThinkingDelta {
+                                        thinking: delta_text,
+                                    } => {
+                                        callback(delta_text)?;
+                                        current_content.push_str(delta_text);
+                                    }
+                                    ContentDelta::SignatureDelta {
+                                        signature: signature_delta,
+                                    } => {
+                                        // Update the signature in the last block if it's a thinking block
+                                        match blocks.last_mut().unwrap() {
+                                            ContentBlock::Thinking { signature, .. } => {
+                                                *signature = signature_delta.clone();
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                     ContentDelta::TextDelta { text: delta_text } => {
                                         callback(delta_text)?;
                                         current_content.push_str(delta_text);
@@ -645,7 +679,7 @@ impl LLMProvider for AnthropicClient {
             (
                 Some(ThinkingConfiguration {
                     thinking_type: "enabled".to_string(),
-                    budget_tokens: 16000,
+                    budget_tokens: 4000,
                 }),
                 128000,
             )
