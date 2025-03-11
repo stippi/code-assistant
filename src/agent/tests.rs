@@ -463,10 +463,21 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
             "content": content,
             "append": append
         }),
-        Tool::ReplaceInFile { path, replacements } => serde_json::json!({
-            "path": path,
-            "replacements": replacements
-        }),
+        Tool::ReplaceInFile { path, replacements } => {
+            // Convert replacements to the diff format
+            let mut diff = String::new();
+            for replacement in replacements {
+                diff.push_str("<<<<<<< SEARCH\n");
+                diff.push_str(&replacement.search);
+                diff.push_str("\n=======\n");
+                diff.push_str(&replacement.replace);
+                diff.push_str("\n>>>>>>> REPLACE\n\n");
+            }
+            serde_json::json!({
+                "path": path,
+                "diff": diff
+            })
+        },
         Tool::DeleteFiles { paths } => serde_json::json!({
             "paths": paths
         }),

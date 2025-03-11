@@ -406,33 +406,11 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
                     ToolError::ParseError("Missing required parameter: path".into())
                 })?,
             ),
-            replacements: params["replacements"]
-                .as_array()
-                .ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: replacements array".into())
-                })?
-                .iter()
-                .map(|r| -> Result<_, ToolError> {
-                    Ok(FileReplacement {
-                        search: r["search"]
-                            .as_str()
-                            .ok_or_else(|| {
-                                ToolError::ParseError(
-                                    "Missing search content in replacement".into(),
-                                )
-                            })?
-                            .to_string(),
-                        replace: r["replace"]
-                            .as_str()
-                            .ok_or_else(|| {
-                                ToolError::ParseError(
-                                    "Missing replace content in replacement".into(),
-                                )
-                            })?
-                            .to_string(),
-                    })
-                })
-                .collect::<Result<Vec<_>, ToolError>>()?,
+            replacements: parse_search_replace_blocks(
+                params["diff"].as_str().ok_or_else(|| {
+                    ToolError::ParseError("Missing required parameter: diff".into())
+                })?,
+            )?,
         }),
         "write_file" => Ok(Tool::WriteFile {
             path: PathBuf::from(

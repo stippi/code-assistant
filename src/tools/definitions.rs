@@ -230,26 +230,12 @@ impl Tools {
                         "type": "string",
                         "description": "Path to the file to modify"
                     },
-                    "replacements": {
-                        "type": "array",
-                        "description": "List of search/replace pairs",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "search": {
-                                    "type": "string",
-                                    "description": "Exact content to find. Make sure it is unique in the file by providing a large enough search string!"
-                                },
-                                "replace": {
-                                    "type": "string",
-                                    "description": "Content to replace with"
-                                }
-                            },
-                            "required": ["search", "replace"]
-                        }
+                    "diff": {
+                        "type": "string",
+                        "description": "One or more SEARCH/REPLACE blocks following this exact format:\n<<<<<<< SEARCH\n[exact content to find]\n=======\n[new content to replace with]\n>>>>>>> REPLACE\nSEARCH content must match the associated file section to find EXACTLY. The operation will fail if a SEARCH content has multiple matches, so make sure it is long enough to be unique."
                     }
                 },
-                "required": ["path", "replacements"]
+                "required": ["path", "diff"]
             }),
         }
     }
