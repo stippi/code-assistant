@@ -15,7 +15,7 @@ A CLI tool built in Rust for assisting with code-related tasks.
 
 ## Installation
 
-Ensure you have Rust installed on your system. Then:
+Ensure you have [Rust installed](https://www.rust-lang.org/tools/install) on your system. Then:
 
 ```bash
 # Clone the repository
