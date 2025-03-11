@@ -42,6 +42,15 @@ Always adhere to this format for the tool use to ensure proper parsing and execu
 
 # Tools
 
+## update_plan
+Description: Store your plan for solving the task in working memory. Useful for break down the task into a list of sub-tasks and steps to take.
+Parameters:
+- plan: (required) The new or updated plan. Will replace the current plan.
+Usage:
+<tool:update_plan>
+<param:plan>Your plan here</param:plan>
+</tool:update_plan>
+
 ## execute_command
 Description: Request to execute a CLI command on the system. Use this when you need to perform system operations or run specific commands to accomplish any step in the user's task. You must tailor your command to the user's system and provide a clear explanation of what the command does. Prefer to execute complex CLI commands over creating executable scripts, as they are more flexible and easier to run. Commands will be executed in the project root directory.
 Parameters:

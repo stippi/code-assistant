@@ -50,6 +50,8 @@ impl ToolExecutor {
                 }
             }
 
+            Tool::UpdatePlan { plan } => ToolResult::UpdatePlan { plan: plan.clone() },
+
             Tool::Summarize { resources } => ToolResult::Summarize {
                 resources: resources.clone(),
             },

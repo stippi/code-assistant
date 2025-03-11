@@ -118,6 +118,15 @@ pub fn parse_tool_from_params(
     params: &HashMap<String, Vec<String>>,
 ) -> Result<Tool, ToolError> {
     match tool_name {
+        "update_plan" => Ok(Tool::UpdatePlan {
+            plan: params
+                .get("plan")
+                .ok_or_else(|| ToolError::ParseError("Missing required parameter: plan".into()))?
+                .first()
+                .ok_or_else(|| ToolError::ParseError("Plan parameter is empty".into()))?
+                .to_string(),
+        }),
+
         "search_files" => Ok(Tool::SearchFiles {
             query: params
                 .get("query")
@@ -316,6 +325,12 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
                 .ok_or_else(|| {
                     ToolError::ParseError("Missing required parameter: project name".into())
                 })?
+                .to_string(),
+        }),
+        "update_plan" => Ok(Tool::UpdatePlan {
+            plan: params["plan"]
+                .as_str()
+                .ok_or_else(|| ToolError::ParseError("Missing required parameter: plan".into()))?
                 .to_string(),
         }),
         "execute_command" => Ok(Tool::ExecuteCommand {

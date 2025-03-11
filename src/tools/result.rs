@@ -26,6 +26,9 @@ impl ToolResult {
                     )
                 }
             }
+            ToolResult::UpdatePlan { .. } => {
+                format!("Plan successfully updated")
+            }
             ToolResult::AbsolutePathError { path } => {
                 format!("Path must be relative to project root: {}", path.display())
             }

@@ -21,6 +21,10 @@ impl<'a> ToolResultHandler for AgentToolHandler<'a> {
         // Update working memory if tool was successful
         if result.is_success() {
             match &result {
+                ToolResult::UpdatePlan { plan } => {
+                    self.working_memory.plan = plan.clone();
+                }
+
                 ToolResult::ListFiles { expanded_paths, .. } => {
                     // Update working memory file tree with each entry
                     if let Some(file_tree) = &mut self.working_memory.file_tree {

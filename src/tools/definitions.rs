@@ -5,6 +5,7 @@ impl Tools {
     /// Returns all available tool definitions
     pub fn all() -> Vec<ToolDefinition> {
         vec![
+            Self::update_plan(),
             Self::execute_command(),
             Self::search_files(),
             Self::list_files(),
@@ -62,6 +63,23 @@ impl Tools {
                     }
                 },
                 "required": ["name"]
+            }),
+        }
+    }
+
+    pub fn update_plan() -> ToolDefinition {
+        ToolDefinition {
+            name: "update_plan".to_string(),
+            description: "Create or replace your plan for accomplishing the task".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "plan": {
+                        "type": "string",
+                        "description": "Your plan in markdown format, i.e. a structured list."
+                    }
+                },
+                "required": ["plan"]
             }),
         }
     }

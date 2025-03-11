@@ -48,16 +48,18 @@ impl Default for FileEncoding {
 /// Represents the agent's working memory during execution
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct WorkingMemory {
+    /// Current task description
+    pub current_task: String,
+    /// Current plan
+    pub plan: String,
+    /// Memory of previous actions and their results
+    pub action_history: Vec<ActionResult>,
     /// Currently loaded resources (files, web search results, web pages)
     pub loaded_resources: HashMap<PathBuf, LoadedResource>,
     /// Summaries of previously seen resources
     pub summaries: HashMap<PathBuf, String>,
     /// Complete file tree of the repository
     pub file_tree: Option<FileTreeEntry>,
-    /// Current task description
-    pub current_task: String,
-    /// Memory of previous actions and their results
-    pub action_history: Vec<ActionResult>,
 }
 
 impl std::fmt::Display for LoadedResource {
@@ -108,6 +110,7 @@ impl WorkingMemory {
 
         let replacements = [
             ("{task}", self.current_task.as_str()),
+            ("{plan}", self.plan.as_str()),
             (
                 "{action_history}",
                 &vec_to_markdown(&action_history, "No actions performed yet"),
@@ -169,6 +172,8 @@ pub enum Tool {
     ListProjects,
     /// Open a project by name
     OpenProject { name: String },
+    /// Update the plan
+    UpdatePlan { plan: String },
     /// Delete one or more files
     DeleteFiles { paths: Vec<PathBuf> },
     /// List contents of directories
@@ -243,6 +248,9 @@ pub enum ToolResult {
         name: String,
         path: Option<PathBuf>,
         error: Option<String>,
+    },
+    UpdatePlan {
+        plan: String,
     },
     AbsolutePathError {
         path: PathBuf,

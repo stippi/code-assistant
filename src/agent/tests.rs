@@ -398,6 +398,7 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
     let tool_name = match &tool {
         Tool::ListProjects { .. } => "list_projects",
         Tool::OpenProject { .. } => "open_project",
+        Tool::UpdatePlan { .. } => "update_plan",
         Tool::SearchFiles { .. } => "search_files",
         Tool::ExecuteCommand { .. } => "execute_command",
         Tool::ListFiles { .. } => "list_files",
@@ -416,6 +417,9 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         Tool::ListProjects {} => serde_json::json!({}),
         Tool::OpenProject { name } => serde_json::json!({
             "name": name
+        }),
+        Tool::UpdatePlan { plan } => serde_json::json!({
+            "plan": plan
         }),
         Tool::SearchFiles {
             query,

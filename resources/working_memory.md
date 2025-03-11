@@ -8,6 +8,10 @@ This is your accumulated working memory.
 {task}
 ```
 
+## Your Plan
+
+{plan}
+
 ====
 
 ## Previous Tools
