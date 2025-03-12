@@ -109,7 +109,6 @@ impl GPUI {
             // If updates were requested, refresh the window
             if updated {
                 cx.refresh_windows();
-                println!("DEBUG: UI refreshed based on flag");
             }
 
             // Schedule another check for the next frame by creating a new closure
@@ -143,7 +142,6 @@ impl GPUI {
         // If updates were requested, refresh the window
         if updated {
             cx.refresh_windows();
-            println!("DEBUG: UI refreshed based on flag");
         }
 
         // Schedule another check for the next frame
@@ -182,7 +180,6 @@ impl GPUI {
         // Set the flag to indicate that UI refresh is needed
         if let Ok(mut flag) = self.ui_update_needed.lock() {
             *flag = true;
-            println!("DEBUG: UI update flag set");
         }
     }
 }
