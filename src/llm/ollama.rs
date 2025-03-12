@@ -1,4 +1,4 @@
-use crate::llm::{types::*, LLMProvider, StreamingCallback};
+use crate::llm::{types::*, LLMProvider, StreamingCallback, StreamingChunk};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
@@ -229,7 +229,9 @@ impl OllamaClient {
                         {
                             // Handle text content
                             if !chunk_response.message.content.is_empty() {
-                                streaming_callback(&chunk_response.message.content)?;
+                                streaming_callback(&StreamingChunk::Text(
+                                    chunk_response.message.content.clone(),
+                                ))?;
                                 accumulated_content.push_str(&chunk_response.message.content);
                             }
 

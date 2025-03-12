@@ -106,8 +106,13 @@ impl ChunkCollector {
 
     fn callback(&self) -> StreamingCallback {
         let chunks = self.chunks.clone();
-        Box::new(move |chunk: &str| {
-            chunks.lock().unwrap().push(chunk.to_string());
+        Box::new(move |chunk: &StreamingChunk| {
+            let text = match chunk {
+                StreamingChunk::Text(text) => text.clone(),
+                StreamingChunk::Thinking(text) => format!("<thinking>{}</thinking>", text),
+                StreamingChunk::InputJson { content, .. } => content.clone(),
+            };
+            chunks.lock().unwrap().push(text);
             Ok(())
         })
     }

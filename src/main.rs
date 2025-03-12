@@ -219,7 +219,7 @@ async fn main() -> Result<()> {
             // Check if GUI mode is requested
             if use_gui {
                 // Create shared state between GUI and Agent thread
-                let gui = ui::gui::GPUI::new();
+                let gui = ui::gpui::GPUI::new();
 
                 // Setup dynamic types
                 let root_path = path.canonicalize()?;

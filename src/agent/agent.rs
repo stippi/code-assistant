@@ -1,12 +1,13 @@
 use crate::llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
+    StreamingChunk,
 };
 use crate::persistence::StatePersistence;
 use crate::tools::{
     parse_tool_json, parse_tool_xml, AgentToolHandler, ToolExecutor, TOOL_TAG_PREFIX,
 };
 use crate::types::*;
-use crate::ui::{UIMessage, UserInterface};
+use crate::ui::{streaming::StreamProcessor, UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
 use percent_encoding;
@@ -335,10 +336,15 @@ impl Agent {
             }
         }
 
+        // Create a StreamProcessor and use it to process streaming chunks
         let ui = Arc::clone(&self.ui);
-        let streaming_callback: StreamingCallback = Box::new(move |text: &str| {
-            ui.display_streaming(text)
-                .map_err(|e| anyhow::anyhow!("Failed to display streaming output: {}", e))
+        let processor = Arc::new(std::sync::Mutex::new(StreamProcessor::new(ui)));
+        
+        let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
+            let mut processor_guard = processor.lock().unwrap();
+            processor_guard
+                .process(chunk)
+                .map_err(|e| anyhow::anyhow!("Failed to process streaming chunk: {}", e))
         });
 
         let response = self

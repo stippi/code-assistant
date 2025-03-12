@@ -1,4 +1,6 @@
-use crate::llm::{types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback};
+use crate::llm::{
+    types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Response};
@@ -371,7 +373,9 @@ impl VertexClient {
                                 if let Some(candidate) = response.candidates.first() {
                                     for part in &candidate.content.parts {
                                         if let Some(text) = &part.text {
-                                            streaming_callback(text)?;
+                                            streaming_callback(&StreamingChunk::Text(
+                                                text.clone(),
+                                            ))?;
                                             current_text.push_str(text);
                                         } else if let Some(function_call) = &part.function_call {
                                             // If we have accumulated text, push it as a content block

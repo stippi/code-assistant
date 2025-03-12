@@ -1,4 +1,6 @@
-use crate::llm::{types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback};
+use crate::llm::{
+    types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -517,7 +519,7 @@ impl AnthropicClient {
                                     ContentDelta::ThinkingDelta {
                                         thinking: delta_text,
                                     } => {
-                                        callback(delta_text)?;
+                                        callback(&StreamingChunk::Thinking(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
                                     }
                                     ContentDelta::SignatureDelta {
@@ -532,11 +534,29 @@ impl AnthropicClient {
                                         }
                                     }
                                     ContentDelta::TextDelta { text: delta_text } => {
-                                        callback(delta_text)?;
+                                        callback(&StreamingChunk::Text(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
                                     }
                                     ContentDelta::InputJsonDelta { partial_json } => {
-                                        // Accumulate JSON parts as string
+                                        // Accumulate JSON parts as string and send as specific type
+                                        callback(&StreamingChunk::InputJson {
+                                            content: partial_json.clone(),
+                                            tool_name: blocks.last().and_then(|block| {
+                                                if let ContentBlock::ToolUse { name, .. } = block {
+                                                    Some(name.clone())
+                                                } else {
+                                                    None
+                                                }
+                                            }),
+                                            tool_id: blocks.last().and_then(|block| {
+                                                if let ContentBlock::ToolUse { id, .. } = block {
+                                                    Some(id.clone())
+                                                } else {
+                                                    None
+                                                }
+                                            }),
+                                        })?;
+
                                         current_content.push_str(partial_json);
                                     }
                                 }

@@ -1,16 +1,11 @@
-use crate::ui::async_trait;
-use crate::ui::{UIError, UIMessage, UserInterface};
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use gpui::{
-    actions, black, div, fill, hsla, opaque_grey, point, prelude::*, px, relative, rgb, rgba, size,
-    white, yellow, App, Application, Bounds, ClipboardItem, Context, CursorStyle, ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId,
-    KeyBinding, Keystroke, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextRun, UTF16Selection,
-    UnderlineStyle, Window, WindowBounds, WindowOptions,
+    actions, div, fill, hsla, point, prelude::*, px, relative, rgb, rgba, size, white, App, Bounds,
+    ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
+    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
+    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
 };
 use unicode_segmentation::*;
 
@@ -34,18 +29,27 @@ actions!(
     ]
 );
 
-// Events that can be sent between threads
-enum GuiEvent {
-    DisplayMessage(String),
-    InputRequested(String), // Prompt text
-}
-
-enum GuiResponse {
-    InputProvided(String),
+// Register key bindings for the text input
+pub fn register_key_bindings(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("backspace", Backspace, None),
+        KeyBinding::new("delete", Delete, None),
+        KeyBinding::new("left", Left, None),
+        KeyBinding::new("right", Right, None),
+        KeyBinding::new("shift-left", SelectLeft, None),
+        KeyBinding::new("shift-right", SelectRight, None),
+        KeyBinding::new("cmd-a", SelectAll, None),
+        KeyBinding::new("cmd-v", Paste, None),
+        KeyBinding::new("cmd-c", Copy, None),
+        KeyBinding::new("cmd-x", Cut, None),
+        KeyBinding::new("home", Home, None),
+        KeyBinding::new("end", End, None),
+        KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, None),
+    ]);
 }
 
 // Text input component
-struct TextInput {
+pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
     placeholder: SharedString,
@@ -58,6 +62,20 @@ struct TextInput {
 }
 
 impl TextInput {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        Self {
+            focus_handle: cx.focus_handle(),
+            content: "".into(),
+            placeholder: "Type your message...".into(),
+            selected_range: 0..0,
+            selection_reversed: false,
+            marked_range: None,
+            last_layout: None,
+            last_bounds: None,
+            is_selecting: false,
+        }
+    }
+
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
@@ -262,7 +280,7 @@ impl TextInput {
             .unwrap_or(self.content.len())
     }
 
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.content = "".into();
         self.selected_range = 0..0;
         self.selection_reversed = false;
@@ -272,7 +290,7 @@ impl TextInput {
         self.is_selecting = false;
     }
 
-    fn get_content(&self) -> String {
+    pub fn get_content(&self) -> String {
         self.content.to_string()
     }
 }
@@ -615,299 +633,5 @@ impl Render for TextInput {
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
-    }
-}
-
-// Main Input Example view
-struct InputExample {
-    text_input: Entity<TextInput>,
-    recent_keystrokes: Vec<Keystroke>,
-    focus_handle: FocusHandle,
-    input_value: Arc<Mutex<Option<String>>>,
-    message_queue: Arc<Mutex<Vec<String>>>,
-    input_requested: Arc<Mutex<bool>>,
-}
-
-impl Focusable for InputExample {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
-impl InputExample {
-    fn on_reset_click(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        self.recent_keystrokes.clear();
-        self.text_input
-            .update(cx, |text_input, _cx| text_input.reset());
-        cx.notify();
-    }
-
-    fn on_submit_click(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        self.text_input.update(cx, |text_input, _cx| {
-            let content = text_input.get_content();
-            if !content.is_empty() {
-                // Store input in the shared value
-                let mut input_value = self.input_value.lock().unwrap();
-                *input_value = Some(content);
-
-                // Clear the input field
-                text_input.reset();
-            }
-        });
-        cx.notify();
-    }
-}
-
-impl Render for InputExample {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Get current messages to display
-        let messages = {
-            let lock = self.message_queue.lock().unwrap();
-            lock.clone()
-        };
-
-        // Check if input is requested
-        let is_input_requested = *self.input_requested.lock().unwrap();
-
-        let input_placeholder = if is_input_requested {
-            "Type your response and press Enter..."
-        } else {
-            "Input disabled while agent is working..."
-        };
-
-        div()
-            .bg(rgb(0x2c2c2c))
-            .track_focus(&self.focus_handle(cx))
-            .flex()
-            .flex_col()
-            .size_full()
-            .child(
-                // Messages display area
-                div()
-                    .id("messages")
-                    .flex_1()
-                    .p_2()
-                    .overflow_y_scroll()
-                    .bg(rgb(0x202020))
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .children(messages.into_iter().map(|msg| {
-                        div()
-                            .bg(rgb(0x303030))
-                            .p_2()
-                            .rounded_sm()
-                            .text_color(white())
-                            .child(msg)
-                    })),
-            )
-            .child(
-                // Input area
-                div()
-                    .bg(white())
-                    .border_b_1()
-                    .border_color(black())
-                    .flex()
-                    .flex_row()
-                    .justify_between()
-                    .items_center()
-                    .p_2()
-                    .gap_2()
-                    .child(div().flex_1().child(self.text_input.clone()))
-                    .child(
-                        div()
-                            .border_1()
-                            .border_color(black())
-                            .px_2()
-                            .py_1()
-                            .bg(if is_input_requested {
-                                yellow()
-                            } else {
-                                opaque_grey(0.8, 1.0)
-                            })
-                            .cursor(if is_input_requested {
-                                CursorStyle::Arrow
-                            } else {
-                                CursorStyle::OperationNotAllowed
-                            })
-                            .child("Submit")
-                            .when(is_input_requested, |style| {
-                                style
-                                    .hover(|s| s.bg(yellow().blend(opaque_grey(0.5, 0.5))))
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::on_submit_click),
-                                    )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .border_1()
-                            .border_color(black())
-                            .px_2()
-                            .py_1()
-                            .bg(yellow())
-                            .cursor_pointer()
-                            .child("Clear")
-                            .hover(|style| style.bg(yellow().blend(opaque_grey(0.5, 0.5))))
-                            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_reset_click)),
-                    ),
-            )
-    }
-}
-
-// Our main UI struct that implements the UserInterface trait
-pub struct GPUI {
-    message_queue: Arc<Mutex<Vec<String>>>,
-    input_value: Arc<Mutex<Option<String>>>,
-    input_requested: Arc<Mutex<bool>>,
-}
-
-impl GPUI {
-    pub fn new() -> Self {
-        let message_queue = Arc::new(Mutex::new(Vec::new()));
-        let input_value = Arc::new(Mutex::new(None));
-        let input_requested = Arc::new(Mutex::new(false));
-
-        Self {
-            message_queue,
-            input_value,
-            input_requested,
-        }
-    }
-
-    // Neue Methode zum Starten der Anwendung
-    pub fn run_app(&self) {
-        let message_queue = self.message_queue.clone();
-        let input_value = self.input_value.clone();
-        let input_requested = self.input_requested.clone();
-
-        let app = Application::new();
-        app.run(move |cx| {
-            // Tastaturkürzel binden
-            cx.bind_keys([
-                KeyBinding::new("backspace", Backspace, None),
-                KeyBinding::new("delete", Delete, None),
-                KeyBinding::new("left", Left, None),
-                KeyBinding::new("right", Right, None),
-                KeyBinding::new("shift-left", SelectLeft, None),
-                KeyBinding::new("shift-right", SelectRight, None),
-                KeyBinding::new("cmd-a", SelectAll, None),
-                KeyBinding::new("cmd-v", Paste, None),
-                KeyBinding::new("cmd-c", Copy, None),
-                KeyBinding::new("cmd-x", Cut, None),
-                KeyBinding::new("home", Home, None),
-                KeyBinding::new("end", End, None),
-                KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, None),
-            ]);
-
-            // Fenster erstellen
-            let bounds = Bounds::centered(None, size(px(600.0), px(500.0)), cx);
-            let window_result = cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(gpui::TitlebarOptions {
-                        title: Some(SharedString::from("Code Assistant")),
-                        appears_transparent: false,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                |window, cx| {
-                    // TextInput erstellen
-                    let text_input = cx.new(|cx| TextInput {
-                        focus_handle: cx.focus_handle(),
-                        content: "".into(),
-                        placeholder: "Type your message...".into(),
-                        selected_range: 0..0,
-                        selection_reversed: false,
-                        marked_range: None,
-                        last_layout: None,
-                        last_bounds: None,
-                        is_selecting: false,
-                    });
-
-                    // InputExample mit unserem TextInput erstellen
-                    cx.new(|cx| InputExample {
-                        text_input,
-                        recent_keystrokes: vec![],
-                        focus_handle: cx.focus_handle(),
-                        input_value: input_value.clone(),
-                        message_queue: message_queue.clone(),
-                        input_requested: input_requested.clone(),
-                    })
-                },
-            );
-
-            // Wenn Fenster erfolgreich erstellt wurde, TextInput fokussieren
-            if let Ok(window_handle) = window_result {
-                window_handle
-                    .update(cx, |view, window, cx| {
-                        window.focus(&view.text_input.focus_handle(cx));
-                        cx.activate(true);
-                    })
-                    .ok();
-            }
-        });
-    }
-}
-
-#[async_trait]
-impl UserInterface for GPUI {
-    async fn display(&self, message: UIMessage) -> Result<(), UIError> {
-        let mut queue = self.message_queue.lock().unwrap();
-        match message {
-            UIMessage::Action(msg) | UIMessage::Question(msg) => {
-                queue.push(msg);
-            }
-        }
-        Ok(())
-    }
-
-    async fn get_input(&self, prompt: &str) -> Result<String, UIError> {
-        // Prompt anzeigen
-        self.display(UIMessage::Question(prompt.to_string()))
-            .await?;
-
-        // Eingabe anfordern
-        {
-            let mut requested = self.input_requested.lock().unwrap();
-            *requested = true;
-        }
-
-        // Auf Eingabe warten
-        loop {
-            {
-                let mut input = self.input_value.lock().unwrap();
-                if let Some(value) = input.take() {
-                    // Eingabeanforderung zurücksetzen
-                    let mut requested = self.input_requested.lock().unwrap();
-                    *requested = false;
-                    return Ok(value);
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    fn display_streaming(&self, text: &str) -> Result<(), UIError> {
-        let mut queue = self.message_queue.lock().unwrap();
-        if queue.is_empty() {
-            queue.push(text.to_string());
-        } else {
-            let last = queue.len() - 1;
-            queue[last] = format!("{}{}", queue[last], text);
-        }
-        Ok(())
-    }
-}
-
-impl Clone for GPUI {
-    fn clone(&self) -> Self {
-        Self {
-            message_queue: self.message_queue.clone(),
-            input_value: self.input_value.clone(),
-            input_requested: self.input_requested.clone(),
-        }
     }
 }
