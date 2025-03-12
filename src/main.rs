@@ -14,6 +14,7 @@ use crate::agent::Agent;
 use crate::explorer::Explorer;
 use crate::llm::{AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient};
 use crate::mcp::MCPServer;
+use crate::ui::terminal::TerminalUI;
 use crate::utils::DefaultCommandExecutor;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -210,7 +211,7 @@ async fn main() -> Result<()> {
             // Setup dynamic types
             let root_path = path.canonicalize()?;
             let explorer = Box::new(Explorer::new(root_path.clone()));
-            let user_interface = ui::create_ui(use_gui);
+            let user_interface = Box::new(TerminalUI::new());
             let command_executor = Box::new(DefaultCommandExecutor);
             let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
 
@@ -244,11 +245,22 @@ async fn main() -> Result<()> {
             } else if let Some(task_str) = task {
                 agent.start_with_task(task_str).await?;
             } else if use_gui {
-                // In GUI mode with no task, we can start without a task
-                // The UI will prompt the user for a task
-                let task_prompt = "Please enter the task you want me to perform:";
-                let task_from_ui = agent.get_input_from_ui(task_prompt).await?;
-                agent.start_with_task(task_from_ui).await?;
+                let gui = ui::gui::GPUI::new();
+
+                // Starte einen separaten Thread, der den Agent ausführt
+                let agent_thread = std::thread::spawn(move || {
+                    // Hier kommt dein eigentlicher Agent-Code
+                    // (der Rest der Agent-Startroutine)
+
+                    // z.B. agent.start_with_task(task_from_ui).await?;
+                });
+
+                // Starte die GUI-Anwendung im Hauptthread
+                // Diese Methode blockiert, bis die Anwendung geschlossen wird
+                gui.run_app();
+
+                // Warte auf den Abschluss des Agent-Threads
+                agent_thread.join().unwrap();
             }
         }
     }

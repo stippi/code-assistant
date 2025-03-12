@@ -625,6 +625,7 @@ struct InputExample {
     focus_handle: FocusHandle,
     input_value: Arc<Mutex<Option<String>>>,
     message_queue: Arc<Mutex<Vec<String>>>,
+    input_requested: Arc<Mutex<bool>>,
 }
 
 impl Focusable for InputExample {
@@ -665,6 +666,15 @@ impl Render for InputExample {
             lock.clone()
         };
 
+        // Check if input is requested
+        let is_input_requested = *self.input_requested.lock().unwrap();
+
+        let input_placeholder = if is_input_requested {
+            "Type your response and press Enter..."
+        } else {
+            "Input disabled while agent is working..."
+        };
+
         div()
             .bg(rgb(0x2c2c2c))
             .track_focus(&self.focus_handle(cx))
@@ -676,7 +686,7 @@ impl Render for InputExample {
                 div()
                     .flex_1()
                     .p_2()
-                    // .overflow_y_scroll()
+                    .overflow_hidden()
                     .bg(rgb(0x202020))
                     .flex()
                     .flex_col()
@@ -709,14 +719,25 @@ impl Render for InputExample {
                             .border_color(black())
                             .px_2()
                             .py_1()
-                            .bg(yellow())
-                            .child("Submit")
-                            .hover(|style| {
-                                style
-                                    .bg(yellow().blend(opaque_grey(0.5, 0.5)))
-                                    .cursor_pointer()
+                            .bg(if is_input_requested {
+                                yellow()
+                            } else {
+                                opaque_grey(0.8, 1.0)
                             })
-                            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_submit_click)),
+                            .cursor(if is_input_requested {
+                                CursorStyle::Arrow
+                            } else {
+                                CursorStyle::OperationNotAllowed
+                            })
+                            .child("Submit")
+                            .when(is_input_requested, |style| {
+                                style
+                                    .hover(|s| s.bg(yellow().blend(opaque_grey(0.5, 0.5))))
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(Self::on_submit_click),
+                                    )
+                            }),
                     )
                     .child(
                         div()
@@ -725,12 +746,9 @@ impl Render for InputExample {
                             .px_2()
                             .py_1()
                             .bg(yellow())
-                            .child("Reset")
-                            .hover(|style| {
-                                style
-                                    .bg(yellow().blend(opaque_grey(0.5, 0.5)))
-                                    .cursor_pointer()
-                            })
+                            .cursor_pointer()
+                            .child("Clear")
+                            .hover(|style| style.bg(yellow().blend(opaque_grey(0.5, 0.5))))
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_reset_click)),
                     ),
             )
@@ -745,30 +763,91 @@ pub struct GPUI {
 }
 
 impl GPUI {
-    pub fn init() -> Self {
+    pub fn new() -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let input_value = Arc::new(Mutex::new(None));
         let input_requested = Arc::new(Mutex::new(false));
-
-        // Klone der Zustände für die Anwendung
-        let msg_queue = message_queue.clone();
-        let input = input_value.clone();
-        let req = input_requested.clone();
-
-        // Starte die Anwendung im Hintergrund
-        tokio::spawn(async move {
-            let app = Application::new();
-            app.run(|cx| {
-                // Hier Window erstellen und InputExample einrichten
-                // mit msg_queue, input, req...
-            });
-        });
 
         Self {
             message_queue,
             input_value,
             input_requested,
         }
+    }
+
+    // Neue Methode zum Starten der Anwendung
+    pub fn run_app(&self) {
+        let message_queue = self.message_queue.clone();
+        let input_value = self.input_value.clone();
+        let input_requested = self.input_requested.clone();
+
+        let app = Application::new();
+        app.run(move |cx| {
+            // Tastaturkürzel binden
+            cx.bind_keys([
+                KeyBinding::new("backspace", Backspace, None),
+                KeyBinding::new("delete", Delete, None),
+                KeyBinding::new("left", Left, None),
+                KeyBinding::new("right", Right, None),
+                KeyBinding::new("shift-left", SelectLeft, None),
+                KeyBinding::new("shift-right", SelectRight, None),
+                KeyBinding::new("cmd-a", SelectAll, None),
+                KeyBinding::new("cmd-v", Paste, None),
+                KeyBinding::new("cmd-c", Copy, None),
+                KeyBinding::new("cmd-x", Cut, None),
+                KeyBinding::new("home", Home, None),
+                KeyBinding::new("end", End, None),
+                KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, None),
+            ]);
+
+            // Fenster erstellen
+            let bounds = Bounds::centered(None, size(px(600.0), px(500.0)), cx);
+            let window_result = cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some(SharedString::from("Code Assistant")),
+                        appears_transparent: false,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    // TextInput erstellen
+                    let text_input = cx.new(|cx| TextInput {
+                        focus_handle: cx.focus_handle(),
+                        content: "".into(),
+                        placeholder: "Type your message...".into(),
+                        selected_range: 0..0,
+                        selection_reversed: false,
+                        marked_range: None,
+                        last_layout: None,
+                        last_bounds: None,
+                        is_selecting: false,
+                    });
+
+                    // InputExample mit unserem TextInput erstellen
+                    cx.new(|cx| InputExample {
+                        text_input,
+                        recent_keystrokes: vec![],
+                        focus_handle: cx.focus_handle(),
+                        input_value: input_value.clone(),
+                        message_queue: message_queue.clone(),
+                        input_requested: input_requested.clone(),
+                    })
+                },
+            );
+
+            // Wenn Fenster erfolgreich erstellt wurde, TextInput fokussieren
+            if let Ok(window_handle) = window_result {
+                window_handle
+                    .update(cx, |view, window, cx| {
+                        window.focus(&view.text_input.focus_handle(cx));
+                        cx.activate(true);
+                    })
+                    .ok();
+            }
+        });
     }
 }
 
@@ -819,5 +898,15 @@ impl UserInterface for GPUI {
             queue[last] = format!("{}{}", queue[last], text);
         }
         Ok(())
+    }
+}
+
+impl Clone for GPUI {
+    fn clone(&self) -> Self {
+        Self {
+            message_queue: self.message_queue.clone(),
+            input_value: self.input_value.clone(),
+            input_requested: self.input_requested.clone(),
+        }
     }
 }

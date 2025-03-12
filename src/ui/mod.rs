@@ -33,14 +33,5 @@ pub trait UserInterface: Send + Sync {
     fn display_streaming(&self, text: &str) -> Result<(), UIError>;
 }
 
-// UI factory function to create either terminal or GUI interface
-pub fn create_ui(use_gui: bool) -> Box<dyn UserInterface> {
-    if use_gui {
-        Box::new(gui::GPUI::init())
-    } else {
-        Box::new(terminal::TerminalUI::new())
-    }
-}
-
 #[cfg(test)]
 mod terminal_test;
