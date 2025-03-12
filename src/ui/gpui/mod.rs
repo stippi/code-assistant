@@ -16,6 +16,7 @@ pub struct GPUI {
     message_queue: Arc<Mutex<Vec<MessageContainer>>>,
     input_value: Arc<Mutex<Option<String>>>,
     input_requested: Arc<Mutex<bool>>,
+    ui_update_needed: Arc<Mutex<bool>>,
 }
 
 impl GPUI {
@@ -23,11 +24,13 @@ impl GPUI {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let input_value = Arc::new(Mutex::new(None));
         let input_requested = Arc::new(Mutex::new(false));
+        let ui_update_needed = Arc::new(Mutex::new(false));
 
         Self {
             message_queue,
             input_value,
             input_requested,
+            ui_update_needed,
         }
     }
 
@@ -36,6 +39,7 @@ impl GPUI {
         let message_queue = self.message_queue.clone();
         let input_value = self.input_value.clone();
         let input_requested = self.input_requested.clone();
+        let ui_update_needed = self.ui_update_needed.clone();
 
         let app = gpui::Application::new();
         app.run(move |cx| {
@@ -78,10 +82,79 @@ impl GPUI {
                     .update(cx, |view, window, cx| {
                         window.focus(&view.text_input.focus_handle(cx));
                         cx.activate(true);
+
+                        // Set up the frame refresh cycle
+                        Self::setup_frame_refresh_cycle(window, ui_update_needed.clone());
                     })
                     .ok();
             }
         });
+    }
+
+    // Setup a recurring frame refresh cycle to check for UI updates
+    fn setup_frame_refresh_cycle(window: &mut gpui::Window, update_flag: Arc<Mutex<bool>>) {
+        // Create a recursive frame handler
+        let update_flag_ref = update_flag.clone();
+        let frame_handler = move |window: &mut gpui::Window, cx: &mut gpui::App| {
+            // Check if UI update is needed
+            let mut updated = false;
+            if let Ok(mut flag) = update_flag_ref.lock() {
+                if *flag {
+                    // Reset the flag
+                    *flag = false;
+                    updated = true;
+                }
+            }
+
+            // If updates were requested, refresh the window
+            if updated {
+                cx.refresh_windows();
+                println!("DEBUG: UI refreshed based on flag");
+            }
+
+            // Schedule another check for the next frame by creating a new closure
+            // that captures our update_flag
+            let new_handler = {
+                let update_flag = update_flag_ref.clone();
+                move |window: &mut gpui::Window, cx: &mut gpui::App| {
+                    Self::handle_frame(window, cx, update_flag);
+                }
+            };
+
+            window.on_next_frame(new_handler);
+        };
+
+        // Start the refresh cycle
+        window.on_next_frame(frame_handler);
+    }
+
+    // Helper method for the recurring frame handler
+    fn handle_frame(window: &mut gpui::Window, cx: &mut gpui::App, update_flag: Arc<Mutex<bool>>) {
+        // Check if UI update is needed
+        let mut updated = false;
+        if let Ok(mut flag) = update_flag.lock() {
+            if *flag {
+                // Reset the flag
+                *flag = false;
+                updated = true;
+            }
+        }
+
+        // If updates were requested, refresh the window
+        if updated {
+            cx.refresh_windows();
+            println!("DEBUG: UI refreshed based on flag");
+        }
+
+        // Schedule another check for the next frame
+        let new_handler = {
+            let update_flag = update_flag.clone();
+            move |window: &mut gpui::Window, cx: &mut gpui::App| {
+                Self::handle_frame(window, cx, update_flag);
+            }
+        };
+
+        window.on_next_frame(new_handler);
     }
 
     // Helper method to get or create a message container
@@ -96,13 +169,20 @@ impl GPUI {
         }
     }
 
-    // Update a message container in the queue
+    // Update a message container in the queue and flag UI for refresh
     fn update_message(&self, message: MessageContainer) {
+        // Update the message in the queue
         let mut queue = self.message_queue.lock().unwrap();
         if !queue.is_empty() {
             *queue.last_mut().unwrap() = message;
         } else {
             queue.push(message);
+        }
+
+        // Set the flag to indicate that UI refresh is needed
+        if let Ok(mut flag) = self.ui_update_needed.lock() {
+            *flag = true;
+            println!("DEBUG: UI update flag set");
         }
     }
 }
@@ -192,6 +272,7 @@ impl Clone for GPUI {
             message_queue: self.message_queue.clone(),
             input_value: self.input_value.clone(),
             input_requested: self.input_requested.clone(),
+            ui_update_needed: self.ui_update_needed.clone(),
         }
     }
 }
