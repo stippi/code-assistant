@@ -128,6 +128,11 @@ impl StreamProcessor {
         // Check backwards for potential tag starts
         for j in (1..=processing_text.len().min(40)).rev() {
             // Check at most last 40 chars
+            // Make sure we're at a valid char boundary
+            if !processing_text.is_char_boundary(processing_text.len() - j) {
+                continue;
+            }
+
             let suffix = &processing_text[processing_text.len() - j..];
             if self.is_potential_tag_start(suffix) {
                 // We found a potential tag start, buffer this part
@@ -137,8 +142,12 @@ impl StreamProcessor {
             }
         }
 
-        // Only process text up to safe_length
+        // Only process text up to safe_length, ensuring we end at a char boundary
         if safe_length < processing_text.len() {
+            // Ensure safe_length is at a char boundary
+            while safe_length > 0 && !processing_text.is_char_boundary(safe_length) {
+                safe_length -= 1;
+            }
             processing_text = processing_text[..safe_length].to_string();
         } else {
             // No potential tag at end, clear buffer
@@ -293,16 +302,27 @@ impl StreamProcessor {
 
                     TagType::None => {
                         // Not a recognized tag, treat as regular character
-                        if self.state.in_thinking {
-                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                                processing_text[absolute_tag_pos..absolute_tag_pos + 1].to_string(),
-                            ))?;
+                        // Ensure we're processing complete characters by using char iterators
+                        if let Some(first_char) = processing_text[absolute_tag_pos..].chars().next()
+                        {
+                            let char_len = first_char.len_utf8();
+
+                            let single_char = first_char.to_string();
+                            if self.state.in_thinking {
+                                self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                    single_char,
+                                ))?;
+                            } else {
+                                self.ui
+                                    .display_fragment(&DisplayFragment::PlainText(single_char))?;
+                            }
+
+                            // Move forward by the full character length
+                            current_pos = absolute_tag_pos + char_len;
                         } else {
-                            self.ui.display_fragment(&DisplayFragment::PlainText(
-                                processing_text[absolute_tag_pos..absolute_tag_pos + 1].to_string(),
-                            ))?;
+                            // Shouldn't happen, but just in case
+                            current_pos = absolute_tag_pos + 1;
                         }
-                        current_pos = absolute_tag_pos + 1;
                     }
                 }
             } else {
