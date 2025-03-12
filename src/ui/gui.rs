@@ -684,9 +684,10 @@ impl Render for InputExample {
             .child(
                 // Messages display area
                 div()
+                    .id("messages")
                     .flex_1()
                     .p_2()
-                    .overflow_hidden()
+                    .overflow_y_scroll()
                     .bg(rgb(0x202020))
                     .flex()
                     .flex_col()

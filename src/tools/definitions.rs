@@ -14,9 +14,6 @@ impl Tools {
             Self::replace_in_file(),
             Self::write_file(),
             Self::delete_files(),
-            Self::ask_user(),
-            Self::message_user(),
-            Self::complete_task(),
             Self::web_search(),
             Self::web_fetch(),
         ]
@@ -289,59 +286,6 @@ impl Tools {
                     }
                 },
                 "required": ["paths"]
-            }),
-        }
-    }
-
-    pub fn ask_user() -> ToolDefinition {
-        ToolDefinition {
-            name: "ask_user".to_string(),
-            description:
-                "Ask the user a question. Use for clarifications, feedback or confirmation."
-                    .to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "question": {
-                        "type": "string",
-                        "description": "The question for the user"
-                    }
-                },
-                "required": ["question"]
-            }),
-        }
-    }
-
-    pub fn message_user() -> ToolDefinition {
-        ToolDefinition {
-            name: "message_user".to_string(),
-            description: "Complete the task".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "A final message for the user"
-                    }
-                },
-                "required": ["message"]
-            }),
-        }
-    }
-
-    pub fn complete_task() -> ToolDefinition {
-        ToolDefinition {
-            name: "complete_task".to_string(),
-            description: "Complete the task".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "A final message for the user"
-                    }
-                },
-                "required": ["message"]
             }),
         }
     }

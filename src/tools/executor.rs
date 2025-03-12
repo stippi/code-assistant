@@ -56,38 +56,6 @@ impl ToolExecutor {
                 resources: resources.clone(),
             },
 
-            Tool::MessageUser { message } => match &ui {
-                Some(ui) => match ui.display(UIMessage::Action(message.clone())).await {
-                    Ok(_) => ToolResult::MessageUser {
-                        result: "Message delivered".to_string(),
-                    },
-                    Err(e) => ToolResult::MessageUser {
-                        result: format!("Failed to deliver message: {}", e),
-                    },
-                },
-                None => ToolResult::MessageUser {
-                    result: "Messaging user not available".to_string(),
-                },
-            },
-
-            Tool::AskUser { question } => match &ui {
-                Some(ui) => {
-                    // Display the question
-                    ui.display(UIMessage::Question(question.clone())).await?;
-
-                    // Get the input
-                    match ui.get_input("> ").await {
-                        Ok(response) => ToolResult::AskUser { response },
-                        Err(e) => ToolResult::AskUser {
-                            response: format!("Failed to get user input: {}", e),
-                        },
-                    }
-                }
-                None => ToolResult::AskUser {
-                    response: "User input not available".to_string(),
-                },
-            },
-
             Tool::CompleteTask { message } => match &ui {
                 Some(ui) => match ui.display(UIMessage::Action(message.clone())).await {
                     Ok(_) => ToolResult::CompleteTask {

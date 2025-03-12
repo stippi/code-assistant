@@ -407,9 +407,8 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         Tool::ReplaceInFile { .. } => "replace_in_file",
         Tool::DeleteFiles { .. } => "delete_files",
         Tool::Summarize { .. } => "summarize",
-        Tool::AskUser { .. } => "ask_user",
-        Tool::MessageUser { .. } => "message_user",
         Tool::CompleteTask { .. } => "complete_task",
+        Tool::UserInput { .. } => "user_input",
         Tool::WebSearch { .. } => "web_search",
         Tool::WebFetch { .. } => "web_fetch",
     };
@@ -421,6 +420,7 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         Tool::UpdatePlan { plan } => serde_json::json!({
             "plan": plan
         }),
+        Tool::UserInput {} => serde_json::json!({}),
         Tool::SearchFiles {
             query,
             path,
@@ -488,12 +488,6 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
                     "summary": summary
                 })
             }).collect::<Vec<_>>()
-        }),
-        Tool::AskUser { question } => serde_json::json!({
-            "question": question
-        }),
-        Tool::MessageUser { message } => serde_json::json!({
-            "message": message
         }),
         Tool::CompleteTask { message } => serde_json::json!({
             "message": message
@@ -694,98 +688,14 @@ fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
 }
 
 #[tokio::test]
-async fn test_agent_start_with_message() -> Result<(), anyhow::Error> {
-    // Prepare test data
-    let test_message = "Test message for user";
-    let test_reasoning = "Dummy reason";
-    let tool = Tool::MessageUser {
-        message: test_message.to_string(),
-    };
-
-    let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(tool, test_reasoning))]);
-
-    let mock_ui = MockUI::default();
-
-    let mut agent = Agent::new(
-        Box::new(mock_llm),
-        ToolMode::Native,
-        Box::new(create_explorer_mock()),
-        Box::new(create_command_executor_mock()),
-        Box::new(mock_ui.clone()),
-        Box::new(MockStatePersistence::new()),
-    );
-
-    // Run the agent
-    agent.start_with_task("Test task".to_string()).await?;
-
-    // Verify the message was displayed
-    let messages = mock_ui.get_messages();
-    assert!(!messages.is_empty());
-
-    if let UIMessage::Action(msg) = &messages[1] {
-        assert!(msg.contains(test_message));
-    } else {
-        panic!("Expected UIMessage::Action");
-    }
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_agent_ask_user() -> Result<(), anyhow::Error> {
-    // Prepare test data
-    let test_question = "Test question?";
-    let test_answer = "Test answer";
-
-    let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
-        Tool::AskUser {
-            question: test_question.to_string(),
-        },
-        "Need to ask user a question",
-    ))]);
-
-    let mock_ui = MockUI::new(vec![Ok(test_answer.to_string())]);
-
-    let mut agent = Agent::new(
-        Box::new(mock_llm),
-        ToolMode::Native,
-        Box::new(create_explorer_mock()),
-        Box::new(create_command_executor_mock()),
-        Box::new(mock_ui.clone()),
-        Box::new(MockStatePersistence::new()),
-    );
-
-    // Run the agent
-    agent.start_with_task("Test task".to_string()).await?;
-
-    // Verify the question was asked
-    let messages = mock_ui.get_messages();
-    assert!(messages.iter().any(|msg| match msg {
-        UIMessage::Question(q) => q == test_question,
-        _ => false,
-    }));
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     // Test success case
-    let mock_llm = MockLLMProvider::new(vec![
-        // Responses in reverse order
-        Ok(create_test_response(
-            Tool::MessageUser {
-                message: (String::from("Done")),
-            },
-            "Dummy reason",
-        )),
-        Ok(create_test_response(
-            Tool::ReadFiles {
-                paths: vec![PathBuf::from("test.txt")],
-            },
-            "Reading test file",
-        )),
-    ]);
+    let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
+        Tool::ReadFiles {
+            paths: vec![PathBuf::from("test.txt")],
+        },
+        "Reading test file",
+    ))]);
     // Obtain a reference to the mock_llm before handing ownership to the agent
     let mock_llm_ref = mock_llm.clone();
 

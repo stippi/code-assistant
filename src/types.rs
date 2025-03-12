@@ -168,6 +168,8 @@ pub struct FileReplacement {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "tool", content = "params")]
 pub enum Tool {
+    /// Input given by the user after the LLM has not called any tool
+    UserInput,
     /// List available projects
     ListProjects,
     /// Open a project by name
@@ -198,10 +200,6 @@ pub enum Tool {
     },
     /// Replace contents of resources with summaries in working memory
     Summarize { resources: Vec<(PathBuf, String)> },
-    /// Ask user a question and wait for response
-    AskUser { question: String },
-    /// Message the user
-    MessageUser { message: String },
     /// Complete the current task
     CompleteTask { message: String },
     /// Execute a CLI command
@@ -241,6 +239,9 @@ pub enum Tool {
 /// Specific results for each tool type
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum ToolResult {
+    UserInput {
+        message: String,
+    },
     ListProjects {
         projects: HashMap<String, Project>,
     },
@@ -287,12 +288,6 @@ pub enum ToolResult {
     },
     Summarize {
         resources: Vec<(PathBuf, String)>,
-    },
-    AskUser {
-        response: String,
-    },
-    MessageUser {
-        result: String,
     },
     CompleteTask {
         result: String,
