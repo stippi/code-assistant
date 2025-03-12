@@ -56,6 +56,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # File content inspection
 content_inspector = "0.2"
 encoding_rs = "0.8.35"
+unicode-segmentation = "1.12.0"
 
 [dev-dependencies]
 axum = "0.7"

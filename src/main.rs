@@ -10,11 +10,10 @@ mod ui;
 mod utils;
 mod web;
 
-use crate::agent::{Agent, ToolMode};
+use crate::agent::Agent;
 use crate::explorer::Explorer;
 use crate::llm::{AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient};
 use crate::mcp::MCPServer;
-use crate::ui;
 use crate::utils::DefaultCommandExecutor;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
