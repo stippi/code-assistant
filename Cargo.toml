@@ -6,9 +6,9 @@ edition = "2021"
 [dependencies]
 glob = "0.3"
 ignore = "0.4"
-walkdir = "2.4"
-tokio = { version = "1.36", features = ["full"] }
-tempfile = "3.10"
+walkdir = "2.5"
+tokio = { version = "1.44", features = ["full"] }
+tempfile = "3.18"
 
 # Terminal UI
 rustyline = "12.0.0"
@@ -16,7 +16,7 @@ crossterm = "0.27.0"
 
 # GUI - specify rev to avoid dependency conflicts
 gpui = { git = "https://github.com/zed-industries/zed.git", package = "gpui" }
-smallvec = "1.10"
+smallvec = "1.14"
 
 # HTTP Requests
 chromiumoxide = { version = "0.5", features = ["tokio-runtime"] }
@@ -37,7 +37,7 @@ serde_json = "1.0"
 # Error handling
 anyhow = "1.0"
 thiserror = "1.0"
-regex = "1.9"
+regex = "1.11"
 
 # Logging
 tracing = "0.1"
@@ -59,4 +59,4 @@ encoding_rs = "0.8.35"
 
 [dev-dependencies]
 axum = "0.7"
-bytes = "1.5"
+bytes = "1.10"
