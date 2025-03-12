@@ -212,7 +212,7 @@ impl Render for AppView {
                             .cursor(if is_input_requested {
                                 gpui::CursorStyle::IBeam
                             } else {
-                                gpui::CursorStyle::NotAllowed
+                                gpui::CursorStyle::OperationNotAllowed
                             })
                             .on_key_down(move |_, event, _, _| {
                                 event.prevent_default();
