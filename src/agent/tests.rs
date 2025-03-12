@@ -477,7 +477,7 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
                 "path": path,
                 "diff": diff
             })
-        },
+        }
         Tool::DeleteFiles { paths } => serde_json::json!({
             "paths": paths
         }),

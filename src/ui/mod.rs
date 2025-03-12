@@ -1,5 +1,5 @@
-pub mod terminal;
 pub mod gui;
+pub mod terminal;
 use async_trait::async_trait;
 use thiserror::Error;
 
@@ -36,7 +36,7 @@ pub trait UserInterface: Send + Sync {
 // UI factory function to create either terminal or GUI interface
 pub fn create_ui(use_gui: bool) -> Box<dyn UserInterface> {
     if use_gui {
-        Box::new(gui::GPUI::new())
+        Box::new(gui::GPUI::init())
     } else {
         Box::new(terminal::TerminalUI::new())
     }
