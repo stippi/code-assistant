@@ -692,7 +692,7 @@ impl LLMProvider for AnthropicClient {
             thinking,
             messages: request.messages,
             max_tokens,
-            temperature: 0.7,
+            temperature: 1.0,
             system,
             stream: streaming_callback.map(|_| true),
             tool_choice,
