@@ -15,6 +15,7 @@ use crate::explorer::Explorer;
 use crate::llm::{AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient};
 use crate::mcp::MCPServer;
 use crate::ui::terminal::TerminalUI;
+use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -204,17 +205,6 @@ async fn main() -> Result<()> {
                 anyhow::bail!("Path '{}' is not a directory", path.display());
             }
 
-            // Setup LLM client with the specified provider
-            let llm_client = create_llm_client(provider, model, num_ctx)
-                .context("Failed to initialize LLM client")?;
-
-            // Setup dynamic types
-            let root_path = path.canonicalize()?;
-            let explorer = Box::new(Explorer::new(root_path.clone()));
-            let user_interface = Box::new(TerminalUI::new());
-            let command_executor = Box::new(DefaultCommandExecutor);
-            let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
-
             // Validate parameters
             if continue_task && task.is_some() {
                 anyhow::bail!(
@@ -226,41 +216,95 @@ async fn main() -> Result<()> {
                 anyhow::bail!("Either --task, --continue, or --ui must be specified");
             }
 
-            // Initialize agent
-            let mut agent = Agent::new(
-                llm_client,
-                match &tools_type {
-                    ToolsType::Native => agent::ToolMode::Native,
-                    ToolsType::Xml => agent::ToolMode::Xml,
-                },
-                explorer,
-                command_executor,
-                user_interface,
-                state_persistence,
-            );
-
-            // Get task either from state file, argument, or GUI
-            if continue_task {
-                agent.start_from_state().await?;
-            } else if let Some(task_str) = task {
-                agent.start_with_task(task_str).await?;
-            } else if use_gui {
+            // Check if GUI mode is requested
+            if use_gui {
+                // Create shared state between GUI and Agent thread
                 let gui = ui::gui::GPUI::new();
 
-                // Starte einen separaten Thread, der den Agent ausführt
-                let agent_thread = std::thread::spawn(move || {
-                    // Hier kommt dein eigentlicher Agent-Code
-                    // (der Rest der Agent-Startroutine)
+                // Setup dynamic types
+                let root_path = path.canonicalize()?;
+                let explorer = Box::new(Explorer::new(root_path.clone()));
+                let user_interface: Box<dyn UserInterface> = Box::new(gui.clone());
+                let command_executor = Box::new(DefaultCommandExecutor);
+                let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
 
-                    // z.B. agent.start_with_task(task_from_ui).await?;
+                // Start the agent in a separate thread using a standard thread
+                // We need to move all the necessary components into this thread
+                std::thread::spawn(move || {
+                    // Create a new tokio runtime for this thread
+                    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+                    // Run the agent within this runtime
+                    runtime.block_on(async {
+                        // Setup LLM client inside the thread
+                        let llm_client = create_llm_client(provider, model, num_ctx)
+                            .expect("Failed to initialize LLM client");
+
+                        // Initialize agent
+                        let mut agent = Agent::new(
+                            llm_client,
+                            match &tools_type {
+                                ToolsType::Native => agent::ToolMode::Native,
+                                ToolsType::Xml => agent::ToolMode::Xml,
+                            },
+                            explorer,
+                            command_executor,
+                            user_interface,
+                            state_persistence,
+                        );
+
+                        // Get task either from state file, argument, or GUI
+                        if continue_task {
+                            agent.start_from_state().await.unwrap();
+                        } else if let Some(task_str) = task {
+                            agent.start_with_task(task_str).await.unwrap();
+                        } else {
+                            // In GUI mode with no task, we can start without a task
+                            // The UI will prompt the user for a task
+                            let task_prompt = "Please enter the task you want me to perform:";
+                            let task_from_ui = agent.get_input_from_ui(task_prompt).await.unwrap();
+                            agent.start_with_task(task_from_ui).await.unwrap();
+                        }
+                    });
                 });
 
-                // Starte die GUI-Anwendung im Hauptthread
-                // Diese Methode blockiert, bis die Anwendung geschlossen wird
+                // Run the GUI in the main thread - this will block until the application exits
                 gui.run_app();
 
-                // Warte auf den Abschluss des Agent-Threads
-                agent_thread.join().unwrap();
+                // We return here when the GUI is closed
+                return Ok(());
+            } else {
+                // Non-GUI mode - run the agent directly in the main thread
+                // Setup dynamic types
+                let root_path = path.canonicalize()?;
+                let explorer = Box::new(Explorer::new(root_path.clone()));
+                let user_interface = Box::new(TerminalUI::new());
+                let command_executor = Box::new(DefaultCommandExecutor);
+                let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
+
+                // Setup LLM client with the specified provider
+                let llm_client = create_llm_client(provider, model, num_ctx)
+                    .context("Failed to initialize LLM client")?;
+
+                // Initialize agent
+                let mut agent = Agent::new(
+                    llm_client,
+                    match &tools_type {
+                        ToolsType::Native => agent::ToolMode::Native,
+                        ToolsType::Xml => agent::ToolMode::Xml,
+                    },
+                    explorer,
+                    command_executor,
+                    user_interface,
+                    state_persistence,
+                );
+
+                // Get task either from state file or argument
+                if continue_task {
+                    agent.start_from_state().await?;
+                } else {
+                    agent.start_with_task(task.unwrap()).await?;
+                }
             }
         }
     }
