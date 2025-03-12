@@ -63,75 +63,107 @@ impl Agent {
             // Start with just the working memory message
             let mut messages = self.prepare_messages();
 
-            // Get next actions from LLM
-            let (actions, assistant_msg) = match self.get_next_actions(messages.clone()).await {
-                Ok(result) => result,
-                Err(e) => match e {
-                    AgentError::LLMError(e) => return Err(e),
-                    AgentError::ActionError { error, message } => {
-                        messages.push(message);
-                        return Err(error);
-                    }
-                },
-            };
+            // Keep trying until all actions succeed
+            let mut all_actions_succeeded = false;
+            while !all_actions_succeeded {
+                let (actions, assistant_msg) = match self.get_next_actions(messages.clone()).await {
+                    Ok(result) => result,
+                    Err(e) => match e {
+                        AgentError::LLMError(e) => return Err(e),
+                        AgentError::ActionError { error, message } => {
+                            messages.push(message);
 
-            // Add the assistant message to the conversation history
-            messages.push(assistant_msg);
-
-            // If no actions were returned, wait for user input
-            if actions.is_empty() {
-                // Wait for user input
-                let user_input = self.get_input_from_ui("").await?;
-
-                // Add user input as a special action result to working memory
-                self.working_memory.action_history.push(ActionResult {
-                    tool: Tool::UserInput {},
-                    result: ToolResult::UserInput {
-                        message: user_input,
+                            if let Some(tool_error) = error.downcast_ref::<ToolError>() {
+                                match tool_error {
+                                    ToolError::UnknownTool(t) => {
+                                        messages.push(Message {
+                                            role: MessageRole::User,
+                                            content: MessageContent::Text(format!(
+                                                "Unknown tool '{}'. Please use only available tools.",
+                                                t
+                                            )),
+                                        });
+                                        continue;
+                                    }
+                                    ToolError::ParseError(msg) => {
+                                        messages.push(Message {
+                                            role: MessageRole::User,
+                                            content: MessageContent::Text(format!(
+                                                "Tool parameter error: {}. Please try again.",
+                                                msg
+                                            )),
+                                        });
+                                        continue;
+                                    }
+                                }
+                            }
+                            return Err(error);
+                        }
                     },
-                    reasoning: "Need user input".to_string(),
-                });
+                };
+                messages.push(assistant_msg);
 
-                // Save state after user input
-                self.state_persistence.save_state(
-                    self.working_memory.current_task.clone(),
-                    self.working_memory.action_history.clone(),
-                )?;
+                // If no actions were returned, get user input
+                if actions.is_empty() {
+                    // Get input from UI
+                    let user_input = self.get_input_from_ui("").await?;
 
-                continue; // Continue the loop with new user input
-            }
+                    // Add user input as an action result to working memory
+                    let action_result = ActionResult {
+                        tool: Tool::UserInput {},
+                        result: ToolResult::UserInput {
+                            message: user_input,
+                        },
+                        reasoning: "User provided input".to_string(),
+                    };
 
-            // Process each action
-            let mut all_actions_succeeded = true;
-            for action in actions {
-                let result = self.execute_action(&action).await?;
+                    self.working_memory.action_history.push(action_result);
 
-                if !result.result.is_success() {
-                    all_actions_succeeded = false;
-                    // Add error message to conversation
-                    messages.push(Message {
-                        role: MessageRole::User,
-                        content: MessageContent::Text(format!(
-                            "Error executing action: {}\n{}",
-                            result.reasoning,
-                            result.result.format_message()
-                        )),
-                    });
-                    break; // Stop processing remaining actions
+                    // Save state after user input
+                    self.state_persistence.save_state(
+                        self.working_memory.current_task.clone(),
+                        self.working_memory.action_history.clone(),
+                    )?;
+
+                    // Break the inner loop to start a new iteration with updated working memory
+                    break;
                 }
 
-                self.working_memory.action_history.push(result);
+                all_actions_succeeded = true; // Will be set to false if any action fails
 
-                // Save state after each successful action
-                self.state_persistence.save_state(
-                    self.working_memory.current_task.clone(),
-                    self.working_memory.action_history.clone(),
-                )?;
-            }
+                for action in actions {
+                    let result = self.execute_action(&action).await?;
 
-            // If not all actions succeeded, continue to retry
-            if !all_actions_succeeded {
-                continue;
+                    if !result.result.is_success() {
+                        all_actions_succeeded = false;
+                        // Add error message to conversation
+                        messages.push(Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Text(format!(
+                                "Error executing action: {}\n{}",
+                                result.reasoning,
+                                result.result.format_message()
+                            )),
+                        });
+                        break; // Stop processing remaining actions
+                    }
+
+                    self.working_memory.action_history.push(result);
+
+                    // Save state after each successful action
+                    self.state_persistence.save_state(
+                        self.working_memory.current_task.clone(),
+                        self.working_memory.action_history.clone(),
+                    )?;
+
+                    // Check if this was a CompleteTask action
+                    if let Tool::CompleteTask { .. } = action.tool {
+                        // Clean up state file on successful completion
+                        self.state_persistence.cleanup()?;
+                        debug!("Task completed");
+                        return Ok(());
+                    }
+                }
             }
         }
     }
