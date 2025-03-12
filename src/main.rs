@@ -14,7 +14,7 @@ use crate::agent::{Agent, ToolMode};
 use crate::explorer::Explorer;
 use crate::llm::{AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient};
 use crate::mcp::MCPServer;
-use crate::ui::terminal::TerminalUI;
+use crate::ui;
 use crate::utils::DefaultCommandExecutor;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -37,49 +37,52 @@ enum ToolsType {
     Xml,
 }
 
+// Define the application arguments
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
     #[command(subcommand)]
-    mode: Mode,
+    mode: Option<Mode>,
+
+    /// Path to the code directory to analyze
+    #[arg(long, default_value = ".")]
+    path: Option<PathBuf>,
+
+    /// Task to perform on the codebase (required unless --continue or --ui is used)
+    #[arg(short, long, required_unless_present_any = ["continue_task", "ui"])]
+    task: Option<String>,
+
+    /// Start with GUI interface
+    #[arg(long)]
+    ui: bool,
+
+    /// Continue from previous state
+    #[arg(long)]
+    continue_task: bool,
+
+    /// Enable verbose logging
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// LLM provider to use
+    #[arg(short = 'p', long, default_value = "anthropic")]
+    provider: Option<LLMProviderType>,
+
+    /// Model name to use (provider-specific)
+    #[arg(short = 'm', long)]
+    model: Option<String>,
+
+    /// Context window size (in tokens, only relevant for Ollama)
+    #[arg(long, default_value = "8192")]
+    num_ctx: Option<usize>,
+
+    /// Type of tool declaration ('native' = tools via API, 'xml' = custom system message)
+    #[arg(long, default_value = "xml")]
+    tools_type: Option<ToolsType>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Mode {
-    /// Run as autonomous agent with LLM support
-    Agent {
-        /// Path to the code directory to analyze
-        #[arg(long, default_value = ".")]
-        path: PathBuf,
-
-        /// Task to perform on the codebase (required unless --continue is used)
-        #[arg(short, long, required_unless_present = "continue_task")]
-        task: Option<String>,
-
-        /// Continue from previous state
-        #[arg(long)]
-        continue_task: bool,
-
-        /// Enable verbose logging
-        #[arg(short, long)]
-        verbose: bool,
-
-        /// LLM provider to use
-        #[arg(short = 'p', long, default_value = "anthropic")]
-        provider: LLMProviderType,
-
-        /// Model name to use (provider-specific)
-        #[arg(short = 'm', long)]
-        model: Option<String>,
-
-        /// Context window size (in tokens, only relevant for Ollama)
-        #[arg(long, default_value = "8192")]
-        num_ctx: usize,
-
-        /// Type of tool declaration ('native' = tools via API, 'xml' = custom system message)
-        #[arg(long, default_value = "xml")]
-        tools_type: ToolsType,
-    },
     /// Run as MCP server
     Server {
         /// Enable verbose logging
@@ -170,16 +173,29 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     match args.mode {
-        Mode::Agent {
-            path,
-            task,
-            continue_task,
-            verbose,
-            provider,
-            model,
-            num_ctx,
-            tools_type,
-        } => {
+        // Server mode
+        Some(Mode::Server { verbose }) => {
+            // Setup logging based on verbose flag
+            setup_logging(verbose, false);
+
+            // Initialize server
+            let mut server = MCPServer::new()?;
+            server.run().await?;
+        }
+
+        // Agent mode (default)
+        None => {
+            // Get all the agent options from args
+            let path = args.path.unwrap_or_else(|| PathBuf::from("."));
+            let task = args.task;
+            let continue_task = args.continue_task;
+            let verbose = args.verbose;
+            let provider = args.provider.unwrap_or(LLMProviderType::Anthropic);
+            let model = args.model;
+            let num_ctx = args.num_ctx.unwrap_or(8192);
+            let tools_type = args.tools_type.unwrap_or(ToolsType::Xml);
+            let use_gui = args.ui;
+
             // Setup logging based on verbose flag
             setup_logging(verbose, true);
 
@@ -195,7 +211,7 @@ async fn main() -> Result<()> {
             // Setup dynamic types
             let root_path = path.canonicalize()?;
             let explorer = Box::new(Explorer::new(root_path.clone()));
-            let terminal_ui = Box::new(TerminalUI::new());
+            let user_interface = ui::create_ui(use_gui);
             let command_executor = Box::new(DefaultCommandExecutor);
             let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
 
@@ -206,38 +222,35 @@ async fn main() -> Result<()> {
                 );
             }
 
-            if !continue_task && task.is_none() {
-                anyhow::bail!("Either --task or --continue must be specified");
+            if !continue_task && task.is_none() && !use_gui {
+                anyhow::bail!("Either --task, --continue, or --ui must be specified");
             }
 
             // Initialize agent
             let mut agent = Agent::new(
                 llm_client,
                 match &tools_type {
-                    ToolsType::Native => ToolMode::Native,
-                    ToolsType::Xml => ToolMode::Xml,
+                    ToolsType::Native => agent::ToolMode::Native,
+                    ToolsType::Xml => agent::ToolMode::Xml,
                 },
                 explorer,
                 command_executor,
-                terminal_ui,
+                user_interface,
                 state_persistence,
             );
 
-            // Get task either from state file or argument
+            // Get task either from state file, argument, or GUI
             if continue_task {
                 agent.start_from_state().await?;
-            } else {
-                agent.start_with_task(task.unwrap()).await?;
+            } else if let Some(task_str) = task {
+                agent.start_with_task(task_str).await?;
+            } else if use_gui {
+                // In GUI mode with no task, we can start without a task
+                // The UI will prompt the user for a task
+                let task_prompt = "Please enter the task you want me to perform:";
+                let task_from_ui = agent.get_input_from_ui(task_prompt).await?;
+                agent.start_with_task(task_from_ui).await?;
             }
-        }
-
-        Mode::Server { verbose } => {
-            // Setup logging based on verbose flag
-            setup_logging(verbose, false);
-
-            // Initialize server
-            let mut server = MCPServer::new()?;
-            server.run().await?;
         }
     }
 

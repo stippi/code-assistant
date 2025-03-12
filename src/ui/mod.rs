@@ -1,4 +1,5 @@
 pub mod terminal;
+pub mod gui;
 use async_trait::async_trait;
 use thiserror::Error;
 
@@ -30,6 +31,15 @@ pub trait UserInterface: Send + Sync {
 
     /// Display streaming output synchronously
     fn display_streaming(&self, text: &str) -> Result<(), UIError>;
+}
+
+// UI factory function to create either terminal or GUI interface
+pub fn create_ui(use_gui: bool) -> Box<dyn UserInterface> {
+    if use_gui {
+        Box::new(gui::GPUI::new())
+    } else {
+        Box::new(terminal::TerminalUI::new())
+    }
 }
 
 #[cfg(test)]

@@ -52,6 +52,11 @@ impl Agent {
         }
     }
 
+    // New method to get input directly from UI
+    pub async fn get_input_from_ui(&self, prompt: &str) -> Result<String> {
+        self.ui.get_input(prompt).await.map_err(|e| e.into())
+    }
+
     async fn run_agent_loop(&mut self) -> Result<()> {
         // Main agent loop
         loop {
