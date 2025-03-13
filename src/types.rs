@@ -101,11 +101,11 @@ impl WorkingMemory {
             })
             .collect::<Vec<_>>();
 
-        // Format loaded resources
+        // Format loaded resources with clear boundary markers
         let resources: Vec<String> = self
             .loaded_resources
             .iter()
-            .map(|(path, resource)| format!("{}:\n{}", path.display(), resource))
+            .map(|(path, resource)| format!(">>>>> RESOURCE: {}\n{}\n<<<<< END RESOURCE", path.display(), resource))
             .collect();
 
         let replacements = [
@@ -117,7 +117,11 @@ impl WorkingMemory {
             ),
             (
                 "{resources}",
-                &vec_to_markdown(&resources, "No resources loaded"),
+                &if resources.is_empty() {
+                    "No resources loaded".to_string()
+                } else {
+                    resources.join("\n\n")
+                },
             ),
             (
                 "{file_tree}",

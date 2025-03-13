@@ -1,4 +1,5 @@
 /target
+/sessions
 mcp-config.json
 .code-assistant.state.json
 tarpaulin-report.html
