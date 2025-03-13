@@ -5,7 +5,7 @@ mod message;
 
 use crate::types::WorkingMemory;
 use crate::ui::{async_trait, DisplayFragment, UIError, UIMessage, UserInterface};
-use gpui::{AppContext, Focusable, px};
+use gpui::{px, AppContext, Focusable};
 use input::TextInput;
 pub use memory_view::MemoryView;
 use message::MessageView;
@@ -57,15 +57,15 @@ impl GPUI {
             let memory_view = cx.new(|cx| MemoryView::new(cx));
             *memory_view_handle.lock().unwrap() = Some(memory_view.clone());
 
-            // Create window
+            // Create window with larger size to accommodate both views
             let bounds =
-                gpui::Bounds::centered(None, gpui::size(gpui::px(800.0), gpui::px(600.0)), cx);
+                gpui::Bounds::centered(None, gpui::size(gpui::px(1000.0), gpui::px(650.0)), cx);
             let window_result = cx.open_window(
                 gpui::WindowOptions {
                     window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some(gpui::SharedString::from("Code Assistant")),
-                        appears_transparent: false,
+                        appears_transparent: true, // Make titlebar transparent
                         ..Default::default()
                     }),
                     ..Default::default()

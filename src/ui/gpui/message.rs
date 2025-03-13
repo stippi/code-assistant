@@ -92,14 +92,17 @@ impl Render for MessageView {
             .bg(rgb(0x2c2c2c))
             .track_focus(&self.focus_handle(cx))
             .flex()
-            .flex_row() // Changed to row for main container
-            .size_full()
+            .flex_row() // Main container as row layout
+            .w_full() // Constrain to window width
+            .h_full() // Take full height
             .child(
                 // Left side with messages and input (content area)
                 div()
                     .flex()
                     .flex_col()
-                    .flex_1() // Takes available space (main content area)
+                    .flex_grow() // Grow to take available space
+                    .flex_shrink() // Allow shrinking if needed
+                    .overflow_hidden() // Prevent overflow
                     .child(
                         // Messages display area
                         div()
@@ -174,17 +177,20 @@ impl Render for MessageView {
                                     .cursor_pointer()
                                     .child("Clear")
                                     .hover(|style| style.bg(rgb(0x664444)))
-                                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_reset_click)),
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(Self::on_reset_click),
+                                    ),
                             ),
                     ),
             )
             .child(
-                // Right side with memory view 
+                // Right side with memory view - now using flex_none to ensure it takes its natural width
                 div()
                     .w(px(280.)) // Fixed width for the sidebar
                     .h_full()
-                    .flex_none() // Don't flex, use exact size
-                    .child(self.memory_view.clone())
+                    .flex_none() // Don't flex, use exact width
+                    .child(self.memory_view.clone()),
             )
     }
 }

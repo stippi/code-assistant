@@ -245,7 +245,7 @@ impl Render for MemoryView {
             .id("memory-sidebar")
             .track_focus(&self.focus_handle(cx))
             .flex_none()
-            .w_full() // Take full width of the parent container
+            .w(px(280.)) // Fixed width matching parent container's allocation
             .h_full()
             .bg(rgb(0x252525))
             .border_l_1()
