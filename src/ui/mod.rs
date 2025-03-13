@@ -31,24 +31,8 @@ pub trait UserInterface: Send + Sync {
     /// Get input from the user
     async fn get_input(&self, prompt: &str) -> Result<String, UIError>;
 
-    /// Display streaming output synchronously (legacy method, still needed for compatibility)
-    fn display_streaming(&self, text: &str) -> Result<(), UIError>;
-
     /// Display a streaming fragment with specific type information
-    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
-        // Default implementation converts fragments to text for backward compatibility
-        match fragment {
-            DisplayFragment::PlainText(text) => self.display_streaming(text),
-            DisplayFragment::ThinkingText(text) => self.display_streaming(text),
-            DisplayFragment::ToolName { name, .. } => {
-                self.display_streaming(&format!("\n• {}", name))
-            }
-            DisplayFragment::ToolParameter { name, value, .. } => {
-                self.display_streaming(&format!("  {}: {}", name, value))
-            }
-            DisplayFragment::ToolEnd { .. } => Ok(()),
-        }
-    }
+    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError>;
 }
 
 #[cfg(test)]

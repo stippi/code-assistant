@@ -235,19 +235,4 @@ impl UserInterface for TerminalUI {
         writer.flush()?;
         Ok(())
     }
-
-    // Legacy method - delegates to the StreamProcessor now
-    fn display_streaming(&self, text: &str) -> Result<(), UIError> {
-        // Simple fallback implementation that just writes the text directly
-        let mut stdout = io::stdout().lock();
-        let writer: &mut dyn Write = if let Some(w) = &self.writer {
-            &mut *w.lock().unwrap()
-        } else {
-            &mut stdout
-        };
-
-        write!(writer, "{}", text)?;
-        writer.flush()?;
-        Ok(())
-    }
 }

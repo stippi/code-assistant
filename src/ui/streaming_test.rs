@@ -35,10 +35,6 @@ impl UserInterface for TestUI {
         Ok(String::new())
     }
 
-    fn display_streaming(&self, _text: &str) -> Result<(), crate::ui::UIError> {
-        Ok(())
-    }
-
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), crate::ui::UIError> {
         let mut guard = self.fragments.lock().unwrap();
         guard.push_back(fragment.clone());

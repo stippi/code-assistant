@@ -256,11 +256,6 @@ impl UserInterface for GPUI {
 
         Ok(())
     }
-
-    fn display_streaming(&self, text: &str) -> Result<(), UIError> {
-        // Handle streaming text as a plain text fragment
-        self.display_fragment(&DisplayFragment::PlainText(text.to_string()))
-    }
 }
 
 impl Clone for GPUI {

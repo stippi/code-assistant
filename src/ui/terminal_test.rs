@@ -1,7 +1,9 @@
 //! Tests for the terminal UI streaming functionality
 
+use super::streaming::{DisplayFragment, StreamProcessor};
 use super::terminal::TerminalUI;
 use super::UserInterface;
+use crate::llm::StreamingChunk;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -39,7 +41,8 @@ fn test_param_tag_hiding() {
     // Create shared test writer to capture output
     let writer = Arc::new(Mutex::new(TestWriter::new()));
 
-    // Run the code that uses the test writer
+    // Run the code that uses the test writer - deliberately using very small chunks
+    // to test the robustness of tag handling when tags are split across chunks
     stream_text(writer.clone(), chunk_str(input, 3));
 
     // Check the output
@@ -70,7 +73,7 @@ fn chunk_str(s: &str, chunk_size: usize) -> Vec<String> {
     chunks
 }
 
-// Helper function to run a chunk of text through our UI
+// Helper function to run a chunk of text through our UI with StreamProcessor
 fn stream_text(writer: Arc<Mutex<TestWriter>>, chunks: Vec<String>) {
     // Erstelle eine minimale Struktur, die Write implementiert und an unseren Arc<Mutex<TestWriter>> weiterleitet
     struct WriterWrapper(Arc<Mutex<TestWriter>>);
@@ -90,9 +93,13 @@ fn stream_text(writer: Arc<Mutex<TestWriter>>, chunks: Vec<String>) {
 
     // Erstelle UI mit Test-Writer
     let ui = TerminalUI::with_test_writer(wrapper);
+    let ui_arc = Arc::new(Box::new(ui) as Box<dyn UserInterface>);
 
-    // Streame Text-Chunks
+    // Create a StreamProcessor with the UI
+    let mut processor = StreamProcessor::new(ui_arc);
+
+    // Process each chunk
     for chunk in chunks {
-        ui.display_streaming(&chunk).unwrap();
+        processor.process(&StreamingChunk::Text(chunk)).unwrap();
     }
 }

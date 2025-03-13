@@ -186,8 +186,26 @@ impl UserInterface for MockUI {
             ))))
     }
 
-    fn display_streaming(&self, text: &str) -> Result<(), UIError> {
-        self.streaming.lock().unwrap().push(text.to_string());
+    fn display_fragment(&self, fragment: &crate::ui::DisplayFragment) -> Result<(), UIError> {
+        // Convert the fragment to a string and add it to streaming collection
+        match fragment {
+            crate::ui::DisplayFragment::PlainText(text) => {
+                self.streaming.lock().unwrap().push(text.clone());
+            }
+            crate::ui::DisplayFragment::ThinkingText(text) => {
+                self.streaming.lock().unwrap().push(text.clone());
+            }
+            crate::ui::DisplayFragment::ToolName { name, .. } => {
+                self.streaming.lock().unwrap().push(format!("\n• {}", name));
+            }
+            crate::ui::DisplayFragment::ToolParameter { name, value, .. } => {
+                self.streaming
+                    .lock()
+                    .unwrap()
+                    .push(format!("  {}: {}", name, value));
+            }
+            crate::ui::DisplayFragment::ToolEnd { .. } => {}
+        }
         Ok(())
     }
 }
