@@ -1,5 +1,5 @@
-use gpui::prelude::*;
 use gpui::{div, hsla, px, white, IntoElement};
+use gpui::{prelude::*, FontWeight};
 use std::sync::{Arc, Mutex};
 
 /// Container for all elements within a message
@@ -203,7 +203,7 @@ impl IntoElement for MessageElement {
                     .children(vec![
                         // Tool name header
                         div()
-                            //.font_bold()
+                            .font_weight(FontWeight(700.0))
                             .text_color(hsla(210., 0.7, 0.7, 1.0)) // Blue text
                             .mb_1()
                             .child(format!("🔧 {}", block.name))
@@ -221,7 +221,7 @@ impl IntoElement for MessageElement {
                                     .mb_1()
                                     .children(vec![
                                         div()
-                                            //.font_medium()
+                                            .font_weight(FontWeight(500.0))
                                             .text_color(hsla(210., 0.5, 0.8, 1.0)) // Light blue text
                                             .min_w(px(100.))
                                             .mr_2()
