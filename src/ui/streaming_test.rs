@@ -43,7 +43,6 @@ impl UserInterface for TestUI {
 }
 
 // Helper function to split text into small chunks for testing tag handling
-// Used internally for chunk processing tests
 fn chunk_str(s: &str, chunk_size: usize) -> Vec<String> {
     let chars: Vec<char> = s.chars().collect();
     let mut chunks = Vec::new();
@@ -53,6 +52,21 @@ fn chunk_str(s: &str, chunk_size: usize) -> Vec<String> {
     }
 
     chunks
+}
+
+// Process input text with a stream processor, breaking it into chunks
+fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
+    let test_ui = TestUI::new();
+    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+
+    let mut processor = StreamProcessor::new(ui_arc);
+
+    // Split text into small chunks and process each one
+    for chunk in chunk_str(text, chunk_size) {
+        processor.process(&StreamingChunk::Text(chunk)).unwrap();
+    }
+
+    test_ui
 }
 
 #[cfg(test)]
@@ -84,20 +98,14 @@ mod tests {
     fn test_param_tag_hiding() {
         let input = "<thinking>The user has not provided a task.</thinking>\nI'll use the ask_user tool.\n<tool:ask_user>\n<param:question>What would you like to know?</param:question>\n</tool:ask_user>";
 
-        let test_ui_direct = TestUI::new();
-        let test_ui = Arc::new(Box::new(test_ui_direct.clone()) as Box<dyn UserInterface>);
-        let mut processor = StreamProcessor::new(test_ui);
-
-        // Process the input with large enough chunks so tags don't get split
-        processor
-            .process(&StreamingChunk::Text(input.to_string()))
-            .unwrap();
+        // Process with very small chunks (3 chars each) to test tag handling across chunks
+        let test_ui = process_chunked_text(input, 3);
 
         // Get and verify the fragments
-        let fragments = test_ui_direct.get_fragments();
+        let fragments = test_ui.get_fragments();
         print_fragments(&fragments);
 
-        // Check if we find parameter content
+        // Check if we find parameter content in tool parameter fragments
         let mut found_param_content = false;
         let mut found_param_end_tag = false;
 
@@ -126,110 +134,136 @@ mod tests {
 
     #[test]
     fn test_tool_tag_across_chunks() -> Result<()> {
-        // Create a test UI
-        let test_ui_direct = TestUI::new();
-        let test_ui = Arc::new(Box::new(test_ui_direct.clone()) as Box<dyn UserInterface>);
+        let input = "Let me read some files for you using <tool:read_files><param:paths>[\"src/main.rs\"]</param:paths></tool:read_files>";
 
-        // Create stream processor
-        let mut processor = StreamProcessor::new(test_ui);
-
-        println!("\n=== Processing first chunk ===");
-        // First chunk with partial tool tag
-        processor.process(&StreamingChunk::Text(
-            "Let me read some files for you using <tool:read".to_string(),
-        ))?;
-
-        println!("\n=== Processing second chunk ===");
-        // Second chunk with completion of tool tag and start of param tag
-        processor.process(&StreamingChunk::Text(
-            "_files><param:paths>[\"src/main.rs\"]</param:paths></tool:read_files>".to_string(),
-        ))?;
+        // Process with chunk size that splits the tool tag
+        let test_ui = process_chunked_text(input, 10);
 
         // Get and verify the fragments
-        let fragments = test_ui_direct.get_fragments();
+        let fragments = test_ui.get_fragments();
         print_fragments(&fragments);
 
-        // Instead of strict assertions, let's log what we find for now
+        // Check for specific fragment types
         let mut found_tool_name = false;
         let mut found_tool_param = false;
+        let mut found_tool_end = false;
 
         for fragment in &fragments {
             match fragment {
                 DisplayFragment::ToolName { name, .. } => {
                     found_tool_name = true;
-                    println!("Found ToolName: {}", name);
+                    assert_eq!(name, "read_files", "Should extract correct tool name");
                 }
-                DisplayFragment::ToolParameter { name, .. } => {
+                DisplayFragment::ToolParameter { name, value, .. } => {
                     found_tool_param = true;
-                    println!("Found ToolParameter: {}", name);
+                    assert_eq!(name, "paths", "Should extract correct param name");
+                    assert!(
+                        value.contains("[\"src/main.rs\"]"),
+                        "Should contain correct param value"
+                    );
+                }
+                DisplayFragment::ToolEnd { .. } => {
+                    found_tool_end = true;
                 }
                 _ => {}
             }
         }
 
-        // For debugging purposes, we'll just report but not fail
-        if !found_tool_name {
-            println!("Warning: Did not find ToolName fragment");
-        }
-        if !found_tool_param {
-            println!("Warning: Did not find ToolParameter fragment");
-        }
+        assert!(found_tool_name, "Should find tool name fragment");
+        assert!(found_tool_param, "Should find tool parameter fragment");
+        assert!(found_tool_end, "Should find tool end fragment");
 
         Ok(())
     }
 
     #[test]
     fn test_complex_tool_call_with_multiple_params() -> Result<()> {
-        // Create a test UI
-        let test_ui_direct = TestUI::new();
-        let test_ui = Arc::new(Box::new(test_ui_direct.clone()) as Box<dyn UserInterface>);
+        let input = "Let me search for specific files <tool:search_files><param:query>main function</param:query><param:path>src</param:path><param:case_sensitive>false</param:case_sensitive></tool:search_files>";
 
-        // Create stream processor
-        let mut processor = StreamProcessor::new(test_ui);
-
-        println!("\n=== Processing first chunk ===");
-        processor.process(&StreamingChunk::Text(
-            "Let me search for specific files <tool:search_fil".to_string(),
-        ))?;
-
-        println!("\n=== Processing second chunk ===");
-        processor.process(&StreamingChunk::Text(
-            "es><param:query>main function</param:query><param:path>src</".to_string(),
-        ))?;
-
-        println!("\n=== Processing third chunk ===");
-        processor.process(&StreamingChunk::Text(
-            "param:path><param:case_sensitive>false</param:case_sensitive></tool:search_files>"
-                .to_string(),
-        ))?;
+        // Process with chunk size that splits both tags and content
+        let test_ui = process_chunked_text(input, 12);
 
         // Get and verify the fragments
-        let fragments = test_ui_direct.get_fragments();
+        let fragments = test_ui.get_fragments();
         print_fragments(&fragments);
 
-        // Instead of strict assertions, let's log what we find for now
+        // Check for specific fragment patterns
         let mut found_tool_name = false;
-        let mut param_count = 0;
+        let mut param_names = Vec::new();
 
         for fragment in &fragments {
             match fragment {
                 DisplayFragment::ToolName { name, .. } => {
                     found_tool_name = true;
-                    println!("Found ToolName: {}", name);
+                    assert_eq!(name, "search_files", "Should extract correct tool name");
                 }
                 DisplayFragment::ToolParameter { name, .. } => {
-                    param_count += 1;
-                    println!("Found ToolParameter: {}", name);
+                    param_names.push(name.clone());
                 }
                 _ => {}
             }
         }
 
-        // For debugging purposes, we'll just report but not fail
-        if !found_tool_name {
-            println!("Warning: Did not find ToolName fragment");
+        assert!(found_tool_name, "Should find tool name fragment");
+        assert_eq!(param_names.len(), 3, "Should find 3 parameter fragments");
+        assert!(
+            param_names.contains(&"query".to_string()),
+            "Should have 'query' parameter"
+        );
+        assert!(
+            param_names.contains(&"path".to_string()),
+            "Should have 'path' parameter"
+        );
+        assert!(
+            param_names.contains(&"case_sensitive".to_string()),
+            "Should have 'case_sensitive' parameter"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_thinking_tag_handling() -> Result<()> {
+        let input = "Let me think about this.<thinking>This is a complex problem that requires careful analysis.</thinking>I've considered all options.";
+
+        // Process with small chunks
+        let test_ui = process_chunked_text(input, 5);
+
+        // Get and verify the fragments
+        let fragments = test_ui.get_fragments();
+        print_fragments(&fragments);
+
+        // Check that thinking text is properly tagged
+        let mut found_plain_text = false;
+        let mut found_thinking_text = false;
+
+        for fragment in &fragments {
+            match fragment {
+                DisplayFragment::PlainText(text) => {
+                    if text.contains("Let me think") || text.contains("I've considered") {
+                        found_plain_text = true;
+                    }
+                    // Thinking tags should not appear in plain text
+                    assert!(
+                        !text.contains("<thinking>"),
+                        "Thinking tag should not be visible"
+                    );
+                    assert!(
+                        !text.contains("</thinking>"),
+                        "Thinking end tag should not be visible"
+                    );
+                }
+                DisplayFragment::ThinkingText(text) => {
+                    if text.contains("complex problem") {
+                        found_thinking_text = true;
+                    }
+                }
+                _ => {}
+            }
         }
-        println!("Found {} parameter fragments", param_count);
+
+        assert!(found_plain_text, "Should find plain text content");
+        assert!(found_thinking_text, "Should find thinking text content");
 
         Ok(())
     }
