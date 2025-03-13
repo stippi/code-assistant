@@ -19,8 +19,8 @@ async fn test_playback_recorded_session() -> Result<()> {
     // Load the recording
     let player = RecordingPlayer::from_file(recording_path)?;
 
-    // Create a mock provider with the first session
-    let mut provider = player.create_mock_provider(0)?;
+    // Create a provider that will play sessions in order
+    let mut provider = player.create_provider()?;
 
     // Optionally turn off timing simulation for faster tests
     provider.set_simulate_timing(false);

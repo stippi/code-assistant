@@ -117,7 +117,7 @@ fn create_llm_client(
             return Err(anyhow::anyhow!("Recording file contains no sessions"));
         }
 
-        let provider = player.create_mock_provider(0)?;
+        let provider = player.create_provider()?;
         return Ok(Box::new(provider));
     }
 

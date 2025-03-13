@@ -14,6 +14,7 @@ use serde_json::Value;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A player for recorded LLM sessions
@@ -35,54 +36,82 @@ impl RecordingPlayer {
         Ok(Self { sessions })
     }
 
-    /// Get a specific session by index
-    pub fn get_session(&self, index: usize) -> Option<&RecordingSession> {
-        self.sessions.get(index)
-    }
-
     /// Get the number of available sessions
     pub fn session_count(&self) -> usize {
         self.sessions.len()
     }
 
-    /// Create a mock LLM provider that will replay a specific recorded session
-    pub fn create_mock_provider(&self, session_index: usize) -> Result<RecordingMockProvider> {
-        let session = self
-            .get_session(session_index)
-            .context("Session index out of bounds")?;
+    /// Create a mock LLM provider that will replay all sessions sequentially
+    pub fn create_provider(&self) -> Result<RecordingProvider> {
+        if self.sessions.is_empty() {
+            return Err(anyhow::anyhow!("No sessions available for playback"));
+        }
 
-        Ok(RecordingMockProvider {
-            session: session.clone(),
+        Ok(RecordingProvider {
+            sessions: self.sessions.clone(),
+            current_session: Arc::new(Mutex::new(0)),
             simulate_timing: true,
         })
     }
 }
 
-/// A mock LLM provider that replays a recorded session
+/// A mock LLM provider that replays sessions sequentially
 #[derive(Clone)]
-pub struct RecordingMockProvider {
-    session: RecordingSession,
+pub struct RecordingProvider {
+    sessions: Vec<RecordingSession>,
+    current_session: Arc<Mutex<usize>>,
     simulate_timing: bool,
 }
 
-impl RecordingMockProvider {
+impl RecordingProvider {
     /// Set whether to simulate the original timing between chunks
     pub fn set_simulate_timing(&mut self, simulate: bool) {
         self.simulate_timing = simulate;
     }
+    
+    /// Get the current session index
+    pub fn current_index(&self) -> usize {
+        *self.current_session.lock().unwrap()
+    }
+    
+    /// Get the total number of sessions
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
 }
 
 #[async_trait]
-impl LLMProvider for RecordingMockProvider {
+impl LLMProvider for RecordingProvider {
     async fn send_message(
         &self,
         _request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
+        // Get the session for this request and increment the index atomically
+        let session_index;
+        let session;
+        {
+            let mut index_guard = self.current_session.lock().unwrap();
+            session_index = *index_guard;
+            
+            // Make sure we don't exceed the available sessions
+            if session_index >= self.sessions.len() {
+                return Err(anyhow::anyhow!("No more recorded sessions available"));
+            }
+            
+            // Get the session for this request (clone it to avoid borrowing issues)
+            session = self.sessions[session_index].clone();
+            
+            // Increment for next time
+            *index_guard = session_index + 1;
+            
+            // Lock is automatically dropped at the end of this block
+        }
+        
         // When streaming is requested, replay the recorded chunks with timing
         if let Some(callback) = streaming_callback {
             // Extract the LLM response from the last event
-            let response = if let Some(last_chunk) = self.session.chunks.last() {
+            let response = if let Some(last_chunk) = &session.chunks.last() {
                 parse_response_from_chunk(last_chunk)?
             } else {
                 // Return empty response if no chunks are present
@@ -94,7 +123,7 @@ impl LLMProvider for RecordingMockProvider {
             let mut last_chunk_time = 0;
 
             // Stream each chunk with appropriate timing
-            for chunk in &self.session.chunks {
+            for chunk in &session.chunks {
                 // Simulate the timing between chunks
                 if self.simulate_timing && chunk.timestamp_ms > last_chunk_time {
                     let delay = chunk.timestamp_ms - last_chunk_time;
@@ -112,7 +141,7 @@ impl LLMProvider for RecordingMockProvider {
             Ok(response)
         } else {
             // For non-streaming requests, just return the final response
-            if let Some(last_chunk) = self.session.chunks.last() {
+            if let Some(last_chunk) = session.chunks.last() {
                 parse_response_from_chunk(last_chunk)
             } else {
                 // Return empty response if no chunks are present
@@ -226,38 +255,52 @@ mod tests {
     use std::io::Write;
     use tempfile::tempdir;
 
-    // Create a test recording file
+    // Create a test recording file with multiple sessions
     fn create_test_recording() -> Result<(tempfile::TempDir, String)> {
         let dir = tempdir()?;
         let file_path = dir.path().join("test_recording.json");
 
-        // Create a simple recording with one session
-        let session = RecordingSession {
-            request: serde_json::json!({
-                "messages": [
-                    {"role": "user", "content": "Hello"}
+        // Create a simple recording with two sessions
+        let sessions = vec![
+            RecordingSession {
+                request: serde_json::json!({
+                    "messages": [
+                        {"role": "user", "content": "Hello"}
+                    ],
+                    "system": "You are a helpful assistant."
+                }),
+                timestamp: chrono::Utc::now(),
+                chunks: vec![
+                    RecordedChunk {
+                        data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#.to_string(),
+                        timestamp_ms: 0,
+                    },
+                    RecordedChunk {
+                        data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"! How are you?"}}"#.to_string(),
+                        timestamp_ms: 500,
+                    },
                 ],
-                "system": "You are a helpful assistant."
-            }),
-            timestamp: chrono::Utc::now(),
-            chunks: vec![
-                RecordedChunk {
-                    data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#.to_string(),
-                    timestamp_ms: 0,
-                },
-                RecordedChunk {
-                    data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"! How"}}"#.to_string(),
-                    timestamp_ms: 500,
-                },
-                RecordedChunk {
-                    data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" can I help you?"}}"#.to_string(),
-                    timestamp_ms: 1000,
-                },
-            ],
-        };
-
-        // Create an array with one session
-        let sessions = vec![session];
+            },
+            RecordingSession {
+                request: serde_json::json!({
+                    "messages": [
+                        {"role": "user", "content": "What can you do?"}
+                    ],
+                    "system": "You are a helpful assistant."
+                }),
+                timestamp: chrono::Utc::now(),
+                chunks: vec![
+                    RecordedChunk {
+                        data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I can help"}}"#.to_string(),
+                        timestamp_ms: 0,
+                    },
+                    RecordedChunk {
+                        data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" with many tasks!"}}"#.to_string(),
+                        timestamp_ms: 500,
+                    },
+                ],
+            },
+        ];
 
         // Write to file
         let mut file = File::create(&file_path)?;
@@ -265,56 +308,78 @@ mod tests {
 
         Ok((dir, file_path.to_string_lossy().to_string()))
     }
-
+    
     #[tokio::test]
-    async fn test_recording_playback() -> Result<()> {
+    async fn test_sequential_playback() -> Result<()> {
         // Create a temporary recording file
         let (dir, file_path) = create_test_recording()?;
 
         // Load the recording
         let player = RecordingPlayer::from_file(file_path)?;
-
-        // Check that we have one session
-        assert_eq!(player.session_count(), 1);
-
-        // Create a mock provider
-        let mut provider = player.create_mock_provider(0)?;
-
+        
+        // Create a provider
+        let mut provider = player.create_provider()?;
+        
         // Turn off timing simulation for faster tests
         provider.set_simulate_timing(false);
-
-        // Create a vector to collect chunks
-        let chunks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let chunks_clone = chunks.clone();
-
-        // Create a callback to collect chunks
-        let callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
-            let text = match chunk {
-                StreamingChunk::Text(text) => text.clone(),
-                StreamingChunk::Thinking(text) => format!("Thinking: {}", text),
-                StreamingChunk::InputJson { content, .. } => {
-                    format!("JSON: {}", content)
-                }
-            };
-            chunks_clone.lock().unwrap().push(text);
+        
+        // Verify initial state
+        assert_eq!(provider.current_index(), 0);
+        assert_eq!(provider.session_count(), 2);
+        
+        // Create two callbacks with separate chunk collectors
+        let first_chunks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let first_chunks_clone = first_chunks.clone();
+        
+        let first_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
+            if let StreamingChunk::Text(text) = chunk {
+                first_chunks_clone.lock().unwrap().push(text.clone());
+            }
             Ok(())
         });
-
-        // Send a dummy message to trigger playback
+        
+        let second_chunks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let second_chunks_clone = second_chunks.clone();
+        
+        let second_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
+            if let StreamingChunk::Text(text) = chunk {
+                second_chunks_clone.lock().unwrap().push(text.clone());
+            }
+            Ok(())
+        });
+        
+        // First request should play the first session
         let _ = provider
-            .send_message(LLMRequest::default(), Some(&callback))
+            .send_message(LLMRequest::default(), Some(&first_callback))
             .await?;
-
-        // Check collected chunks
-        let collected = chunks.lock().unwrap();
-        assert_eq!(collected.len(), 3);
-        assert_eq!(collected[0], "Hi");
-        assert_eq!(collected[1], "! How");
-        assert_eq!(collected[2], " can I help you?");
-
+            
+        // Second request should play the second session
+        let _ = provider
+            .send_message(LLMRequest::default(), Some(&second_callback))
+            .await?;
+            
+        // Check that we incremented the session index
+        assert_eq!(provider.current_index(), 2);
+        
+        // Check collected chunks from first request
+        let first_collected = first_chunks.lock().unwrap();
+        assert_eq!(first_collected.len(), 2);
+        assert_eq!(first_collected[0], "Hi");
+        assert_eq!(first_collected[1], "! How are you?");
+        
+        // Check collected chunks from second request
+        let second_collected = second_chunks.lock().unwrap();
+        assert_eq!(second_collected.len(), 2);
+        assert_eq!(second_collected[0], "I can help");
+        assert_eq!(second_collected[1], " with many tasks!");
+        
+        // A third request should fail since we only have 2 sessions
+        let result = provider.send_message(LLMRequest::default(), None).await;
+        assert!(result.is_err());
+        
         // Ensure we remove the temporary directory
         drop(dir);
-
+        
         Ok(())
     }
 }
