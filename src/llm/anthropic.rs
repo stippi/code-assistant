@@ -422,6 +422,7 @@ impl AnthropicClient {
                 usage: &mut AnthropicUsage,
                 current_content: &mut String,
                 callback: &StreamingCallback,
+                recorder: &Option<APIRecorder>,
             ) -> Result<()> {
                 let chunk_str = str::from_utf8(chunk)?;
 
@@ -434,6 +435,7 @@ impl AnthropicClient {
                                 usage,
                                 current_content,
                                 callback,
+                                recorder,
                             )?;
                             line_buffer.clear();
                         }
@@ -450,9 +452,15 @@ impl AnthropicClient {
                 usage: &mut AnthropicUsage,
                 current_content: &mut String,
                 callback: &StreamingCallback,
+                recorder: &Option<APIRecorder>,
             ) -> Result<()> {
                 if let Some(data) = line.strip_prefix("data: ") {
                     if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
+                        // Record the chunk if recorder is available
+                        if let Some(recorder) = &recorder {
+                            recorder.record_chunk(data)?;
+                        }
+
                         // Extract and check index for relevant events
                         match &event {
                             StreamEvent::ContentBlockStart { common, .. } => {
@@ -608,17 +616,6 @@ impl AnthropicClient {
             }
 
             while let Some(chunk) = response.chunk().await? {
-                // Record the chunk if recorder is available
-                if let Some(recorder) = &self.recorder {
-                    if let Ok(chunk_str) = std::str::from_utf8(&chunk) {
-                        for line in chunk_str.lines() {
-                            if line.starts_with("data: ") {
-                                recorder.record_chunk(line)?;
-                            }
-                        }
-                    }
-                }
-
                 process_chunk(
                     &chunk,
                     &mut line_buffer,
@@ -626,12 +623,8 @@ impl AnthropicClient {
                     &mut usage,
                     &mut current_content,
                     callback,
+                    &self.recorder,
                 )?;
-            }
-
-            // End recording if a recorder is available
-            if let Some(recorder) = &self.recorder {
-                recorder.end_recording()?;
             }
 
             // Process any remaining data in the buffer
@@ -642,7 +635,13 @@ impl AnthropicClient {
                     &mut usage,
                     &mut current_content,
                     callback,
+                    &self.recorder,
                 )?;
+            }
+
+            // End recording if a recorder is available
+            if let Some(recorder) = &self.recorder {
+                recorder.end_recording()?;
             }
 
             Ok((
