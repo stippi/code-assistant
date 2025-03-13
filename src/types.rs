@@ -1,5 +1,5 @@
 use crate::llm::Message;
-use crate::utils::{hash_map_to_markdown, vec_to_markdown};
+
 use crate::web::{WebPage, WebSearchResult};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -85,62 +85,84 @@ impl std::fmt::Display for LoadedResource {
 impl WorkingMemory {
     /// Convert working memory to markdown format
     pub fn to_markdown(&self) -> String {
-        let template = include_str!("../resources/working_memory.md");
-
-        // Format action history
-        let action_history = self
-            .action_history
-            .iter()
-            .map(|a| {
-                format!(
-                    "{:?}\n  Reasoning: {}\n  Result: {}",
-                    a.tool,
-                    a.reasoning,
-                    a.result.format_message()
-                )
-            })
-            .collect::<Vec<_>>();
-
-        // Format loaded resources with clear boundary markers
-        let resources: Vec<String> = self
-            .loaded_resources
-            .iter()
-            .map(|(path, resource)| format!(">>>>> RESOURCE: {}\n{}\n<<<<< END RESOURCE", path.display(), resource))
-            .collect();
-
-        let replacements = [
-            ("{task}", self.current_task.as_str()),
-            ("{plan}", self.plan.as_str()),
-            (
-                "{action_history}",
-                &vec_to_markdown(&action_history, "No actions performed yet"),
-            ),
-            (
-                "{resources}",
-                &if resources.is_empty() {
-                    "No resources loaded".to_string()
-                } else {
-                    resources.join("\n\n")
-                },
-            ),
-            (
-                "{file_tree}",
-                &self
-                    .file_tree
-                    .as_ref()
-                    .map(|t| t.to_string())
-                    .unwrap_or_else(|| "No file tree available".to_string()),
-            ),
-            (
-                "{summaries}",
-                &hash_map_to_markdown(&self.summaries, "No summaries created"),
-            ),
-        ];
-
-        let mut result = template.to_string();
-        for (placeholder, value) in replacements.iter() {
-            result = result.replace(placeholder, value);
+        let mut result = String::new();
+        
+        // Header
+        result.push_str("# Working Memory\n\n");
+        result.push_str("This is your accumulated working memory.\n\n");
+        
+        // Task
+        result.push_str("## Current Task\n\n```\n");
+        result.push_str(&self.current_task);
+        result.push_str("\n```\n\n");
+        
+        // Plan
+        result.push_str("## Your Plan\n\n");
+        result.push_str(&self.plan);
+        result.push_str("\n\n====\n\n");
+        
+        // Action history
+        result.push_str("## Previous Tools\n\n");
+        if self.action_history.is_empty() {
+            result.push_str("No actions performed yet\n");
+        } else {
+            result.push_str("You have already executed the following tools:\n\n");
+            // Format action history
+            let action_history = self
+                .action_history
+                .iter()
+                .map(|a| {
+                    format!(
+                        "{:?}\n  Reasoning: {}\n  Result: {}",
+                        a.tool,
+                        a.reasoning,
+                        a.result.format_message()
+                    )
+                })
+                .collect::<Vec<_>>();
+            
+            for action in &action_history {
+                result.push_str(&format!("- {}\n", action));
+            }
+            
+            result.push_str("\n====\n\n");
+            result.push_str("By executing the above tools, you have gathered the following information:\n\n");
         }
+        
+        // Resources
+        result.push_str("## Resources in Memory\n\n");
+        if self.loaded_resources.is_empty() {
+            result.push_str("No resources loaded\n\n");
+        } else {
+            result.push_str("All resources are shown in their latest version. They already reflect the tools you may have used.\n\n");
+            for (path, resource) in &self.loaded_resources {
+                result.push_str(&format!(">>>>> RESOURCE: {}\n", path.display()));
+                result.push_str(&resource.to_string());
+                result.push_str("\n<<<<< END RESOURCE\n\n");
+            }
+        }
+        
+        // File tree
+        result.push_str("## File Tree\n\n");
+        if let Some(tree) = &self.file_tree {
+            result.push_str("This is the file tree showing directories expanded via list_files:\n\n");
+            result.push_str(&tree.to_string());
+        } else {
+            result.push_str("No file tree available\n");
+        }
+        result.push_str("\n\n");
+        
+        // Summaries
+        result.push_str("## Summaries\n\n");
+        if self.summaries.is_empty() {
+            result.push_str("No summaries created\n");
+        } else {
+            result.push_str("The following resources were previously loaded, but you have decided to keep a summary only:\n\n");
+            for (path, summary) in &self.summaries {
+                result.push_str(&format!("- `{}`: {}\n", path.display(), summary));
+            }
+        }
+        
         result
     }
     /// Add a new resource to working memory
