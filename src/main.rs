@@ -4,6 +4,7 @@ mod explorer;
 mod llm;
 mod mcp;
 mod persistence;
+mod tests;
 mod tools;
 mod types;
 mod ui;
@@ -84,6 +85,10 @@ struct Args {
     /// Record API responses to a file (only supported for Anthropic provider currently)
     #[arg(long)]
     record: Option<PathBuf>,
+
+    /// Play back a recorded session from a file
+    #[arg(long)]
+    playback: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -101,7 +106,22 @@ fn create_llm_client(
     model: Option<String>,
     num_ctx: usize,
     record_path: Option<PathBuf>,
+    playback_path: Option<PathBuf>,
 ) -> Result<Box<dyn LLMProvider>> {
+    // If playback is specified, use the recording player regardless of provider
+    if let Some(path) = playback_path {
+        use crate::tests::recording_player::RecordingPlayer;
+        let player = RecordingPlayer::from_file(path)?;
+
+        if player.session_count() == 0 {
+            return Err(anyhow::anyhow!("Recording file contains no sessions"));
+        }
+
+        let provider = player.create_mock_provider(0)?;
+        return Ok(Box::new(provider));
+    }
+
+    // Otherwise continue with normal provider setup
     if let Some(_) = record_path {
         match provider {
             LLMProviderType::Anthropic => {}
@@ -255,9 +275,14 @@ async fn main() -> Result<()> {
                     // Run the agent within this runtime
                     runtime.block_on(async {
                         // Setup LLM client inside the thread
-                        let llm_client =
-                            create_llm_client(provider, model, num_ctx, args.record.clone())
-                                .expect("Failed to initialize LLM client");
+                        let llm_client = create_llm_client(
+                            provider,
+                            model,
+                            num_ctx,
+                            args.record.clone(),
+                            args.playback.clone(),
+                        )
+                        .expect("Failed to initialize LLM client");
 
                         // Initialize agent
                         let mut agent = Agent::new(
@@ -302,8 +327,9 @@ async fn main() -> Result<()> {
                 let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
 
                 // Setup LLM client with the specified provider
-                let llm_client = create_llm_client(provider, model, num_ctx, args.record)
-                    .context("Failed to initialize LLM client")?;
+                let llm_client =
+                    create_llm_client(provider, model, num_ctx, args.record, args.playback)
+                        .context("Failed to initialize LLM client")?;
 
                 // Initialize agent
                 let mut agent = Agent::new(

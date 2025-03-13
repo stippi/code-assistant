@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// Recording session that contains the original request and all chunks
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RecordingSession {
     /// The request that was sent (simplified for storage)
     pub request: serde_json::Value,
@@ -18,7 +18,7 @@ pub struct RecordingSession {
 }
 
 /// Single recorded chunk with timing info
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RecordedChunk {
     /// Raw content of the data part of the SSE
     pub data: String,
