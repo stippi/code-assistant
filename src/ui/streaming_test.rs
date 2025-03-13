@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-// A test UI that collects display fragments
+// A test UI that collects display fragments and merges them appropriately
 #[derive(Clone)]
 pub struct TestUI {
     fragments: Arc<Mutex<VecDeque<DisplayFragment>>>,
@@ -23,6 +23,47 @@ impl TestUI {
         let guard = self.fragments.lock().unwrap();
         guard.iter().cloned().collect()
     }
+
+    // Attempt to merge a new fragment with the last one if they are of the same type
+    fn merge_fragments(last: &mut DisplayFragment, new: &DisplayFragment) -> bool {
+        match (last, new) {
+            // Merge plain text fragments
+            (DisplayFragment::PlainText(last_text), DisplayFragment::PlainText(new_text)) => {
+                last_text.push_str(new_text);
+                true
+            }
+
+            // Merge thinking text fragments
+            (DisplayFragment::ThinkingText(last_text), DisplayFragment::ThinkingText(new_text)) => {
+                last_text.push_str(new_text);
+                true
+            }
+
+            // Merge tool parameters with the same name and tool_id
+            (
+                DisplayFragment::ToolParameter {
+                    name: last_name,
+                    value: last_value,
+                    tool_id: last_id,
+                },
+                DisplayFragment::ToolParameter {
+                    name: new_name,
+                    value: new_value,
+                    tool_id: new_id,
+                },
+            ) => {
+                if last_name == new_name && last_id == new_id {
+                    last_value.push_str(new_value);
+                    true
+                } else {
+                    false
+                }
+            }
+
+            // No other fragments can be merged
+            _ => false,
+        }
+    }
 }
 
 #[async_trait]
@@ -37,6 +78,16 @@ impl UserInterface for TestUI {
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
         let mut guard = self.fragments.lock().unwrap();
+
+        // Check if we can merge this fragment with the previous one
+        if let Some(last_fragment) = guard.back_mut() {
+            if Self::merge_fragments(last_fragment, fragment) {
+                // Successfully merged, don't add a new fragment
+                return Ok(());
+            }
+        }
+
+        // If we couldn't merge, add the new fragment
         guard.push_back(fragment.clone());
         Ok(())
     }
@@ -93,177 +144,216 @@ mod tests {
         }
     }
 
-    // Test that parameter end tags are correctly processed and not shown
+    // Helper function to check if two fragments match in content (ignoring IDs)
+    fn fragments_match(expected: &DisplayFragment, actual: &DisplayFragment) -> bool {
+        match (expected, actual) {
+            (
+                DisplayFragment::PlainText(expected_text),
+                DisplayFragment::PlainText(actual_text),
+            ) => expected_text == actual_text,
+            (
+                DisplayFragment::ThinkingText(expected_text),
+                DisplayFragment::ThinkingText(actual_text),
+            ) => expected_text == actual_text,
+            (
+                DisplayFragment::ToolName {
+                    name: expected_name,
+                    ..
+                },
+                DisplayFragment::ToolName {
+                    name: actual_name, ..
+                },
+            ) => expected_name == actual_name,
+            (
+                DisplayFragment::ToolParameter {
+                    name: expected_name,
+                    value: expected_value,
+                    ..
+                },
+                DisplayFragment::ToolParameter {
+                    name: actual_name,
+                    value: actual_value,
+                    ..
+                },
+            ) => expected_name == actual_name && expected_value == actual_value,
+            (DisplayFragment::ToolEnd { .. }, DisplayFragment::ToolEnd { .. }) => true,
+            _ => false,
+        }
+    }
+
+    // Helper function to assert that actual fragments match expected fragments
+    fn assert_fragments_match(expected: &[DisplayFragment], actual: &[DisplayFragment]) {
+        assert_eq!(
+            expected.len(),
+            actual.len(),
+            "Different number of fragments. Expected {}, got {}",
+            expected.len(),
+            actual.len()
+        );
+
+        for (i, (expected, actual)) in expected.iter().zip(actual.iter()).enumerate() {
+            assert!(
+                fragments_match(expected, actual),
+                "Fragment mismatch at position {}: \nExpected: {:?}\nActual: {:?}",
+                i,
+                expected,
+                actual
+            );
+        }
+    }
+
     #[test]
     fn test_param_tag_hiding() {
         let input = "<thinking>The user has not provided a task.</thinking>\nI'll use the ask_user tool.\n<tool:ask_user>\n<param:question>What would you like to know?</param:question>\n</tool:ask_user>";
 
+        // Define expected fragments
+        let expected_fragments = vec![
+            DisplayFragment::ThinkingText("The user has not provided a task.".to_string()),
+            DisplayFragment::PlainText("\nI'll use the ask_user tool.\n".to_string()),
+            DisplayFragment::ToolName {
+                name: "ask_user".to_string(),
+                id: "ignored".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "question".to_string(),
+                value: "What would you like to know?".to_string(),
+                tool_id: "ignored".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "ignored".to_string(),
+            },
+        ];
+
         // Process with very small chunks (3 chars each) to test tag handling across chunks
         let test_ui = process_chunked_text(input, 3);
 
-        // Get and verify the fragments
+        // Get fragments and print for debugging
         let fragments = test_ui.get_fragments();
         print_fragments(&fragments);
 
-        // Check if we find parameter content in tool parameter fragments
-        let mut found_param_content = false;
-        let mut found_param_end_tag = false;
-
-        for fragment in &fragments {
-            match fragment {
-                DisplayFragment::ToolParameter { value, .. } => {
-                    if value.contains("What would you like to know?") {
-                        found_param_content = true;
-                    }
-                }
-                DisplayFragment::PlainText(text) => {
-                    if text.contains("</param:question>") {
-                        found_param_end_tag = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        assert!(found_param_content, "Parameter content should be visible");
-        assert!(
-            !found_param_end_tag,
-            "Parameter end tag should not be visible"
-        );
+        // Check that fragments match expected sequence
+        assert_fragments_match(&expected_fragments, &fragments);
     }
 
     #[test]
-    fn test_tool_tag_across_chunks() -> Result<()> {
-        let input = "Let me read some files for you using <tool:read_files><param:paths>[\"src/main.rs\"]</param:paths></tool:read_files>";
+    fn test_text_and_tool_in_one_line() -> Result<()> {
+        let input = "Let me read some files for you using <tool:read_files><param:path>src/main.rs</param:path></tool:read_files>";
+
+        // Define expected fragments
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("Let me read some files for you using ".to_string()),
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "ignored".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "src/main.rs".to_string(),
+                tool_id: "ignored".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "ignored".to_string(),
+            },
+        ];
 
         // Process with chunk size that splits the tool tag
         let test_ui = process_chunked_text(input, 10);
 
-        // Get and verify the fragments
+        // Get fragments and print for debugging
         let fragments = test_ui.get_fragments();
         print_fragments(&fragments);
 
-        // Check for specific fragment types
-        let mut found_tool_name = false;
-        let mut found_tool_param = false;
-        let mut found_tool_end = false;
-
-        for fragment in &fragments {
-            match fragment {
-                DisplayFragment::ToolName { name, .. } => {
-                    found_tool_name = true;
-                    assert_eq!(name, "read_files", "Should extract correct tool name");
-                }
-                DisplayFragment::ToolParameter { name, value, .. } => {
-                    found_tool_param = true;
-                    assert_eq!(name, "paths", "Should extract correct param name");
-                    assert!(
-                        value.contains("[\"src/main.rs\"]"),
-                        "Should contain correct param value"
-                    );
-                }
-                DisplayFragment::ToolEnd { .. } => {
-                    found_tool_end = true;
-                }
-                _ => {}
-            }
-        }
-
-        assert!(found_tool_name, "Should find tool name fragment");
-        assert!(found_tool_param, "Should find tool parameter fragment");
-        assert!(found_tool_end, "Should find tool end fragment");
+        // Check that fragments match expected sequence
+        assert_fragments_match(&expected_fragments, &fragments);
 
         Ok(())
     }
 
     #[test]
-    fn test_complex_tool_call_with_multiple_params() -> Result<()> {
-        let input = "Let me search for specific files <tool:search_files><param:query>main function</param:query><param:path>src</param:path><param:case_sensitive>false</param:case_sensitive></tool:search_files>";
+    fn test_complex_tool_call_with_multiple_params_and_linebreaks() -> Result<()> {
+        let input = "Let me search for specific files\n<tool:search_files>\n<param:query>main function</param:query>\n<param:path>src</param:path>\n<param:case_sensitive>false</param:case_sensitive>\n</tool:search_files>";
+
+        // Define expected fragments - order of parameters might vary
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("Let me search for specific files".to_string()),
+            DisplayFragment::ToolName {
+                name: "search_files".to_string(),
+                id: "ignored".to_string(),
+            },
+            // Parameters in expected order
+            DisplayFragment::ToolParameter {
+                name: "query".to_string(),
+                value: "main function".to_string(),
+                tool_id: "ignored".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "src".to_string(),
+                tool_id: "ignored".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "case_sensitive".to_string(),
+                value: "false".to_string(),
+                tool_id: "ignored".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "ignored".to_string(),
+            },
+        ];
 
         // Process with chunk size that splits both tags and content
         let test_ui = process_chunked_text(input, 12);
 
-        // Get and verify the fragments
+        // Get fragments and print for debugging
         let fragments = test_ui.get_fragments();
         print_fragments(&fragments);
 
-        // Check for specific fragment patterns
-        let mut found_tool_name = false;
-        let mut param_names = Vec::new();
-
-        for fragment in &fragments {
-            match fragment {
-                DisplayFragment::ToolName { name, .. } => {
-                    found_tool_name = true;
-                    assert_eq!(name, "search_files", "Should extract correct tool name");
-                }
-                DisplayFragment::ToolParameter { name, .. } => {
-                    param_names.push(name.clone());
-                }
-                _ => {}
-            }
-        }
-
-        assert!(found_tool_name, "Should find tool name fragment");
-        assert_eq!(param_names.len(), 3, "Should find 3 parameter fragments");
-        assert!(
-            param_names.contains(&"query".to_string()),
-            "Should have 'query' parameter"
-        );
-        assert!(
-            param_names.contains(&"path".to_string()),
-            "Should have 'path' parameter"
-        );
-        assert!(
-            param_names.contains(&"case_sensitive".to_string()),
-            "Should have 'case_sensitive' parameter"
-        );
+        // Check that fragments match expected sequence
+        assert_fragments_match(&expected_fragments, &fragments);
 
         Ok(())
     }
 
     #[test]
     fn test_thinking_tag_handling() -> Result<()> {
-        let input = "Let me think about this.<thinking>This is a complex problem that requires careful analysis.</thinking>I've considered all options.";
+        let input =
+            "Let me think about this.<thinking>This is a complex problem.</thinking>I've decided.";
+
+        // Define expected fragments
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("Let me think about this.".to_string()),
+            DisplayFragment::ThinkingText("This is a complex problem.".to_string()),
+            DisplayFragment::PlainText("I've decided.".to_string()),
+        ];
 
         // Process with small chunks
         let test_ui = process_chunked_text(input, 5);
 
-        // Get and verify the fragments
+        // Get fragments and print for debugging
         let fragments = test_ui.get_fragments();
         print_fragments(&fragments);
 
-        // Check that thinking text is properly tagged
-        let mut found_plain_text = false;
-        let mut found_thinking_text = false;
+        // Check that fragments match expected sequence
+        assert_fragments_match(&expected_fragments, &fragments);
 
-        for fragment in &fragments {
-            match fragment {
-                DisplayFragment::PlainText(text) => {
-                    if text.contains("Let me think") || text.contains("I've considered") {
-                        found_plain_text = true;
-                    }
-                    // Thinking tags should not appear in plain text
-                    assert!(
-                        !text.contains("<thinking>"),
-                        "Thinking tag should not be visible"
-                    );
-                    assert!(
-                        !text.contains("</thinking>"),
-                        "Thinking end tag should not be visible"
-                    );
-                }
-                DisplayFragment::ThinkingText(text) => {
-                    if text.contains("complex problem") {
-                        found_thinking_text = true;
-                    }
-                }
-                _ => {}
-            }
-        }
+        Ok(())
+    }
 
-        assert!(found_plain_text, "Should find plain text content");
-        assert!(found_thinking_text, "Should find thinking text content");
+    #[test]
+    fn test_simple_text_processing() -> Result<()> {
+        let input = "Hello, world!";
+
+        // Define expected fragments
+        let expected_fragments = vec![DisplayFragment::PlainText("Hello, world!".to_string())];
+
+        // Process with small chunks
+        let test_ui = process_chunked_text(input, 3);
+
+        // Get fragments
+        let fragments = test_ui.get_fragments();
+
+        // Check that fragments match expected sequence
+        assert_fragments_match(&expected_fragments, &fragments);
 
         Ok(())
     }
