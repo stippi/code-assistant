@@ -257,7 +257,7 @@ async fn main() -> Result<()> {
             // Check if GUI mode is requested
             if use_gui {
                 // Create shared state between GUI and Agent thread
-                let mut gui = ui::gpui::GPUI::new();
+                let gui = ui::gpui::GPUI::new();
 
                 // Setup dynamic types
                 let root_path = path.canonicalize()?;
@@ -265,10 +265,6 @@ async fn main() -> Result<()> {
                 let user_interface: Box<dyn UserInterface> = Box::new(gui.clone());
                 let command_executor = Box::new(DefaultCommandExecutor);
                 let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
-
-                // Memory view reference will be created by the GUI and shared back
-                // This is used internally by the GUI
-                let _memory_view_ref = gui.create_memory_view();
 
                 // Start the agent in a separate thread using a standard thread
                 // We need to move all the necessary components into this thread

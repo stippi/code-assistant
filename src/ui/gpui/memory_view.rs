@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    div, hsla, prelude::*, px, rgb, MouseButton, MouseUpEvent, Context, Window, 
-    FocusHandle, Focusable, App
+    div, hsla, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, MouseButton,
+    MouseUpEvent, Window,
 };
 
 use crate::types::{FileSystemEntryType, FileTreeEntry, LoadedResource, WorkingMemory};
@@ -15,10 +15,10 @@ pub struct MemoryView {
 }
 
 impl MemoryView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(memory: Arc<Mutex<Option<WorkingMemory>>>, cx: &mut Context<Self>) -> Self {
         Self {
             is_expanded: true,
-            memory: Arc::new(Mutex::new(None)),
+            memory,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -29,16 +29,10 @@ impl MemoryView {
         cx.notify();
     }
 
-    // Update the memory model
-    pub fn update_memory(&mut self, memory: WorkingMemory, cx: &mut Context<Self>) {
-        *self.memory.lock().unwrap() = Some(memory);
-        cx.notify();
-    }
-
     // Render a file tree entry using a simpler approach
     fn render_file_tree_entry(&self, entry: &FileTreeEntry, indent_level: usize) -> gpui::Div {
         let indent = indent_level * 16;
-        
+
         // Create base div
         let mut base = div()
             .py_1()
@@ -51,33 +45,38 @@ impl MemoryView {
                 div()
                     .text_color(match entry.entry_type {
                         FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
-                        FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),        // Light gray
+                        FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
                     })
                     .child(match entry.entry_type {
-                        FileSystemEntryType::Directory => if entry.is_expanded { "📂" } else { "📁" },
+                        FileSystemEntryType::Directory => {
+                            if entry.is_expanded {
+                                "📂"
+                            } else {
+                                "📁"
+                            }
+                        }
                         FileSystemEntryType::File => "📄",
-                    })
+                    }),
             )
-            .child(div().text_color(hsla(0., 0., 0.9, 1.0)).child(entry.name.clone()));
-        
+            .child(
+                div()
+                    .text_color(hsla(0., 0., 0.9, 1.0))
+                    .child(entry.name.clone()),
+            );
+
         // Add children if expanded
         if entry.is_expanded && !entry.children.is_empty() {
             // Create child elements
-            let children: Vec<gpui::Div> = entry.children
+            let children: Vec<gpui::Div> = entry
+                .children
                 .values()
                 .map(|child| self.render_file_tree_entry(child, indent_level + 1))
                 .collect();
-                
+
             // Add a container with all children
-            base = base.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .children(children)
-            );
+            base = base.child(div().flex().flex_col().w_full().children(children));
         }
-        
+
         base
     }
 }
@@ -96,7 +95,7 @@ impl Render for MemoryView {
         // Create components that will be used in when blocks
         let memory_content = if self.is_expanded && has_memory {
             let memory = self.memory.lock().unwrap().clone().unwrap();
-            
+
             // Resources section
             let resources_header = div()
                 .id("resources-header")
@@ -110,9 +109,13 @@ impl Render for MemoryView {
                 .justify_between()
                 .text_color(hsla(0., 0., 0.9, 1.0))
                 .child("Loaded Resources")
-                .child(div().text_xs().text_color(hsla(0., 0., 0.6, 1.0))
-                    .child(format!("({})", memory.loaded_resources.len())));
-                
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(hsla(0., 0., 0.6, 1.0))
+                        .child(format!("({})", memory.loaded_resources.len())),
+                );
+
             let resources_list = div()
                 .id("resources-list")
                 .max_h(px(300.))
@@ -121,42 +124,37 @@ impl Render for MemoryView {
                 .flex_col()
                 .p_1()
                 .gap_1()
-                .children(
-                    memory.loaded_resources.iter().map(|(path, resource)| {
-                        div()
-                            .rounded_sm()
-                            .p_2()
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .bg(rgb(0x303030))
-                            .border_l_4()
-                            .border_color(match resource {
-                                LoadedResource::File(_) => rgb(0x4CAF50), // Green
-                                LoadedResource::WebSearch { .. } => rgb(0x2196F3), // Blue
-                                LoadedResource::WebPage(_) => rgb(0x9C27B0), // Purple
-                            })
-                            .child(
-                                div()
-                                    .text_color(hsla(0., 0., 0.9, 1.0))
-                                    .text_sm()
-                                    .truncate()
-                                    .child(path.to_string_lossy().to_string())
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(hsla(0., 0., 0.6, 1.0))
-                                    .child(match resource {
-                                        LoadedResource::File(_) => "File",
-                                        LoadedResource::WebSearch { .. } => "Web Search",
-                                        LoadedResource::WebPage(_) => "Web Page",
-                                    })
-                            )
-                    })
-                );
-                
+                .children(memory.loaded_resources.iter().map(|(path, resource)| {
+                    div()
+                        .rounded_sm()
+                        .p_2()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .bg(rgb(0x303030))
+                        .border_l_4()
+                        .border_color(match resource {
+                            LoadedResource::File(_) => rgb(0x4CAF50),          // Green
+                            LoadedResource::WebSearch { .. } => rgb(0x2196F3), // Blue
+                            LoadedResource::WebPage(_) => rgb(0x9C27B0),       // Purple
+                        })
+                        .child(
+                            div()
+                                .text_color(hsla(0., 0., 0.9, 1.0))
+                                .text_sm()
+                                .truncate()
+                                .child(path.to_string_lossy().to_string()),
+                        )
+                        .child(div().text_xs().text_color(hsla(0., 0., 0.6, 1.0)).child(
+                            match resource {
+                                LoadedResource::File(_) => "File",
+                                LoadedResource::WebSearch { .. } => "Web Search",
+                                LoadedResource::WebPage(_) => "Web Page",
+                            },
+                        ))
+                }));
+
             let resources_section = div()
                 .id("resources-section")
                 .flex_none()
@@ -167,7 +165,7 @@ impl Render for MemoryView {
                 .flex_col()
                 .child(resources_header)
                 .child(resources_list);
-                
+
             // File tree header
             let file_tree_header = div()
                 .id("file-tree-header")
@@ -181,8 +179,8 @@ impl Render for MemoryView {
                 .justify_between()
                 .text_color(hsla(0., 0., 0.9, 1.0))
                 .child("File Tree");
-                
-            // File tree content 
+
+            // File tree content
             let file_tree_content = if memory.file_tree.is_some() {
                 self.render_file_tree_entry(memory.file_tree.as_ref().unwrap(), 0)
             } else {
@@ -192,7 +190,7 @@ impl Render for MemoryView {
                     .text_center()
                     .child("No file tree available")
             };
-            
+
             let file_tree = div()
                 .id("file-tree")
                 .flex_1()
@@ -201,7 +199,7 @@ impl Render for MemoryView {
                 .flex_col()
                 .p_1()
                 .child(file_tree_content);
-                
+
             let file_tree_section = div()
                 .id("file-tree-section")
                 .flex_1()
@@ -209,12 +207,12 @@ impl Render for MemoryView {
                 .flex_col()
                 .child(file_tree_header)
                 .child(file_tree);
-            
+
             Some((resources_section, file_tree_section))
         } else {
             None
         };
-        
+
         // Toggle button
         let toggle_button = div()
             .id("sidebar-toggle")
@@ -227,7 +225,11 @@ impl Render for MemoryView {
             .justify_between()
             .bg(rgb(0x303030))
             .text_color(hsla(0., 0., 0.8, 1.0))
-            .child(if self.is_expanded { "Memory Explorer" } else { "" })
+            .child(if self.is_expanded {
+                "Memory Explorer"
+            } else {
+                ""
+            })
             .child(
                 div()
                     .text_lg()
@@ -237,9 +239,9 @@ impl Render for MemoryView {
                     .cursor_pointer()
                     .hover(|s| s.text_color(hsla(0., 0., 1.0, 1.0)))
                     .child(if self.is_expanded { "◀" } else { "▶" })
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_sidebar))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_sidebar)),
             );
-        
+
         // Build main container
         let mut container = div()
             .id("memory-sidebar")
@@ -254,12 +256,12 @@ impl Render for MemoryView {
             .flex()
             .flex_col()
             .child(toggle_button);
-            
+
         // Add memory content if available
         if let Some((resources_section, file_tree_section)) = memory_content {
             container = container.child(resources_section).child(file_tree_section);
         }
-        
+
         container
     }
 }

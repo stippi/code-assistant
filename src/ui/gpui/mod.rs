@@ -5,7 +5,7 @@ mod message;
 
 use crate::types::WorkingMemory;
 use crate::ui::{async_trait, DisplayFragment, UIError, UIMessage, UserInterface};
-use gpui::{px, AppContext, Focusable};
+use gpui::{AppContext, Focusable};
 use input::TextInput;
 pub use memory_view::MemoryView;
 use message::MessageView;
@@ -20,7 +20,7 @@ pub struct GPUI {
     input_value: Arc<Mutex<Option<String>>>,
     input_requested: Arc<Mutex<bool>>,
     ui_update_needed: Arc<Mutex<bool>>,
-    memory_view: Option<Arc<Mutex<Option<gpui::Entity<MemoryView>>>>>,
+    working_memory: Arc<Mutex<Option<WorkingMemory>>>,
 }
 
 impl GPUI {
@@ -29,13 +29,14 @@ impl GPUI {
         let input_value = Arc::new(Mutex::new(None));
         let input_requested = Arc::new(Mutex::new(false));
         let ui_update_needed = Arc::new(Mutex::new(false));
+        let working_memory = Arc::new(Mutex::new(None));
 
         Self {
             message_queue,
             input_value,
             input_requested,
             ui_update_needed,
-            memory_view: None,
+            working_memory,
         }
     }
 
@@ -45,17 +46,15 @@ impl GPUI {
         let input_value = self.input_value.clone();
         let input_requested = self.input_requested.clone();
         let ui_update_needed = self.ui_update_needed.clone();
-        let memory_view_ref = Arc::new(Mutex::new(None));
-        let memory_view_handle = memory_view_ref.clone();
+        let working_memory = self.working_memory.clone();
 
         let app = gpui::Application::new();
         app.run(move |cx| {
             // Register key bindings
             input::register_key_bindings(cx);
 
-            // Create memory view
-            let memory_view = cx.new(|cx| MemoryView::new(cx));
-            *memory_view_handle.lock().unwrap() = Some(memory_view.clone());
+            // Create memory view with our shared working memory
+            let memory_view = cx.new(|cx| MemoryView::new(working_memory.clone(), cx));
 
             // Create window with larger size to accommodate both views
             let bounds =
@@ -194,13 +193,6 @@ impl GPUI {
             *flag = true;
         }
     }
-
-    // Create memory view reference to be used by the application
-    pub fn create_memory_view(&mut self) -> Arc<Mutex<Option<gpui::Entity<MemoryView>>>> {
-        let memory_view_ref = Arc::new(Mutex::new(None));
-        self.memory_view = Some(memory_view_ref.clone());
-        memory_view_ref
-    }
 }
 
 #[async_trait]
@@ -277,20 +269,16 @@ impl UserInterface for GPUI {
     }
 
     async fn update_memory(&self, memory: &WorkingMemory) -> Result<(), UIError> {
-        // We would clone the memory here if we needed it
-        let _memory_clone = memory.clone();
-
-        // Check if we have a memory view
-        if self.memory_view.is_some() {
-            // Mark update needed flag
-            if let Ok(mut flag) = self.ui_update_needed.lock() {
-                *flag = true;
-            }
+        // Update the shared working memory directly
+        if let Ok(mut memory_guard) = self.working_memory.lock() {
+            *memory_guard = Some(memory.clone());
         }
 
-        // Since we can't directly update the memory view from here,
-        // we'll rely on the Application's refresh cycle to pick up the
-        // update on the next frame. The UI update needed flag will trigger a refresh.
+        // Set the update flag to trigger a UI refresh
+        if let Ok(mut flag) = self.ui_update_needed.lock() {
+            *flag = true;
+        }
+
         Ok(())
     }
 }
@@ -302,7 +290,7 @@ impl Clone for GPUI {
             input_value: self.input_value.clone(),
             input_requested: self.input_requested.clone(),
             ui_update_needed: self.ui_update_needed.clone(),
-            memory_view: self.memory_view.clone(),
+            working_memory: self.working_memory.clone(),
         }
     }
 }
