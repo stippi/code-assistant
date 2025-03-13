@@ -209,7 +209,7 @@ mod tests {
         // Define expected fragments
         let expected_fragments = vec![
             DisplayFragment::ThinkingText("The user has not provided a task.".to_string()),
-            DisplayFragment::PlainText("\nI'll use the ask_user tool.\n".to_string()),
+            DisplayFragment::PlainText("I'll use the ask_user tool.".to_string()),
             DisplayFragment::ToolName {
                 name: "ask_user".to_string(),
                 id: "ignored".to_string(),
@@ -271,11 +271,13 @@ mod tests {
 
     #[test]
     fn test_complex_tool_call_with_multiple_params_and_linebreaks() -> Result<()> {
-        let input = "Let me search for specific files\n<tool:search_files>\n<param:query>main function</param:query>\n<param:path>src</param:path>\n<param:case_sensitive>false</param:case_sensitive>\n</tool:search_files>";
+        let input = "I understand.\n\nLet me search for specific files\n<tool:search_files>\n<param:query>main function</param:query>\n<param:path>src</param:path>\n<param:case_sensitive>false</param:case_sensitive>\n</tool:search_files>";
 
         // Define expected fragments - order of parameters might vary
         let expected_fragments = vec![
-            DisplayFragment::PlainText("Let me search for specific files\n".to_string()),
+            DisplayFragment::PlainText(
+                "I understand.\n\nLet me search for specific files".to_string(),
+            ),
             DisplayFragment::ToolName {
                 name: "search_files".to_string(),
                 id: "ignored".to_string(),
@@ -317,7 +319,7 @@ mod tests {
     #[test]
     fn test_thinking_tag_handling() -> Result<()> {
         let input =
-            "Let me think about this.<thinking>This is a complex problem.</thinking>I've decided.";
+            "Let me think about this.\n<thinking>This is a complex problem.</thinking>\nI've decided.";
 
         // Define expected fragments
         let expected_fragments = vec![

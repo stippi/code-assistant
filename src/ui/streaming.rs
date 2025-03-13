@@ -134,8 +134,15 @@ impl StreamProcessor {
             }
 
             let suffix = &processing_text[processing_text.len() - j..];
-            if self.is_potential_tag_start(suffix) {
-                // We found a potential tag start, buffer this part
+            
+            // Special case for newlines at the end that might be followed by a tag in the next chunk
+            if suffix.ends_with('\n') && j == 1 {
+                // Only hold back the newline if it's the very last character
+                safe_length = processing_text.len() - 1;
+                self.state.buffer = "\n".to_string();
+                break;
+            } else if self.is_potential_tag_start(suffix) && suffix != "\n" {
+                // We found a potential tag start (not just a newline), buffer this part
                 safe_length = processing_text.len() - j;
                 self.state.buffer = suffix.to_string();
                 break;
