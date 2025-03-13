@@ -179,23 +179,42 @@ impl StreamProcessor {
                     let is_only_whitespace = pre_tag_text.trim().is_empty();
 
                     if !is_only_whitespace {
+                        // Only trim newlines at tag boundaries, preserving newlines within text
+                        let trimmed_text = pre_tag_text.trim_end_matches('\n');
+                        // If we're at the start of processing (current_pos == 0), also trim leading newlines
+                        // or if the previous char was the end of a tag
+                        let is_at_start = current_pos == 0 || 
+                            (current_pos > 0 && processing_text.chars().nth(current_pos-1) == Some('>'));
+                        
+                        let trimmed_text = if is_at_start {
+                            trimmed_text.trim_start_matches('\n')
+                        } else {
+                            trimmed_text
+                        };
+                        
+                        if trimmed_text.is_empty() {
+                            // Skip empty text after trimming
+                            current_pos = absolute_tag_pos;
+                            continue;
+                        }
+                        
                         if self.state.in_thinking {
                             // In thinking mode, text is displayed as thinking text
                             self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                                pre_tag_text.to_string(),
+                                trimmed_text.to_string(),
                             ))?;
                         } else if self.state.in_param {
                             // In parameter mode, text is collected as a parameter value
                             self.ui.display_fragment(&DisplayFragment::ToolParameter {
                                 name: self.state.param_name.clone(),
-                                value: pre_tag_text.to_string(),
+                                value: trimmed_text.to_string(),
                                 tool_id: self.state.tool_id.clone(),
                             })?;
                         } else {
                             // All other text (including inside tool tags but not in params)
                             // is displayed as plain text
                             self.ui.display_fragment(&DisplayFragment::PlainText(
-                                pre_tag_text.to_string(),
+                                trimmed_text.to_string(),
                             ))?;
                         }
                     }
@@ -334,19 +353,34 @@ impl StreamProcessor {
 
                 // Only process if there's actual content (not just whitespace)
                 if !remaining.is_empty() && !remaining.trim().is_empty() {
-                    if self.state.in_thinking {
-                        self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                            remaining.to_string(),
-                        ))?;
-                    } else if self.state.in_param {
-                        self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                            name: self.state.param_name.clone(),
-                            value: remaining.to_string(),
-                            tool_id: self.state.tool_id.clone(),
-                        })?;
+                    // Only trim trailing newlines at end of processing
+                    let trimmed_text = remaining.trim_end_matches('\n');
+                    
+                    // If we're at the start of processing (current_pos == 0), also trim leading newlines
+                    let is_at_start = current_pos == 0 || 
+                        (current_pos > 0 && processing_text.chars().nth(current_pos-1) == Some('>'));
+                    
+                    let trimmed_text = if is_at_start {
+                        trimmed_text.trim_start_matches('\n')
                     } else {
-                        self.ui
-                            .display_fragment(&DisplayFragment::PlainText(remaining.to_string()))?;
+                        trimmed_text
+                    };
+                    
+                    if !trimmed_text.is_empty() {
+                        if self.state.in_thinking {
+                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                trimmed_text.to_string(),
+                            ))?;
+                        } else if self.state.in_param {
+                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                                name: self.state.param_name.clone(),
+                                value: trimmed_text.to_string(),
+                                tool_id: self.state.tool_id.clone(),
+                            })?;
+                        } else {
+                            self.ui
+                                .display_fragment(&DisplayFragment::PlainText(trimmed_text.to_string()))?;
+                        }
                     }
                 }
                 current_pos = processing_text.len();
