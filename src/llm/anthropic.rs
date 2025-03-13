@@ -1,4 +1,7 @@
-use crate::llm::{types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback};
+use crate::llm::{
+    recording::APIRecorder, types::*, utils, ApiError, LLMProvider, RateLimitHandler,
+    StreamingCallback, StreamingChunk,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -288,6 +291,7 @@ pub struct AnthropicClient {
     api_key: String,
     base_url: String,
     model: String,
+    recorder: Option<APIRecorder>,
 }
 
 impl AnthropicClient {
@@ -297,6 +301,22 @@ impl AnthropicClient {
             api_key,
             base_url: "https://api.anthropic.com/v1".to_string(),
             model,
+            recorder: None,
+        }
+    }
+
+    /// Create a new client with recording capability
+    pub fn new_with_recorder<P: AsRef<std::path::Path>>(
+        api_key: String,
+        model: String,
+        recording_path: P,
+    ) -> Self {
+        Self {
+            client: Client::new(),
+            api_key,
+            base_url: "https://api.anthropic.com/v1".to_string(),
+            model,
+            recorder: Some(APIRecorder::new(recording_path)),
         }
     }
 
@@ -307,6 +327,7 @@ impl AnthropicClient {
             api_key,
             base_url,
             model,
+            recorder: None,
         }
     }
 
@@ -401,6 +422,7 @@ impl AnthropicClient {
                 usage: &mut AnthropicUsage,
                 current_content: &mut String,
                 callback: &StreamingCallback,
+                recorder: &Option<APIRecorder>,
             ) -> Result<()> {
                 let chunk_str = str::from_utf8(chunk)?;
 
@@ -413,6 +435,7 @@ impl AnthropicClient {
                                 usage,
                                 current_content,
                                 callback,
+                                recorder,
                             )?;
                             line_buffer.clear();
                         }
@@ -429,9 +452,15 @@ impl AnthropicClient {
                 usage: &mut AnthropicUsage,
                 current_content: &mut String,
                 callback: &StreamingCallback,
+                recorder: &Option<APIRecorder>,
             ) -> Result<()> {
                 if let Some(data) = line.strip_prefix("data: ") {
                     if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
+                        // Record the chunk if recorder is available
+                        if let Some(recorder) = &recorder {
+                            recorder.record_chunk(data)?;
+                        }
+
                         // Extract and check index for relevant events
                         match &event {
                             StreamEvent::ContentBlockStart { common, .. } => {
@@ -517,7 +546,7 @@ impl AnthropicClient {
                                     ContentDelta::ThinkingDelta {
                                         thinking: delta_text,
                                     } => {
-                                        callback(delta_text)?;
+                                        callback(&StreamingChunk::Thinking(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
                                     }
                                     ContentDelta::SignatureDelta {
@@ -532,11 +561,34 @@ impl AnthropicClient {
                                         }
                                     }
                                     ContentDelta::TextDelta { text: delta_text } => {
-                                        callback(delta_text)?;
+                                        callback(&StreamingChunk::Text(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
                                     }
                                     ContentDelta::InputJsonDelta { partial_json } => {
-                                        // Accumulate JSON parts as string
+                                        // Accumulate JSON parts as string and send as specific type
+                                        /*
+                                        // TODO: Keep this here, but disable it. For now, the other providers don't send parameter chunks.
+                                        // The StreamingProcessor shall eventuall emit DisplayFragment::ToolParameter chunks,
+                                        // but the implementation is incomplete anyway. It does work already in XML-tools mode.
+                                        callback(&StreamingChunk::InputJson {
+                                            content: partial_json.clone(),
+                                            tool_name: blocks.last().and_then(|block| {
+                                                if let ContentBlock::ToolUse { name, .. } = block {
+                                                    Some(name.clone())
+                                                } else {
+                                                    None
+                                                }
+                                            }),
+                                            tool_id: blocks.last().and_then(|block| {
+                                                if let ContentBlock::ToolUse { id, .. } = block {
+                                                    Some(id.clone())
+                                                } else {
+                                                    None
+                                                }
+                                            }),
+                                        })?;
+                                         */
+
                                         current_content.push_str(partial_json);
                                     }
                                 }
@@ -561,6 +613,13 @@ impl AnthropicClient {
                 Ok(())
             }
 
+            // Start recording if a recorder is available
+            if let Some(recorder) = &self.recorder {
+                // Serialize request for recording
+                let request_json = serde_json::to_value(request)?;
+                recorder.start_recording(request_json)?;
+            }
+
             while let Some(chunk) = response.chunk().await? {
                 process_chunk(
                     &chunk,
@@ -569,6 +628,7 @@ impl AnthropicClient {
                     &mut usage,
                     &mut current_content,
                     callback,
+                    &self.recorder,
                 )?;
             }
 
@@ -580,7 +640,13 @@ impl AnthropicClient {
                     &mut usage,
                     &mut current_content,
                     callback,
+                    &self.recorder,
                 )?;
+            }
+
+            // End recording if a recorder is available
+            if let Some(recorder) = &self.recorder {
+                recorder.end_recording()?;
             }
 
             Ok((
@@ -692,7 +758,7 @@ impl LLMProvider for AnthropicClient {
             thinking,
             messages: request.messages,
             max_tokens,
-            temperature: 0.7,
+            temperature: 1.0,
             system,
             stream: streaming_callback.map(|_| true),
             tool_choice,

@@ -6,6 +6,7 @@
 //! - Message streaming capabilities
 //! - Provider-specific implementations and optimizations
 //! - Shared types and utilities for LLM interactions
+//! - Recording capabilities for debugging and testing
 
 #[cfg(test)]
 mod tests;
@@ -15,6 +16,7 @@ mod utils;
 pub mod anthropic;
 pub mod ollama;
 pub mod openai;
+pub mod recording;
 pub mod types;
 pub mod vertex;
 
@@ -27,7 +29,22 @@ pub use vertex::VertexClient;
 use anyhow::Result;
 use async_trait::async_trait;
 
-pub type StreamingCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
+/// Structure to represent different types of streaming content from LLMs
+#[derive(Debug, Clone)]
+pub enum StreamingChunk {
+    /// Regular text content
+    Text(String),
+    /// Content identified as "thinking" (supported by some models)
+    Thinking(String),
+    /// JSON input for tool calls with optional metadata
+    InputJson {
+        content: String,
+        tool_name: Option<String>,
+        tool_id: Option<String>,
+    },
+}
+
+pub type StreamingCallback = Box<dyn Fn(&StreamingChunk) -> Result<()> + Send + Sync>;
 
 /// Trait for different LLM provider implementations
 #[async_trait]

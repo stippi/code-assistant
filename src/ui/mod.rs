@@ -1,5 +1,8 @@
+pub mod gpui;
+pub mod streaming;
 pub mod terminal;
 use async_trait::async_trait;
+pub use streaming::DisplayFragment;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -28,9 +31,12 @@ pub trait UserInterface: Send + Sync {
     /// Get input from the user
     async fn get_input(&self, prompt: &str) -> Result<String, UIError>;
 
-    /// Display streaming output synchronously
-    fn display_streaming(&self, text: &str) -> Result<(), UIError>;
+    /// Display a streaming fragment with specific type information
+    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError>;
 }
 
 #[cfg(test)]
 mod terminal_test;
+
+#[cfg(test)]
+mod streaming_test;

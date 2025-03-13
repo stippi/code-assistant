@@ -177,8 +177,7 @@ impl ToolResult {
             ToolResult::Summarize { resources } => {
                 format!("Created summaries for {} resources", resources.len())
             }
-            ToolResult::AskUser { response } => response.clone(),
-            ToolResult::MessageUser { result } => result.clone(),
+            ToolResult::UserInput { message } => message.clone(),
             ToolResult::CompleteTask { result } => result.clone(),
             ToolResult::WebSearch { results, error, .. } => {
                 if let Some(e) = error {

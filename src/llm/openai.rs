@@ -1,4 +1,6 @@
-use crate::llm::{types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback};
+use crate::llm::{
+    types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Response};
@@ -493,7 +495,7 @@ impl OpenAIClient {
                     if let Some(delta) = chunk_response.choices.get(0) {
                         // Handle content streaming
                         if let Some(content) = &delta.delta.content {
-                            callback(content)?;
+                            callback(&StreamingChunk::Text(content.clone()))?;
                             *accumulated_content = Some(
                                 accumulated_content
                                     .as_ref()

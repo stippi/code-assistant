@@ -240,26 +240,6 @@ pub fn parse_tool_from_params(
                 .collect(),
         }),
 
-        "ask_user" => Ok(Tool::AskUser {
-            question: params
-                .get("question")
-                .ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: question".into())
-                })?
-                .first()
-                .ok_or_else(|| ToolError::ParseError("Question parameter is empty".into()))?
-                .to_string(),
-        }),
-
-        "message_user" => Ok(Tool::MessageUser {
-            message: params
-                .get("message")
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: message".into()))?
-                .first()
-                .ok_or_else(|| ToolError::ParseError("Message parameter is empty".into()))?
-                .to_string(),
-        }),
-
         "complete_task" => Ok(Tool::CompleteTask {
             message: params
                 .get("message")
@@ -400,18 +380,16 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
                 })
                 .collect::<Result<Vec<_>, ToolError>>()?,
         }),
-        "replace_in_file" => Ok(Tool::ReplaceInFile {
-            path: PathBuf::from(
-                params["path"].as_str().ok_or_else(|| {
+        "replace_in_file" => {
+            Ok(Tool::ReplaceInFile {
+                path: PathBuf::from(params["path"].as_str().ok_or_else(|| {
                     ToolError::ParseError("Missing required parameter: path".into())
-                })?,
-            ),
-            replacements: parse_search_replace_blocks(
-                params["diff"].as_str().ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: diff".into())
-                })?,
-            )?,
-        }),
+                })?),
+                replacements: parse_search_replace_blocks(params["diff"].as_str().ok_or_else(
+                    || ToolError::ParseError("Missing required parameter: diff".into()),
+                )?)?,
+            })
+        }
         "write_file" => Ok(Tool::WriteFile {
             path: PathBuf::from(
                 params["path"].as_str().ok_or_else(|| {
@@ -429,20 +407,6 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
         }),
         "delete_files" => Ok(Tool::DeleteFiles {
             paths: parse_path_array(&params["paths"], "paths")?,
-        }),
-        "ask_user" => Ok(Tool::AskUser {
-            question: params["question"]
-                .as_str()
-                .ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: question".into())
-                })?
-                .to_string(),
-        }),
-        "message_user" => Ok(Tool::MessageUser {
-            message: params["message"]
-                .as_str()
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: message".into()))?
-                .to_string(),
         }),
         "complete_task" => Ok(Tool::CompleteTask {
             message: params["message"]

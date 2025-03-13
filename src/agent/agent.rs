@@ -1,12 +1,13 @@
 use crate::llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
+    StreamingChunk,
 };
 use crate::persistence::StatePersistence;
 use crate::tools::{
     parse_tool_json, parse_tool_xml, AgentToolHandler, ToolExecutor, TOOL_TAG_PREFIX,
 };
 use crate::types::*;
-use crate::ui::{UIMessage, UserInterface};
+use crate::ui::{streaming::StreamProcessor, UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
 use percent_encoding;
@@ -50,6 +51,10 @@ impl Agent {
             command_executor,
             state_persistence,
         }
+    }
+
+    pub async fn get_input_from_ui(&self, prompt: &str) -> Result<String> {
+        self.ui.get_input(prompt).await.map_err(|e| e.into())
     }
 
     async fn run_agent_loop(&mut self) -> Result<()> {
@@ -97,6 +102,32 @@ impl Agent {
                     },
                 };
                 messages.push(assistant_msg);
+
+                // If no actions were returned, get user input
+                if actions.is_empty() {
+                    // Get input from UI
+                    let user_input = self.get_input_from_ui("").await?;
+
+                    // Add user input as an action result to working memory
+                    let action_result = ActionResult {
+                        tool: Tool::UserInput {},
+                        result: ToolResult::UserInput {
+                            message: user_input,
+                        },
+                        reasoning: "User provided input".to_string(),
+                    };
+
+                    self.working_memory.action_history.push(action_result);
+
+                    // Save state after user input
+                    self.state_persistence.save_state(
+                        self.working_memory.current_task.clone(),
+                        self.working_memory.action_history.clone(),
+                    )?;
+
+                    // Break the inner loop to start a new iteration with updated working memory
+                    break;
+                }
 
                 all_actions_succeeded = true; // Will be set to false if any action fails
 
@@ -304,10 +335,15 @@ impl Agent {
             }
         }
 
+        // Create a StreamProcessor and use it to process streaming chunks
         let ui = Arc::clone(&self.ui);
-        let streaming_callback: StreamingCallback = Box::new(move |text: &str| {
-            ui.display_streaming(text)
-                .map_err(|e| anyhow::anyhow!("Failed to display streaming output: {}", e))
+        let processor = Arc::new(std::sync::Mutex::new(StreamProcessor::new(ui)));
+
+        let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
+            let mut processor_guard = processor.lock().unwrap();
+            processor_guard
+                .process(chunk)
+                .map_err(|e| anyhow::anyhow!("Failed to process streaming chunk: {}", e))
         });
 
         let response = self
@@ -454,17 +490,6 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
             });
             reasoning = String::new();
         }
-    }
-
-    // If we have reasoning but no actions, auto-create a CompleteTask action
-    if actions.is_empty() && !reasoning.is_empty() {
-        // Substantial text response detected, convert to CompleteTask
-        actions.push(AgentAction {
-            tool: Tool::CompleteTask {
-                message: reasoning.clone(),
-            },
-            reasoning: "Auto-generated task completion from text response".to_string(),
-        });
     }
 
     Ok(actions)
