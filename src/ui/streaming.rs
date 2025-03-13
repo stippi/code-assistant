@@ -134,7 +134,7 @@ impl StreamProcessor {
             }
 
             let suffix = &processing_text[processing_text.len() - j..];
-            
+
             // Special case for newlines at the end that might be followed by a tag in the next chunk
             if suffix.ends_with('\n') && j == 1 {
                 // Only hold back the newline if it's the very last character
@@ -183,21 +183,22 @@ impl StreamProcessor {
                         let trimmed_text = pre_tag_text.trim_end_matches('\n');
                         // If we're at the start of processing (current_pos == 0), also trim leading newlines
                         // or if the previous char was the end of a tag
-                        let is_at_start = current_pos == 0 || 
-                            (current_pos > 0 && processing_text.chars().nth(current_pos-1) == Some('>'));
-                        
+                        let is_at_start = current_pos == 0
+                            || (current_pos > 0
+                                && processing_text.chars().nth(current_pos - 1) == Some('>'));
+
                         let trimmed_text = if is_at_start {
                             trimmed_text.trim_start_matches('\n')
                         } else {
                             trimmed_text
                         };
-                        
+
                         if trimmed_text.is_empty() {
                             // Skip empty text after trimming
                             current_pos = absolute_tag_pos;
                             continue;
                         }
-                        
+
                         if self.state.in_thinking {
                             // In thinking mode, text is displayed as thinking text
                             self.ui.display_fragment(&DisplayFragment::ThinkingText(
@@ -355,17 +356,18 @@ impl StreamProcessor {
                 if !remaining.is_empty() && !remaining.trim().is_empty() {
                     // Only trim trailing newlines at end of processing
                     let trimmed_text = remaining.trim_end_matches('\n');
-                    
+
                     // If we're at the start of processing (current_pos == 0), also trim leading newlines
-                    let is_at_start = current_pos == 0 || 
-                        (current_pos > 0 && processing_text.chars().nth(current_pos-1) == Some('>'));
-                    
+                    let is_at_start = current_pos == 0
+                        || (current_pos > 0
+                            && processing_text.chars().nth(current_pos - 1) == Some('>'));
+
                     let trimmed_text = if is_at_start {
                         trimmed_text.trim_start_matches('\n')
                     } else {
                         trimmed_text
                     };
-                    
+
                     if !trimmed_text.is_empty() {
                         if self.state.in_thinking {
                             self.ui.display_fragment(&DisplayFragment::ThinkingText(
@@ -378,8 +380,9 @@ impl StreamProcessor {
                                 tool_id: self.state.tool_id.clone(),
                             })?;
                         } else {
-                            self.ui
-                                .display_fragment(&DisplayFragment::PlainText(trimmed_text.to_string()))?;
+                            self.ui.display_fragment(&DisplayFragment::PlainText(
+                                trimmed_text.to_string(),
+                            ))?;
                         }
                     }
                 }

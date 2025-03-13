@@ -317,6 +317,47 @@ mod tests {
     }
 
     #[test]
+    fn test_complex_tool_call_with_brackets() -> Result<()> {
+        let input = "I'll replace condition.\n<tool:replace_in_file>\n<param:path>src/main.ts</param:path>\n<param:diff><<<<<<< SEARCH\nif a > b {\n=======\nif b <= a {\n>>>>>>> REPLACE</param:diff>\n</tool:replace_in_file>";
+
+        // Define expected fragments - order of parameters might vary
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("I'll replace condition.".to_string()),
+            DisplayFragment::ToolName {
+                name: "replace_in_file".to_string(),
+                id: "ignored".to_string(),
+            },
+            // Parameters in expected order
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "src/main.ts".to_string(),
+                tool_id: "ignored".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "diff".to_string(),
+                value: "<<<<<<< SEARCH\nif a > b {\n=======\nif b <= a {\n>>>>>>> REPLACE"
+                    .to_string(),
+                tool_id: "ignored".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "ignored".to_string(),
+            },
+        ];
+
+        // Process with chunk size that splits both tags and content
+        let test_ui = process_chunked_text(input, 12);
+
+        // Get fragments and print for debugging
+        let fragments = test_ui.get_fragments();
+        print_fragments(&fragments);
+
+        // Check that fragments match expected sequence
+        assert_fragments_match(&expected_fragments, &fragments);
+
+        Ok(())
+    }
+
+    #[test]
     fn test_thinking_tag_handling() -> Result<()> {
         let input =
             "Let me think about this.\n<thinking>This is a complex problem.</thinking>\nI've decided.";
