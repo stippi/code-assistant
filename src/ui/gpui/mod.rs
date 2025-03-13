@@ -5,7 +5,7 @@ mod message;
 
 use crate::types::WorkingMemory;
 use crate::ui::{async_trait, DisplayFragment, UIError, UIMessage, UserInterface};
-use gpui::{AppContext, Focusable};
+use gpui::{AppContext, Focusable, px};
 use input::TextInput;
 pub use memory_view::MemoryView;
 use message::MessageView;

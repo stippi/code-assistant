@@ -2,7 +2,7 @@ use super::elements::MessageContainer;
 use super::input::TextInput;
 use super::memory_view::MemoryView;
 use gpui::{
-    div, prelude::*, rgb, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
+    div, prelude::*, px, rgb, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
     MouseButton, MouseUpEvent,
 };
 use std::sync::{Arc, Mutex};
@@ -95,11 +95,11 @@ impl Render for MessageView {
             .flex_row() // Changed to row for main container
             .size_full()
             .child(
-                // Left side with messages and input
+                // Left side with messages and input (content area)
                 div()
                     .flex()
                     .flex_col()
-                    .flex_1() // Take remaining space
+                    .flex_1() // Takes available space (main content area)
                     .child(
                         // Messages display area
                         div()
@@ -179,8 +179,12 @@ impl Render for MessageView {
                     ),
             )
             .child(
-                // Right side with memory view
-                self.memory_view.clone()
+                // Right side with memory view 
+                div()
+                    .w(px(280.)) // Fixed width for the sidebar
+                    .h_full()
+                    .flex_none() // Don't flex, use exact size
+                    .child(self.memory_view.clone())
             )
     }
 }

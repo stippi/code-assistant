@@ -91,7 +91,7 @@ impl Focusable for MemoryView {
 impl Render for MemoryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_memory = self.memory.lock().unwrap().is_some();
-        let sidebar_width = if self.is_expanded { px(280.) } else { px(36.) };
+        // Use expanded state to control content visibility, not width
 
         // Create components that will be used in when blocks
         let memory_content = if self.is_expanded && has_memory {
@@ -245,11 +245,12 @@ impl Render for MemoryView {
             .id("memory-sidebar")
             .track_focus(&self.focus_handle(cx))
             .flex_none()
-            .w(sidebar_width)
+            .w_full() // Take full width of the parent container
             .h_full()
             .bg(rgb(0x252525))
             .border_l_1()
             .border_color(rgb(0x404040))
+            .overflow_hidden() // Prevent content from overflowing
             .flex()
             .flex_col()
             .child(toggle_button);
