@@ -1,5 +1,6 @@
 use crate::llm::{
-    types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
+    recording::APIRecorder, types::*, utils, ApiError, LLMProvider, RateLimitHandler,
+    StreamingCallback, StreamingChunk,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -290,6 +291,7 @@ pub struct AnthropicClient {
     api_key: String,
     base_url: String,
     model: String,
+    recorder: Option<APIRecorder>,
 }
 
 impl AnthropicClient {
@@ -299,6 +301,22 @@ impl AnthropicClient {
             api_key,
             base_url: "https://api.anthropic.com/v1".to_string(),
             model,
+            recorder: None,
+        }
+    }
+
+    /// Create a new client with recording capability
+    pub fn new_with_recorder<P: AsRef<std::path::Path>>(
+        api_key: String,
+        model: String,
+        recording_path: P,
+    ) -> Self {
+        Self {
+            client: Client::new(),
+            api_key,
+            base_url: "https://api.anthropic.com/v1".to_string(),
+            model,
+            recorder: Some(APIRecorder::new(recording_path)),
         }
     }
 
@@ -309,6 +327,7 @@ impl AnthropicClient {
             api_key,
             base_url,
             model,
+            recorder: None,
         }
     }
 
@@ -581,7 +600,25 @@ impl AnthropicClient {
                 Ok(())
             }
 
+            // Start recording if a recorder is available
+            if let Some(recorder) = &self.recorder {
+                // Serialize request for recording
+                let request_json = serde_json::to_value(request)?;
+                recorder.start_recording(request_json)?;
+            }
+
             while let Some(chunk) = response.chunk().await? {
+                // Record the chunk if recorder is available
+                if let Some(recorder) = &self.recorder {
+                    if let Ok(chunk_str) = std::str::from_utf8(&chunk) {
+                        for line in chunk_str.lines() {
+                            if line.starts_with("data: ") {
+                                recorder.record_chunk(line)?;
+                            }
+                        }
+                    }
+                }
+
                 process_chunk(
                     &chunk,
                     &mut line_buffer,
@@ -590,6 +627,11 @@ impl AnthropicClient {
                     &mut current_content,
                     callback,
                 )?;
+            }
+
+            // End recording if a recorder is available
+            if let Some(recorder) = &self.recorder {
+                recorder.end_recording()?;
             }
 
             // Process any remaining data in the buffer

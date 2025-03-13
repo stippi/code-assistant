@@ -6,6 +6,7 @@
 //! - Message streaming capabilities
 //! - Provider-specific implementations and optimizations
 //! - Shared types and utilities for LLM interactions
+//! - Recording capabilities for debugging and testing
 
 #[cfg(test)]
 mod tests;
@@ -15,6 +16,7 @@ mod utils;
 pub mod anthropic;
 pub mod ollama;
 pub mod openai;
+pub mod recording;
 pub mod types;
 pub mod vertex;
 

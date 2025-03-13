@@ -53,3 +53,6 @@ pub trait UserInterface: Send + Sync {
 
 #[cfg(test)]
 mod terminal_test;
+
+#[cfg(test)]
+mod streaming_test;

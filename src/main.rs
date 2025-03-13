@@ -80,6 +80,10 @@ struct Args {
     /// Type of tool declaration ('native' = tools via API, 'xml' = custom system message)
     #[arg(long, default_value = "xml")]
     tools_type: Option<ToolsType>,
+
+    /// Record API responses to a file (only supported for Anthropic provider currently)
+    #[arg(long)]
+    record: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -96,18 +100,32 @@ fn create_llm_client(
     provider: LLMProviderType,
     model: Option<String>,
     num_ctx: usize,
+    record_path: Option<PathBuf>,
 ) -> Result<Box<dyn LLMProvider>> {
+    if let Some(_) = record_path {
+        match provider {
+            LLMProviderType::Anthropic => {}
+            _ => {
+                eprintln!("Warning: Recording is only supported for the Anthropic provider");
+            }
+        }
+    }
     match provider {
         LLMProviderType::Anthropic => {
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .context("ANTHROPIC_API_KEY environment variable not set")?;
 
-            Ok(Box::new(AnthropicClient::new(
-                api_key,
-                model
-                    .clone()
-                    .unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string()),
-            )))
+            let model_name = model
+                .clone()
+                .unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string());
+
+            if let Some(path) = record_path {
+                Ok(Box::new(AnthropicClient::new_with_recorder(
+                    api_key, model_name, path,
+                )))
+            } else {
+                Ok(Box::new(AnthropicClient::new(api_key, model_name)))
+            }
         }
 
         LLMProviderType::OpenAI => {
@@ -237,8 +255,9 @@ async fn main() -> Result<()> {
                     // Run the agent within this runtime
                     runtime.block_on(async {
                         // Setup LLM client inside the thread
-                        let llm_client = create_llm_client(provider, model, num_ctx)
-                            .expect("Failed to initialize LLM client");
+                        let llm_client =
+                            create_llm_client(provider, model, num_ctx, args.record.clone())
+                                .expect("Failed to initialize LLM client");
 
                         // Initialize agent
                         let mut agent = Agent::new(
@@ -283,7 +302,7 @@ async fn main() -> Result<()> {
                 let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
 
                 // Setup LLM client with the specified provider
-                let llm_client = create_llm_client(provider, model, num_ctx)
+                let llm_client = create_llm_client(provider, model, num_ctx, args.record)
                     .context("Failed to initialize LLM client")?;
 
                 // Initialize agent

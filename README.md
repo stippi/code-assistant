@@ -96,6 +96,7 @@ Available options:
 - `-m, --model <MODEL>`: Model name to use (provider-specific)
 - `--tools-type <TOOLS_TYPE>`: Type of tool declaration [native, xml] (default: xml) `native` = tools via LLM provider API, `xml` = custom system message
 - `--num-ctx <NUM>`: Context window size in tokens (default: 8192, only relevant for Ollama)
+- `--record <PATH>`: Record API responses to a file for testing (currently Anthropic only)
 Environment variables:
 - `ANTHROPIC_API_KEY`: Required when using the Anthropic provider
 - `OPENAI_API_KEY`: Required when using the OpenAI provider
