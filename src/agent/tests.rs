@@ -208,6 +208,11 @@ impl UserInterface for MockUI {
         }
         Ok(())
     }
+    
+    async fn update_memory(&self, _memory: &WorkingMemory) -> Result<(), UIError> {
+        // Mock implementation does nothing with memory updates
+        Ok(())
+    }
 }
 
 // Mock Explorer

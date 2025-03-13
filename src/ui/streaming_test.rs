@@ -91,6 +91,11 @@ impl UserInterface for TestUI {
         guard.push_back(fragment.clone());
         Ok(())
     }
+    
+    async fn update_memory(&self, _memory: &crate::types::WorkingMemory) -> Result<(), UIError> {
+        // Test implementation does nothing with memory updates
+        Ok(())
+    }
 }
 
 // Helper function to split text into small chunks for testing tag handling

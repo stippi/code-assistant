@@ -1,4 +1,5 @@
 use super::{DisplayFragment, UIError, UIMessage, UserInterface};
+use crate::types::WorkingMemory;
 use async_trait::async_trait;
 use crossterm::{
     style::{self, Color, Stylize},
@@ -233,6 +234,11 @@ impl UserInterface for TerminalUI {
         }
 
         writer.flush()?;
+        Ok(())
+    }
+
+    async fn update_memory(&self, _memory: &WorkingMemory) -> Result<(), UIError> {
+        // Terminal UI doesn't display memory visually, so this is a no-op
         Ok(())
     }
 }

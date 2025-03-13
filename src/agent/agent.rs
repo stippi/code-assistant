@@ -125,6 +125,9 @@ impl Agent {
                         self.working_memory.action_history.clone(),
                     )?;
 
+                    // Notify UI of working memory change
+                    let _ = self.ui.update_memory(&self.working_memory).await;
+
                     // Break the inner loop to start a new iteration with updated working memory
                     break;
                 }
@@ -156,6 +159,9 @@ impl Agent {
                         self.working_memory.action_history.clone(),
                     )?;
 
+                    // Notify UI of working memory change
+                    let _ = self.ui.update_memory(&self.working_memory).await;
+
                     // Check if this was a CompleteTask action
                     if let Tool::CompleteTask { .. } = action.tool {
                         // Clean up state file on successful completion
@@ -185,6 +191,9 @@ impl Agent {
         self.state_persistence
             .save_state(task, self.working_memory.action_history.clone())?;
 
+        // Notify UI of initial working memory
+        let _ = self.ui.update_memory(&self.working_memory).await;
+
         self.run_agent_loop().await
     }
 
@@ -210,6 +219,9 @@ impl Agent {
                     state.actions.len()
                 )))
                 .await?;
+
+            // Notify UI of loaded working memory
+            let _ = self.ui.update_memory(&self.working_memory).await;
 
             self.run_agent_loop().await
         } else {

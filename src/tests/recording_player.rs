@@ -310,35 +310,36 @@ fn build_content_blocks(session: &RecordingSession) -> Result<Vec<ContentBlock>>
                 // Handle content block start
                 Some("content_block_start") => {
                     if let Some(index) = json.get("index").and_then(|v| v.as_u64()) {
-                        let index = index as usize;
+                        let _index = index as usize;
                         let content_block = json.get("content_block");
                         
                         if let Some(content_block) = content_block {
                             let block_type = content_block.get("type").and_then(Value::as_str).unwrap_or("text");
-                            current_block_types.insert(index, block_type.to_string());
+                            let index_as_usize = index as usize;
+                            current_block_types.insert(index_as_usize, block_type.to_string());
                             
                             match block_type {
                                 "text" => {
                                     // Initialize text content
-                                    current_texts.insert(index, String::new());
+                                    current_texts.insert(index_as_usize, String::new());
                                     let text = content_block.get("text").and_then(Value::as_str).unwrap_or("");
-                                    current_texts.entry(index).and_modify(|e| e.push_str(text));
+                                    current_texts.entry(index_as_usize).and_modify(|e| e.push_str(text));
                                 }
                                 "thinking" => {
                                     // Initialize thinking content
-                                    current_texts.insert(index, String::new());
+                                    current_texts.insert(index_as_usize, String::new());
                                     let thinking = content_block.get("thinking").and_then(Value::as_str).unwrap_or("");
-                                    current_texts.entry(index).and_modify(|e| e.push_str(thinking));
+                                    current_texts.entry(index_as_usize).and_modify(|e| e.push_str(thinking));
                                 }
                                 "tool_use" => {
                                     // Initialize tool content
-                                    current_texts.insert(index, String::new());
+                                    current_texts.insert(index_as_usize, String::new());
                                     let id = content_block.get("id").and_then(Value::as_str).unwrap_or("tool-id").to_string();
                                     let name = content_block.get("name").and_then(Value::as_str).unwrap_or("tool-name").to_string();
-                                    tool_properties.insert(index, (id, name));
+                                    tool_properties.insert(index_as_usize, (id, name));
                                     
                                     if let Some(input) = content_block.get("input").and_then(Value::as_str) {
-                                        current_texts.entry(index).and_modify(|e| e.push_str(input));
+                                        current_texts.entry(index_as_usize).and_modify(|e| e.push_str(input));
                                     }
                                 }
                                 _ => {}
@@ -349,7 +350,7 @@ fn build_content_blocks(session: &RecordingSession) -> Result<Vec<ContentBlock>>
                 // Handle content block delta
                 Some("content_block_delta") => {
                     if let Some(index) = json.get("index").and_then(|v| v.as_u64()) {
-                        let index = index as usize;
+                        let index_as_usize = index as usize;
                         
                         if let Some(delta) = json.get("delta") {
                             let delta_type = delta.get("type").and_then(Value::as_str);
@@ -357,17 +358,17 @@ fn build_content_blocks(session: &RecordingSession) -> Result<Vec<ContentBlock>>
                             match delta_type {
                                 Some("text_delta") => {
                                     if let Some(text) = delta.get("text").and_then(Value::as_str) {
-                                        current_texts.entry(index).or_insert_with(String::new).push_str(text);
+                                        current_texts.entry(index_as_usize).or_insert_with(String::new).push_str(text);
                                     }
                                 }
                                 Some("thinking_delta") => {
                                     if let Some(thinking) = delta.get("thinking").and_then(Value::as_str) {
-                                        current_texts.entry(index).or_insert_with(String::new).push_str(thinking);
+                                        current_texts.entry(index_as_usize).or_insert_with(String::new).push_str(thinking);
                                     }
                                 }
                                 Some("input_json_delta") => {
                                     if let Some(json_part) = delta.get("partial_json").and_then(Value::as_str) {
-                                        current_texts.entry(index).or_insert_with(String::new).push_str(json_part);
+                                        current_texts.entry(index_as_usize).or_insert_with(String::new).push_str(json_part);
                                     }
                                 }
                                 _ => {}
@@ -378,7 +379,7 @@ fn build_content_blocks(session: &RecordingSession) -> Result<Vec<ContentBlock>>
                 // Handle content block stop - finalize blocks at the end
                 Some("content_block_stop") => {
                     if let Some(index) = json.get("index").and_then(|v| v.as_u64()) {
-                        let index = index as usize;
+                        let _index = index as usize;
                         
                         // Don't create the blocks yet, we'll create them all at the end
                         // This helps with accurate ordering and ensures all deltas are processed
