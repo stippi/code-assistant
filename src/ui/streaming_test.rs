@@ -1,6 +1,6 @@
 use super::streaming::{DisplayFragment, StreamProcessor};
 use crate::llm::StreamingChunk;
-use crate::ui::UserInterface;
+use crate::ui::{UIError, UserInterface};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::VecDeque;
@@ -27,19 +27,32 @@ impl TestUI {
 
 #[async_trait]
 impl UserInterface for TestUI {
-    async fn display(&self, _message: crate::ui::UIMessage) -> Result<(), crate::ui::UIError> {
+    async fn display(&self, _message: crate::ui::UIMessage) -> Result<(), UIError> {
         Ok(())
     }
 
-    async fn get_input(&self, _prompt: &str) -> Result<String, crate::ui::UIError> {
+    async fn get_input(&self, _prompt: &str) -> Result<String, UIError> {
         Ok(String::new())
     }
 
-    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), crate::ui::UIError> {
+    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
         let mut guard = self.fragments.lock().unwrap();
         guard.push_back(fragment.clone());
         Ok(())
     }
+}
+
+// Helper function to split text into small chunks for testing tag handling
+// Used internally for chunk processing tests
+fn chunk_str(s: &str, chunk_size: usize) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut chunks = Vec::new();
+
+    for chunk in chars.chunks(chunk_size) {
+        chunks.push(chunk.iter().collect::<String>());
+    }
+
+    chunks
 }
 
 #[cfg(test)]
@@ -64,6 +77,51 @@ mod tests {
                 DisplayFragment::ToolEnd { id } => println!("  [{i}] ToolEnd: (id: {id})"),
             }
         }
+    }
+
+    // Test that parameter end tags are correctly processed and not shown
+    #[test]
+    fn test_param_tag_hiding() {
+        let input = "<thinking>The user has not provided a task.</thinking>\nI'll use the ask_user tool.\n<tool:ask_user>\n<param:question>What would you like to know?</param:question>\n</tool:ask_user>";
+
+        let test_ui_direct = TestUI::new();
+        let test_ui = Arc::new(Box::new(test_ui_direct.clone()) as Box<dyn UserInterface>);
+        let mut processor = StreamProcessor::new(test_ui);
+
+        // Process the input with large enough chunks so tags don't get split
+        processor
+            .process(&StreamingChunk::Text(input.to_string()))
+            .unwrap();
+
+        // Get and verify the fragments
+        let fragments = test_ui_direct.get_fragments();
+        print_fragments(&fragments);
+
+        // Check if we find parameter content
+        let mut found_param_content = false;
+        let mut found_param_end_tag = false;
+
+        for fragment in &fragments {
+            match fragment {
+                DisplayFragment::ToolParameter { value, .. } => {
+                    if value.contains("What would you like to know?") {
+                        found_param_content = true;
+                    }
+                }
+                DisplayFragment::PlainText(text) => {
+                    if text.contains("</param:question>") {
+                        found_param_end_tag = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assert!(found_param_content, "Parameter content should be visible");
+        assert!(
+            !found_param_end_tag,
+            "Parameter end tag should not be visible"
+        );
     }
 
     #[test]
