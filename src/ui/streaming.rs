@@ -166,24 +166,31 @@ impl StreamProcessor {
                 // Output all text before this tag if there is any
                 if tag_pos > 0 {
                     let pre_tag_text = &processing_text[current_pos..absolute_tag_pos];
-                    if self.state.in_thinking {
-                        // In thinking mode, text is displayed as thinking text
-                        self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                            pre_tag_text.to_string(),
-                        ))?;
-                    } else if self.state.in_param {
-                        // In parameter mode, text is collected as a parameter value
-                        self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                            name: self.state.param_name.clone(),
-                            value: pre_tag_text.to_string(),
-                            tool_id: self.state.tool_id.clone(),
-                        })?;
-                    } else {
-                        // All other text (including inside tool tags but not in params)
-                        // is displayed as plain text
-                        self.ui.display_fragment(&DisplayFragment::PlainText(
-                            pre_tag_text.to_string(),
-                        ))?;
+
+                    // Skip if the text is just whitespace and we're about to process a tag
+                    // This prevents creating unnecessary whitespace fragments between tags
+                    let is_only_whitespace = pre_tag_text.trim().is_empty();
+
+                    if !is_only_whitespace {
+                        if self.state.in_thinking {
+                            // In thinking mode, text is displayed as thinking text
+                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                pre_tag_text.to_string(),
+                            ))?;
+                        } else if self.state.in_param {
+                            // In parameter mode, text is collected as a parameter value
+                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                                name: self.state.param_name.clone(),
+                                value: pre_tag_text.to_string(),
+                                tool_id: self.state.tool_id.clone(),
+                            })?;
+                        } else {
+                            // All other text (including inside tool tags but not in params)
+                            // is displayed as plain text
+                            self.ui.display_fragment(&DisplayFragment::PlainText(
+                                pre_tag_text.to_string(),
+                            ))?;
+                        }
                     }
                 }
 
@@ -317,7 +324,9 @@ impl StreamProcessor {
             } else {
                 // No more tags, output the rest of the text
                 let remaining = &processing_text[current_pos..];
-                if !remaining.is_empty() {
+
+                // Only process if there's actual content (not just whitespace)
+                if !remaining.is_empty() && !remaining.trim().is_empty() {
                     if self.state.in_thinking {
                         self.ui.display_fragment(&DisplayFragment::ThinkingText(
                             remaining.to_string(),

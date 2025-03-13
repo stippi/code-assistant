@@ -275,7 +275,7 @@ mod tests {
 
         // Define expected fragments - order of parameters might vary
         let expected_fragments = vec![
-            DisplayFragment::PlainText("Let me search for specific files".to_string()),
+            DisplayFragment::PlainText("Let me search for specific files\n".to_string()),
             DisplayFragment::ToolName {
                 name: "search_files".to_string(),
                 id: "ignored".to_string(),
