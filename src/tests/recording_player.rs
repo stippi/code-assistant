@@ -6,7 +6,7 @@
 
 use crate::llm::{
     recording::{RecordedChunk, RecordingSession},
-    LLMProvider, LLMRequest, LLMResponse, StreamingCallback, StreamingChunk,
+    ContentBlock, LLMProvider, LLMRequest, LLMResponse, StreamingCallback, StreamingChunk, Usage,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -110,13 +110,23 @@ impl LLMProvider for RecordingProvider {
         
         // When streaming is requested, replay the recorded chunks with timing
         if let Some(callback) = streaming_callback {
-            // Extract the LLM response from the last event
-            let response = if let Some(last_chunk) = &session.chunks.last() {
-                parse_response_from_chunk(last_chunk)?
-            } else {
-                // Return empty response if no chunks are present
-                LLMResponse::default()
+            // Parse complete response (all content blocks) from session
+            let content = build_content_blocks(&session)?;
+            
+            // Get usage information
+            let initial_usage = parse_initial_response(&session.chunks)?;
+            let final_usage = parse_final_usage(&session.chunks)?;
+            
+            // Combine usage information
+            let usage = Usage {
+                input_tokens: initial_usage.input_tokens,
+                output_tokens: final_usage.output_tokens,
+                cache_creation_input_tokens: initial_usage.cache_creation_input_tokens,
+                cache_read_input_tokens: initial_usage.cache_read_input_tokens,
             };
+            
+            // Create response
+            let response = LLMResponse { content, usage };
 
             // Prepare for streaming with timing information
             let _start = Instant::now();
@@ -140,13 +150,23 @@ impl LLMProvider for RecordingProvider {
             // Return the final response
             Ok(response)
         } else {
-            // For non-streaming requests, just return the final response
-            if let Some(last_chunk) = session.chunks.last() {
-                parse_response_from_chunk(last_chunk)
-            } else {
-                // Return empty response if no chunks are present
-                Ok(LLMResponse::default())
-            }
+            // For non-streaming requests, just build and return the final response
+            let content = build_content_blocks(&session)?;
+            
+            // Get usage information
+            let initial_usage = parse_initial_response(&session.chunks)?;
+            let final_usage = parse_final_usage(&session.chunks)?;
+            
+            // Combine usage information
+            let usage = Usage {
+                input_tokens: initial_usage.input_tokens,
+                output_tokens: final_usage.output_tokens,
+                cache_creation_input_tokens: initial_usage.cache_creation_input_tokens,
+                cache_read_input_tokens: initial_usage.cache_read_input_tokens,
+            };
+            
+            // Create response
+            Ok(LLMResponse { content, usage })
         }
     }
 }
@@ -211,41 +231,220 @@ fn parse_streaming_chunk_from_data(data: &str) -> Result<Option<StreamingChunk>>
     Ok(None)
 }
 
-/// Parse the final LLM response from a chunk
-fn parse_response_from_chunk(chunk: &RecordedChunk) -> Result<LLMResponse> {
-    use crate::llm::{ContentBlock, Usage};
+/// Parse an initial LLM response for session tracking
+fn parse_initial_response(chunks: &[RecordedChunk]) -> Result<Usage> {
+    use crate::llm::Usage;
 
-    // Try to parse the chunk data as JSON
-    let json: Value = serde_json::from_str(&chunk.data)?;
-
-    // For simplicity, we create a basic response
-    // In a real implementation, we would fully parse the "message_stop" event
-    // and look for the corresponding "message_start" to get the full content
-
-    let mut content = vec![];
-    let mut usage = Usage {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 0,
-    };
-
-    // Extract usage information if available
-    if let Some(usage_obj) = json.get("usage") {
-        if let Some(input_tokens) = usage_obj.get("input_tokens").and_then(|v| v.as_u64()) {
-            usage.input_tokens = input_tokens as u32;
-        }
-        if let Some(output_tokens) = usage_obj.get("output_tokens").and_then(|v| v.as_u64()) {
-            usage.output_tokens = output_tokens as u32;
+    // Find the message_start event which has usage info
+    for chunk in chunks {
+        if let Ok(json) = serde_json::from_str::<Value>(&chunk.data) {
+            if json.get("type").and_then(Value::as_str) == Some("message_start") {
+                if let Some(message) = json.get("message") {
+                    if let Some(usage) = message.get("usage") {
+                        let mut result = Usage::default();
+                        
+                        if let Some(input_tokens) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                            result.input_tokens = input_tokens as u32;
+                        }
+                        if let Some(output_tokens) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+                            result.output_tokens = output_tokens as u32;
+                        }
+                        if let Some(creation) = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()) {
+                            result.cache_creation_input_tokens = creation as u32;
+                        }
+                        if let Some(read) = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()) {
+                            result.cache_read_input_tokens = read as u32;
+                        }
+                        
+                        return Ok(result);
+                    }
+                }
+            }
         }
     }
+    
+    // Return default if not found
+    Ok(Usage::default())
+}
 
-    // Add a text content block as a placeholder
-    content.push(ContentBlock::Text {
-        text: "This content was reconstructed from a recorded session".to_string(),
-    });
+/// Parse final usage information from message_delta event
+fn parse_final_usage(chunks: &[RecordedChunk]) -> Result<Usage> {
+    use crate::llm::Usage;
 
-    Ok(LLMResponse { content, usage })
+    // Go through chunks in reverse to find the message_delta event with usage info
+    for chunk in chunks.iter().rev() {
+        if let Ok(json) = serde_json::from_str::<Value>(&chunk.data) {
+            if json.get("type").and_then(Value::as_str) == Some("message_delta") {
+                if let Some(usage) = json.get("usage") {
+                    let mut result = Usage::default();
+                    
+                    if let Some(output_tokens) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+                        result.output_tokens = output_tokens as u32;
+                    }
+                    
+                    return Ok(result);
+                }
+            }
+        }
+    }
+    
+    // Return default if not found
+    Ok(Usage::default())
+}
+
+/// Parse content blocks from a session
+fn build_content_blocks(session: &RecordingSession) -> Result<Vec<ContentBlock>> {
+    use crate::llm::ContentBlock;
+    use std::collections::HashMap;
+    
+    let mut blocks: Vec<ContentBlock> = Vec::new();
+    let mut current_texts: HashMap<usize, String> = HashMap::new();
+    let mut current_block_types: HashMap<usize, String> = HashMap::new();
+    let mut tool_properties: HashMap<usize, (String, String)> = HashMap::new(); // (id, name)
+    
+    for chunk in &session.chunks {
+        if let Ok(json) = serde_json::from_str::<Value>(&chunk.data) {
+            let event_type = json.get("type").and_then(Value::as_str);
+            
+            match event_type {
+                // Handle content block start
+                Some("content_block_start") => {
+                    if let Some(index) = json.get("index").and_then(|v| v.as_u64()) {
+                        let index = index as usize;
+                        let content_block = json.get("content_block");
+                        
+                        if let Some(content_block) = content_block {
+                            let block_type = content_block.get("type").and_then(Value::as_str).unwrap_or("text");
+                            current_block_types.insert(index, block_type.to_string());
+                            
+                            match block_type {
+                                "text" => {
+                                    // Initialize text content
+                                    current_texts.insert(index, String::new());
+                                    let text = content_block.get("text").and_then(Value::as_str).unwrap_or("");
+                                    current_texts.entry(index).and_modify(|e| e.push_str(text));
+                                }
+                                "thinking" => {
+                                    // Initialize thinking content
+                                    current_texts.insert(index, String::new());
+                                    let thinking = content_block.get("thinking").and_then(Value::as_str).unwrap_or("");
+                                    current_texts.entry(index).and_modify(|e| e.push_str(thinking));
+                                }
+                                "tool_use" => {
+                                    // Initialize tool content
+                                    current_texts.insert(index, String::new());
+                                    let id = content_block.get("id").and_then(Value::as_str).unwrap_or("tool-id").to_string();
+                                    let name = content_block.get("name").and_then(Value::as_str).unwrap_or("tool-name").to_string();
+                                    tool_properties.insert(index, (id, name));
+                                    
+                                    if let Some(input) = content_block.get("input").and_then(Value::as_str) {
+                                        current_texts.entry(index).and_modify(|e| e.push_str(input));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                // Handle content block delta
+                Some("content_block_delta") => {
+                    if let Some(index) = json.get("index").and_then(|v| v.as_u64()) {
+                        let index = index as usize;
+                        
+                        if let Some(delta) = json.get("delta") {
+                            let delta_type = delta.get("type").and_then(Value::as_str);
+                            
+                            match delta_type {
+                                Some("text_delta") => {
+                                    if let Some(text) = delta.get("text").and_then(Value::as_str) {
+                                        current_texts.entry(index).or_insert_with(String::new).push_str(text);
+                                    }
+                                }
+                                Some("thinking_delta") => {
+                                    if let Some(thinking) = delta.get("thinking").and_then(Value::as_str) {
+                                        current_texts.entry(index).or_insert_with(String::new).push_str(thinking);
+                                    }
+                                }
+                                Some("input_json_delta") => {
+                                    if let Some(json_part) = delta.get("partial_json").and_then(Value::as_str) {
+                                        current_texts.entry(index).or_insert_with(String::new).push_str(json_part);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                // Handle content block stop - finalize blocks at the end
+                Some("content_block_stop") => {
+                    if let Some(index) = json.get("index").and_then(|v| v.as_u64()) {
+                        let index = index as usize;
+                        
+                        // Don't create the blocks yet, we'll create them all at the end
+                        // This helps with accurate ordering and ensures all deltas are processed
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    
+    // Now create all blocks in order
+    for index in 0..current_texts.len() {
+        if let Some(block_type) = current_block_types.get(&index) {
+            match block_type.as_str() {
+                "text" => {
+                    if let Some(text) = current_texts.get(&index) {
+                        blocks.push(ContentBlock::Text { 
+                            text: text.clone() 
+                        });
+                    }
+                }
+                "thinking" => {
+                    if let Some(thinking) = current_texts.get(&index) {
+                        blocks.push(ContentBlock::Thinking { 
+                            thinking: thinking.clone(), 
+                            signature: String::new()
+                        });
+                    }
+                }
+                "tool_use" => {
+                    if let Some(text) = current_texts.get(&index) {
+                        if let Some((id, name)) = tool_properties.get(&index) {
+                            let input = if text.is_empty() {
+                                serde_json::Value::Null
+                            } else {
+                                serde_json::from_str(text).unwrap_or(serde_json::Value::Null)
+                            };
+                            
+                            blocks.push(ContentBlock::ToolUse { 
+                                id: id.clone(), 
+                                name: name.clone(), 
+                                input 
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    // Unknown block type, add as plain text
+                    if let Some(text) = current_texts.get(&index) {
+                        blocks.push(ContentBlock::Text { 
+                            text: text.clone() 
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    // If no blocks were created, add a default one
+    if blocks.is_empty() {
+        blocks.push(ContentBlock::Text {
+            text: "No content was found in the recorded session".to_string(),
+        });
+    }
+    
+    Ok(blocks)
 }
 
 #[cfg(test)]
