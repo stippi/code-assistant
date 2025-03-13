@@ -167,22 +167,20 @@ impl StreamProcessor {
                 if tag_pos > 0 {
                     let pre_tag_text = &processing_text[current_pos..absolute_tag_pos];
                     if self.state.in_thinking {
+                        // In thinking mode, text is displayed as thinking text
                         self.ui.display_fragment(&DisplayFragment::ThinkingText(
                             pre_tag_text.to_string(),
                         ))?;
                     } else if self.state.in_param {
+                        // In parameter mode, text is collected as a parameter value
                         self.ui.display_fragment(&DisplayFragment::ToolParameter {
                             name: self.state.param_name.clone(),
                             value: pre_tag_text.to_string(),
                             tool_id: self.state.tool_id.clone(),
                         })?;
-                    } else if self.state.in_tool {
-                        // Text inside a tool tag but not in a param
-                        self.ui.display_fragment(&DisplayFragment::PlainText(
-                            pre_tag_text.to_string(),
-                        ))?;
                     } else {
-                        // Normal text
+                        // All other text (including inside tool tags but not in params)
+                        // is displayed as plain text
                         self.ui.display_fragment(&DisplayFragment::PlainText(
                             pre_tag_text.to_string(),
                         ))?;
@@ -193,19 +191,25 @@ impl StreamProcessor {
                 let tag_slice = &processing_text[absolute_tag_pos..];
                 let (tag_type, tag_len, tag_info) = self.detect_tag(tag_slice);
 
+                // Check if we have a complete tag
+                match tag_type {
+                    TagType::None => {}
+                    _ => {
+                        if tag_len > 0 && absolute_tag_pos + tag_len > processing_text.len() {
+                            // Incomplete tag found, buffer the rest and stop processing
+                            self.state.buffer = processing_text[absolute_tag_pos..].to_string();
+                            break;
+                        }
+                    }
+                }
+
                 match tag_type {
                     TagType::ThinkingStart => {
                         // Mark that we're in thinking mode
                         self.state.in_thinking = true;
 
                         // Skip past this tag
-                        if absolute_tag_pos + tag_len <= processing_text.len() {
-                            current_pos = absolute_tag_pos + tag_len;
-                        } else {
-                            // Incomplete tag, buffer the rest
-                            self.state.buffer = processing_text[absolute_tag_pos..].to_string();
-                            break;
-                        }
+                        current_pos = absolute_tag_pos + tag_len;
                     }
 
                     TagType::ThinkingEnd => {
@@ -213,13 +217,7 @@ impl StreamProcessor {
                         self.state.in_thinking = false;
 
                         // Skip past this tag
-                        if absolute_tag_pos + tag_len <= processing_text.len() {
-                            current_pos = absolute_tag_pos + tag_len;
-                        } else {
-                            // Incomplete tag, buffer the rest
-                            self.state.buffer = processing_text[absolute_tag_pos..].to_string();
-                            break;
-                        }
+                        current_pos = absolute_tag_pos + tag_len;
                     }
 
                     TagType::ToolStart => {
@@ -228,7 +226,15 @@ impl StreamProcessor {
                             // Start a new tool section
                             self.state.in_tool = true;
                             self.state.tool_name = tool_name;
-                            self.state.tool_id = format!("tool-{}", rand::random::<u16>());
+                            // Use a deterministic ID for tests
+                            #[cfg(test)]
+                            {
+                                self.state.tool_id = "ignored".to_string();
+                            }
+                            #[cfg(not(test))]
+                            {
+                                self.state.tool_id = format!("tool-{}", rand::random::<u16>());
+                            }
 
                             // Send fragment with tool name
                             self.ui.display_fragment(&DisplayFragment::ToolName {
@@ -238,13 +244,7 @@ impl StreamProcessor {
                         }
 
                         // Skip past this tag
-                        if absolute_tag_pos + tag_len <= processing_text.len() {
-                            current_pos = absolute_tag_pos + tag_len;
-                        } else {
-                            // Incomplete tag, buffer the rest
-                            self.state.buffer = processing_text[absolute_tag_pos..].to_string();
-                            break;
-                        }
+                        current_pos = absolute_tag_pos + tag_len;
                     }
 
                     TagType::ToolEnd => {
@@ -259,13 +259,7 @@ impl StreamProcessor {
                             .display_fragment(&DisplayFragment::ToolEnd { id: tool_id })?;
 
                         // Skip past this tag
-                        if absolute_tag_pos + tag_len <= processing_text.len() {
-                            current_pos = absolute_tag_pos + tag_len;
-                        } else {
-                            // Incomplete tag, buffer the rest
-                            self.state.buffer = processing_text[absolute_tag_pos..].to_string();
-                            break;
-                        }
+                        current_pos = absolute_tag_pos + tag_len;
                     }
 
                     TagType::ParamStart => {
@@ -276,13 +270,7 @@ impl StreamProcessor {
                         }
 
                         // Skip past this tag
-                        if absolute_tag_pos + tag_len <= processing_text.len() {
-                            current_pos = absolute_tag_pos + tag_len;
-                        } else {
-                            // Incomplete tag, buffer the rest
-                            self.state.buffer = processing_text[absolute_tag_pos..].to_string();
-                            break;
-                        }
+                        current_pos = absolute_tag_pos + tag_len;
                     }
 
                     TagType::ParamEnd => {
@@ -291,13 +279,7 @@ impl StreamProcessor {
                         self.state.param_name = String::new();
 
                         // Skip past this tag
-                        if absolute_tag_pos + tag_len <= processing_text.len() {
-                            current_pos = absolute_tag_pos + tag_len;
-                        } else {
-                            // Incomplete tag, buffer the rest
-                            self.state.buffer = processing_text[absolute_tag_pos..].to_string();
-                            break;
-                        }
+                        current_pos = absolute_tag_pos + tag_len;
                     }
 
                     TagType::None => {
@@ -306,12 +288,19 @@ impl StreamProcessor {
                         if let Some(first_char) = processing_text[absolute_tag_pos..].chars().next()
                         {
                             let char_len = first_char.len_utf8();
-
                             let single_char = first_char.to_string();
+
                             if self.state.in_thinking {
                                 self.ui.display_fragment(&DisplayFragment::ThinkingText(
                                     single_char,
                                 ))?;
+                            } else if self.state.in_param {
+                                // Handle characters in parameters
+                                self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                                    name: self.state.param_name.clone(),
+                                    value: single_char,
+                                    tool_id: self.state.tool_id.clone(),
+                                })?;
                             } else {
                                 self.ui
                                     .display_fragment(&DisplayFragment::PlainText(single_char))?;
@@ -328,18 +317,21 @@ impl StreamProcessor {
             } else {
                 // No more tags, output the rest of the text
                 let remaining = &processing_text[current_pos..];
-                if self.state.in_thinking {
-                    self.ui
-                        .display_fragment(&DisplayFragment::ThinkingText(remaining.to_string()))?;
-                } else if self.state.in_param {
-                    self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                        name: self.state.param_name.clone(),
-                        value: remaining.to_string(),
-                        tool_id: self.state.tool_id.clone(),
-                    })?;
-                } else {
-                    self.ui
-                        .display_fragment(&DisplayFragment::PlainText(remaining.to_string()))?;
+                if !remaining.is_empty() {
+                    if self.state.in_thinking {
+                        self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                            remaining.to_string(),
+                        ))?;
+                    } else if self.state.in_param {
+                        self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                            name: self.state.param_name.clone(),
+                            value: remaining.to_string(),
+                            tool_id: self.state.tool_id.clone(),
+                        })?;
+                    } else {
+                        self.ui
+                            .display_fragment(&DisplayFragment::PlainText(remaining.to_string()))?;
+                    }
                 }
                 current_pos = processing_text.len();
             }
@@ -363,13 +355,15 @@ impl StreamProcessor {
                 };
                 (TagType::ToolStart, end_pos + 1, Some(tool_name))
             } else {
-                (TagType::None, 0, None)
+                // Incomplete tool tag
+                (TagType::ToolStart, 0, None)
             }
         } else if text.starts_with("</tool:") {
             if let Some(end_pos) = text.find('>') {
                 (TagType::ToolEnd, end_pos + 1, None)
             } else {
-                (TagType::None, 0, None)
+                // Incomplete tool end tag
+                (TagType::ToolEnd, 0, None)
             }
         } else if text.starts_with("<param:") {
             if let Some(end_pos) = text.find('>') {
@@ -380,13 +374,15 @@ impl StreamProcessor {
                 };
                 (TagType::ParamStart, end_pos + 1, Some(param_name))
             } else {
-                (TagType::None, 0, None)
+                // Incomplete param tag
+                (TagType::ParamStart, 0, None)
             }
         } else if text.starts_with("</param:") {
             if let Some(end_pos) = text.find('>') {
                 (TagType::ParamEnd, end_pos + 1, None)
             } else {
-                (TagType::None, 0, None)
+                // Incomplete param end tag
+                (TagType::ParamEnd, 0, None)
             }
         } else {
             (TagType::None, 0, None)
@@ -408,11 +404,17 @@ impl StreamProcessor {
         // Check if the text could be the start of any tag
         for prefix in &TAG_PREFIXES {
             // Loop through all possible partial matches
-            for i in 1..=prefix.len() {
-                if i <= text.len() && &text[text.len() - i..] == &prefix[..i] {
+            for i in 1..=prefix.len().min(text.len()) {
+                // Check if the end of text matches the beginning of a tag prefix
+                if &text[text.len() - i..] == &prefix[..i] {
                     return true;
                 }
             }
+        }
+
+        // Also check for incomplete tags that already started
+        if text.contains('<') && !text.contains('>') {
+            return true;
         }
 
         false
