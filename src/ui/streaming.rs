@@ -126,8 +126,8 @@ impl StreamProcessor {
         let mut safe_length = processing_text.len();
 
         // Check backwards for potential tag starts
-        for j in (1..=processing_text.len().min(40)).rev() {
-            // Check at most last 40 chars
+        for j in (1..=processing_text.len().min(120)).rev() {
+            // Check at most last 120 chars
             // Make sure we're at a valid char boundary
             if !processing_text.is_char_boundary(processing_text.len() - j) {
                 continue;
