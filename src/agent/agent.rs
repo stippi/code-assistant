@@ -53,7 +53,6 @@ impl Agent {
         }
     }
 
-    // New method to get input directly from UI
     pub async fn get_input_from_ui(&self, prompt: &str) -> Result<String> {
         self.ui.get_input(prompt).await.map_err(|e| e.into())
     }
@@ -339,7 +338,7 @@ impl Agent {
         // Create a StreamProcessor and use it to process streaming chunks
         let ui = Arc::clone(&self.ui);
         let processor = Arc::new(std::sync::Mutex::new(StreamProcessor::new(ui)));
-        
+
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
             let mut processor_guard = processor.lock().unwrap();
             processor_guard
