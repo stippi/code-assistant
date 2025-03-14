@@ -1,6 +1,7 @@
 pub mod gpui;
 pub mod streaming;
 pub mod terminal;
+use crate::types::WorkingMemory;
 use async_trait::async_trait;
 pub use streaming::DisplayFragment;
 use thiserror::Error;
@@ -33,6 +34,9 @@ pub trait UserInterface: Send + Sync {
 
     /// Display a streaming fragment with specific type information
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError>;
+
+    /// Update memory view with current working memory
+    async fn update_memory(&self, memory: &WorkingMemory) -> Result<(), UIError>;
 }
 
 #[cfg(test)]

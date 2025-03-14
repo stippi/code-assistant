@@ -105,37 +105,16 @@ impl Tools {
     pub fn search_files() -> ToolDefinition {
         ToolDefinition {
             name: "search_files".to_string(),
-            description: "Search for text in files with advanced options".to_string(),
+            description: "Search for text in files using regex in Rust syntax. This tool searches for specific content across multiple files, displaying each match with context.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "query": {
+                    "regex": {
                         "type": "string",
-                        "description": "The text to search for. Supports regular expressions."
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Optional: directory path to search in (relative to project root)"
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Optional: maximum number of results to return"
-                    },
-                    "case_sensitive": {
-                        "type": "boolean",
-                        "description": "Optional: whether the search should be case-sensitive (default: false)"
-                    },
-                    "whole_words": {
-                        "type": "boolean",
-                        "description": "Optional: match whole words only (default: false)"
-                    },
-                    "mode": {
-                        "type": "string",
-                        "description": "Optional: search mode - 'exact' (default) for standard text search, or 'regex' for regular expressions",
-                        "enum": ["exact", "regex"]
+                        "description": "The regex pattern to search for. Supports Rust regex syntax including character classes, quantifiers, etc."
                     }
                 },
-                "required": ["query"]
+                "required": ["regex"]
             }),
         }
     }

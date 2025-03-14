@@ -93,14 +93,14 @@ impl ToolResult {
                 }
                 msg
             }
-            ToolResult::SearchFiles { results, query } => {
+            ToolResult::SearchFiles { results, regex } => {
                 if results.is_empty() {
-                    format!("No matches found for '{}'", query)
+                    format!("No matches found for '{}'", regex)
                 } else {
-                    let mut msg = format!("Found matches for '{}':\n", query);
+                    let mut msg = format!("Found matches for '{}':\n", regex);
                     for result in results {
                         msg.push_str(&format!(
-                            "{}:{}-{}:\n",
+                            ">>>>> RESULT: {}:{}-{}\n",
                             result.file.display(),
                             result.start_line + 1,
                             result.start_line + result.line_content.len()
@@ -113,7 +113,7 @@ impl ToolResult {
                             };
                             msg.push_str(&format!("{} {}\n", line_prefix, line));
                         }
-                        msg.push('\n');
+                        msg.push_str("<<<<< END RESULT\n\n");
                     }
                     msg
                 }

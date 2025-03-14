@@ -1,10 +1,16 @@
+pub mod assets;
 mod elements;
+pub mod file_icons;
 mod input;
+mod memory_view;
 mod message;
+mod path_util;
 
+use crate::types::WorkingMemory;
 use crate::ui::{async_trait, DisplayFragment, UIError, UIMessage, UserInterface};
 use gpui::{AppContext, Focusable};
 use input::TextInput;
+pub use memory_view::MemoryView;
 use message::MessageView;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,6 +23,7 @@ pub struct GPUI {
     input_value: Arc<Mutex<Option<String>>>,
     input_requested: Arc<Mutex<bool>>,
     ui_update_needed: Arc<Mutex<bool>>,
+    working_memory: Arc<Mutex<Option<WorkingMemory>>>,
 }
 
 impl GPUI {
@@ -25,12 +32,14 @@ impl GPUI {
         let input_value = Arc::new(Mutex::new(None));
         let input_requested = Arc::new(Mutex::new(false));
         let ui_update_needed = Arc::new(Mutex::new(false));
+        let working_memory = Arc::new(Mutex::new(None));
 
         Self {
             message_queue,
             input_value,
             input_requested,
             ui_update_needed,
+            working_memory,
         }
     }
 
@@ -40,21 +49,51 @@ impl GPUI {
         let input_value = self.input_value.clone();
         let input_requested = self.input_requested.clone();
         let ui_update_needed = self.ui_update_needed.clone();
+        let working_memory = self.working_memory.clone();
 
-        let app = gpui::Application::new();
+        // Get the current directory and assets path
+        let current_dir = std::env::current_dir().unwrap_or_default();
+
+        // Check if assets directory exists
+        let assets_dir = current_dir.join("assets");
+        let assets_exist = assets_dir.exists() && assets_dir.is_dir();
+
+        // Use absolute path for assets to be sure
+        let assets_path = if assets_exist {
+            assets_dir.clone()
+        } else {
+            current_dir.join("assets")
+        };
+
+        // Create asset source
+        let asset_source =
+            crate::ui::gpui::assets::Assets::new(assets_path.to_string_lossy().to_string());
+
+        // Initialize our global instance
+        assets::init(assets_path.to_string_lossy().to_string());
+
+        // Initialize app with assets
+        let app = gpui::Application::new().with_assets(asset_source);
+
         app.run(move |cx| {
+            // Initialize file icons
+            file_icons::init();
+
             // Register key bindings
             input::register_key_bindings(cx);
 
-            // Create window
+            // Create memory view with our shared working memory
+            let memory_view = cx.new(|cx| MemoryView::new(working_memory.clone(), cx));
+
+            // Create window with larger size to accommodate both views
             let bounds =
-                gpui::Bounds::centered(None, gpui::size(gpui::px(600.0), gpui::px(500.0)), cx);
+                gpui::Bounds::centered(None, gpui::size(gpui::px(1000.0), gpui::px(650.0)), cx);
             let window_result = cx.open_window(
                 gpui::WindowOptions {
                     window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some(gpui::SharedString::from("Code Assistant")),
-                        appears_transparent: false,
+                        appears_transparent: true, // Make titlebar transparent
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -67,6 +106,7 @@ impl GPUI {
                     cx.new(|cx| {
                         MessageView::new(
                             text_input,
+                            memory_view.clone(),
                             cx,
                             input_value.clone(),
                             message_queue.clone(),
@@ -256,6 +296,20 @@ impl UserInterface for GPUI {
 
         Ok(())
     }
+
+    async fn update_memory(&self, memory: &WorkingMemory) -> Result<(), UIError> {
+        // Update the shared working memory directly
+        if let Ok(mut memory_guard) = self.working_memory.lock() {
+            *memory_guard = Some(memory.clone());
+        }
+
+        // Set the update flag to trigger a UI refresh
+        if let Ok(mut flag) = self.ui_update_needed.lock() {
+            *flag = true;
+        }
+
+        Ok(())
+    }
 }
 
 impl Clone for GPUI {
@@ -265,6 +319,7 @@ impl Clone for GPUI {
             input_value: self.input_value.clone(),
             input_requested: self.input_requested.clone(),
             ui_update_needed: self.ui_update_needed.clone(),
+            working_memory: self.working_memory.clone(),
         }
     }
 }

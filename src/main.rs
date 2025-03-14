@@ -50,8 +50,8 @@ struct Args {
     #[arg(long, default_value = ".")]
     path: Option<PathBuf>,
 
-    /// Task to perform on the codebase (required unless --continue or --ui is used)
-    #[arg(short, long, required_unless_present_any = ["continue_task", "ui"])]
+    /// Task to perform on the codebase (required in agent mode unless --continue or --ui is used)
+    #[arg(short, long)]
     task: Option<String>,
 
     /// Start with GUI interface
@@ -251,7 +251,7 @@ async fn main() -> Result<()> {
             }
 
             if !continue_task && task.is_none() && !use_gui {
-                anyhow::bail!("Either --task, --continue, or --ui must be specified");
+                anyhow::bail!("In agent mode, either --task, --continue, or --ui must be specified");
             }
 
             // Check if GUI mode is requested
