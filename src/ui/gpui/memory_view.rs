@@ -97,7 +97,7 @@ impl MemoryView {
                 div()
                     .text_xs()
                     .font_weight(gpui::FontWeight(400.))
-                    .text_color(hsla(0., 0., 0.9, 1.0))
+                    .text_color(hsla(0., 0., 0.8, 1.0))
                     .child(entry.name.clone()),
             )
     }
@@ -158,7 +158,7 @@ impl Render for MemoryView {
             let resources_header = div()
                 .id("resources-header")
                 .flex_none()
-                .h(px(28.))
+                .text_sm()
                 .w_full()
                 .px_2()
                 .bg(rgb(0x303030))
@@ -265,7 +265,7 @@ impl Render for MemoryView {
             let file_tree_header = div()
                 .id("file-tree-header")
                 .flex_none()
-                .h(px(28.))
+                .text_sm()
                 .w_full()
                 .px_2()
                 .bg(rgb(0x303030))
@@ -290,17 +290,16 @@ impl Render for MemoryView {
 
             let file_tree = div()
                 .id("file-tree")
-                .flex_1()
                 .overflow_y_scroll()
+                .size_full()
                 .flex()
-                .flex_col() // Vertical arrangement of children
+                .flex_col()
                 .p_1()
-                .w_full() // Full width to prevent horizontal wrapping
                 .child(file_tree_content);
 
             let file_tree_section = div()
                 .id("file-tree-section")
-                .flex_1()
+                .size_full()
                 .flex()
                 .flex_col()
                 .child(file_tree_header)

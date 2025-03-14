@@ -33,6 +33,7 @@ const COLLAPSED_DIRECTORY_TYPE: &str = "collapsed_folder";
 const EXPANDED_DIRECTORY_TYPE: &str = "expanded_folder";
 const COLLAPSED_CHEVRON_TYPE: &str = "collapsed_chevron";
 const EXPANDED_CHEVRON_TYPE: &str = "expanded_chevron";
+const WORKING_MEMORY_TYPE: &str = "brain";
 const DEFAULT_TYPE: &str = "default";
 const FILE_TYPES_ASSET: &str = "icons/file_icons/file_types.json";
 
@@ -73,34 +74,46 @@ impl FileIcons {
 
     /// Load configuration from file_types.json
     fn load_config(assets: &impl AssetSource) -> FileTypesConfig {
-        eprintln!("DEBUG [FileIcons]: Loading config from: {}", FILE_TYPES_ASSET);
+        eprintln!(
+            "DEBUG [FileIcons]: Loading config from: {}",
+            FILE_TYPES_ASSET
+        );
         let result = assets.load(FILE_TYPES_ASSET).ok().flatten();
 
         if let Some(content) = result {
-            eprintln!("DEBUG [FileIcons]: Loaded config file, {} bytes", content.len());
+            eprintln!(
+                "DEBUG [FileIcons]: Loaded config file, {} bytes",
+                content.len()
+            );
             match std::str::from_utf8(&content) {
                 Ok(content_str) => {
                     eprintln!("DEBUG [FileIcons]: Successfully converted config to UTF-8");
                     match serde_json::from_str::<FileTypesConfig>(content_str) {
                         Ok(config) => {
-                            eprintln!("DEBUG [FileIcons]: Successfully parsed config: {} stems, {} suffixes, {} types", 
+                            eprintln!("DEBUG [FileIcons]: Successfully parsed config: {} stems, {} suffixes, {} types",
                                      config.stems.len(), config.suffixes.len(), config.types.len());
                             return config;
-                        },
+                        }
                         Err(err) => {
                             eprintln!("DEBUG [FileIcons]: Error parsing file_types.json: {}", err);
-                            
+
                             // Try to find specific parsing issues by logging a substring
                             if content_str.len() > 100 {
-                                eprintln!("DEBUG [FileIcons]: Config start: {}", &content_str[..100]);
+                                eprintln!(
+                                    "DEBUG [FileIcons]: Config start: {}",
+                                    &content_str[..100]
+                                );
                             } else {
                                 eprintln!("DEBUG [FileIcons]: Config content: {}", content_str);
                             }
                         }
                     }
-                },
+                }
                 Err(err) => {
-                    eprintln!("DEBUG [FileIcons]: Error converting file_types.json to UTF-8: {}", err);
+                    eprintln!(
+                        "DEBUG [FileIcons]: Error converting file_types.json to UTF-8: {}",
+                        err
+                    );
                 }
             }
         } else {
@@ -127,18 +140,27 @@ impl FileIcons {
                 return self.get_type_icon("default");
             }
         };
-        
-        eprintln!("DEBUG [FileIcons]: Looking up icon for path: {:?}, suffix: '{}'", path, suffix);
+
+        eprintln!(
+            "DEBUG [FileIcons]: Looking up icon for path: {:?}, suffix: '{}'",
+            path, suffix
+        );
 
         // First check if we have a match in the stems mapping
         if let Some(type_str) = self.config.stems.get(suffix) {
-            eprintln!("DEBUG [FileIcons]: Found stem match: '{}' -> '{}'", suffix, type_str);
+            eprintln!(
+                "DEBUG [FileIcons]: Found stem match: '{}' -> '{}'",
+                suffix, type_str
+            );
             return self.get_type_icon(type_str);
         }
 
         // Then check if we have a match in the suffixes mapping
         if let Some(type_str) = self.config.suffixes.get(suffix) {
-            eprintln!("DEBUG [FileIcons]: Found suffix match: '{}' -> '{}'", suffix, type_str);
+            eprintln!(
+                "DEBUG [FileIcons]: Found suffix match: '{}' -> '{}'",
+                suffix, type_str
+            );
             return self.get_type_icon(type_str);
         }
 
@@ -146,7 +168,10 @@ impl FileIcons {
         if let Some(filename) = path.file_name() {
             if let Some(filename_str) = filename.to_str() {
                 if let Some(icon) = self.fallback_stems.get(filename_str) {
-                    eprintln!("DEBUG [FileIcons]: Using fallback stem icon for: '{}'", filename_str);
+                    eprintln!(
+                        "DEBUG [FileIcons]: Using fallback stem icon for: '{}'",
+                        filename_str
+                    );
                     return Some(SharedString::from(icon.clone()));
                 }
             }
@@ -154,7 +179,10 @@ impl FileIcons {
 
         // Try fallback suffixes for extensions
         if let Some(fallback) = self.fallback_suffixes.get(suffix) {
-            eprintln!("DEBUG [FileIcons]: Using fallback suffix icon for: '{}'", suffix);
+            eprintln!(
+                "DEBUG [FileIcons]: Using fallback suffix icon for: '{}'",
+                suffix
+            );
             return Some(SharedString::from(fallback.clone()));
         }
 
@@ -165,16 +193,20 @@ impl FileIcons {
 
     /// Get icon based on type name
     fn get_type_icon(&self, typ: &str) -> Option<SharedString> {
-        let result = self.config
+        let result = self
+            .config
             .types
             .get(typ)
             .map(|type_config| type_config.icon.clone());
-            
+
         match &result {
-            Some(icon) => eprintln!("DEBUG [FileIcons]: Found icon for type '{}': '{}'", typ, icon),
+            Some(icon) => eprintln!(
+                "DEBUG [FileIcons]: Found icon for type '{}': '{}'",
+                typ, icon
+            ),
             None => eprintln!("DEBUG [FileIcons]: No icon found for type: '{}'", typ),
         }
-        
+
         result
     }
 
@@ -199,15 +231,20 @@ impl FileIcons {
 
         self.get_type_icon(key)
     }
-    
-    /// Get arrow icon for toggling 
+
+    /// Get working memory icon
+    pub fn get_working_memory_icon(&self) -> Option<SharedString> {
+        self.get_type_icon(WORKING_MEMORY_TYPE)
+    }
+
+    /// Get arrow icon for toggling
     pub fn get_arrow_icon(&self, expanded: bool) -> Option<SharedString> {
         let icon_type = if expanded {
             "chevron_left"
         } else {
             "chevron_right"
         };
-        
+
         if let Some(type_config) = self.config.types.get(icon_type) {
             Some(type_config.icon.clone())
         } else {
@@ -219,7 +256,7 @@ impl FileIcons {
             }
         }
     }
-    
+
     /// Get icon for web search
     pub fn get_search_icon(&self) -> Option<SharedString> {
         if let Some(type_config) = self.config.types.get("magnifying_glass") {
@@ -228,7 +265,7 @@ impl FileIcons {
             Some(SharedString::from("🔍"))
         }
     }
-    
+
     /// Get icon for web page
     pub fn get_web_icon(&self) -> Option<SharedString> {
         if let Some(type_config) = self.config.types.get("html") {
@@ -252,13 +289,19 @@ pub fn init() {
     eprintln!("DEBUG [FileIcons]: Initializing file icons");
     let assets = crate::ui::gpui::assets::get();
     init_with_assets(assets.clone());
-    
+
     // Check if the instance was properly initialized
     if let Some(icons) = INSTANCE.get() {
         let has_types = !icons.config.types.is_empty();
-        eprintln!("DEBUG [FileIcons]: Initialization complete. Has types: {}", has_types);
+        eprintln!(
+            "DEBUG [FileIcons]: Initialization complete. Has types: {}",
+            has_types
+        );
         if has_types {
-            eprintln!("DEBUG [FileIcons]: Loaded {} icon types", icons.config.types.len());
+            eprintln!(
+                "DEBUG [FileIcons]: Loaded {} icon types",
+                icons.config.types.len()
+            );
         } else {
             eprintln!("DEBUG [FileIcons]: WARNING: No icon types were loaded!");
         }
