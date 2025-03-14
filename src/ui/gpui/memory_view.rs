@@ -167,7 +167,36 @@ impl Render for MemoryView {
                 .items_center()
                 .justify_between()
                 .text_color(hsla(0., 0., 0.9, 1.0))
-                .child("Loaded Resources")
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child({
+                            let library_icon = file_icons::get().get_library_icon();
+                            if let Some(icon_str) = &library_icon {
+                                if icon_str.starts_with("icons/") {
+                                    svg()
+                                        .size(px(16.0))
+                                        .path(icon_str)
+                                        .text_color(hsla(0., 0., 0.7, 1.0))
+                                        .into_any_element()
+                                } else {
+                                    div()
+                                        .text_color(hsla(0., 0., 0.7, 1.0))
+                                        .child(icon_str.clone())
+                                        .into_any_element()
+                                }
+                            } else {
+                                // Fallback
+                                div()
+                                    .text_color(hsla(0., 0., 0.7, 1.0))
+                                    .child("📚")
+                                    .into_any_element()
+                            }
+                        })
+                        .child("Loaded Resources")
+                )
                 .child(
                     div()
                         .text_xs()
@@ -274,7 +303,36 @@ impl Render for MemoryView {
                 .items_center()
                 .justify_between()
                 .text_color(hsla(0., 0., 0.9, 1.0))
-                .child("File Tree");
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child({
+                            let tree_icon = file_icons::get().get_file_tree_icon();
+                            if let Some(icon_str) = &tree_icon {
+                                if icon_str.starts_with("icons/") {
+                                    svg()
+                                        .size(px(16.0))
+                                        .path(icon_str)
+                                        .text_color(hsla(0., 0., 0.7, 1.0))
+                                        .into_any_element()
+                                } else {
+                                    div()
+                                        .text_color(hsla(0., 0., 0.7, 1.0))
+                                        .child(icon_str.clone())
+                                        .into_any_element()
+                                }
+                            } else {
+                                // Fallback
+                                div()
+                                    .text_color(hsla(0., 0., 0.7, 1.0))
+                                    .child("🌲")
+                                    .into_any_element()
+                            }
+                        })
+                        .child("File Tree")
+                );
 
             // File tree content - generate a flat list of items
             let file_tree_content = if let Some(root_entry) = memory.file_tree.as_ref() {
@@ -325,11 +383,40 @@ impl Render for MemoryView {
             .justify_between()
             .bg(rgb(0x303030))
             .text_color(hsla(0., 0., 0.8, 1.0))
-            .child(if self.is_expanded {
-                "Working Memory"
-            } else {
-                ""
-            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child({
+                        let brain_icon = file_icons::get().get_working_memory_icon();
+                        if let Some(icon_str) = &brain_icon {
+                            if icon_str.starts_with("icons/") {
+                                svg()
+                                    .size(px(16.0))
+                                    .path(icon_str)
+                                    .text_color(hsla(0., 0., 0.7, 1.0))
+                                    .into_any_element()
+                            } else {
+                                div()
+                                    .text_color(hsla(0., 0., 0.7, 1.0))
+                                    .child(icon_str.clone())
+                                    .into_any_element()
+                            }
+                        } else {
+                            // Fallback for when no icon is available
+                            div()
+                                .text_color(hsla(0., 0., 0.7, 1.0))
+                                .child("🧠")
+                                .into_any_element()
+                        }
+                    })
+                    .child(if self.is_expanded {
+                        "Working Memory"
+                    } else {
+                        ""
+                    })
+            )
             .child(
                 div()
                     .px_2()

@@ -237,6 +237,16 @@ impl FileIcons {
         self.get_type_icon(WORKING_MEMORY_TYPE)
     }
 
+    /// Get library icon for resources
+    pub fn get_library_icon(&self) -> Option<SharedString> {
+        self.get_type_icon("library")
+    }
+
+    /// Get file tree icon
+    pub fn get_file_tree_icon(&self) -> Option<SharedString> {
+        self.get_type_icon("file_tree")
+    }
+
     /// Get arrow icon for toggling
     pub fn get_arrow_icon(&self, expanded: bool) -> Option<SharedString> {
         let icon_type = if expanded {

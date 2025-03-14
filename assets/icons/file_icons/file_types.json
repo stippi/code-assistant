@@ -356,6 +356,15 @@
     },
     "vue": {
       "icon": "icons/file_icons/vue.svg"
+    },
+    "brain": {
+      "icon": "icons/brain.svg"
+    },
+    "library": {
+      "icon": "icons/library.svg"
+    },
+    "file_tree": {
+      "icon": "icons/file_tree.svg"
     }
   }
 }
