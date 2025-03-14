@@ -31,7 +31,7 @@ impl MemoryView {
 
     // Render a file tree entry using a simpler approach
     fn render_file_tree_entry(&self, entry: &FileTreeEntry, indent_level: usize) -> gpui::Div {
-        let indent = indent_level * 16;
+        let indent = indent_level;
 
         // Create base div
         let mut base = div()
@@ -127,32 +127,33 @@ impl Render for MemoryView {
                 .children(memory.loaded_resources.iter().map(|(path, resource)| {
                     div()
                         .rounded_sm()
-                        .p_2()
+                        .py_1()
+                        .px_2()
                         .w_full()
                         .flex()
-                        .flex_col()
-                        .gap_1()
                         .bg(rgb(0x303030))
-                        .border_l_4()
-                        .border_color(match resource {
-                            LoadedResource::File(_) => rgb(0x4CAF50),          // Green
-                            LoadedResource::WebSearch { .. } => rgb(0x2196F3), // Blue
-                            LoadedResource::WebPage(_) => rgb(0x9C27B0),       // Purple
-                        })
+                        .items_center()
+                        .justify_between()
+                        .w_full()
                         .child(
                             div()
-                                .text_color(hsla(0., 0., 0.9, 1.0))
+                                .text_color(hsla(0., 0., 0.8, 1.0))
                                 .text_sm()
                                 .truncate()
+                                .flex_grow()
                                 .child(path.to_string_lossy().to_string()),
                         )
-                        .child(div().text_xs().text_color(hsla(0., 0., 0.6, 1.0)).child(
-                            match resource {
-                                LoadedResource::File(_) => "File",
-                                LoadedResource::WebSearch { .. } => "Web Search",
-                                LoadedResource::WebPage(_) => "Web Page",
-                            },
-                        ))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(hsla(0., 0., 0.5, 1.0))
+                                .flex_none()
+                                .child(match resource {
+                                    LoadedResource::File(_) => "File",
+                                    LoadedResource::WebSearch { .. } => "Web Search",
+                                    LoadedResource::WebPage(_) => "Web Page",
+                                }),
+                        )
                 }));
 
             let resources_section = div()
@@ -238,7 +239,7 @@ impl Render for MemoryView {
                     .text_color(hsla(0., 0., 0.7, 1.0))
                     .cursor_pointer()
                     .hover(|s| s.text_color(hsla(0., 0., 1.0, 1.0)))
-                    .child(if self.is_expanded { "◀" } else { "▶" })
+                    .child(if self.is_expanded { "<" } else { ">" })
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_sidebar)),
             );
 
