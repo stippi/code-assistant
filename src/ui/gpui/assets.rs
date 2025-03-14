@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use gpui::{AssetSource, Result, SharedString};
-use std::{borrow::Cow, fs::File, io::Read, path::Path};
+use std::{borrow::Cow, fs, path::Path};
 
 /// A simple asset source implementation that loads assets from the filesystem.
 ///
@@ -32,17 +32,24 @@ impl AssetSource for Assets {
         let path = Path::new(&full_path);
 
         if !path.exists() {
+            eprintln!("DEBUG [Assets]: Asset not found: {}", full_path);
             return Ok(None);
         }
 
-        let mut file = File::open(path)
-            .map_err(|e| anyhow!("Failed to open asset at {}: {}", full_path, e))?;
-
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)
-            .map_err(|e| anyhow!("Failed to read asset at {}: {}", full_path, e))?;
-
-        Ok(Some(Cow::Owned(buffer)))
+        eprintln!("DEBUG [Assets]: Loading asset: {}", full_path);
+        
+        let result = fs::read(path)
+            .map(|data| Some(Cow::<'static, [u8]>::Owned(data)))
+            .map_err(|e| {
+                eprintln!("DEBUG [Assets]: Failed to read asset: {}", e);
+                anyhow!("Failed to read asset at {}: {}", full_path, e)
+            });
+            
+        if let Ok(Some(ref data)) = result {
+            eprintln!("DEBUG [Assets]: Successfully loaded asset: {} ({} bytes)", full_path, data.len());
+        }
+        
+        result
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {

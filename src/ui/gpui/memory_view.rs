@@ -32,9 +32,14 @@ impl MemoryView {
     }
 
     // Render a file tree entry using a simpler approach
-    fn render_file_tree_entry(&self, entry: &FileTreeEntry, indent_level: usize, cx: &Context<Self>) -> gpui::Div {
+    fn render_file_tree_entry(
+        &self,
+        entry: &FileTreeEntry,
+        indent_level: usize,
+        cx: &Context<Self>,
+    ) -> gpui::Div {
         let indent = indent_level;
-        
+
         // Get appropriate icon based on type and name
         let icon = match entry.entry_type {
             FileSystemEntryType::Directory => {
@@ -63,40 +68,38 @@ impl MemoryView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(
-                        if let Some(icon_str) = &icon {
-                            if icon_str.starts_with("icons/") {
-                                svg()
-                                    .size(px(16.0))
-                                    .path(icon_str.clone())
-                                    .text_color(match entry.entry_type {
-                                        FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
-                                        FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
-                                    })
-                                    .into_any_element()
-                            } else {
-                                div()
-                                    .text_color(match entry.entry_type {
-                                        FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
-                                        FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
-                                    })
-                                    .child(icon_str.clone())
-                                    .into_any_element()
-                            }
+                    .child(if let Some(icon_str) = &icon {
+                        if icon_str.starts_with("icons/") {
+                            svg()
+                                .size(px(16.0))
+                                .path(icon_str)
+                                .text_color(match entry.entry_type {
+                                    FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
+                                    FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0), // Light gray
+                                })
+                                .into_any_element()
                         } else {
-                            // Fallback for when no icon is available
                             div()
                                 .text_color(match entry.entry_type {
                                     FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
-                                    FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
+                                    FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0), // Light gray
                                 })
-                                .child(match entry.entry_type {
-                                    FileSystemEntryType::Directory => "📁",
-                                    FileSystemEntryType::File => "📄",
-                                })
+                                .child(icon_str.clone())
                                 .into_any_element()
                         }
-                    ),
+                    } else {
+                        // Fallback for when no icon is available
+                        div()
+                            .text_color(match entry.entry_type {
+                                FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
+                                FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0), // Light gray
+                            })
+                            .child(match entry.entry_type {
+                                FileSystemEntryType::Directory => "📁",
+                                FileSystemEntryType::File => "📄",
+                            })
+                            .into_any_element()
+                    }),
             )
             .child(
                 div()
@@ -106,16 +109,18 @@ impl MemoryView {
 
         // Add children if expanded
         if entry.is_expanded && !entry.children.is_empty() {
-            // Sort children: directories first, then files, all alphabetically
+            // Sort children: directories first, then files, both alphabetically
+            // This matches the sorting in FileTreeEntry::to_string_with_indent
             let mut children: Vec<&FileTreeEntry> = entry.children.values().collect();
-            children.sort_by(|a, b| {
-                match (&a.entry_type, &b.entry_type) {
-                    (FileSystemEntryType::Directory, FileSystemEntryType::File) => std::cmp::Ordering::Less,
-                    (FileSystemEntryType::File, FileSystemEntryType::Directory) => std::cmp::Ordering::Greater,
-                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                }
+            children.sort_by_key(|entry| {
+                (
+                    // First sort criterion: directories before files
+                    matches!(entry.entry_type, FileSystemEntryType::File),
+                    // Second sort criterion: alphabetical by name (case insensitive)
+                    entry.name.to_lowercase(),
+                )
             });
-            
+
             // Create child elements
             let child_elements: Vec<gpui::Div> = children
                 .iter()
@@ -176,17 +181,11 @@ impl Render for MemoryView {
                 .children(memory.loaded_resources.iter().map(|(path, resource)| {
                     // Get appropriate icon for resource type
                     let icon = match resource {
-                        LoadedResource::File(_) => {
-                            file_icons::get().get_icon(path)
-                        },
-                        LoadedResource::WebSearch { .. } => {
-                            file_icons::get().get_search_icon()
-                        },
-                        LoadedResource::WebPage(_) => {
-                            file_icons::get().get_web_icon()
-                        }
+                        LoadedResource::File(_) => file_icons::get().get_icon(path),
+                        LoadedResource::WebSearch { .. } => file_icons::get().get_search_icon(),
+                        LoadedResource::WebPage(_) => file_icons::get().get_web_icon(),
                     };
-                    
+
                     div()
                         .rounded_sm()
                         .py_1()
@@ -205,28 +204,26 @@ impl Render for MemoryView {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .child(
-                                    if let Some(icon_str) = &icon {
-                                        if icon_str.starts_with("icons/") {
-                                            svg()
-                                                .size(px(16.0))
-                                                .path(icon_str.clone())
-                                                .text_color(hsla(0., 0., 0.7, 1.0))
-                                                .into_any_element()
-                                        } else {
-                                            div()
-                                                .text_color(hsla(0., 0., 0.7, 1.0))
-                                                .child(icon_str.clone())
-                                                .into_any_element()
-                                        }
+                                .child(if let Some(icon_str) = &icon {
+                                    if icon_str.starts_with("icons/") {
+                                        svg()
+                                            .size(px(16.0))
+                                            .path(icon_str.clone())
+                                            .text_color(hsla(0., 0., 0.7, 1.0))
+                                            .into_any_element()
                                     } else {
-                                        // Fallback for when no icon is available
                                         div()
                                             .text_color(hsla(0., 0., 0.7, 1.0))
-                                            .child("📄")
+                                            .child(icon_str.clone())
                                             .into_any_element()
                                     }
-                                )
+                                } else {
+                                    // Fallback for when no icon is available
+                                    div()
+                                        .text_color(hsla(0., 0., 0.7, 1.0))
+                                        .child("📄")
+                                        .into_any_element()
+                                }),
                         )
                         .child(
                             div()
@@ -331,31 +328,29 @@ impl Render for MemoryView {
                     .text_color(hsla(0., 0., 0.7, 1.0))
                     .cursor_pointer()
                     .hover(|s| s.text_color(hsla(0., 0., 1.0, 1.0)))
-                    .child(
-                        {
-                            let icon = file_icons::get().get_arrow_icon(self.is_expanded);
-                            if let Some(icon_str) = &icon {
-                                if icon_str.starts_with("icons/") {
-                                    svg()
-                                        .size(px(16.0))
-                                        .path(icon_str.clone())
-                                        .text_color(hsla(0., 0., 0.7, 1.0))
-                                        .into_any_element()
-                                } else {
-                                    div()
-                                        .text_color(hsla(0., 0., 0.7, 1.0))
-                                        .child(icon_str.clone())
-                                        .into_any_element()
-                                }
+                    .child({
+                        let icon = file_icons::get().get_arrow_icon(self.is_expanded);
+                        if let Some(icon_str) = &icon {
+                            if icon_str.starts_with("icons/") {
+                                svg()
+                                    .size(px(16.0))
+                                    .path(icon_str)
+                                    .text_color(hsla(0., 0., 0.7, 1.0))
+                                    .into_any_element()
                             } else {
-                                // Fallback for when no icon is available
                                 div()
                                     .text_color(hsla(0., 0., 0.7, 1.0))
-                                    .child("▶")
+                                    .child(icon_str.clone())
                                     .into_any_element()
                             }
+                        } else {
+                            // Fallback for when no icon is available
+                            div()
+                                .text_color(hsla(0., 0., 0.7, 1.0))
+                                .child("▶")
+                                .into_any_element()
                         }
-                    )
+                    })
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_sidebar)),
             );
 
