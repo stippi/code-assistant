@@ -474,7 +474,7 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
                         let tool = parse_tool_xml(tool_content)?;
                         actions.push(AgentAction {
                             tool,
-                            reasoning: remove_thinking_tags(reasoning.trim()).to_owned(),
+                            reasoning: remove_thinking_tags(&reasoning).to_owned(),
                         });
 
                         current_pos = abs_end;
@@ -498,7 +498,7 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
             let tool = parse_tool_json(name, input)?;
             actions.push(AgentAction {
                 tool,
-                reasoning: remove_thinking_tags(reasoning.trim()).to_owned(),
+                reasoning: remove_thinking_tags(&reasoning).to_owned(),
             });
             reasoning = String::new();
         }
@@ -507,10 +507,45 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
     Ok(actions)
 }
 
-fn remove_thinking_tags(input: &str) -> &str {
-    if input.starts_with("<thinking>") && input.ends_with("</thinking>") {
-        &input[10..input.len() - 11]
-    } else {
+fn remove_thinking_tags(input: &str) -> String {
+    // First attempt to remove entire <thinking>...</thinking> blocks
+    let mut result = String::new();
+    let mut current_pos = 0;
+    let mut found_any = false;
+
+    while let Some(tag_start) = input[current_pos..].find("<thinking>") {
+        let abs_start = current_pos + tag_start;
+
+        // Add text before the <thinking> tag
+        result.push_str(&input[current_pos..abs_start]);
+
+        // Find the closing tag
+        if let Some(rel_end) = input[abs_start..].find("</thinking>") {
+            let abs_end = abs_start + rel_end + "</thinking>".len();
+            current_pos = abs_end;
+            found_any = true;
+        } else {
+            // No closing tag found, keep the opening tag and continue
+            result.push_str("<thinking>");
+            current_pos = abs_start + "<thinking>".len();
+        }
+    }
+
+    // Add any remaining text
+    if current_pos < input.len() {
+        result.push_str(&input[current_pos..]);
+    }
+
+    let result = result.trim().to_string();
+
+    // If the result is empty or we didn't find any tags, fall back to just removing the tag markers
+    if result.is_empty() || !found_any {
         input
+            .replace("<thinking>", "")
+            .replace("</thinking>", "")
+            .trim()
+            .to_string()
+    } else {
+        result
     }
 }
