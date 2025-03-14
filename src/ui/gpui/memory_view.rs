@@ -31,15 +31,13 @@ impl MemoryView {
         cx.notify();
     }
 
-    // Render a file tree entry using a simpler approach
-    fn render_file_tree_entry(
+    // Render a single file tree entry item
+    fn render_entry_item(
         &self,
         entry: &FileTreeEntry,
         indent_level: usize,
-        cx: &Context<Self>,
+        _cx: &Context<Self>,
     ) -> gpui::Div {
-        let indent = indent_level;
-
         // Get appropriate icon based on type and name
         let icon = match entry.entry_type {
             FileSystemEntryType::Directory => {
@@ -53,13 +51,16 @@ impl MemoryView {
             }
         };
 
-        // Create base div
-        let mut base = div()
-            .py_1()
-            .pl(px(indent as f32 * 16.0)) // Use 16px indentation per level
+        let icon_color = hsla(0., 0., 0.5, 1.0);
+
+        // Create the single item row
+        div()
+            .py(px(2.))
+            .pl(px(indent_level as f32 * 16.0)) // Use 16px indentation per level
             .flex()
             .items_center()
             .gap_2()
+            .w_full() // Ensure entry takes full width to prevent wrapping
             .child(
                 // Icon container - use pattern matching to return a common type
                 div()
@@ -73,27 +74,18 @@ impl MemoryView {
                             svg()
                                 .size(px(16.0))
                                 .path(icon_str)
-                                .text_color(match entry.entry_type {
-                                    FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
-                                    FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0), // Light gray
-                                })
+                                .text_color(icon_color)
                                 .into_any_element()
                         } else {
                             div()
-                                .text_color(match entry.entry_type {
-                                    FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
-                                    FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0), // Light gray
-                                })
+                                .text_color(icon_color)
                                 .child(icon_str.clone())
                                 .into_any_element()
                         }
                     } else {
                         // Fallback for when no icon is available
                         div()
-                            .text_color(match entry.entry_type {
-                                FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
-                                FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0), // Light gray
-                            })
+                            .text_color(icon_color)
                             .child(match entry.entry_type {
                                 FileSystemEntryType::Directory => "📁",
                                 FileSystemEntryType::File => "📄",
@@ -103,14 +95,28 @@ impl MemoryView {
             )
             .child(
                 div()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight(400.))
                     .text_color(hsla(0., 0., 0.9, 1.0))
                     .child(entry.name.clone()),
-            );
+            )
+    }
+
+    // Generate a flat list of all file tree entries with proper indentation
+    fn generate_file_tree(
+        &self,
+        entry: &FileTreeEntry,
+        indent_level: usize,
+        cx: &Context<Self>,
+    ) -> Vec<gpui::Div> {
+        let mut result = Vec::new();
+
+        // Add current entry
+        result.push(self.render_entry_item(entry, indent_level, cx));
 
         // Add children if expanded
         if entry.is_expanded && !entry.children.is_empty() {
             // Sort children: directories first, then files, both alphabetically
-            // This matches the sorting in FileTreeEntry::to_string_with_indent
             let mut children: Vec<&FileTreeEntry> = entry.children.values().collect();
             children.sort_by_key(|entry| {
                 (
@@ -121,17 +127,15 @@ impl MemoryView {
                 )
             });
 
-            // Create child elements
-            let child_elements: Vec<gpui::Div> = children
-                .iter()
-                .map(|child| self.render_file_tree_entry(child, indent_level + 1, cx))
-                .collect();
-
-            // Add a container with all children
-            base = base.child(div().flex().flex_col().w_full().children(child_elements));
+            // Process each child
+            for child in children {
+                // Recursively add this child and its children
+                let child_items = self.generate_file_tree(child, indent_level + 1, cx);
+                result.extend(child_items);
+            }
         }
 
-        base
+        result
     }
 }
 
@@ -271,9 +275,11 @@ impl Render for MemoryView {
                 .text_color(hsla(0., 0., 0.9, 1.0))
                 .child("File Tree");
 
-            // File tree content
-            let file_tree_content = if memory.file_tree.is_some() {
-                self.render_file_tree_entry(memory.file_tree.as_ref().unwrap(), 0, cx)
+            // File tree content - generate a flat list of items
+            let file_tree_content = if let Some(root_entry) = memory.file_tree.as_ref() {
+                // Generate flat list of all entries
+                let entries = self.generate_file_tree(root_entry, 0, cx);
+                div().flex().flex_col().w_full().children(entries)
             } else {
                 div()
                     .p_2()
@@ -287,8 +293,9 @@ impl Render for MemoryView {
                 .flex_1()
                 .overflow_y_scroll()
                 .flex()
-                .flex_col()
+                .flex_col() // Vertical arrangement of children
                 .p_1()
+                .w_full() // Full width to prevent horizontal wrapping
                 .child(file_tree_content);
 
             let file_tree_section = div()
@@ -359,7 +366,8 @@ impl Render for MemoryView {
             .id("memory-sidebar")
             .track_focus(&self.focus_handle(cx))
             .flex_none()
-            .w(px(280.)) // Fixed width matching parent container's allocation
+            //.w(px(280.)) // Fixed width matching parent container's allocation
+            .w(px(400.)) // Fixed width matching parent container's allocation
             .h_full()
             .bg(rgb(0x252525))
             .border_l_1()

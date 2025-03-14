@@ -189,7 +189,7 @@ impl Render for MessageView {
             .child(
                 // Right side with memory view - now using flex_none to ensure it takes its natural width
                 div()
-                    .w(px(280.)) // Fixed width for the sidebar
+                    .w(px(400.)) // Fixed width for the sidebar
                     .h_full()
                     .flex_none() // Don't flex, use exact width
                     .child(self.memory_view.clone()),
