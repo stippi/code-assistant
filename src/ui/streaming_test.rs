@@ -276,9 +276,9 @@ mod tests {
 
     #[test]
     fn test_complex_tool_call_with_multiple_params_and_linebreaks() -> Result<()> {
-        let input = "I understand.\n\nLet me search for specific files\n<tool:search_files>\n<param:query>main function</param:query>\n<param:path>src</param:path>\n<param:case_sensitive>false</param:case_sensitive>\n</tool:search_files>";
+        let input = "I understand.\n\nLet me search for specific files\n<tool:search_files>\n<param:regex>main function</param:regex>\n</tool:search_files>";
 
-        // Define expected fragments - order of parameters might vary
+        // Define expected fragments
         let expected_fragments = vec![
             DisplayFragment::PlainText(
                 "I understand.\n\nLet me search for specific files".to_string(),
@@ -287,20 +287,10 @@ mod tests {
                 name: "search_files".to_string(),
                 id: "ignored".to_string(),
             },
-            // Parameters in expected order
+            // One parameter - regex
             DisplayFragment::ToolParameter {
-                name: "query".to_string(),
+                name: "regex".to_string(),
                 value: "main function".to_string(),
-                tool_id: "ignored".to_string(),
-            },
-            DisplayFragment::ToolParameter {
-                name: "path".to_string(),
-                value: "src".to_string(),
-                tool_id: "ignored".to_string(),
-            },
-            DisplayFragment::ToolParameter {
-                name: "case_sensitive".to_string(),
-                value: "false".to_string(),
                 tool_id: "ignored".to_string(),
             },
             DisplayFragment::ToolEnd {

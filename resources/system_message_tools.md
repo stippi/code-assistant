@@ -125,7 +125,7 @@ Usage:
 ## search_files
 Description: Search for text in files using regex in Rust syntax. This tool searches for specific content across multiple files, displaying each match with context.
 Parameters:
-- regex: (required) The text to search for. Supports regular expressions.
+- regex: (required) The regex pattern to search for. Supports Rust regex syntax including character classes, quantifiers, etc.
 
 Usage:
 <tool:search_files>

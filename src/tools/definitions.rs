@@ -105,13 +105,13 @@ impl Tools {
     pub fn search_files() -> ToolDefinition {
         ToolDefinition {
             name: "search_files".to_string(),
-            description: "Search for text in files using regex".to_string(),
+            description: "Search for text in files using regex in Rust syntax. This tool searches for specific content across multiple files, displaying each match with context.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "regex": {
                         "type": "string",
-                        "description": "The regex pattern to search for (Rust syntax)."
+                        "description": "The regex pattern to search for. Supports Rust regex syntax including character classes, quantifiers, etc."
                     }
                 },
                 "required": ["regex"]
