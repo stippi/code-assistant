@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use gpui::{
     div, hsla, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent, SharedString, Window,
+    MouseUpEvent, Window,
 };
 
 use crate::types::{FileSystemEntryType, FileTreeEntry, LoadedResource, WorkingMemory};
@@ -151,10 +151,10 @@ impl Render for MemoryView {
                             file_icons::get().get_icon(path)
                         },
                         LoadedResource::WebSearch { .. } => {
-                            SharedString::from("🔍")
+                            file_icons::get().get_search_icon()
                         },
                         LoadedResource::WebPage(_) => {
-                            SharedString::from("🌐")
+                            file_icons::get().get_web_icon()
                         }
                     };
                     
