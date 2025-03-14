@@ -1,4 +1,5 @@
 mod elements;
+mod file_icons;
 mod input;
 mod memory_view;
 mod message;
@@ -50,6 +51,9 @@ impl GPUI {
 
         let app = gpui::Application::new();
         app.run(move |cx| {
+            // Initialize file icons
+            file_icons::init(gpui::assets(), cx);
+            
             // Register key bindings
             input::register_key_bindings(cx);
 

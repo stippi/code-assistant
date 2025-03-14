@@ -1,11 +1,13 @@
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    div, hsla, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, MouseButton,
+    div, hsla, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, Icon, MouseButton,
     MouseUpEvent, Window,
 };
 
 use crate::types::{FileSystemEntryType, FileTreeEntry, LoadedResource, WorkingMemory};
+use crate::ui::gpui::file_icons::FileIcons;
 
 // Memory sidebar component
 pub struct MemoryView {
@@ -30,33 +32,49 @@ impl MemoryView {
     }
 
     // Render a file tree entry using a simpler approach
-    fn render_file_tree_entry(&self, entry: &FileTreeEntry, indent_level: usize) -> gpui::Div {
+    fn render_file_tree_entry(&self, entry: &FileTreeEntry, indent_level: usize, cx: &Context<Self>) -> gpui::Div {
         let indent = indent_level;
+        
+        // Get appropriate icon based on type and name
+        let icon_element = match entry.entry_type {
+            FileSystemEntryType::Directory => {
+                // Get folder icon based on expanded state
+                if let Some(icon_path) = FileIcons::get_folder_icon(entry.is_expanded, cx) {
+                    Icon::from_path(icon_path.to_string())
+                        .color(hsla(210., 0.7, 0.7, 1.0))
+                } else {
+                    Icon::new(if entry.is_expanded { "📂" } else { "📁" })
+                        .color(hsla(210., 0.7, 0.7, 1.0))
+                }
+            }
+            FileSystemEntryType::File => {
+                // Get file icon based on file extension
+                let path = Path::new(&entry.name);
+                if let Some(icon_path) = FileIcons::get_icon(path, cx) {
+                    Icon::from_path(icon_path.to_string())
+                        .color(hsla(0., 0., 0.7, 1.0))
+                } else {
+                    Icon::new("📄").color(hsla(0., 0., 0.7, 1.0))
+                }
+            }
+        };
 
         // Create base div
         let mut base = div()
             .py_1()
-            .pl(px(indent as f32))
+            .pl(px(indent as f32 * 16.0)) // Use 16px indentation per level
             .flex()
             .items_center()
-            .gap_1()
+            .gap_2()
             .child(
-                // Icon based on type
+                // Icon container
                 div()
-                    .text_color(match entry.entry_type {
-                        FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
-                        FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
-                    })
-                    .child(match entry.entry_type {
-                        FileSystemEntryType::Directory => {
-                            if entry.is_expanded {
-                                "📂"
-                            } else {
-                                "📁"
-                            }
-                        }
-                        FileSystemEntryType::File => "📄",
-                    }),
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon_element),
             )
             .child(
                 div()
@@ -66,15 +84,24 @@ impl MemoryView {
 
         // Add children if expanded
         if entry.is_expanded && !entry.children.is_empty() {
+            // Sort children: directories first, then files, all alphabetically
+            let mut children: Vec<&FileTreeEntry> = entry.children.values().collect();
+            children.sort_by(|a, b| {
+                match (&a.entry_type, &b.entry_type) {
+                    (FileSystemEntryType::Directory, FileSystemEntryType::File) => std::cmp::Ordering::Less,
+                    (FileSystemEntryType::File, FileSystemEntryType::Directory) => std::cmp::Ordering::Greater,
+                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                }
+            });
+            
             // Create child elements
-            let children: Vec<gpui::Div> = entry
-                .children
-                .values()
-                .map(|child| self.render_file_tree_entry(child, indent_level + 1))
+            let child_elements: Vec<gpui::Div> = children
+                .iter()
+                .map(|child| self.render_file_tree_entry(child, indent_level + 1, cx))
                 .collect();
 
             // Add a container with all children
-            base = base.child(div().flex().flex_col().w_full().children(children));
+            base = base.child(div().flex().flex_col().w_full().children(child_elements));
         }
 
         base
@@ -125,6 +152,35 @@ impl Render for MemoryView {
                 .p_1()
                 .gap_1()
                 .children(memory.loaded_resources.iter().map(|(path, resource)| {
+                    // Get appropriate icon for resource type
+                    let icon = match resource {
+                        LoadedResource::File(_) => {
+                            if let Some(icon_path) = FileIcons::get_icon(path, cx) {
+                                Icon::from_path(icon_path.to_string())
+                            } else {
+                                if let Some(icon_path) = FileIcons::get_type_icon_static("default", cx) {
+                                    Icon::from_path(icon_path.to_string())
+                                } else {
+                                    Icon::new("📄")
+                                }
+                            }
+                        },
+                        LoadedResource::WebSearch { .. } => {
+                            if let Some(icon_path) = FileIcons::get_type_icon_static("magnifying_glass", cx) {
+                                Icon::from_path(icon_path.to_string())
+                            } else {
+                                Icon::new("🔍")
+                            }
+                        },
+                        LoadedResource::WebPage(_) => {
+                            if let Some(icon_path) = FileIcons::get_type_icon_static("html", cx) {
+                                Icon::from_path(icon_path.to_string())
+                            } else {
+                                Icon::new("🌐")
+                            }
+                        }
+                    };
+                    
                     div()
                         .rounded_sm()
                         .py_1()
@@ -134,7 +190,17 @@ impl Render for MemoryView {
                         .bg(rgb(0x303030))
                         .items_center()
                         .justify_between()
+                        .gap_2()
                         .w_full()
+                        .child(
+                            div()
+                                .w(px(16.0))
+                                .h(px(16.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon)
+                        )
                         .child(
                             div()
                                 .text_color(hsla(0., 0., 0.8, 1.0))
@@ -183,7 +249,7 @@ impl Render for MemoryView {
 
             // File tree content
             let file_tree_content = if memory.file_tree.is_some() {
-                self.render_file_tree_entry(memory.file_tree.as_ref().unwrap(), 0)
+                self.render_file_tree_entry(memory.file_tree.as_ref().unwrap(), 0, cx)
             } else {
                 div()
                     .p_2()
@@ -214,7 +280,7 @@ impl Render for MemoryView {
             None
         };
 
-        // Toggle button
+        // Toggle button with SVG icon for expansion indicator
         let toggle_button = div()
             .id("sidebar-toggle")
             .flex_none()
@@ -233,13 +299,26 @@ impl Render for MemoryView {
             })
             .child(
                 div()
-                    .text_lg()
                     .px_2()
                     .py_1()
                     .text_color(hsla(0., 0., 0.7, 1.0))
                     .cursor_pointer()
                     .hover(|s| s.text_color(hsla(0., 0., 1.0, 1.0)))
-                    .child(if self.is_expanded { "<" } else { ">" })
+                    .child(
+                        if self.is_expanded {
+                            if let Some(icon_path) = FileIcons::get_type_icon_static("chevron_left", cx) {
+                                Icon::from_path(icon_path.to_string()).size(px(16.0))
+                            } else {
+                                Icon::new("<").size(px(16.0))
+                            }
+                        } else {
+                            if let Some(icon_path) = FileIcons::get_type_icon_static("chevron_right", cx) {
+                                Icon::from_path(icon_path.to_string()).size(px(16.0))
+                            } else {
+                                Icon::new(">").size(px(16.0))
+                            }
+                        }
+                    )
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_sidebar)),
             );
 
