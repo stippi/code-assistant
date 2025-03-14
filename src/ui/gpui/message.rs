@@ -157,6 +157,7 @@ impl Render for MessageView {
                                         CursorStyle::OperationNotAllowed
                                     })
                                     .text_color(white())
+                                    .font_weight(gpui::FontWeight(600.0))
                                     .child("Submit")
                                     .when(is_input_requested, |style| {
                                         style.hover(|s| s.bg(rgb(0x4466cc))).on_mouse_up(
@@ -175,6 +176,7 @@ impl Render for MessageView {
                                     .bg(rgb(0x553333))
                                     .text_color(white())
                                     .cursor_pointer()
+                                    .font_weight(gpui::FontWeight(600.0))
                                     .child("Clear")
                                     .hover(|style| style.bg(rgb(0x664444)))
                                     .on_mouse_up(
