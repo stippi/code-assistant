@@ -1,5 +1,4 @@
 pub mod assets;
-mod debug;
 mod elements;
 pub mod file_icons;
 mod input;
@@ -54,37 +53,32 @@ impl GPUI {
 
         // Get the current directory and assets path
         let current_dir = std::env::current_dir().unwrap_or_default();
-        eprintln!("DEBUG [GPUI]: Current directory: {:?}", current_dir);
-        
+
         // Check if assets directory exists
         let assets_dir = current_dir.join("assets");
         let assets_exist = assets_dir.exists() && assets_dir.is_dir();
-        eprintln!("DEBUG [GPUI]: Assets directory exists: {}", assets_exist);
-        
+
         // Use absolute path for assets to be sure
         let assets_path = if assets_exist {
             assets_dir.clone()
         } else {
             current_dir.join("assets")
         };
-        
-        eprintln!("DEBUG [GPUI]: Using assets path: {:?}", assets_path);
-        
+
         // Create asset source
-        let asset_source = crate::ui::gpui::assets::Assets::new(assets_path.to_string_lossy().to_string());
-        
+        let asset_source =
+            crate::ui::gpui::assets::Assets::new(assets_path.to_string_lossy().to_string());
+
         // Initialize our global instance
         assets::init(assets_path.to_string_lossy().to_string());
-        
+
         // Initialize app with assets
-        let app = gpui::Application::new()
-            .with_assets(asset_source);
-            
+        let app = gpui::Application::new().with_assets(asset_source);
+
         app.run(move |cx| {
-            
             // Initialize file icons
             file_icons::init();
-            
+
             // Register key bindings
             input::register_key_bindings(cx);
 

@@ -36,19 +36,21 @@ impl AssetSource for Assets {
             return Ok(None);
         }
 
-        eprintln!("DEBUG [Assets]: Loading asset: {}", full_path);
-        
         let result = fs::read(path)
             .map(|data| Some(Cow::<'static, [u8]>::Owned(data)))
             .map_err(|e| {
                 eprintln!("DEBUG [Assets]: Failed to read asset: {}", e);
                 anyhow!("Failed to read asset at {}: {}", full_path, e)
             });
-            
+
         if let Ok(Some(ref data)) = result {
-            eprintln!("DEBUG [Assets]: Successfully loaded asset: {} ({} bytes)", full_path, data.len());
+            eprintln!(
+                "DEBUG [Assets]: Successfully loaded asset: {} ({} bytes)",
+                full_path,
+                data.len()
+            );
         }
-        
+
         result
     }
 
