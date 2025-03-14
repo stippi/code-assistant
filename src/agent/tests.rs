@@ -154,20 +154,6 @@ struct MockUI {
     responses: Arc<Mutex<Vec<Result<String, UIError>>>>,
 }
 
-impl MockUI {
-    fn new(responses: Vec<Result<String, UIError>>) -> Self {
-        Self {
-            messages: Arc::new(Mutex::new(Vec::new())),
-            streaming: Arc::new(Mutex::new(Vec::new())),
-            responses: Arc::new(Mutex::new(responses)),
-        }
-    }
-
-    fn get_messages(&self) -> Vec<UIMessage> {
-        self.messages.lock().unwrap().clone()
-    }
-}
-
 #[async_trait]
 impl UserInterface for MockUI {
     async fn display(&self, message: UIMessage) -> Result<(), UIError> {

@@ -29,6 +29,7 @@ impl MessageContainer {
     }
 
     // Add a new thinking block
+    #[allow(dead_code)]
     pub fn add_thinking_block(&self, content: impl Into<String>) {
         let mut elements = self.elements.lock().unwrap();
         elements.push(MessageElement::ThinkingBlock(ThinkingBlock {
