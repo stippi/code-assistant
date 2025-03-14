@@ -12,7 +12,7 @@ use crate::utils::CommandExecutor;
 use anyhow::Result;
 use percent_encoding;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::debug;
 
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
@@ -349,7 +349,7 @@ impl Agent {
 
         // Create a StreamProcessor and use it to process streaming chunks
         let ui = Arc::clone(&self.ui);
-        let processor = Arc::new(std::sync::Mutex::new(StreamProcessor::new(ui)));
+        let processor = Arc::new(Mutex::new(StreamProcessor::new(ui)));
 
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
             let mut processor_guard = processor.lock().unwrap();
