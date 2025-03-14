@@ -227,7 +227,7 @@ impl Render for MemoryView {
             .bg(rgb(0x303030))
             .text_color(hsla(0., 0., 0.8, 1.0))
             .child(if self.is_expanded {
-                "Memory Explorer"
+                "Working Memory"
             } else {
                 ""
             })
