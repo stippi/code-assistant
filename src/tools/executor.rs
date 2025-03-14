@@ -164,34 +164,16 @@ impl ToolExecutor {
                         }
                     }
 
-                    Tool::SearchFiles {
-                        query,
-                        path,
-                        case_sensitive,
-                        whole_words,
-                        regex_mode,
-                        max_results,
-                    } => {
+                    Tool::SearchFiles { regex } => {
                         let options = SearchOptions {
-                            query: query.clone(),
-                            case_sensitive: *case_sensitive,
-                            whole_words: *whole_words,
-                            mode: if *regex_mode {
-                                SearchMode::Regex
-                            } else {
-                                SearchMode::Exact
-                            },
-                            max_results: *max_results,
+                            query: regex.clone(),
+                            case_sensitive: false,
+                            whole_words: false,
+                            mode: SearchMode::Regex,
+                            max_results: None,
                         };
 
-                        let search_path = if let Some(p) = path {
-                            if let Some(error) = check_absolute_path(p) {
-                                return Ok((String::new(), error));
-                            }
-                            explorer.root_dir().join(p)
-                        } else {
-                            explorer.root_dir()
-                        };
+                        let search_path = explorer.root_dir();
 
                         match explorer.search(&search_path, options) {
                             Ok(mut results) => {
@@ -205,12 +187,12 @@ impl ToolExecutor {
 
                                 ToolResult::SearchFiles {
                                     results,
-                                    query: query.clone(),
+                                    regex: regex.clone(),
                                 }
                             }
                             Err(e) => ToolResult::SearchFiles {
                                 results: Vec::new(),
-                                query: format!("Search failed: {}", e),
+                                regex: format!("Search failed: {}", e),
                             },
                         }
                     }

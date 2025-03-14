@@ -194,7 +194,7 @@ impl UserInterface for MockUI {
         }
         Ok(())
     }
-    
+
     async fn update_memory(&self, _memory: &WorkingMemory) -> Result<(), UIError> {
         // Mock implementation does nothing with memory updates
         Ok(())
@@ -430,20 +430,8 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
             "plan": plan
         }),
         Tool::UserInput {} => serde_json::json!({}),
-        Tool::SearchFiles {
-            query,
-            path,
-            case_sensitive,
-            whole_words,
-            regex_mode,
-            max_results,
-        } => serde_json::json!({
-            "query": query,
-            "path": path,
-            "case_sensitive": case_sensitive,
-            "whole_words": whole_words,
-            "regex_mode": regex_mode,
-            "max_results": max_results
+        Tool::SearchFiles { regex } => serde_json::json!({
+            "regex": regex,
         }),
         Tool::ExecuteCommand {
             command_line,
@@ -789,12 +777,7 @@ fn test_flexible_xml_parsing() -> Result<()> {
             text: r#"I will search for TODO comments in the code.
 
 <tool:search_files>
-<param:query>TODO & FIXME <html></param:query>
-<param:path>src/</param:path>
-<param:case_sensitive>true</param:case_sensitive>
-<param:max_results>
-    50
-</param:max_results>
+<param:regex>TODO & FIXME <html></param:regex>
 </tool:search_files>"#
                 .to_string(),
         }],
@@ -810,12 +793,8 @@ fn test_flexible_xml_parsing() -> Result<()> {
     assert_eq!(actions.len(), 1);
     assert!(actions[0].reasoning.contains("search for TODO comments"));
 
-    if let Tool::SearchFiles {
-        query, max_results, ..
-    } = &actions[0].tool
-    {
-        assert_eq!(query, "TODO & FIXME <html>"); // Notice the & character is allowed and also tags
-        assert_eq!(*max_results, Some(50));
+    if let Tool::SearchFiles { regex, .. } = &actions[0].tool {
+        assert_eq!(regex, "TODO & FIXME <html>"); // Notice the & character is allowed and also tags
     } else {
         panic!("Expected Search tool");
     }
