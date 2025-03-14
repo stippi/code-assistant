@@ -64,22 +64,36 @@ impl MemoryView {
                     .items_center()
                     .justify_center()
                     .child(
-                        if icon.starts_with("icons/") {
-                            svg()
-                                .size(px(16.0))
-                                .path(icon)
-                                .text_color(match entry.entry_type {
-                                    FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
-                                    FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
-                                })
-                                .into_any_element()
+                        if let Some(icon_str) = &icon {
+                            if icon_str.starts_with("icons/") {
+                                svg()
+                                    .size(px(16.0))
+                                    .path(icon_str.clone())
+                                    .text_color(match entry.entry_type {
+                                        FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
+                                        FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
+                                    })
+                                    .into_any_element()
+                            } else {
+                                div()
+                                    .text_color(match entry.entry_type {
+                                        FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
+                                        FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
+                                    })
+                                    .child(icon_str.clone())
+                                    .into_any_element()
+                            }
                         } else {
+                            // Fallback for when no icon is available
                             div()
                                 .text_color(match entry.entry_type {
                                     FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
                                     FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
                                 })
-                                .child(icon)
+                                .child(match entry.entry_type {
+                                    FileSystemEntryType::Directory => "📁",
+                                    FileSystemEntryType::File => "📄",
+                                })
                                 .into_any_element()
                         }
                     ),
@@ -192,16 +206,24 @@ impl Render for MemoryView {
                                 .items_center()
                                 .justify_center()
                                 .child(
-                                    if icon.starts_with("icons/") {
-                                        svg()
-                                            .size(px(16.0))
-                                            .path(icon)
-                                            .text_color(hsla(0., 0., 0.7, 1.0))
-                                            .into_any_element()
+                                    if let Some(icon_str) = &icon {
+                                        if icon_str.starts_with("icons/") {
+                                            svg()
+                                                .size(px(16.0))
+                                                .path(icon_str.clone())
+                                                .text_color(hsla(0., 0., 0.7, 1.0))
+                                                .into_any_element()
+                                        } else {
+                                            div()
+                                                .text_color(hsla(0., 0., 0.7, 1.0))
+                                                .child(icon_str.clone())
+                                                .into_any_element()
+                                        }
                                     } else {
+                                        // Fallback for when no icon is available
                                         div()
                                             .text_color(hsla(0., 0., 0.7, 1.0))
-                                            .child(icon)
+                                            .child("📄")
                                             .into_any_element()
                                     }
                                 )
@@ -312,16 +334,24 @@ impl Render for MemoryView {
                     .child(
                         {
                             let icon = file_icons::get().get_arrow_icon(self.is_expanded);
-                            if icon.starts_with("icons/") {
-                                svg()
-                                    .size(px(16.0))
-                                    .path(icon)
-                                    .text_color(hsla(0., 0., 0.7, 1.0))
-                                    .into_any_element()
+                            if let Some(icon_str) = &icon {
+                                if icon_str.starts_with("icons/") {
+                                    svg()
+                                        .size(px(16.0))
+                                        .path(icon_str.clone())
+                                        .text_color(hsla(0., 0., 0.7, 1.0))
+                                        .into_any_element()
+                                } else {
+                                    div()
+                                        .text_color(hsla(0., 0., 0.7, 1.0))
+                                        .child(icon_str.clone())
+                                        .into_any_element()
+                                }
                             } else {
+                                // Fallback for when no icon is available
                                 div()
                                     .text_color(hsla(0., 0., 0.7, 1.0))
-                                    .child(icon)
+                                    .child("▶")
                                     .into_any_element()
                             }
                         }

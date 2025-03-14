@@ -1,8 +1,10 @@
+pub mod assets;
 mod elements;
-mod file_icons;
+pub mod file_icons;
 mod input;
 mod memory_view;
 mod message;
+mod path_util;
 
 use crate::types::WorkingMemory;
 use crate::ui::{async_trait, DisplayFragment, UIError, UIMessage, UserInterface};
@@ -51,6 +53,9 @@ impl GPUI {
 
         let app = gpui::Application::new();
         app.run(move |cx| {
+            // Initialize assets first
+            assets::init("assets");
+            
             // Initialize file icons
             file_icons::init();
             
