@@ -52,7 +52,7 @@ impl GPUI {
         let app = gpui::Application::new();
         app.run(move |cx| {
             // Initialize file icons
-            file_icons::init(gpui::assets(), cx);
+            file_icons::init();
             
             // Register key bindings
             input::register_key_bindings(cx);

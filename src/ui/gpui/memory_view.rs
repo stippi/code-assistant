@@ -2,12 +2,12 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    div, hsla, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, Icon, MouseButton,
-    MouseUpEvent, Window,
+    div, hsla, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, MouseButton,
+    MouseUpEvent, SharedString, Window,
 };
 
 use crate::types::{FileSystemEntryType, FileTreeEntry, LoadedResource, WorkingMemory};
-use crate::ui::gpui::file_icons::FileIcons;
+use crate::ui::gpui::file_icons;
 
 // Memory sidebar component
 pub struct MemoryView {
@@ -36,26 +36,15 @@ impl MemoryView {
         let indent = indent_level;
         
         // Get appropriate icon based on type and name
-        let icon_element = match entry.entry_type {
+        let icon = match entry.entry_type {
             FileSystemEntryType::Directory => {
                 // Get folder icon based on expanded state
-                if let Some(icon_path) = FileIcons::get_folder_icon(entry.is_expanded, cx) {
-                    Icon::from_path(icon_path.to_string())
-                        .color(hsla(210., 0.7, 0.7, 1.0))
-                } else {
-                    Icon::new(if entry.is_expanded { "📂" } else { "📁" })
-                        .color(hsla(210., 0.7, 0.7, 1.0))
-                }
+                file_icons::get().get_folder_icon(entry.is_expanded)
             }
             FileSystemEntryType::File => {
                 // Get file icon based on file extension
                 let path = Path::new(&entry.name);
-                if let Some(icon_path) = FileIcons::get_icon(path, cx) {
-                    Icon::from_path(icon_path.to_string())
-                        .color(hsla(0., 0., 0.7, 1.0))
-                } else {
-                    Icon::new("📄").color(hsla(0., 0., 0.7, 1.0))
-                }
+                file_icons::get().get_icon(path)
             }
         };
 
@@ -74,7 +63,11 @@ impl MemoryView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon_element),
+                    .text_color(match entry.entry_type {
+                        FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
+                        FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
+                    })
+                    .child(icon),
             )
             .child(
                 div()
@@ -155,29 +148,13 @@ impl Render for MemoryView {
                     // Get appropriate icon for resource type
                     let icon = match resource {
                         LoadedResource::File(_) => {
-                            if let Some(icon_path) = FileIcons::get_icon(path, cx) {
-                                Icon::from_path(icon_path.to_string())
-                            } else {
-                                if let Some(icon_path) = FileIcons::get_type_icon_static("default", cx) {
-                                    Icon::from_path(icon_path.to_string())
-                                } else {
-                                    Icon::new("📄")
-                                }
-                            }
+                            file_icons::get().get_icon(path)
                         },
                         LoadedResource::WebSearch { .. } => {
-                            if let Some(icon_path) = FileIcons::get_type_icon_static("magnifying_glass", cx) {
-                                Icon::from_path(icon_path.to_string())
-                            } else {
-                                Icon::new("🔍")
-                            }
+                            SharedString::from("🔍")
                         },
                         LoadedResource::WebPage(_) => {
-                            if let Some(icon_path) = FileIcons::get_type_icon_static("html", cx) {
-                                Icon::from_path(icon_path.to_string())
-                            } else {
-                                Icon::new("🌐")
-                            }
+                            SharedString::from("🌐")
                         }
                     };
                     
@@ -304,21 +281,7 @@ impl Render for MemoryView {
                     .text_color(hsla(0., 0., 0.7, 1.0))
                     .cursor_pointer()
                     .hover(|s| s.text_color(hsla(0., 0., 1.0, 1.0)))
-                    .child(
-                        if self.is_expanded {
-                            if let Some(icon_path) = FileIcons::get_type_icon_static("chevron_left", cx) {
-                                Icon::from_path(icon_path.to_string()).size(px(16.0))
-                            } else {
-                                Icon::new("<").size(px(16.0))
-                            }
-                        } else {
-                            if let Some(icon_path) = FileIcons::get_type_icon_static("chevron_right", cx) {
-                                Icon::from_path(icon_path.to_string()).size(px(16.0))
-                            } else {
-                                Icon::new(">").size(px(16.0))
-                            }
-                        }
-                    )
+                    .child(file_icons::get().get_arrow_icon(self.is_expanded))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_sidebar)),
             );
 

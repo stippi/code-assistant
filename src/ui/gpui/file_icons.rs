@@ -1,94 +1,130 @@
-use std::{path::Path, str};
-
-use gpui::{AppContext, AssetSource, Global, SharedString};
-use serde_derive::Deserialize;
 use std::collections::HashMap;
+use std::path::Path;
+use gpui::SharedString;
 
-#[derive(Deserialize, Debug)]
-struct TypeConfig {
-    icon: SharedString,
-}
-
-#[derive(Deserialize, Debug)]
+/// A simple provider for file icons that returns string icons (emoji)
 pub struct FileIcons {
     stems: HashMap<String, String>,
     suffixes: HashMap<String, String>,
-    types: HashMap<String, TypeConfig>,
-}
-
-impl Global for FileIcons {}
-
-const COLLAPSED_DIRECTORY_TYPE: &str = "collapsed_folder";
-const EXPANDED_DIRECTORY_TYPE: &str = "expanded_folder";
-const FILE_TYPES_ASSET: &str = "icons/file_icons/file_types.json";
-
-pub fn init(assets: impl AssetSource, cx: &mut AppContext) {
-    cx.set_global(FileIcons::new(assets))
+    default_file_icon: String,
+    folder_icon: String,
+    folder_open_icon: String,
 }
 
 impl FileIcons {
-    pub fn get(cx: &AppContext) -> &Self {
-        cx.global::<FileIcons>()
+    pub fn new() -> Self {
+        let mut stems = HashMap::new();
+        let mut suffixes = HashMap::new();
+        
+        // Initialize with common file types
+        suffixes.insert("rs".to_string(), "🦀".to_string());
+        suffixes.insert("js".to_string(), "📜".to_string());
+        suffixes.insert("mjs".to_string(), "📜".to_string()); 
+        suffixes.insert("jsx".to_string(), "⚛️".to_string());
+        suffixes.insert("ts".to_string(), "📘".to_string());
+        suffixes.insert("tsx".to_string(), "⚛️".to_string());
+        suffixes.insert("py".to_string(), "🐍".to_string());
+        suffixes.insert("html".to_string(), "🌐".to_string());
+        suffixes.insert("htm".to_string(), "🌐".to_string());
+        suffixes.insert("css".to_string(), "🎨".to_string());
+        suffixes.insert("json".to_string(), "📋".to_string());
+        suffixes.insert("md".to_string(), "📝".to_string());
+        suffixes.insert("txt".to_string(), "📄".to_string());
+        suffixes.insert("jpg".to_string(), "🖼️".to_string());
+        suffixes.insert("jpeg".to_string(), "🖼️".to_string());
+        suffixes.insert("png".to_string(), "🖼️".to_string());
+        suffixes.insert("svg".to_string(), "🖌️".to_string());
+        suffixes.insert("c".to_string(), "🔨".to_string());
+        suffixes.insert("cpp".to_string(), "🔨".to_string());
+        suffixes.insert("h".to_string(), "📐".to_string());
+        suffixes.insert("hpp".to_string(), "📐".to_string());
+        suffixes.insert("go".to_string(), "🐹".to_string());
+        suffixes.insert("java".to_string(), "☕".to_string());
+        suffixes.insert("php".to_string(), "🐘".to_string());
+        suffixes.insert("rb".to_string(), "💎".to_string());
+        suffixes.insert("sh".to_string(), "🐚".to_string());
+        suffixes.insert("bash".to_string(), "🐚".to_string());
+        suffixes.insert("toml".to_string(), "⚙️".to_string());
+        suffixes.insert("yaml".to_string(), "⚙️".to_string());
+        suffixes.insert("yml".to_string(), "⚙️".to_string());
+        suffixes.insert("sql".to_string(), "🗃️".to_string());
+        suffixes.insert("db".to_string(), "🗃️".to_string());
+        suffixes.insert("pdf".to_string(), "📑".to_string());
+        suffixes.insert("mp3".to_string(), "🎵".to_string());
+        suffixes.insert("wav".to_string(), "🎵".to_string());
+        suffixes.insert("mp4".to_string(), "🎬".to_string());
+        suffixes.insert("csv".to_string(), "📊".to_string());
+        suffixes.insert("lock".to_string(), "🔒".to_string());
+        
+        // Special file stems
+        stems.insert("Cargo.toml".to_string(), "📦".to_string());
+        stems.insert("package.json".to_string(), "📦".to_string());
+        stems.insert("Dockerfile".to_string(), "🐳".to_string());
+        stems.insert("docker-compose.yml".to_string(), "🐳".to_string());
+        stems.insert("README.md".to_string(), "📚".to_string());
+        stems.insert("LICENSE".to_string(), "⚖️".to_string());
+        stems.insert(".gitignore".to_string(), "🔍".to_string());
+        stems.insert(".env".to_string(), "🔐".to_string());
+        
+        Self {
+            stems,
+            suffixes,
+            default_file_icon: "📄".to_string(),
+            folder_icon: "📁".to_string(),
+            folder_open_icon: "📂".to_string(),
+        }
     }
-
-    pub fn new(assets: impl AssetSource) -> Self {
-        assets
-            .load("icons/file_icons/file_types.json")
-            .ok()
-            .flatten()
-            .and_then(|file| serde_json::from_str::<FileIcons>(str::from_utf8(&file).unwrap()).ok())
-            .unwrap_or_else(|| FileIcons {
-                stems: HashMap::default(),
-                suffixes: HashMap::default(),
-                types: HashMap::default(),
-            })
-    }
-
-    pub fn get_icon(path: &Path, cx: &AppContext) -> Option<SharedString> {
-        let this = cx.try_global::<Self>()?;
-
-        // Try to find icon by file stem first
+    
+    /// Get the appropriate icon for a file path
+    pub fn get_icon(&self, path: &Path) -> SharedString {
+        // Try by filename first
         if let Some(filename) = path.file_name() {
             if let Some(filename_str) = filename.to_str() {
-                if let Some(type_str) = this.stems.get(filename_str) {
-                    return this.get_type_icon(type_str);
+                if let Some(icon) = self.stems.get(filename_str) {
+                    return SharedString::from(icon.clone());
                 }
             }
         }
-
+        
         // Then try by extension
         if let Some(extension) = path.extension() {
             if let Some(ext_str) = extension.to_str() {
-                if let Some(type_str) = this.suffixes.get(ext_str) {
-                    return this.get_type_icon(type_str);
+                if let Some(icon) = self.suffixes.get(&ext_str.to_lowercase()) {
+                    return SharedString::from(icon.clone());
                 }
             }
         }
-
+        
         // Default file icon
-        this.get_type_icon("default")
+        SharedString::from(self.default_file_icon.clone())
     }
-
-    pub fn get_type_icon(&self, typ: &str) -> Option<SharedString> {
-        self.types
-            .get(typ)
-            .map(|type_config| type_config.icon.clone())
-    }
-
-    pub fn get_type_icon_static(typ: &str, cx: &AppContext) -> Option<SharedString> {
-        let this = cx.try_global::<Self>()?;
-        this.get_type_icon(typ)
-    }
-
-    pub fn get_folder_icon(expanded: bool, cx: &AppContext) -> Option<SharedString> {
-        let this = cx.try_global::<Self>()?;
-
-        let key = if expanded {
-            EXPANDED_DIRECTORY_TYPE
+    
+    /// Get folder icon based on expanded state
+    pub fn get_folder_icon(&self, expanded: bool) -> SharedString {
+        if expanded {
+            SharedString::from(self.folder_open_icon.clone())
         } else {
-            COLLAPSED_DIRECTORY_TYPE
-        };
-
-        this.get_type_icon(key)
+            SharedString::from(self.folder_icon.clone())
+        }
     }
+
+    /// Get arrow icon for toggling 
+    pub fn get_arrow_icon(&self, expanded: bool) -> SharedString {
+        if expanded {
+            SharedString::from("◀")
+        } else {
+            SharedString::from("▶")
+        }
+    }
+}
+
+// Singleton instance
+static INSTANCE: std::sync::OnceLock<FileIcons> = std::sync::OnceLock::new();
+
+pub fn init() {
+    INSTANCE.get_or_init(|| FileIcons::new());
+}
+
+pub fn get() -> &'static FileIcons {
+    INSTANCE.get_or_init(|| FileIcons::new())
 }
