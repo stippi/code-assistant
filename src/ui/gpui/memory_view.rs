@@ -61,6 +61,7 @@ impl MemoryView {
             .items_center()
             .gap_2()
             .w_full() // Ensure entry takes full width to prevent wrapping
+            .flex_none() // Prevent item from growing or shrinking
             .child(
                 // Icon container - use pattern matching to return a common type
                 div()
@@ -291,7 +292,8 @@ impl Render for MemoryView {
             let file_tree = div()
                 .id("file-tree")
                 .overflow_y_scroll()
-                .size_full()
+                .flex_1() // Take remaining space with flex grow
+                .min_h(px(100.)) // Minimum height to ensure scrolling works
                 .flex()
                 .flex_col()
                 .p_1()
@@ -299,7 +301,8 @@ impl Render for MemoryView {
 
             let file_tree_section = div()
                 .id("file-tree-section")
-                .size_full()
+                .flex_1() // Take remaining space in parent container
+                .min_h(px(100.)) // Minimum height to ensure scrolling works
                 .flex()
                 .flex_col()
                 .child(file_tree_header)
