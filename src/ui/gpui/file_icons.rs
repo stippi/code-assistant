@@ -119,6 +119,17 @@ impl FileIcons {
         None
     }
     
+    /// Get absolute path to an SVG file for debugging
+    fn get_absolute_svg_path(&self, type_name: &str) -> Option<PathBuf> {
+        let svg_filename = format!("{}.svg", type_name);
+        let full_path = self.icons_path.join(&svg_filename);
+        if full_path.exists() {
+            Some(full_path)
+        } else {
+            None
+        }
+    }
+    
     /// Get the appropriate icon for a file path
     pub fn get_icon(&self, path: &Path) -> SharedString {
         // Try to get icon by filename first

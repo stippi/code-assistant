@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    div, hsla, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, MouseButton,
+    div, hsla, prelude::*, px, rgb, svg, App, Context, FocusHandle, Focusable, MouseButton,
     MouseUpEvent, Window,
 };
 
@@ -56,18 +56,33 @@ impl MemoryView {
             .items_center()
             .gap_2()
             .child(
-                // Icon container
+                // Icon container - use pattern matching to return a common type
                 div()
                     .w(px(16.0))
                     .h(px(16.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_color(match entry.entry_type {
-                        FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
-                        FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
-                    })
-                    .child(icon),
+                    .child(
+                        if icon.starts_with("icons/") {
+                            svg()
+                                .size(px(16.0))
+                                .path(icon)
+                                .text_color(match entry.entry_type {
+                                    FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
+                                    FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
+                                })
+                                .into_any_element()
+                        } else {
+                            div()
+                                .text_color(match entry.entry_type {
+                                    FileSystemEntryType::Directory => hsla(210., 0.7, 0.7, 1.0), // Blue
+                                    FileSystemEntryType::File => hsla(0., 0., 0.7, 1.0),         // Light gray
+                                })
+                                .child(icon)
+                                .into_any_element()
+                        }
+                    ),
             )
             .child(
                 div()
@@ -176,7 +191,20 @@ impl Render for MemoryView {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .child(icon)
+                                .child(
+                                    if icon.starts_with("icons/") {
+                                        svg()
+                                            .size(px(16.0))
+                                            .path(icon)
+                                            .text_color(hsla(0., 0., 0.7, 1.0))
+                                            .into_any_element()
+                                    } else {
+                                        div()
+                                            .text_color(hsla(0., 0., 0.7, 1.0))
+                                            .child(icon)
+                                            .into_any_element()
+                                    }
+                                )
                         )
                         .child(
                             div()
@@ -281,7 +309,23 @@ impl Render for MemoryView {
                     .text_color(hsla(0., 0., 0.7, 1.0))
                     .cursor_pointer()
                     .hover(|s| s.text_color(hsla(0., 0., 1.0, 1.0)))
-                    .child(file_icons::get().get_arrow_icon(self.is_expanded))
+                    .child(
+                        {
+                            let icon = file_icons::get().get_arrow_icon(self.is_expanded);
+                            if icon.starts_with("icons/") {
+                                svg()
+                                    .size(px(16.0))
+                                    .path(icon)
+                                    .text_color(hsla(0., 0., 0.7, 1.0))
+                                    .into_any_element()
+                            } else {
+                                div()
+                                    .text_color(hsla(0., 0., 0.7, 1.0))
+                                    .child(icon)
+                                    .into_any_element()
+                            }
+                        }
+                    )
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_sidebar)),
             );
 
