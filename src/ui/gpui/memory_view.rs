@@ -62,38 +62,15 @@ impl MemoryView {
             .gap_2()
             .w_full() // Ensure entry takes full width to prevent wrapping
             .flex_none() // Prevent item from growing or shrinking
-            .child(
-                // Icon container - use pattern matching to return a common type
-                div()
-                    .w(px(16.0))
-                    .h(px(16.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(if let Some(icon_str) = &icon {
-                        if icon_str.starts_with("icons/") {
-                            svg()
-                                .size(px(16.0))
-                                .path(icon_str)
-                                .text_color(icon_color)
-                                .into_any_element()
-                        } else {
-                            div()
-                                .text_color(icon_color)
-                                .child(icon_str.clone())
-                                .into_any_element()
-                        }
-                    } else {
-                        // Fallback for when no icon is available
-                        div()
-                            .text_color(icon_color)
-                            .child(match entry.entry_type {
-                                FileSystemEntryType::Directory => "📁",
-                                FileSystemEntryType::File => "📄",
-                            })
-                            .into_any_element()
-                    }),
-            )
+            .child(file_icons::render_icon_container(
+                &icon,
+                16.0,
+                icon_color,
+                match entry.entry_type {
+                    FileSystemEntryType::Directory => "📁",
+                    FileSystemEntryType::File => "📄",
+                },
+            ))
             .child(
                 div()
                     .text_xs()
@@ -172,29 +149,12 @@ impl Render for MemoryView {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child({
-                            let library_icon = file_icons::get().get_library_icon();
-                            if let Some(icon_str) = &library_icon {
-                                if icon_str.starts_with("icons/") {
-                                    svg()
-                                        .size(px(16.0))
-                                        .path(icon_str)
-                                        .text_color(hsla(0., 0., 0.7, 1.0))
-                                        .into_any_element()
-                                } else {
-                                    div()
-                                        .text_color(hsla(0., 0., 0.7, 1.0))
-                                        .child(icon_str.clone())
-                                        .into_any_element()
-                                }
-                            } else {
-                                // Fallback
-                                div()
-                                    .text_color(hsla(0., 0., 0.7, 1.0))
-                                    .child("📚")
-                                    .into_any_element()
-                            }
-                        })
+                        .child(file_icons::render_icon(
+                            &file_icons::get().get_library_icon(),
+                            16.0,
+                            hsla(0., 0., 0.7, 1.0),
+                            "📚",
+                        ))
                         .child("Loaded Resources"),
                 )
                 .child(
@@ -231,34 +191,12 @@ impl Render for MemoryView {
                         .justify_between()
                         .gap_2()
                         .w_full()
-                        .child(
-                            div()
-                                .w(px(16.0))
-                                .h(px(16.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(if let Some(icon_str) = &icon {
-                                    if icon_str.starts_with("icons/") {
-                                        svg()
-                                            .size(px(16.0))
-                                            .path(icon_str.clone())
-                                            .text_color(hsla(0., 0., 0.7, 1.0))
-                                            .into_any_element()
-                                    } else {
-                                        div()
-                                            .text_color(hsla(0., 0., 0.7, 1.0))
-                                            .child(icon_str.clone())
-                                            .into_any_element()
-                                    }
-                                } else {
-                                    // Fallback for when no icon is available
-                                    div()
-                                        .text_color(hsla(0., 0., 0.7, 1.0))
-                                        .child("📄")
-                                        .into_any_element()
-                                }),
-                        )
+                        .child(file_icons::render_icon_container(
+                            &icon,
+                            16.0,
+                            hsla(0., 0., 0.7, 1.0),
+                            "📄",
+                        ))
                         .child(
                             div()
                                 .text_color(hsla(0., 0., 0.8, 1.0))
@@ -308,29 +246,12 @@ impl Render for MemoryView {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child({
-                            let tree_icon = file_icons::get().get_file_tree_icon();
-                            if let Some(icon_str) = &tree_icon {
-                                if icon_str.starts_with("icons/") {
-                                    svg()
-                                        .size(px(16.0))
-                                        .path(icon_str)
-                                        .text_color(hsla(0., 0., 0.7, 1.0))
-                                        .into_any_element()
-                                } else {
-                                    div()
-                                        .text_color(hsla(0., 0., 0.7, 1.0))
-                                        .child(icon_str.clone())
-                                        .into_any_element()
-                                }
-                            } else {
-                                // Fallback
-                                div()
-                                    .text_color(hsla(0., 0., 0.7, 1.0))
-                                    .child("🌲")
-                                    .into_any_element()
-                            }
-                        })
+                        .child(file_icons::render_icon(
+                            &file_icons::get().get_file_tree_icon(),
+                            16.0,
+                            hsla(0., 0., 0.7, 1.0),
+                            "🌲",
+                        ))
                         .child("File Tree"),
                 );
 
@@ -388,32 +309,15 @@ impl Render for MemoryView {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child({
-                        if self.is_expanded {
-                            let brain_icon = file_icons::get().get_working_memory_icon();
-                            if let Some(icon_str) = &brain_icon {
-                                if icon_str.starts_with("icons/") {
-                                    svg()
-                                        .size(px(16.0))
-                                        .path(icon_str)
-                                        .text_color(hsla(0., 0., 0.7, 1.0))
-                                        .into_any_element()
-                                } else {
-                                    div()
-                                        .text_color(hsla(0., 0., 0.7, 1.0))
-                                        .child(icon_str.clone())
-                                        .into_any_element()
-                                }
-                            } else {
-                                // Fallback for when no icon is available
-                                div()
-                                    .text_color(hsla(0., 0., 0.7, 1.0))
-                                    .child("🧠")
-                                    .into_any_element()
-                            }
-                        } else {
-                            div().into_any_element()
-                        }
+                    .child(if self.is_expanded {
+                        file_icons::render_icon(
+                            &file_icons::get().get_working_memory_icon(),
+                            16.0,
+                            hsla(0., 0., 0.7, 1.0),
+                            "🧠",
+                        )
+                    } else {
+                        div().into_any_element()
                     })
                     .child(if self.is_expanded {
                         "Working Memory"
@@ -428,29 +332,12 @@ impl Render for MemoryView {
                     .text_color(hsla(0., 0., 0.7, 1.0))
                     .cursor_pointer()
                     .hover(|s| s.text_color(hsla(0., 0., 1.0, 1.0)))
-                    .child({
-                        let icon = file_icons::get().get_arrow_icon(self.is_expanded);
-                        if let Some(icon_str) = &icon {
-                            if icon_str.starts_with("icons/") {
-                                svg()
-                                    .size(px(16.0))
-                                    .path(icon_str)
-                                    .text_color(hsla(0., 0., 0.7, 1.0))
-                                    .into_any_element()
-                            } else {
-                                div()
-                                    .text_color(hsla(0., 0., 0.7, 1.0))
-                                    .child(icon_str.clone())
-                                    .into_any_element()
-                            }
-                        } else {
-                            // Fallback for when no icon is available
-                            div()
-                                .text_color(hsla(0., 0., 0.7, 1.0))
-                                .child("▶")
-                                .into_any_element()
-                        }
-                    })
+                    .child(file_icons::render_icon(
+                        &file_icons::get().get_arrow_icon(self.is_expanded),
+                        16.0,
+                        hsla(0., 0., 0.7, 1.0),
+                        "▶",
+                    ))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_sidebar)),
             );
 

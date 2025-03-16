@@ -1,4 +1,4 @@
-use gpui::{App, AssetSource, SharedString};
+use gpui::{div, px, svg, App, AssetSource, IntoElement, ParentElement, SharedString, Styled};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -270,4 +270,73 @@ pub fn init(cx: &App) {
 /// Get the FileIcons instance
 pub fn get() -> &'static FileIcons {
     INSTANCE.get().expect("FileIcons not initialized")
+}
+
+/// Renders an icon as a gpui element based on the icon string and additional options
+///
+/// # Arguments
+/// * `icon_opt` - Option<SharedString> with the icon string or None
+/// * `size` - Size of the icon in pixels (default: 16.0)
+/// * `color` - Color of the icon (default: hsla(0., 0., 0.7, 1.0))
+/// * `fallback` - Fallback string to use when no icon is available (default: "📄")
+///
+/// # Returns
+/// * A gpui element that represents the icon
+pub fn render_icon(
+    icon_opt: &Option<SharedString>,
+    size: f32,
+    color: gpui::Hsla,
+    fallback: &str,
+) -> gpui::AnyElement {
+    let size_px = px(size);
+
+    if let Some(icon_str) = icon_opt {
+        if icon_str.starts_with("icons/") {
+            // SVG icon
+            svg()
+                .size(size_px)
+                .path(icon_str)
+                .text_color(color)
+                .into_any_element()
+        } else {
+            // Text/emoji icon
+            div()
+                .text_color(color)
+                .child(icon_str.clone())
+                .into_any_element()
+        }
+    } else {
+        // Fallback icon
+        div()
+            .text_color(color)
+            .child(fallback.to_string())
+            .into_any_element()
+    }
+}
+
+/// Renders an icon within a div container with specific dimensions
+///
+/// # Arguments
+/// * `icon_opt` - Option<SharedString> with the icon string or None
+/// * `size` - Size of the icon and container in pixels (default: 16.0)
+/// * `color` - Color of the icon (default: hsla(0., 0., 0.7, 1.0))
+/// * `fallback` - Fallback string to use when no icon is available (default: "📄")
+///
+/// # Returns
+/// * A Div element that contains the icon in a container with the specified size
+pub fn render_icon_container(
+    icon_opt: &Option<SharedString>,
+    size: f32,
+    color: gpui::Hsla,
+    fallback: &str,
+) -> gpui::Div {
+    let size_px = px(size);
+
+    div()
+        .w(size_px)
+        .h(size_px)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(render_icon(icon_opt, size, color, fallback))
 }
