@@ -90,6 +90,7 @@ pub trait ScrollableHandle: Debug + 'static {
     fn set_offset(&self, point: Point<Pixels>);
     fn offset(&self) -> Point<Pixels>;
     fn viewport(&self) -> Bounds<Pixels>;
+    #[allow(dead_code)]
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -117,10 +118,12 @@ impl ScrollbarState {
         self
     }
 
+    #[allow(dead_code)]
     pub fn scroll_handle(&self) -> &Arc<dyn ScrollableHandle> {
         &self.scroll_handle
     }
 
+    #[allow(dead_code)]
     pub fn is_dragging(&self) -> bool {
         self.drag.get().is_some()
     }
@@ -166,6 +169,7 @@ impl Scrollbar {
         Self::new(state, ScrollbarAxis::Vertical)
     }
 
+    #[allow(dead_code)]
     pub fn horizontal(state: ScrollbarState) -> Option<Self> {
         Self::new(state, ScrollbarAxis::Horizontal)
     }
