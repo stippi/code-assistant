@@ -3,17 +3,21 @@ use std::sync::{Arc, Mutex};
 
 use gpui::{
     div, hsla, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent, Window,
+    MouseUpEvent, ScrollHandle, Window,
 };
 
 use crate::types::{FileSystemEntryType, FileTreeEntry, LoadedResource, WorkingMemory};
 use crate::ui::gpui::file_icons;
+use crate::ui::gpui::scrollbar::{Scrollbar, ScrollbarState};
 
 // Memory sidebar component
 pub struct MemoryView {
     is_expanded: bool,
     memory: Arc<Mutex<Option<WorkingMemory>>>,
     focus_handle: FocusHandle,
+    // Add scroll handles for both scrollable areas
+    resources_scroll_handle: ScrollHandle,
+    file_tree_scroll_handle: ScrollHandle,
 }
 
 impl MemoryView {
@@ -22,6 +26,9 @@ impl MemoryView {
             is_expanded: true,
             memory,
             focus_handle: cx.focus_handle(),
+            // Initialize scroll handles
+            resources_scroll_handle: ScrollHandle::new(),
+            file_tree_scroll_handle: ScrollHandle::new(),
         }
     }
 
@@ -116,7 +123,11 @@ impl MemoryView {
         result
     }
 
-    fn generate_resource_section(memory: &WorkingMemory) -> gpui::Stateful<gpui::Div> {
+    fn generate_resource_section(
+        &self,
+        memory: &WorkingMemory,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let resources_header = div()
             .id("resources-header")
             .flex_none()
@@ -148,10 +159,13 @@ impl MemoryView {
                     .child(format!("({})", memory.loaded_resources.len())),
             );
 
-        let resources_list = div()
-            .id("resources-list")
-            .max_h(px(300.))
-            .overflow_y_scroll()
+        // Create scrollbar state for resources
+        let resources_scrollbar_state =
+            ScrollbarState::new(self.resources_scroll_handle.clone()).parent_entity(&cx.entity());
+
+        // Resources list with content (resources)
+        let resources_content = div()
+            .id("resources-content")
             .flex()
             .flex_col()
             .p_1()
@@ -202,6 +216,35 @@ impl MemoryView {
                     )
             }));
 
+        // Container with scrollable area and scrollbar
+        let resources_container = div()
+            .id("resources-list-container")
+            .relative() // For absolute positioning of scrollbar
+            .max_h(px(300.))
+            .flex_grow()
+            .child(
+                div()
+                    .id("resources-list")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.resources_scroll_handle)
+                    .child(resources_content),
+            )
+            .child(
+                // Add scrollbar
+                match Scrollbar::vertical(resources_scrollbar_state) {
+                    Some(scrollbar) => div()
+                        .absolute()
+                        .right(px(0.))
+                        .top(px(0.))
+                        .h_full()
+                        .w(px(12.))
+                        .child(scrollbar)
+                        .into_any_element(),
+                    None => div().w(px(0.)).h(px(0.)).into_any_element(),
+                },
+            );
+
         div()
             .id("resources-section")
             .flex_none()
@@ -211,11 +254,11 @@ impl MemoryView {
             .flex()
             .flex_col()
             .child(resources_header)
-            .child(resources_list)
+            .child(resources_container)
     }
 
     fn generate_file_tree_section(
-        self: &Self,
+        &self,
         memory: &WorkingMemory,
         cx: &Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
@@ -257,15 +300,39 @@ impl MemoryView {
                 .child("No file tree available")
         };
 
-        let file_tree = div()
-            .id("file-tree")
-            .overflow_y_scroll()
-            .flex_1() // Take remaining space with flex grow
+        // Create scrollbar state for file tree
+        let file_tree_scrollbar_state =
+            ScrollbarState::new(self.file_tree_scroll_handle.clone()).parent_entity(&cx.entity());
+
+        // Container with scrollable area and scrollbar
+        let file_tree_container = div()
+            .id("file-tree-container")
+            .relative() // For absolute positioning of scrollbar
+            .flex_1() // Take remaining space in the parent container
             .min_h(px(100.)) // Minimum height to ensure scrolling works
-            .flex()
-            .flex_col()
-            .p_1()
-            .child(file_tree_content);
+            .child(
+                div()
+                    .id("file-tree")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.file_tree_scroll_handle)
+                    .p_1()
+                    .child(file_tree_content),
+            )
+            .child(
+                // Add scrollbar
+                match Scrollbar::vertical(file_tree_scrollbar_state) {
+                    Some(scrollbar) => div()
+                        .absolute()
+                        .right(px(0.))
+                        .top(px(0.))
+                        .h_full()
+                        .w(px(12.))
+                        .child(scrollbar)
+                        .into_any_element(),
+                    None => div().w(px(0.)).h(px(0.)).into_any_element(),
+                },
+            );
 
         div()
             .id("file-tree-section")
@@ -274,7 +341,7 @@ impl MemoryView {
             .flex()
             .flex_col()
             .child(file_tree_header)
-            .child(file_tree)
+            .child(file_tree_container)
     }
 }
 
@@ -292,7 +359,7 @@ impl Render for MemoryView {
         // Create components that will be used in when blocks
         let memory_content = if self.is_expanded && has_memory {
             let memory = self.memory.lock().unwrap().clone().unwrap();
-            let resources_section = Self::generate_resource_section(&memory);
+            let resources_section = self.generate_resource_section(&memory, cx);
             let file_tree_section = self.generate_file_tree_section(&memory, cx);
             Some((resources_section, file_tree_section))
         } else {
