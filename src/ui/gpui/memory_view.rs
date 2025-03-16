@@ -195,7 +195,7 @@ impl Render for MemoryView {
                                     .into_any_element()
                             }
                         })
-                        .child("Loaded Resources")
+                        .child("Loaded Resources"),
                 )
                 .child(
                     div()
@@ -331,7 +331,7 @@ impl Render for MemoryView {
                                     .into_any_element()
                             }
                         })
-                        .child("File Tree")
+                        .child("File Tree"),
                 );
 
             // File tree content - generate a flat list of items
@@ -389,33 +389,37 @@ impl Render for MemoryView {
                     .items_center()
                     .gap_2()
                     .child({
-                        let brain_icon = file_icons::get().get_working_memory_icon();
-                        if let Some(icon_str) = &brain_icon {
-                            if icon_str.starts_with("icons/") {
-                                svg()
-                                    .size(px(16.0))
-                                    .path(icon_str)
-                                    .text_color(hsla(0., 0., 0.7, 1.0))
-                                    .into_any_element()
+                        if self.is_expanded {
+                            let brain_icon = file_icons::get().get_working_memory_icon();
+                            if let Some(icon_str) = &brain_icon {
+                                if icon_str.starts_with("icons/") {
+                                    svg()
+                                        .size(px(16.0))
+                                        .path(icon_str)
+                                        .text_color(hsla(0., 0., 0.7, 1.0))
+                                        .into_any_element()
+                                } else {
+                                    div()
+                                        .text_color(hsla(0., 0., 0.7, 1.0))
+                                        .child(icon_str.clone())
+                                        .into_any_element()
+                                }
                             } else {
+                                // Fallback for when no icon is available
                                 div()
                                     .text_color(hsla(0., 0., 0.7, 1.0))
-                                    .child(icon_str.clone())
+                                    .child("🧠")
                                     .into_any_element()
                             }
                         } else {
-                            // Fallback for when no icon is available
-                            div()
-                                .text_color(hsla(0., 0., 0.7, 1.0))
-                                .child("🧠")
-                                .into_any_element()
+                            div().into_any_element()
                         }
                     })
                     .child(if self.is_expanded {
                         "Working Memory"
                     } else {
                         ""
-                    })
+                    }),
             )
             .child(
                 div()
@@ -455,8 +459,7 @@ impl Render for MemoryView {
             .id("memory-sidebar")
             .track_focus(&self.focus_handle(cx))
             .flex_none()
-            //.w(px(280.)) // Fixed width matching parent container's allocation
-            .w(px(400.)) // Fixed width matching parent container's allocation
+            .w(if self.is_expanded { px(400.) } else { px(40.) })
             .h_full()
             .bg(rgb(0x252525))
             .border_l_1()
