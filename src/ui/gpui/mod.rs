@@ -7,6 +7,8 @@ mod message;
 mod path_util;
 pub mod scrollbar;
 
+pub use scrollbar::{ScrollbarHandle, ScrollbarStyle, ScrollableExt, Scrollbar, ScrollableContainer};
+
 use crate::types::WorkingMemory;
 use crate::ui::{async_trait, DisplayFragment, UIError, UIMessage, UserInterface};
 use gpui::{AppContext, Focusable};

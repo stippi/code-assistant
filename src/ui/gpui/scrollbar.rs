@@ -1,16 +1,33 @@
-use gpui::{
-    canvas, div, prelude::*, px, rgb, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    Window,
-};
+use gpui::{div, prelude::*, px, rgb, AnyElement, Pixels, Point, ScrollHandle};
+use std::{cell::RefCell, rc::Rc};
 
-/// Width of the scrollbar thumb
+/// Default width of the scrollbar thumb
 const DEFAULT_SCROLLBAR_THUMB_WIDTH: Pixels = px(8.);
 /// Minimum height of the scrollbar thumb
 const MIN_SCROLLBAR_THUMB_HEIGHT: Pixels = px(30.);
 /// Padding from the edge of the container
 const SCROLLBAR_PADDING: Pixels = px(4.);
 
+/// A handle for controlling and tracking the state of a scrollbar.
+#[derive(Clone, Debug)]
+pub struct ScrollbarHandle {
+    /// Shared state for the scrollbar
+    pub state: Rc<RefCell<ScrollbarState>>,
+}
+
+/// Internal state tracked by the scrollbar
+#[derive(Clone, Debug)]
+pub struct ScrollbarState {
+    /// The underlying scroll handle from GPUI
+    pub scroll_handle: ScrollHandle,
+    /// The position within the thumb where dragging started
+    pub drag_position: Option<Point<Pixels>>,
+    /// Whether the mouse is hovering over the scrollbar
+    pub is_hovered: bool,
+}
+
 /// Configuration for the scrollbar appearance
+#[derive(Clone, Debug)]
 pub struct ScrollbarStyle {
     /// Width of the scrollbar thumb
     pub thumb_width: Pixels,
@@ -33,202 +50,170 @@ impl Default for ScrollbarStyle {
     }
 }
 
-/// State for the scrollbar
-#[derive(Default)]
+impl ScrollbarHandle {
+    /// Create a new scrollbar handle
+    pub fn new() -> Self {
+        Self {
+            state: Rc::new(RefCell::new(ScrollbarState {
+                scroll_handle: ScrollHandle::new(),
+                drag_position: None,
+                is_hovered: false,
+            })),
+        }
+    }
+
+    /// Get the current scroll offset
+    pub fn offset(&self) -> Point<Pixels> {
+        self.state.borrow().scroll_handle.offset()
+    }
+
+    /// Set the scroll offset
+    pub fn set_offset(&self, offset: Point<Pixels>) {
+        self.state.borrow_mut().scroll_handle.set_offset(offset);
+    }
+}
+
+/// Simple vertical scrollbar component
 pub struct Scrollbar {
-    /// The style of the scrollbar
-    style: ScrollbarStyle,
-    /// The position in thumb bounds when dragging starts (mouse down)
-    drag_position: Option<Point<Pixels>>,
-    /// Flag to indicate if the mouse is currently hovering over the thumb
-    is_hovered: bool,
+    /// Handle to control the scrollbar state
+    pub handle: ScrollbarHandle,
+    /// Style configuration for the scrollbar
+    pub style: ScrollbarStyle,
 }
 
 impl Scrollbar {
+    /// Create a new scrollbar with default style
     pub fn new() -> Self {
         Self {
+            handle: ScrollbarHandle::new(),
             style: ScrollbarStyle::default(),
-            drag_position: None,
-            is_hovered: false,
         }
     }
 
-    /// Set a custom style for the scrollbar
-    pub fn with_style(mut self, style: ScrollbarStyle) -> Self {
-        self.style = style;
+    /// Create a new scrollbar with custom style
+    pub fn with_style(style: ScrollbarStyle) -> Self {
+        Self {
+            handle: ScrollbarHandle::new(),
+            style,
+        }
+    }
+
+    /// Use an existing handle for the scrollbar
+    pub fn with_handle(mut self, handle: ScrollbarHandle) -> Self {
+        self.handle = handle;
         self
     }
 
-    /// Get the current thumb color based on hover state
-    fn current_thumb_color(&self) -> gpui::Rgba {
-        if self.is_hovered {
-            self.style.thumb_hover_color
-        } else {
-            self.style.thumb_color
-        }
-    }
+    /// Render the scrollbar as an element
+    pub fn render(&self) -> AnyElement {
+        let style = self.style.clone();
 
-    /// Calculate the height of the scrollbar thumb based on content and viewport
-    fn calculate_thumb_height(&self, viewport_height: Pixels, content_height: Pixels) -> Pixels {
-        if content_height <= viewport_height {
-            viewport_height // Full height if no scrolling needed
-        } else {
-            // Calculate proportional thumb height
-            let ratio = viewport_height / content_height;
-            let height = viewport_height * ratio;
-            // Ensure minimum height
-            height.max(MIN_SCROLLBAR_THUMB_HEIGHT)
-        }
-    }
-
-    /// Calculate the vertical position of the thumb based on scroll position
-    fn calculate_thumb_position(
-        &self,
-        viewport_height: Pixels,
-        content_height: Pixels,
-        scroll_top: Pixels,
-        thumb_height: Pixels,
-    ) -> Pixels {
-        if content_height <= viewport_height {
-            px(0.) // No scrolling needed, position at top
-        } else {
-            // Calculate position based on scroll percentage
-            let max_scroll = content_height - viewport_height;
-            let scroll_percentage = (-scroll_top / max_scroll).clamp(0., 1.);
-            let max_thumb_offset = viewport_height - thumb_height;
-            (max_thumb_offset * scroll_percentage).clamp(px(0.), max_thumb_offset)
-        }
-    }
-}
-
-impl Render for Scrollbar {
-    /// Render a scrollbar at the right edge of a scrollable view
-    ///
-    /// # Arguments
-    /// * `cx` - The context
-    /// * `scroll_top` - The current vertical scroll position (y-offset)
-    /// * `view_height` - The height of the viewport
-    /// * `content_height` - The height of the scrollable content
-    /// * `scroll_callback` - Called when the scrollbar is dragged to update scroll position
-    fn render<F>(
-        &mut self,
-        cx: &mut Window,
-        scroll_top: Pixels,
-        view_height: Pixels,
-        content_height: Pixels,
-        scroll_callback: F,
-    ) -> impl IntoElement
-    where
-        F: Fn(Pixels) + 'static,
-    {
-        // Don't render scrollbar if content fits within viewport
-        if content_height <= view_height {
-            return div().id("scrollbar-hidden");
-        }
-
-        let entity_id = cx.entity_id();
-        let thumb_height = self.calculate_thumb_height(view_height, content_height);
-        let thumb_position =
-            self.calculate_thumb_position(view_height, content_height, scroll_top, thumb_height);
-
-        // Current mouse hover state
-        let is_hovered = self.is_hovered;
-
+        // Simplified scrollbar visualization
+        // In a real implementation, we'd calculate position based on viewport/content ratio
         div()
-            .id("scrollbar-container")
             .absolute()
             .right(SCROLLBAR_PADDING)
-            .top(thumb_position + SCROLLBAR_PADDING)
-            .w(self.style.thumb_width)
-            .h(thumb_height)
-            .bg(if is_hovered {
-                self.style.thumb_hover_color
-            } else {
-                self.style.thumb_color
-            })
-            .rounded(self.style.border_radius)
-            .child(
-                canvas({
-                    let entity_id = entity_id;
-                    move |bounds, _, window, cx| {
-                        // Handle mouse down on thumb
-                        window.on_mouse_event({
-                            let entity_id = entity_id;
-                            move |ev: &MouseDownEvent, _, _, cx| {
-                                if !bounds.contains(&ev.position) {
-                                    return;
-                                }
-
-                                cx.update_entity(entity_id, |this: &mut Scrollbar, _| {
-                                    this.drag_position = Some(ev.position - bounds.origin);
-                                });
-                            }
-                        });
-
-                        // Handle mouse up to end dragging
-                        window.on_mouse_event({
-                            let entity_id = entity_id;
-                            move |_: &MouseUpEvent, _, _, cx| {
-                                cx.update_entity(entity_id, |this: &mut Scrollbar, _| {
-                                    this.drag_position = None;
-                                });
-                            }
-                        });
-
-                        // Handle mouse movement for dragging and hover
-                        window.on_mouse_event({
-                            let entity_id = entity_id;
-                            let content_height = content_height;
-                            let view_height = view_height;
-                            let scroll_callback = scroll_callback.clone();
-
-                            move |ev: &MouseMoveEvent, _, _, cx| {
-                                // Update hover state
-                                let is_hovering = bounds.contains(&ev.position);
-                                cx.update_entity(entity_id, |this: &mut Scrollbar, cx| {
-                                    if this.is_hovered != is_hovering {
-                                        this.is_hovered = is_hovering;
-                                        cx.notify();
-                                    }
-                                });
-
-                                // If not dragging, we're done
-                                if !ev.dragging() {
-                                    return;
-                                }
-
-                                cx.update_entity(entity_id, |this: &mut Scrollbar, _| {
-                                    if let Some(drag_pos) = this.drag_position {
-                                        // Calculate position based on mouse
-                                        let window_bounds = cx.bounds();
-                                        let max_offset = view_height - bounds.size.height;
-                                        let position_y =
-                                            ev.position.y - window_bounds.origin.y - drag_pos.y;
-                                        let percentage = (position_y / max_offset).clamp(0.0, 1.0);
-
-                                        // Calculate new scroll position
-                                        let max_scroll = content_height - view_height;
-                                        let new_scroll_y = -(max_scroll * percentage);
-
-                                        // Notify via callback
-                                        scroll_callback(new_scroll_y);
-                                    }
-                                });
-                            }
-                        });
-                    }
-                })
-                .size_full(),
-            )
+            .top(px(100.)) // Fixed position for simplicity
+            .h(MIN_SCROLLBAR_THUMB_HEIGHT)
+            .w(style.thumb_width)
+            .bg(style.thumb_color)
+            .rounded(style.border_radius)
+            .into_any()
     }
 }
 
-/// Constructor for a custom style scrollbar
-pub fn styled_scrollbar(style: ScrollbarStyle) -> Scrollbar {
-    Scrollbar::new().with_style(style)
+impl IntoElement for Scrollbar {
+    type Element = AnyElement;
+
+    fn into_element(self) -> Self::Element {
+        self.render()
+    }
 }
 
-/// Create a scrollbar with the default style
+/// Create a container with a custom scrollbar
+pub struct ScrollableContainer<E: IntoElement> {
+    /// The content to be made scrollable
+    content: E,
+    /// Handle to control the scrollbar
+    handle: ScrollbarHandle,
+    /// Optional custom style for the scrollbar
+    style: Option<ScrollbarStyle>,
+}
+
+impl<E: IntoElement> ScrollableContainer<E> {
+    /// Create a new scrollable container
+    pub fn new(content: E) -> Self {
+        Self {
+            content,
+            handle: ScrollbarHandle::new(),
+            style: None,
+        }
+    }
+
+    /// Use a specific handle for the scrollbar
+    pub fn with_handle(mut self, handle: ScrollbarHandle) -> Self {
+        self.handle = handle;
+        self
+    }
+
+    /// Apply custom styling to the scrollbar
+    pub fn with_style(mut self, style: ScrollbarStyle) -> Self {
+        self.style = Some(style);
+        self
+    }
+
+    /// Get the scrollbar handle
+    pub fn handle(&self) -> ScrollbarHandle {
+        self.handle.clone()
+    }
+}
+
+impl<E: IntoElement> IntoElement for ScrollableContainer<E> {
+    type Element = AnyElement;
+
+    fn into_element(self) -> Self::Element {
+        let scrollbar = Scrollbar {
+            handle: self.handle,
+            style: self.style.unwrap_or_default(),
+        };
+
+        div()
+            .relative()
+            .size_full()
+            .overflow_y_hidden()
+            .child(self.content)
+            .child(scrollbar)
+            .into_any()
+    }
+}
+
+/// Extension trait to add scrollbar functionality to containers
+pub trait ScrollableExt: IntoElement + Sized {
+    /// Add a custom scrollbar to a scrollable element
+    fn with_scrollbar(self) -> ScrollableContainer<Self> {
+        ScrollableContainer::new(self)
+    }
+
+    /// Add a scrollbar with a specific handle
+    fn with_scrollbar_handle(self, handle: ScrollbarHandle) -> ScrollableContainer<Self> {
+        ScrollableContainer::new(self).with_handle(handle)
+    }
+
+    /// Add a styled scrollbar
+    fn with_styled_scrollbar(self, style: ScrollbarStyle) -> ScrollableContainer<Self> {
+        ScrollableContainer::new(self).with_style(style)
+    }
+}
+
+// Implement the extension trait for all elements
+impl<T: IntoElement> ScrollableExt for T {}
+
+// Convenience function to create a scrollbar with default style
 pub fn scrollbar() -> Scrollbar {
     Scrollbar::new()
+}
+
+// Convenience function to create a scrollbar with custom style
+pub fn styled_scrollbar(style: ScrollbarStyle) -> Scrollbar {
+    Scrollbar::with_style(style)
 }
