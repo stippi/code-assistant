@@ -5,6 +5,7 @@ mod input;
 mod memory_view;
 mod message;
 mod path_util;
+pub mod scrollbar;
 
 use crate::types::WorkingMemory;
 use crate::ui::{async_trait, DisplayFragment, UIError, UIMessage, UserInterface};
