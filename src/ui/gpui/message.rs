@@ -95,6 +95,7 @@ impl Render for MessageView {
             .flex_row() // Main container as row layout
             .w_full() // Constrain to window width
             .h_full() // Take full height
+            .pt_8() // Leave room for the window title bar
             .child(
                 // Left side with messages and input (content area)
                 div()

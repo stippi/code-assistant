@@ -78,22 +78,3 @@ impl AssetSource for Assets {
         Ok(result)
     }
 }
-
-// Singleton instance for global access
-static mut ASSETS_INSTANCE: Option<Assets> = None;
-
-/// Initialize the assets system with the given base path.
-pub fn init(base_path: impl Into<String>) {
-    unsafe {
-        ASSETS_INSTANCE = Some(Assets::new(base_path));
-    }
-}
-
-/// Get the assets instance.
-///
-/// # Panics
-///
-/// This function will panic if the assets system has not been initialized.
-pub fn get() -> &'static Assets {
-    unsafe { ASSETS_INSTANCE.as_ref().expect("Assets not initialized") }
-}

@@ -1,9 +1,9 @@
-use gpui::{AssetSource, SharedString};
+use gpui::{App, AssetSource, SharedString};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::OnceLock;
-use tracing::{debug, error, trace, warn};
+use std::sync::{Arc, OnceLock};
+use tracing::{debug, trace, warn};
 
 use crate::ui::gpui::path_util::PathExt;
 
@@ -40,7 +40,7 @@ const FILE_TYPES_ASSET: &str = "icons/file_icons/file_types.json";
 
 impl FileIcons {
     /// Create a new FileIcons instance using the given AssetSource
-    pub fn new(assets: impl AssetSource) -> Self {
+    pub fn new(assets: Arc<dyn AssetSource>) -> Self {
         // Load the configuration from the JSON file
         let config = Self::load_config(&assets);
 
@@ -74,7 +74,7 @@ impl FileIcons {
     }
 
     /// Load configuration from file_types.json
-    fn load_config(assets: &impl AssetSource) -> FileTypesConfig {
+    fn load_config(assets: &Arc<dyn AssetSource>) -> FileTypesConfig {
         debug!("[FileIcons]: Loading config from: {}", FILE_TYPES_ASSET);
         let result = assets.load(FILE_TYPES_ASSET).ok().flatten();
 
@@ -256,34 +256,15 @@ impl FileIcons {
 static INSTANCE: OnceLock<FileIcons> = OnceLock::new();
 
 /// Initialize the file icons system with the given asset source
-pub fn init_with_assets(assets: impl AssetSource) {
-    INSTANCE.get_or_init(|| FileIcons::new(assets));
+pub fn init_with_assets(assets: &Arc<dyn AssetSource>) {
+    INSTANCE.get_or_init(|| FileIcons::new(assets.clone()));
 }
 
-/// Initialize the file icons system using assets from our assets module
-pub fn init() {
+/// Initialize the file icons system using assets from the App
+pub fn init(cx: &App) {
     trace!("[FileIcons]: Initializing file icons");
-    let assets = crate::ui::gpui::assets::get();
-    init_with_assets(assets.clone());
-
-    // Check if the instance was properly initialized
-    if let Some(icons) = INSTANCE.get() {
-        let has_types = !icons.config.types.is_empty();
-        trace!(
-            "[FileIcons]: Initialization complete. Has types: {}",
-            has_types
-        );
-        if has_types {
-            trace!(
-                "[FileIcons]: Loaded {} icon types",
-                icons.config.types.len()
-            );
-        } else {
-            warn!("[FileIcons]: WARNING: No icon types were loaded!");
-        }
-    } else {
-        error!("[FileIcons]: ERROR: Failed to initialize file icons!");
-    }
+    let asset_source = cx.asset_source();
+    init_with_assets(asset_source);
 }
 
 /// Get the FileIcons instance

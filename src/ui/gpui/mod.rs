@@ -68,16 +68,12 @@ impl GPUI {
         // Create asset source
         let asset_source =
             crate::ui::gpui::assets::Assets::new(assets_path.to_string_lossy().to_string());
-
-        // Initialize our global instance
-        assets::init(assets_path.to_string_lossy().to_string());
-
         // Initialize app with assets
         let app = gpui::Application::new().with_assets(asset_source);
 
         app.run(move |cx| {
             // Initialize file icons
-            file_icons::init();
+            file_icons::init(cx);
 
             // Register key bindings
             input::register_key_bindings(cx);
