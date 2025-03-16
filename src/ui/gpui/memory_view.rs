@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    div, hsla, prelude::*, px, rgb, svg, App, Context, FocusHandle, Focusable, MouseButton,
+    div, hsla, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, MouseButton,
     MouseUpEvent, Window,
 };
 
@@ -115,6 +115,167 @@ impl MemoryView {
 
         result
     }
+
+    fn generate_resource_section(memory: &WorkingMemory) -> gpui::Stateful<gpui::Div> {
+        let resources_header = div()
+            .id("resources-header")
+            .flex_none()
+            .text_sm()
+            .w_full()
+            .px_2()
+            .bg(rgb(0x303030))
+            .flex()
+            .items_center()
+            .justify_between()
+            .text_color(hsla(0., 0., 0.9, 1.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(file_icons::render_icon(
+                        &file_icons::get().get_library_icon(),
+                        16.0,
+                        hsla(0., 0., 0.7, 1.0),
+                        "📚",
+                    ))
+                    .child("Loaded Resources"),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(hsla(0., 0., 0.6, 1.0))
+                    .child(format!("({})", memory.loaded_resources.len())),
+            );
+
+        let resources_list = div()
+            .id("resources-list")
+            .max_h(px(300.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .p_1()
+            .gap_1()
+            .children(memory.loaded_resources.iter().map(|(path, resource)| {
+                // Get appropriate icon for resource type
+                let icon = match resource {
+                    LoadedResource::File(_) => file_icons::get().get_icon(path),
+                    LoadedResource::WebSearch { .. } => file_icons::get().get_search_icon(),
+                    LoadedResource::WebPage(_) => file_icons::get().get_web_icon(),
+                };
+
+                div()
+                    .rounded_sm()
+                    .py_1()
+                    .px_2()
+                    .w_full()
+                    .flex()
+                    .bg(rgb(0x303030))
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .w_full()
+                    .child(file_icons::render_icon_container(
+                        &icon,
+                        16.0,
+                        hsla(0., 0., 0.7, 1.0),
+                        "📄",
+                    ))
+                    .child(
+                        div()
+                            .text_color(hsla(0., 0., 0.8, 1.0))
+                            .text_sm()
+                            .truncate()
+                            .flex_grow()
+                            .child(path.to_string_lossy().to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(hsla(0., 0., 0.5, 1.0))
+                            .flex_none()
+                            .child(match resource {
+                                LoadedResource::File(_) => "File",
+                                LoadedResource::WebSearch { .. } => "Web Search",
+                                LoadedResource::WebPage(_) => "Web Page",
+                            }),
+                    )
+            }));
+
+        div()
+            .id("resources-section")
+            .flex_none()
+            .bg(rgb(0x252525))
+            .border_b_1()
+            .border_color(rgb(0x404040))
+            .flex()
+            .flex_col()
+            .child(resources_header)
+            .child(resources_list)
+    }
+
+    fn generate_file_tree_section(
+        self: &Self,
+        memory: &WorkingMemory,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let file_tree_header = div()
+            .id("file-tree-header")
+            .flex_none()
+            .text_sm()
+            .w_full()
+            .px_2()
+            .bg(rgb(0x303030))
+            .flex()
+            .items_center()
+            .justify_between()
+            .text_color(hsla(0., 0., 0.9, 1.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(file_icons::render_icon(
+                        &file_icons::get().get_file_tree_icon(),
+                        16.0,
+                        hsla(0., 0., 0.7, 1.0),
+                        "🌲",
+                    ))
+                    .child("File Tree"),
+            );
+
+        // File tree content - generate a flat list of items
+        let file_tree_content = if let Some(root_entry) = memory.file_tree.as_ref() {
+            // Generate flat list of all entries
+            let entries = self.generate_file_tree(root_entry, 0, cx);
+            div().flex().flex_col().w_full().children(entries)
+        } else {
+            div()
+                .p_2()
+                .text_color(hsla(0., 0., 0.5, 1.0))
+                .text_center()
+                .child("No file tree available")
+        };
+
+        let file_tree = div()
+            .id("file-tree")
+            .overflow_y_scroll()
+            .flex_1() // Take remaining space with flex grow
+            .min_h(px(100.)) // Minimum height to ensure scrolling works
+            .flex()
+            .flex_col()
+            .p_1()
+            .child(file_tree_content);
+
+        div()
+            .id("file-tree-section")
+            .flex_1() // Take remaining space in parent container
+            .min_h(px(100.)) // Minimum height to ensure scrolling works
+            .flex()
+            .flex_col()
+            .child(file_tree_header)
+            .child(file_tree)
+    }
 }
 
 impl Focusable for MemoryView {
@@ -131,162 +292,8 @@ impl Render for MemoryView {
         // Create components that will be used in when blocks
         let memory_content = if self.is_expanded && has_memory {
             let memory = self.memory.lock().unwrap().clone().unwrap();
-
-            // Resources section
-            let resources_header = div()
-                .id("resources-header")
-                .flex_none()
-                .text_sm()
-                .w_full()
-                .px_2()
-                .bg(rgb(0x303030))
-                .flex()
-                .items_center()
-                .justify_between()
-                .text_color(hsla(0., 0., 0.9, 1.0))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(file_icons::render_icon(
-                            &file_icons::get().get_library_icon(),
-                            16.0,
-                            hsla(0., 0., 0.7, 1.0),
-                            "📚",
-                        ))
-                        .child("Loaded Resources"),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(hsla(0., 0., 0.6, 1.0))
-                        .child(format!("({})", memory.loaded_resources.len())),
-                );
-
-            let resources_list = div()
-                .id("resources-list")
-                .max_h(px(300.))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .p_1()
-                .gap_1()
-                .children(memory.loaded_resources.iter().map(|(path, resource)| {
-                    // Get appropriate icon for resource type
-                    let icon = match resource {
-                        LoadedResource::File(_) => file_icons::get().get_icon(path),
-                        LoadedResource::WebSearch { .. } => file_icons::get().get_search_icon(),
-                        LoadedResource::WebPage(_) => file_icons::get().get_web_icon(),
-                    };
-
-                    div()
-                        .rounded_sm()
-                        .py_1()
-                        .px_2()
-                        .w_full()
-                        .flex()
-                        .bg(rgb(0x303030))
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .w_full()
-                        .child(file_icons::render_icon_container(
-                            &icon,
-                            16.0,
-                            hsla(0., 0., 0.7, 1.0),
-                            "📄",
-                        ))
-                        .child(
-                            div()
-                                .text_color(hsla(0., 0., 0.8, 1.0))
-                                .text_sm()
-                                .truncate()
-                                .flex_grow()
-                                .child(path.to_string_lossy().to_string()),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(hsla(0., 0., 0.5, 1.0))
-                                .flex_none()
-                                .child(match resource {
-                                    LoadedResource::File(_) => "File",
-                                    LoadedResource::WebSearch { .. } => "Web Search",
-                                    LoadedResource::WebPage(_) => "Web Page",
-                                }),
-                        )
-                }));
-
-            let resources_section = div()
-                .id("resources-section")
-                .flex_none()
-                .bg(rgb(0x252525))
-                .border_b_1()
-                .border_color(rgb(0x404040))
-                .flex()
-                .flex_col()
-                .child(resources_header)
-                .child(resources_list);
-
-            // File tree header
-            let file_tree_header = div()
-                .id("file-tree-header")
-                .flex_none()
-                .text_sm()
-                .w_full()
-                .px_2()
-                .bg(rgb(0x303030))
-                .flex()
-                .items_center()
-                .justify_between()
-                .text_color(hsla(0., 0., 0.9, 1.0))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(file_icons::render_icon(
-                            &file_icons::get().get_file_tree_icon(),
-                            16.0,
-                            hsla(0., 0., 0.7, 1.0),
-                            "🌲",
-                        ))
-                        .child("File Tree"),
-                );
-
-            // File tree content - generate a flat list of items
-            let file_tree_content = if let Some(root_entry) = memory.file_tree.as_ref() {
-                // Generate flat list of all entries
-                let entries = self.generate_file_tree(root_entry, 0, cx);
-                div().flex().flex_col().w_full().children(entries)
-            } else {
-                div()
-                    .p_2()
-                    .text_color(hsla(0., 0., 0.5, 1.0))
-                    .text_center()
-                    .child("No file tree available")
-            };
-
-            let file_tree = div()
-                .id("file-tree")
-                .overflow_y_scroll()
-                .flex_1() // Take remaining space with flex grow
-                .min_h(px(100.)) // Minimum height to ensure scrolling works
-                .flex()
-                .flex_col()
-                .p_1()
-                .child(file_tree_content);
-
-            let file_tree_section = div()
-                .id("file-tree-section")
-                .flex_1() // Take remaining space in parent container
-                .min_h(px(100.)) // Minimum height to ensure scrolling works
-                .flex()
-                .flex_col()
-                .child(file_tree_header)
-                .child(file_tree);
-
+            let resources_section = Self::generate_resource_section(&memory);
+            let file_tree_section = self.generate_file_tree_section(&memory, cx);
             Some((resources_section, file_tree_section))
         } else {
             None
@@ -333,10 +340,10 @@ impl Render for MemoryView {
                     .cursor_pointer()
                     .hover(|s| s.text_color(hsla(0., 0., 1.0, 1.0)))
                     .child(file_icons::render_icon(
-                        &file_icons::get().get_arrow_icon(self.is_expanded),
+                        &file_icons::get().get_chevron_icon(self.is_expanded),
                         16.0,
                         hsla(0., 0., 0.7, 1.0),
-                        "▶",
+                        "<",
                     ))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_sidebar)),
             );

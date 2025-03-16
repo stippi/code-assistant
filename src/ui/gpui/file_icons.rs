@@ -30,12 +30,11 @@ pub struct FileIcons {
     fallback_suffixes: HashMap<String, String>,
 }
 
-const COLLAPSED_DIRECTORY_TYPE: &str = "collapsed_folder";
-const EXPANDED_DIRECTORY_TYPE: &str = "expanded_folder";
-const COLLAPSED_CHEVRON_TYPE: &str = "collapsed_chevron";
-const EXPANDED_CHEVRON_TYPE: &str = "expanded_chevron";
-const WORKING_MEMORY_TYPE: &str = "brain";
-const DEFAULT_TYPE: &str = "default";
+const DIRECTORY_COLLAPSED: &str = "collapsed_folder";
+const DIRECTORY_EXPANDED: &str = "expanded_folder";
+const CHEVRON_LEFT: &str = "chevron_left";
+const CHEVRON_RIGHT: &str = "chevron_right";
+const WORKING_MEMORY: &str = "brain";
 const FILE_TYPES_ASSET: &str = "icons/file_icons/file_types.json";
 
 impl FileIcons {
@@ -179,9 +178,9 @@ impl FileIcons {
     /// Get folder icon based on expanded state
     pub fn get_folder_icon(&self, expanded: bool) -> Option<SharedString> {
         let key = if expanded {
-            EXPANDED_DIRECTORY_TYPE
+            DIRECTORY_EXPANDED
         } else {
-            COLLAPSED_DIRECTORY_TYPE
+            DIRECTORY_COLLAPSED
         };
 
         self.get_type_icon(key)
@@ -190,9 +189,9 @@ impl FileIcons {
     /// Get chevron icon for folders
     pub fn get_chevron_icon(&self, expanded: bool) -> Option<SharedString> {
         let key = if expanded {
-            EXPANDED_CHEVRON_TYPE
+            CHEVRON_RIGHT
         } else {
-            COLLAPSED_CHEVRON_TYPE
+            CHEVRON_LEFT
         };
 
         self.get_type_icon(key)
@@ -200,7 +199,7 @@ impl FileIcons {
 
     /// Get working memory icon
     pub fn get_working_memory_icon(&self) -> Option<SharedString> {
-        self.get_type_icon(WORKING_MEMORY_TYPE)
+        self.get_type_icon(WORKING_MEMORY)
     }
 
     /// Get library icon for resources
@@ -211,26 +210,6 @@ impl FileIcons {
     /// Get file tree icon
     pub fn get_file_tree_icon(&self) -> Option<SharedString> {
         self.get_type_icon("file_tree")
-    }
-
-    /// Get arrow icon for toggling
-    pub fn get_arrow_icon(&self, expanded: bool) -> Option<SharedString> {
-        let icon_type = if expanded {
-            "chevron_left"
-        } else {
-            "chevron_right"
-        };
-
-        if let Some(type_config) = self.config.types.get(icon_type) {
-            Some(type_config.icon.clone())
-        } else {
-            // Fallback to text arrows
-            if expanded {
-                Some(SharedString::from("◀"))
-            } else {
-                Some(SharedString::from("▶"))
-            }
-        }
     }
 
     /// Get icon for web search

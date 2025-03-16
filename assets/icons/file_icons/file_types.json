@@ -204,8 +204,17 @@
     "coffeescript": {
       "icon": "icons/file_icons/coffeescript.svg"
     },
-    "collapsed_chevron": {
-      "icon": "icons/file_icons/chevron_right.svg"
+    "chevron_left": {
+      "icon": "icons/chevron_left.svg"
+    },
+    "chevron_right": {
+      "icon": "icons/chevron_right.svg"
+    },
+    "chevron_down": {
+      "icon": "icons/chevron_down.svg"
+    },
+    "chevron_up": {
+      "icon": "icons/chevron_up.svg"
     },
     "collapsed_folder": {
       "icon": "icons/file_icons/folder.svg"
@@ -239,9 +248,6 @@
     },
     "eslint": {
       "icon": "icons/file_icons/eslint.svg"
-    },
-    "expanded_chevron": {
-      "icon": "icons/file_icons/chevron_down.svg"
     },
     "expanded_folder": {
       "icon": "icons/file_icons/folder_open.svg"

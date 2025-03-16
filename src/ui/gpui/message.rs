@@ -2,7 +2,7 @@ use super::elements::MessageContainer;
 use super::input::TextInput;
 use super::memory_view::MemoryView;
 use gpui::{
-    div, prelude::*, px, rgb, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
+    div, prelude::*, rgb, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
     MouseButton, MouseUpEvent,
 };
 use std::sync::{Arc, Mutex};
