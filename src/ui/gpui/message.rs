@@ -1,9 +1,10 @@
 use super::elements::MessageContainer;
 use super::input::TextInput;
 use super::memory_view::MemoryView;
+use super::scrollbar::{Scrollbar, ScrollbarState};
 use gpui::{
-    div, prelude::*, rgb, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    MouseButton, MouseUpEvent,
+    div, prelude::*, px, rgb, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
+    MouseButton, MouseUpEvent, ScrollHandle,
 };
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +17,8 @@ pub struct MessageView {
     input_value: Arc<Mutex<Option<String>>>,
     message_queue: Arc<Mutex<Vec<MessageContainer>>>,
     input_requested: Arc<Mutex<bool>>,
+    // Add scroll handle for messages
+    messages_scroll_handle: ScrollHandle,
 }
 
 impl MessageView {
@@ -35,6 +38,8 @@ impl MessageView {
             input_value,
             message_queue,
             input_requested,
+            // Initialize scroll handle
+            messages_scroll_handle: ScrollHandle::new(),
         }
     }
 
@@ -88,6 +93,10 @@ impl Render for MessageView {
         // Check if input is requested
         let is_input_requested = *self.input_requested.lock().unwrap();
 
+        // Create scrollbar state for messages
+        let messages_scrollbar_state =
+            ScrollbarState::new(self.messages_scroll_handle.clone()).parent_entity(&cx.entity());
+
         div()
             .bg(rgb(0x2c2c2c))
             .track_focus(&self.focus_handle(cx))
@@ -105,31 +114,55 @@ impl Render for MessageView {
                     .flex_shrink() // Allow shrinking if needed
                     .overflow_hidden() // Prevent overflow
                     .child(
-                        // Messages display area
+                        // Messages display area with scrollbar
                         div()
-                            .id("messages")
-                            .flex_1()
-                            .p_2()
-                            .overflow_y_scroll()
-                            .bg(rgb(0x202020))
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .children(messages.into_iter().map(|msg| {
+                            .id("messages-container")
+                            .flex_1() // Take remaining space in the parent container
+                            .min_h(px(100.)) // Minimum height to ensure scrolling works
+                            .relative() // For absolute positioning of scrollbar
+                            .child(
                                 div()
-                                    .bg(rgb(0x303030))
-                                    .p_3()
-                                    .rounded_md()
-                                    .shadow_sm()
+                                    .id("messages")
+                                    .size_full() // Fill the parent container
+                                    .p_2()
+                                    .overflow_y_scroll() // Enable vertical scrolling
+                                    .track_scroll(&self.messages_scroll_handle) // Track scrolling
+                                    .bg(rgb(0x202020))
                                     .flex()
                                     .flex_col()
                                     .gap_2()
-                                    .children(msg.elements().into_iter().map(|element| element))
-                            })),
+                                    .children(messages.into_iter().map(|msg| {
+                                        div()
+                                            .bg(rgb(0x303030))
+                                            .p_3()
+                                            .rounded_md()
+                                            .shadow_sm()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_2()
+                                            .children(
+                                                msg.elements().into_iter().map(|element| element),
+                                            )
+                                    })),
+                            )
+                            // Add scrollbar
+                            .child(match Scrollbar::vertical(messages_scrollbar_state) {
+                                Some(scrollbar) => div()
+                                    .absolute()
+                                    .right(px(0.))
+                                    .top(px(0.))
+                                    .h_full()
+                                    .w(px(12.))
+                                    .child(scrollbar)
+                                    .into_any_element(),
+                                None => div().w(px(0.)).h(px(0.)).into_any_element(),
+                            }),
                     )
                     .child(
-                        // Input area
+                        // Input area - ensure this doesn't get pushed out
                         div()
+                            .id("input-area")
+                            .flex_none() // Important: don't grow or shrink
                             .bg(rgb(0x303030))
                             .border_t_1()
                             .border_color(rgb(0x404040))

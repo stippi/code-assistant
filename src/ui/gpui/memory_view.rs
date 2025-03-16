@@ -6,16 +6,15 @@ use gpui::{
     MouseUpEvent, ScrollHandle, Window,
 };
 
+use super::scrollbar::{Scrollbar, ScrollbarState};
 use crate::types::{FileSystemEntryType, FileTreeEntry, LoadedResource, WorkingMemory};
 use crate::ui::gpui::file_icons;
-use crate::ui::gpui::scrollbar::{Scrollbar, ScrollbarState};
 
 // Memory sidebar component
 pub struct MemoryView {
     is_expanded: bool,
     memory: Arc<Mutex<Option<WorkingMemory>>>,
     focus_handle: FocusHandle,
-    // Add scroll handles for both scrollable areas
     resources_scroll_handle: ScrollHandle,
     file_tree_scroll_handle: ScrollHandle,
 }
