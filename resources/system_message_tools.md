@@ -123,23 +123,13 @@ Usage:
 </tool:summarize>
 
 ## search_files
-Description: Search for text in files with advanced options. This tool searches for specific content across multiple files, displaying each match with context.
+Description: Search for text in files using regex in Rust syntax. This tool searches for specific content across multiple files, displaying each match with context.
 Parameters:
-- query: (required) The text to search for. Supports regular expressions.
-- path: (optional) Directory path to search in (relative to project root). If not provided, searches from the root. Avoid providing this parameter unless you are sure you need to restrict results to a folder.
-- case_sensitive: (optional) Whether the search should be case-sensitive (default: false)
-- whole_words: (optional) Match whole words only (default: false)
-- mode: (optional) Search mode - 'exact' (default) for standard text search, or 'regex' for regular expressions
-- max_results: (optional) Maximum number of results to return. Usually, it
+- regex: (required) The regex pattern to search for. Supports Rust regex syntax including character classes, quantifiers, etc.
 
 Usage:
 <tool:search_files>
-<param:query>Your search text or regex pattern here</param:query>
-<param:path>Directory path here (optional)</param:path>
-<param:case_sensitive>true or false (optional)</param:case_sensitive>
-<param:whole_words>true or false (optional)</param:whole_words>
-<param:mode>exact or regex (optional)</param:mode>
-<param:max_results>number (optional)</param:max_results>
+<param:regex>Your regex pattern here</param:regex>
 </tool:search_files>
 
 ## list_files

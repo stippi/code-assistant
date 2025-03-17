@@ -12,7 +12,7 @@ use crate::utils::CommandExecutor;
 use anyhow::Result;
 use percent_encoding;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::debug;
 
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
@@ -125,6 +125,9 @@ impl Agent {
                         self.working_memory.action_history.clone(),
                     )?;
 
+                    // Notify UI of working memory change
+                    let _ = self.ui.update_memory(&self.working_memory).await;
+
                     // Break the inner loop to start a new iteration with updated working memory
                     break;
                 }
@@ -156,6 +159,9 @@ impl Agent {
                         self.working_memory.action_history.clone(),
                     )?;
 
+                    // Notify UI of working memory change
+                    let _ = self.ui.update_memory(&self.working_memory).await;
+
                     // Check if this was a CompleteTask action
                     if let Tool::CompleteTask { .. } = action.tool {
                         // Clean up state file on successful completion
@@ -185,6 +191,9 @@ impl Agent {
         self.state_persistence
             .save_state(task, self.working_memory.action_history.clone())?;
 
+        // Notify UI of initial working memory
+        let _ = self.ui.update_memory(&self.working_memory).await;
+
         self.run_agent_loop().await
     }
 
@@ -210,6 +219,9 @@ impl Agent {
                     state.actions.len()
                 )))
                 .await?;
+
+            // Notify UI of loaded working memory
+            let _ = self.ui.update_memory(&self.working_memory).await;
 
             self.run_agent_loop().await
         } else {
@@ -317,6 +329,10 @@ impl Agent {
         &self,
         messages: Vec<Message>,
     ) -> Result<(Vec<AgentAction>, Message), AgentError> {
+        // Inform UI that a new LLM request is starting
+        let request_id = self.ui.begin_llm_request().await.map_err(|e| AgentError::LLMError(e.into()))?;
+        debug!("Starting LLM request with ID: {}", request_id);
+        
         let request = LLMRequest {
             messages,
             system_prompt: match self.tool_mode {
@@ -337,7 +353,7 @@ impl Agent {
 
         // Create a StreamProcessor and use it to process streaming chunks
         let ui = Arc::clone(&self.ui);
-        let processor = Arc::new(std::sync::Mutex::new(StreamProcessor::new(ui)));
+        let processor = Arc::new(Mutex::new(StreamProcessor::new(ui)));
 
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
             let mut processor_guard = processor.lock().unwrap();
@@ -376,7 +392,11 @@ impl Agent {
             content: MessageContent::Structured(response.content.clone()),
         };
 
-        match parse_llm_response(&response) {
+        // Inform UI that the LLM request has completed
+        let _ = self.ui.end_llm_request(request_id).await;
+        debug!("Completed LLM request with ID: {}", request_id);
+
+        match parse_llm_response(&response, request_id) {
             Ok(actions) => Ok((actions, assistant_msg)),
             Err(e) => Err(AgentError::ActionError {
                 error: e,
@@ -398,6 +418,11 @@ impl Agent {
     async fn execute_action(&mut self, action: &AgentAction) -> Result<ActionResult> {
         debug!("Executing action: {:?}", action.tool);
 
+        // Update status to Running before execution
+        self.ui
+            .update_tool_status(&action.tool_id, crate::ui::ToolStatus::Running, None)
+            .await?;
+
         let mut handler = AgentToolHandler::new(&mut self.working_memory);
 
         // Execute the tool and get both the output and result
@@ -410,10 +435,17 @@ impl Agent {
         )
         .await?;
 
-        // Display any tool output to the user
-        if !output.is_empty() {
-            self.ui.display(UIMessage::Action(output)).await?;
-        }
+        // Determine status based on result
+        let status = if tool_result.is_success() {
+            crate::ui::ToolStatus::Success
+        } else {
+            crate::ui::ToolStatus::Error
+        };
+
+        // Update tool status with result
+        self.ui
+            .update_tool_status(&action.tool_id, status, Some(output))
+            .await?;
 
         Ok(ActionResult {
             tool: action.tool.clone(),
@@ -423,7 +455,7 @@ impl Agent {
     }
 }
 
-pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<Vec<AgentAction>> {
+pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse, request_id: u64) -> Result<Vec<AgentAction>> {
     let mut actions = Vec::new();
 
     let mut reasoning = String::new();
@@ -460,9 +492,13 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
 
                         // Parse and add the tool action
                         let tool = parse_tool_xml(tool_content)?;
+                        // Generate a unique tool ID that matches the one generated by the UI
+                        // The UI increments its counter before generating an ID, so we add 1
+                        let tool_id = format!("tool-{}-{}", request_id, actions.len() + 1);
                         actions.push(AgentAction {
                             tool,
-                            reasoning: remove_thinking_tags(reasoning.trim()).to_owned(),
+                            reasoning: remove_thinking_tags(&reasoning).to_owned(),
+                            tool_id,
                         });
 
                         current_pos = abs_end;
@@ -482,11 +518,21 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
             }
         }
 
-        if let ContentBlock::ToolUse { name, input, .. } = block {
+        if let ContentBlock::ToolUse {
+            name, input, id, ..
+        } = block
+        {
             let tool = parse_tool_json(name, input)?;
+            // Generate a tool ID - either use the provided one or create a new one
+            let tool_id = if id.is_empty() {
+                format!("tool-json-{}", actions.len())
+            } else {
+                id.clone()
+            };
             actions.push(AgentAction {
                 tool,
-                reasoning: remove_thinking_tags(reasoning.trim()).to_owned(),
+                reasoning: remove_thinking_tags(&reasoning).to_owned(),
+                tool_id,
             });
             reasoning = String::new();
         }
@@ -495,10 +541,45 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
     Ok(actions)
 }
 
-fn remove_thinking_tags(input: &str) -> &str {
-    if input.starts_with("<thinking>") && input.ends_with("</thinking>") {
-        &input[10..input.len() - 11]
-    } else {
+fn remove_thinking_tags(input: &str) -> String {
+    // First attempt to remove entire <thinking>...</thinking> blocks
+    let mut result = String::new();
+    let mut current_pos = 0;
+    let mut found_any = false;
+
+    while let Some(tag_start) = input[current_pos..].find("<thinking>") {
+        let abs_start = current_pos + tag_start;
+
+        // Add text before the <thinking> tag
+        result.push_str(&input[current_pos..abs_start]);
+
+        // Find the closing tag
+        if let Some(rel_end) = input[abs_start..].find("</thinking>") {
+            let abs_end = abs_start + rel_end + "</thinking>".len();
+            current_pos = abs_end;
+            found_any = true;
+        } else {
+            // No closing tag found, keep the opening tag and continue
+            result.push_str("<thinking>");
+            current_pos = abs_start + "<thinking>".len();
+        }
+    }
+
+    // Add any remaining text
+    if current_pos < input.len() {
+        result.push_str(&input[current_pos..]);
+    }
+
+    let result = result.trim().to_string();
+
+    // If the result is empty or we didn't find any tags, fall back to just removing the tag markers
+    if result.is_empty() || !found_any {
         input
+            .replace("<thinking>", "")
+            .replace("</thinking>", "")
+            .trim()
+            .to_string()
+    } else {
+        result
     }
 }

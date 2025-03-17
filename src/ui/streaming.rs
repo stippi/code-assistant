@@ -260,14 +260,16 @@ impl StreamProcessor {
                             // Start a new tool section
                             self.state.in_tool = true;
                             self.state.tool_name = tool_name;
-                            // Use a deterministic ID for tests
+
+                            // For XML tools, use empty ID - the UI will generate one
+                            // Use a deterministic ID for tests only
                             #[cfg(test)]
                             {
                                 self.state.tool_id = "ignored".to_string();
                             }
                             #[cfg(not(test))]
                             {
-                                self.state.tool_id = format!("tool-{}", rand::random::<u16>());
+                                self.state.tool_id = String::new();
                             }
 
                             // Send fragment with tool name

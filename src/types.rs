@@ -86,21 +86,21 @@ impl WorkingMemory {
     /// Convert working memory to markdown format
     pub fn to_markdown(&self) -> String {
         let mut result = String::new();
-        
+
         // Header
         result.push_str("# Working Memory\n\n");
         result.push_str("This is your accumulated working memory.\n\n");
-        
+
         // Task
         result.push_str("## Current Task\n\n```\n");
         result.push_str(&self.current_task);
         result.push_str("\n```\n\n");
-        
+
         // Plan
         result.push_str("## Your Plan\n\n");
         result.push_str(&self.plan);
         result.push_str("\n\n====\n\n");
-        
+
         // Action history
         result.push_str("## Previous Tools\n\n");
         if self.action_history.is_empty() {
@@ -120,15 +120,17 @@ impl WorkingMemory {
                     )
                 })
                 .collect::<Vec<_>>();
-            
+
             for action in &action_history {
                 result.push_str(&format!("- {}\n", action));
             }
-            
+
             result.push_str("\n====\n\n");
-            result.push_str("By executing the above tools, you have gathered the following information:\n\n");
+            result.push_str(
+                "By executing the above tools, you have gathered the following information:\n\n",
+            );
         }
-        
+
         // Resources
         result.push_str("## Resources in Memory\n\n");
         if self.loaded_resources.is_empty() {
@@ -141,17 +143,18 @@ impl WorkingMemory {
                 result.push_str("\n<<<<< END RESOURCE\n\n");
             }
         }
-        
+
         // File tree
         result.push_str("## File Tree\n\n");
         if let Some(tree) = &self.file_tree {
-            result.push_str("This is the file tree showing directories expanded via list_files:\n\n");
+            result
+                .push_str("This is the file tree showing directories expanded via list_files:\n\n");
             result.push_str(&tree.to_string());
         } else {
             result.push_str("No file tree available\n");
         }
         result.push_str("\n\n");
-        
+
         // Summaries
         result.push_str("## Summaries\n\n");
         if self.summaries.is_empty() {
@@ -162,7 +165,7 @@ impl WorkingMemory {
                 result.push_str(&format!("- `{}`: {}\n", path.display(), summary));
             }
         }
-        
+
         result
     }
     /// Add a new resource to working memory
@@ -237,18 +240,8 @@ pub enum Tool {
     },
     /// Search for text in files
     SearchFiles {
-        /// The text to search for
-        query: String,
-        /// Optional directory path to search in
-        path: Option<PathBuf>,
-        /// Whether the search should be case-sensitive
-        case_sensitive: bool,
-        /// Whether to match whole words only
-        whole_words: bool,
-        /// Whether to use regex mode
-        regex_mode: bool,
-        /// Maximum number of results to return
-        max_results: Option<usize>,
+        /// The text to search for in regex syntax
+        regex: String,
     },
     /// Web search using DuckDuckGo
     WebSearch {
@@ -292,7 +285,7 @@ pub enum ToolResult {
     },
     SearchFiles {
         results: Vec<SearchResult>,
-        query: String,
+        regex: String,
     },
     ExecuteCommand {
         output: String,
@@ -355,6 +348,7 @@ pub struct ToolDefinition {
 pub struct AgentAction {
     pub tool: Tool,
     pub reasoning: String,
+    pub tool_id: String, // ID of the tool for UI status tracking
 }
 
 /// Result of a tool execution

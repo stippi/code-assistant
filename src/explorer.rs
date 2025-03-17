@@ -10,6 +10,22 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::debug;
 
+// Default directories and files to ignore during file operations
+const DEFAULT_IGNORE_PATTERNS: [&str; 12] = [
+    "target",
+    "node_modules",
+    "build",
+    "dist",
+    ".git",
+    ".idea",
+    ".vscode",
+    "*.pyc",
+    "*.pyo",
+    "*.class",
+    ".DS_Store",
+    "Thumbs.db",
+];
+
 /// Helper struct for grouping search matches into sections
 struct SearchSection {
     start_line: usize,
@@ -124,28 +140,13 @@ impl Explorer {
             return Ok(());
         }
 
-        let default_ignore = [
-            "target",
-            "node_modules",
-            "build",
-            "dist",
-            ".git",
-            ".idea",
-            ".vscode",
-            "*.pyc",
-            "*.pyo",
-            "*.class",
-            ".DS_Store",
-            "Thumbs.db",
-        ];
-
         let walker = WalkBuilder::new(path)
             .max_depth(Some(1)) // Only immediate children
             .hidden(false)
             .git_ignore(true)
             .filter_entry(move |e| {
                 let file_name = e.file_name().to_string_lossy();
-                !default_ignore
+                !DEFAULT_IGNORE_PATTERNS
                     .iter()
                     .any(|pattern| match glob::Pattern::new(pattern) {
                         Ok(pat) => pat.matches(&file_name),
@@ -337,6 +338,15 @@ impl CodeExplorer for Explorer {
         let walker = WalkBuilder::new(path)
             .hidden(false)
             .git_ignore(true)
+            .filter_entry(move |e| {
+                let file_name = e.file_name().to_string_lossy();
+                !DEFAULT_IGNORE_PATTERNS
+                    .iter()
+                    .any(|pattern| match glob::Pattern::new(pattern) {
+                        Ok(pat) => pat.matches(&file_name),
+                        Err(_) => file_name.contains(pattern),
+                    })
+            })
             .build();
 
         for entry in walker {

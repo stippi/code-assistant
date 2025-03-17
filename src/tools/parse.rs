@@ -128,33 +128,12 @@ pub fn parse_tool_from_params(
         }),
 
         "search_files" => Ok(Tool::SearchFiles {
-            query: params
-                .get("query")
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: query".into()))?
+            regex: params
+                .get("regex")
+                .ok_or_else(|| ToolError::ParseError("Missing required parameter: regex".into()))?
                 .first()
-                .ok_or_else(|| ToolError::ParseError("Query parameter is empty".into()))?
+                .ok_or_else(|| ToolError::ParseError("Regex parameter is empty".into()))?
                 .to_string(),
-            path: params
-                .get("path")
-                .and_then(|v| v.first())
-                .map(PathBuf::from),
-            case_sensitive: params
-                .get("case_sensitive")
-                .map_or(false, |v| v.first().map_or(false, |s| s == "true")),
-            whole_words: params
-                .get("whole_words")
-                .map_or(false, |v| v.first().map_or(false, |s| s == "true")),
-            regex_mode: params
-                .get("regex_mode")
-                .map_or(false, |v| v.first().map_or(false, |s| s == "true")),
-            max_results: params
-                .get("max_results")
-                .and_then(|v| v.first())
-                .map(|v| v.trim().parse::<usize>())
-                .transpose()
-                .map_err(|e| {
-                    ToolError::ParseError(format!("Invalid max_results parameter: {}", e))
-                })?,
         }),
 
         "list_files" => Ok(Tool::ListFiles {
@@ -326,30 +305,10 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
                 .map(PathBuf::from),
         }),
         "search_files" => Ok(Tool::SearchFiles {
-            query: params["query"]
+            regex: params["regex"]
                 .as_str()
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: query".into()))?
+                .ok_or_else(|| ToolError::ParseError("Missing required parameter: regex".into()))?
                 .to_string(),
-            path: params
-                .get("path")
-                .and_then(|p| p.as_str())
-                .map(PathBuf::from),
-            case_sensitive: params
-                .get("case_sensitive")
-                .and_then(|b| b.as_bool())
-                .unwrap_or(false),
-            whole_words: params
-                .get("whole_words")
-                .and_then(|b| b.as_bool())
-                .unwrap_or(false),
-            regex_mode: params
-                .get("mode")
-                .and_then(|m| m.as_str())
-                .map_or(false, |m| m == "regex"),
-            max_results: params
-                .get("max_results")
-                .and_then(|n| n.as_u64())
-                .map(|n| n as usize),
         }),
         "list_files" => Ok(Tool::ListFiles {
             paths: parse_path_array(&params["paths"], "paths")?,

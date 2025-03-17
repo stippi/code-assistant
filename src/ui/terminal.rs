@@ -1,4 +1,5 @@
-use super::{DisplayFragment, UIError, UIMessage, UserInterface};
+use super::{DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
+use crate::types::WorkingMemory;
 use async_trait::async_trait;
 use crossterm::{
     style::{self, Color, Stylize},
@@ -233,6 +234,73 @@ impl UserInterface for TerminalUI {
         }
 
         writer.flush()?;
+        Ok(())
+    }
+
+    async fn update_tool_status(
+        &self,
+        _tool_id: &str,
+        status: ToolStatus,
+        message: Option<String>,
+    ) -> Result<(), UIError> {
+        // For terminal UI, we just print a status message if provided
+        if let Some(msg) = message {
+            // Choose color based on status
+            let color = match status {
+                ToolStatus::Pending => Color::DarkGrey,
+                ToolStatus::Running => Color::Blue,
+                ToolStatus::Success => Color::Green,
+                ToolStatus::Error => Color::Red,
+            };
+
+            // Format status symbol
+            let symbol = match status {
+                ToolStatus::Pending => "⋯",
+                ToolStatus::Running => "⚙",
+                ToolStatus::Success => "✓",
+                ToolStatus::Error => "✗",
+            };
+
+            // Format and print message
+            let formatted_msg = format!("{} {}", symbol.with(color), msg);
+            self.write_line(&formatted_msg).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn update_memory(&self, _memory: &WorkingMemory) -> Result<(), UIError> {
+        // Terminal UI doesn't display memory visually, so this is a no-op
+        Ok(())
+    }
+
+    async fn begin_llm_request(&self) -> Result<u64, UIError> {
+        // Use a simple timestamp for request IDs
+        let request_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Optionally display a message that we're starting a new request
+        self.write_line(
+            &format!("Starting new LLM request ({})", request_id)
+                .dark_blue()
+                .to_string(),
+        )
+        .await?;
+
+        Ok(request_id)
+    }
+
+    async fn end_llm_request(&self, request_id: u64) -> Result<(), UIError> {
+        // Optionally display a message that the request has completed
+        self.write_line(
+            &format!("Completed LLM request ({})", request_id)
+                .dark_blue()
+                .to_string(),
+        )
+        .await?;
+
         Ok(())
     }
 }

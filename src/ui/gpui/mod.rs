@@ -1,10 +1,17 @@
+pub mod assets;
 mod elements;
+pub mod file_icons;
 mod input;
+mod memory_view;
 mod message;
+mod path_util;
+mod scrollbar;
 
-use crate::ui::{async_trait, DisplayFragment, UIError, UIMessage, UserInterface};
+use crate::types::WorkingMemory;
+use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use gpui::{AppContext, Focusable};
 use input::TextInput;
+pub use memory_view::MemoryView;
 use message::MessageView;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,6 +24,10 @@ pub struct GPUI {
     input_value: Arc<Mutex<Option<String>>>,
     input_requested: Arc<Mutex<bool>>,
     ui_update_needed: Arc<Mutex<bool>>,
+    working_memory: Arc<Mutex<Option<WorkingMemory>>>,
+    current_request_id: Arc<Mutex<u64>>,
+    current_tool_counter: Arc<Mutex<u64>>,
+    last_xml_tool_id: Arc<Mutex<String>>,
 }
 
 impl GPUI {
@@ -25,12 +36,20 @@ impl GPUI {
         let input_value = Arc::new(Mutex::new(None));
         let input_requested = Arc::new(Mutex::new(false));
         let ui_update_needed = Arc::new(Mutex::new(false));
+        let working_memory = Arc::new(Mutex::new(None));
+        let current_request_id = Arc::new(Mutex::new(0));
+        let current_tool_counter = Arc::new(Mutex::new(0));
+        let last_xml_tool_id = Arc::new(Mutex::new(String::new()));
 
         Self {
             message_queue,
             input_value,
             input_requested,
             ui_update_needed,
+            working_memory,
+            current_request_id,
+            current_tool_counter,
+            last_xml_tool_id,
         }
     }
 
@@ -40,21 +59,47 @@ impl GPUI {
         let input_value = self.input_value.clone();
         let input_requested = self.input_requested.clone();
         let ui_update_needed = self.ui_update_needed.clone();
+        let working_memory = self.working_memory.clone();
 
-        let app = gpui::Application::new();
+        // Get the current directory and assets path
+        let current_dir = std::env::current_dir().unwrap_or_default();
+
+        // Check if assets directory exists
+        let assets_dir = current_dir.join("assets");
+        let assets_exist = assets_dir.exists() && assets_dir.is_dir();
+
+        // Use absolute path for assets to be sure
+        let assets_path = if assets_exist {
+            assets_dir.clone()
+        } else {
+            current_dir.join("assets")
+        };
+
+        // Create asset source
+        let asset_source =
+            crate::ui::gpui::assets::Assets::new(assets_path.to_string_lossy().to_string());
+        // Initialize app with assets
+        let app = gpui::Application::new().with_assets(asset_source);
+
         app.run(move |cx| {
+            // Initialize file icons
+            file_icons::init(cx);
+
             // Register key bindings
             input::register_key_bindings(cx);
 
-            // Create window
+            // Create memory view with our shared working memory
+            let memory_view = cx.new(|cx| MemoryView::new(working_memory.clone(), cx));
+
+            // Create window with larger size to accommodate both views
             let bounds =
-                gpui::Bounds::centered(None, gpui::size(gpui::px(600.0), gpui::px(500.0)), cx);
+                gpui::Bounds::centered(None, gpui::size(gpui::px(1000.0), gpui::px(650.0)), cx);
             let window_result = cx.open_window(
                 gpui::WindowOptions {
                     window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some(gpui::SharedString::from("Code Assistant")),
-                        appears_transparent: false,
+                        appears_transparent: true, // Make titlebar transparent
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -67,6 +112,7 @@ impl GPUI {
                     cx.new(|cx| {
                         MessageView::new(
                             text_input,
+                            memory_view.clone(),
                             cx,
                             input_value.clone(),
                             message_queue.clone(),
@@ -237,23 +283,110 @@ impl UserInterface for GPUI {
                 message.add_or_append_to_thinking_block(text);
             }
             DisplayFragment::ToolName { name, id } => {
-                message.add_tool_use_block(name, id);
+                let tool_id = if id.is_empty() {
+                    // XML case: Generate ID based on request ID and tool counter
+                    let request_id = *self.current_request_id.lock().unwrap();
+                    let mut tool_counter = self.current_tool_counter.lock().unwrap();
+                    *tool_counter += 1;
+                    let new_id = format!("tool-{}-{}", request_id, tool_counter);
+
+                    // Save this ID for subsequent empty parameter IDs
+                    *self.last_xml_tool_id.lock().unwrap() = new_id.clone();
+
+                    new_id
+                } else {
+                    // JSON case: Use the provided ID
+                    id.clone()
+                };
+
+                message.add_tool_use_block(name, &tool_id);
             }
             DisplayFragment::ToolParameter {
                 name,
                 value,
                 tool_id,
             } => {
-                message.add_or_update_tool_parameter(tool_id, name, value);
+                // Use last_xml_tool_id if tool_id is empty
+                let actual_id = if tool_id.is_empty() {
+                    self.last_xml_tool_id.lock().unwrap().clone()
+                } else {
+                    tool_id.clone()
+                };
+
+                message.add_or_update_tool_parameter(&actual_id, name, value);
             }
             DisplayFragment::ToolEnd { id } => {
-                message.end_tool_use(id);
+                // Use last_xml_tool_id if id is empty
+                let actual_id = if id.is_empty() {
+                    self.last_xml_tool_id.lock().unwrap().clone()
+                } else {
+                    id.clone()
+                };
+
+                message.end_tool_use(&actual_id);
             }
         }
 
         // Update the message in the queue
         self.update_message(message);
 
+        Ok(())
+    }
+
+    async fn update_tool_status(
+        &self,
+        tool_id: &str,
+        status: ToolStatus,
+        message: Option<String>,
+    ) -> Result<(), UIError> {
+        let queue = self.message_queue.lock().unwrap();
+        let mut updated = false;
+
+        // Try to update the tool status in all message containers
+        for msg_container in queue.iter() {
+            if msg_container.update_tool_status(tool_id, status, message.clone()) {
+                updated = true;
+            }
+        }
+
+        if updated {
+            // Request UI refresh
+            if let Ok(mut flag) = self.ui_update_needed.lock() {
+                *flag = true;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn update_memory(&self, memory: &WorkingMemory) -> Result<(), UIError> {
+        // Update the shared working memory directly
+        if let Ok(mut memory_guard) = self.working_memory.lock() {
+            *memory_guard = Some(memory.clone());
+        }
+
+        // Set the update flag to trigger a UI refresh
+        if let Ok(mut flag) = self.ui_update_needed.lock() {
+            *flag = true;
+        }
+
+        Ok(())
+    }
+
+    async fn begin_llm_request(&self) -> Result<u64, UIError> {
+        // Increment request ID counter
+        let mut request_id = self.current_request_id.lock().unwrap();
+        *request_id += 1;
+
+        // Reset tool counter for this request
+        let mut tool_counter = self.current_tool_counter.lock().unwrap();
+        *tool_counter = 0;
+
+        Ok(*request_id)
+    }
+
+    async fn end_llm_request(&self, _request_id: u64) -> Result<(), UIError> {
+        // For now, we don't need special handling for request completion
         Ok(())
     }
 }
@@ -265,6 +398,10 @@ impl Clone for GPUI {
             input_value: self.input_value.clone(),
             input_requested: self.input_requested.clone(),
             ui_update_needed: self.ui_update_needed.clone(),
+            working_memory: self.working_memory.clone(),
+            current_request_id: self.current_request_id.clone(),
+            current_tool_counter: self.current_tool_counter.clone(),
+            last_xml_tool_id: self.last_xml_tool_id.clone(),
         }
     }
 }
