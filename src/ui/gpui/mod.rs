@@ -25,6 +25,9 @@ pub struct GPUI {
     input_requested: Arc<Mutex<bool>>,
     ui_update_needed: Arc<Mutex<bool>>,
     working_memory: Arc<Mutex<Option<WorkingMemory>>>,
+    current_request_id: Arc<Mutex<u64>>,
+    current_tool_counter: Arc<Mutex<u64>>,
+    last_xml_tool_id: Arc<Mutex<String>>,
 }
 
 impl GPUI {
@@ -34,6 +37,9 @@ impl GPUI {
         let input_requested = Arc::new(Mutex::new(false));
         let ui_update_needed = Arc::new(Mutex::new(false));
         let working_memory = Arc::new(Mutex::new(None));
+        let current_request_id = Arc::new(Mutex::new(0));
+        let current_tool_counter = Arc::new(Mutex::new(0));
+        let last_xml_tool_id = Arc::new(Mutex::new(String::new()));
 
         Self {
             message_queue,
@@ -41,6 +47,9 @@ impl GPUI {
             input_requested,
             ui_update_needed,
             working_memory,
+            current_request_id,
+            current_tool_counter,
+            last_xml_tool_id,
         }
     }
 
@@ -274,17 +283,47 @@ impl UserInterface for GPUI {
                 message.add_or_append_to_thinking_block(text);
             }
             DisplayFragment::ToolName { name, id } => {
-                message.add_tool_use_block(name, id);
+                let tool_id = if id.is_empty() {
+                    // XML case: Generate ID based on request ID and tool counter
+                    let request_id = *self.current_request_id.lock().unwrap();
+                    let mut tool_counter = self.current_tool_counter.lock().unwrap();
+                    *tool_counter += 1;
+                    let new_id = format!("tool-{}-{}", request_id, tool_counter);
+
+                    // Save this ID for subsequent empty parameter IDs
+                    *self.last_xml_tool_id.lock().unwrap() = new_id.clone();
+
+                    new_id
+                } else {
+                    // JSON case: Use the provided ID
+                    id.clone()
+                };
+
+                message.add_tool_use_block(name, &tool_id);
             }
             DisplayFragment::ToolParameter {
                 name,
                 value,
                 tool_id,
             } => {
-                message.add_or_update_tool_parameter(tool_id, name, value);
+                // Use last_xml_tool_id if tool_id is empty
+                let actual_id = if tool_id.is_empty() {
+                    self.last_xml_tool_id.lock().unwrap().clone()
+                } else {
+                    tool_id.clone()
+                };
+
+                message.add_or_update_tool_parameter(&actual_id, name, value);
             }
             DisplayFragment::ToolEnd { id } => {
-                message.end_tool_use(id);
+                // Use last_xml_tool_id if id is empty
+                let actual_id = if id.is_empty() {
+                    self.last_xml_tool_id.lock().unwrap().clone()
+                } else {
+                    id.clone()
+                };
+
+                message.end_tool_use(&actual_id);
             }
         }
 
@@ -294,24 +333,29 @@ impl UserInterface for GPUI {
         Ok(())
     }
 
-    async fn update_tool_status(&self, tool_id: &str, status: ToolStatus, message: Option<String>) -> Result<(), UIError> {
+    async fn update_tool_status(
+        &self,
+        tool_id: &str,
+        status: ToolStatus,
+        message: Option<String>,
+    ) -> Result<(), UIError> {
         let queue = self.message_queue.lock().unwrap();
         let mut updated = false;
-        
+
         // Try to update the tool status in all message containers
         for msg_container in queue.iter() {
             if msg_container.update_tool_status(tool_id, status, message.clone()) {
                 updated = true;
             }
         }
-        
+
         if updated {
             // Request UI refresh
             if let Ok(mut flag) = self.ui_update_needed.lock() {
                 *flag = true;
             }
         }
-        
+
         Ok(())
     }
 
@@ -328,6 +372,23 @@ impl UserInterface for GPUI {
 
         Ok(())
     }
+
+    async fn begin_llm_request(&self) -> Result<u64, UIError> {
+        // Increment request ID counter
+        let mut request_id = self.current_request_id.lock().unwrap();
+        *request_id += 1;
+
+        // Reset tool counter for this request
+        let mut tool_counter = self.current_tool_counter.lock().unwrap();
+        *tool_counter = 0;
+
+        Ok(*request_id)
+    }
+
+    async fn end_llm_request(&self, _request_id: u64) -> Result<(), UIError> {
+        // For now, we don't need special handling for request completion
+        Ok(())
+    }
 }
 
 impl Clone for GPUI {
@@ -338,6 +399,9 @@ impl Clone for GPUI {
             input_requested: self.input_requested.clone(),
             ui_update_needed: self.ui_update_needed.clone(),
             working_memory: self.working_memory.clone(),
+            current_request_id: self.current_request_id.clone(),
+            current_tool_counter: self.current_tool_counter.clone(),
+            last_xml_tool_id: self.last_xml_tool_id.clone(),
         }
     }
 }

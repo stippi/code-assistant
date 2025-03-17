@@ -209,6 +209,16 @@ impl UserInterface for MockUI {
         // Mock implementation does nothing with the tool status
         Ok(())
     }
+    
+    async fn begin_llm_request(&self) -> Result<u64, UIError> {
+        // For tests, return a fixed request ID
+        Ok(42)
+    }
+    
+    async fn end_llm_request(&self, _request_id: u64) -> Result<(), UIError> {
+        // Mock implementation does nothing with request completion
+        Ok(())
+    }
 }
 
 // Mock Explorer
@@ -799,7 +809,10 @@ fn test_flexible_xml_parsing() -> Result<()> {
         },
     };
 
-    let actions = parse_llm_response(&response)?;
+    // Use a test request_id
+    let request_id = 42;
+
+    let actions = parse_llm_response(&response, request_id)?;
     assert_eq!(actions.len(), 1);
     assert!(actions[0].reasoning.contains("search for TODO comments"));
 
@@ -843,7 +856,9 @@ const x = 42;
         usage: Usage::zero(),
     };
 
-    let actions = parse_llm_response(&response)?;
+    // Use a test request_id
+    let request_id = 42;
+    let actions = parse_llm_response(&response, request_id)?;
     assert_eq!(actions.len(), 1);
     assert!(actions[0].reasoning.contains("fix the code formatting"));
 

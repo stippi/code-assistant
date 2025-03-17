@@ -48,6 +48,13 @@ pub trait UserInterface: Send + Sync {
 
     /// Update memory view with current working memory
     async fn update_memory(&self, memory: &WorkingMemory) -> Result<(), UIError>;
+    
+    /// Informs the UI that a new LLM request is starting
+    /// Returns the request ID that can be used to correlate tool invocations
+    async fn begin_llm_request(&self) -> Result<u64, UIError>;
+    
+    /// Informs the UI that an LLM request has completed
+    async fn end_llm_request(&self, request_id: u64) -> Result<(), UIError>;
 }
 
 #[cfg(test)]
