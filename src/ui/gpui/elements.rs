@@ -1,8 +1,12 @@
 use crate::ui::gpui::file_icons;
 use crate::ui::ToolStatus;
-use gpui::{div, hsla, px, white, IntoElement, SharedString};
+use gpui::{
+    bounce, div, ease_in_out, hsla, percentage, px, svg, white, Animation, AnimationExt,
+    IntoElement, SharedString, Transformation,
+};
 use gpui::{prelude::*, FontWeight};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Container for all elements within a message
 #[derive(Clone)]
@@ -349,12 +353,24 @@ impl IntoElement for MessageElement {
                                             )
                                             .into_any()
                                         } else {
-                                            // Use the custom rotating animation component
-                                            crate::ui::gpui::animations::RotatingArrow::new(
-                                                18.0,
-                                                hsla(280., 0.6, 0.6, 1.0), // Purple
-                                            )
-                                            .into_element()
+                                            svg()
+                                                .size(px(18.))
+                                                .path(SharedString::from("icons/arrow_circle.svg"))
+                                                .text_color(hsla(280., 0.6, 0.6, 1.0))
+                                                .with_animation(
+                                                    "image_circle",
+                                                    Animation::new(Duration::from_secs(2))
+                                                        .repeat()
+                                                        .with_easing(bounce(ease_in_out)),
+                                                    |svg, delta| {
+                                                        svg.with_transformation(
+                                                            Transformation::rotate(percentage(
+                                                                delta,
+                                                            )),
+                                                        )
+                                                    },
+                                                )
+                                                .into_any()
                                         },
                                         // Header text
                                         div()
