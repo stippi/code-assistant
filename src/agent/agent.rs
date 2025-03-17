@@ -409,9 +409,11 @@ impl Agent {
     /// Executes an action and returns the result
     async fn execute_action(&mut self, action: &AgentAction) -> Result<ActionResult> {
         debug!("Executing action: {:?}", action.tool);
-        
+
         // Update status to Running before execution
-        self.ui.update_tool_status(&action.tool_id, crate::ui::ToolStatus::Running, None).await?;
+        self.ui
+            .update_tool_status(&action.tool_id, crate::ui::ToolStatus::Running, None)
+            .await?;
 
         let mut handler = AgentToolHandler::new(&mut self.working_memory);
 
@@ -431,9 +433,11 @@ impl Agent {
         } else {
             crate::ui::ToolStatus::Error
         };
-        
+
         // Update tool status with result
-        self.ui.update_tool_status(&action.tool_id, status, Some(output)).await?;
+        self.ui
+            .update_tool_status(&action.tool_id, status, Some(output))
+            .await?;
 
         Ok(ActionResult {
             tool: action.tool.clone(),
@@ -505,10 +509,17 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
             }
         }
 
-        if let ContentBlock::ToolUse { name, input, id, .. } = block {
+        if let ContentBlock::ToolUse {
+            name, input, id, ..
+        } = block
+        {
             let tool = parse_tool_json(name, input)?;
-            // Use the provided ID if available, otherwise generate one
-            let tool_id = id.clone().unwrap_or_else(|| format!("tool-json-{}", actions.len()));
+            // Generate a tool ID - either use the provided one or create a new one
+            let tool_id = if id.is_empty() {
+                format!("tool-json-{}", actions.len())
+            } else {
+                id.clone()
+            };
             actions.push(AgentAction {
                 tool,
                 reasoning: remove_thinking_tags(&reasoning).to_owned(),

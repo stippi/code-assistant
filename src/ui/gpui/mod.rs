@@ -307,7 +307,7 @@ impl UserInterface for GPUI {
         
         if updated {
             // Request UI refresh
-            if let Ok(mut flag) = self.ui_update_needed.lock().unwrap() {
+            if let Ok(mut flag) = self.ui_update_needed.lock() {
                 *flag = true;
             }
         }
