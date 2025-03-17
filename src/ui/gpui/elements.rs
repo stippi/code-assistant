@@ -1,5 +1,5 @@
 use crate::ui::ToolStatus;
-use gpui::{div, hsla, px, white, IntoElement};
+use gpui::{div, hsla, px, rgba, white, IntoElement};
 use gpui::{prelude::*, FontWeight};
 use std::sync::{Arc, Mutex};
 
@@ -221,17 +221,24 @@ impl IntoElement for MessageElement {
                     .into_any()
             }
             MessageElement::ToolUse(block) => {
-                // Status color based on current status
-                let status_color = match block.status {
-                    ToolStatus::Pending => hsla(0., 0., 0.5, 0.5), // Gray
-                    ToolStatus::Running => hsla(210., 0.7, 0.5, 0.8), // Blue
-                    ToolStatus::Success => hsla(120., 0.7, 0.5, 0.8), // Green
-                    ToolStatus::Error => hsla(0., 0.7, 0.5, 0.8),  // Red
+                // Get status info
+                let (status_color, status_icon) = match block.status {
+                    ToolStatus::Pending => (rgba(0x404040), "⋯"), // Gray, ellipsis
+                    ToolStatus::Running => (rgba(0x0000ff), "⚙"), // Blue, gear
+                    ToolStatus::Success => (rgba(0x00ff00), "✓"), // Green, checkmark
+                    ToolStatus::Error => (rgba(0xff0000), "✗"),   // Red, x
+                };
+
+                // Border color based on status (more subtle indication)
+                let border_color = match block.status {
+                    ToolStatus::Success => hsla(120., 0.3, 0.5, 0.4), // Success: light green
+                    ToolStatus::Error => hsla(0., 0.3, 0.5, 0.4),     // Error: light red
+                    _ => hsla(210., 0.5, 0.5, 0.3), // Others: light blue (default)
                 };
 
                 div()
                     .border_1()
-                    .border_color(hsla(210., 0.5, 0.5, 0.3)) // Light blue border
+                    .border_color(border_color)
                     .rounded_md()
                     .p_2()
                     .mb_2()
@@ -239,46 +246,19 @@ impl IntoElement for MessageElement {
                     .flex()
                     .flex_col()
                     .children(vec![
-                        // Tool name header with status indicator
+                        // Tool name header
                         div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between() // Name left, status right
+                            .font_weight(FontWeight(700.0))
+                            .text_color(hsla(210., 0.7, 0.7, 1.0)) // Blue text
                             .mb_1()
-                            .children(vec![
-                                // Tool name
-                                div()
-                                    .font_weight(FontWeight(700.0))
-                                    .text_color(hsla(210., 0.7, 0.7, 1.0)) // Blue text
-                                    .child(format!("🔧 {}", block.name))
-                                    .into_any(),
-                                // Status circle
-                                div()
-                                    .w(px(12.0))
-                                    .h(px(12.0))
-                                    .rounded_full()
-                                    .bg(status_color)
-                                    .into_any(),
-                            ])
+                            .child(format!("🔧 {}", block.name))
                             .into_any(),
-                        // Status message (if any)
-                        if let Some(msg) = &block.status_message {
-                            div()
-                                .text_color(status_color)
-                                .italic()
-                                .text_sm()
-                                .mb_1()
-                                .child(msg.clone())
-                                .into_any()
-                        } else {
-                            div().h(px(0.0)).into_any() // Empty element
-                        },
                         // Parameters
                         div()
                             .flex()
                             .flex_col()
                             .pl_2()
+                            .mb_2() // Add margin to separate parameters from status
                             .children(block.parameters.iter().map(|param| {
                                 div()
                                     .flex()
@@ -302,6 +282,40 @@ impl IntoElement for MessageElement {
                                     .into_any()
                             }))
                             .into_any(),
+                        // Status indicator below parameters
+                        if block.status != ToolStatus::Pending {
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .pl_2()
+                                .gap_2()
+                                .children(vec![
+                                    // Status circle with icon
+                                    div()
+                                        .w(px(16.0))
+                                        .h(px(16.0))
+                                        .rounded_full()
+                                        .bg(status_color)
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_color(white())
+                                        .text_xs()
+                                        .font_weight(FontWeight(700.0))
+                                        .child(status_icon)
+                                        .into_any(),
+                                    // Status message (if any)
+                                    if let Some(msg) = &block.status_message {
+                                        div().flex_1().text_sm().child(msg.clone()).into_any()
+                                    } else {
+                                        div().into_any() // Empty element
+                                    },
+                                ])
+                                .into_any()
+                        } else {
+                            div().h(px(0.0)).into_any() // Empty element for pending status
+                        },
                     ])
                     .into_any()
             }
