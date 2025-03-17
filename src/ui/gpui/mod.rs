@@ -1,3 +1,4 @@
+pub mod animations;
 pub mod assets;
 mod elements;
 pub mod file_icons;

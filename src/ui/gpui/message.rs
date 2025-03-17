@@ -17,8 +17,10 @@ pub struct MessageView {
     input_value: Arc<Mutex<Option<String>>>,
     message_queue: Arc<Mutex<Vec<MessageContainer>>>,
     input_requested: Arc<Mutex<bool>>,
-    // Add scroll handle for messages
+    // Scroll handle for messages
     messages_scroll_handle: ScrollHandle,
+    // Track the number of thinking blocks for click handling
+    thinking_block_count: usize,
 }
 
 impl MessageView {
@@ -40,6 +42,7 @@ impl MessageView {
             input_requested,
             // Initialize scroll handle
             messages_scroll_handle: ScrollHandle::new(),
+            thinking_block_count: 0,
         }
     }
 
@@ -73,6 +76,32 @@ impl MessageView {
             }
         });
         cx.notify();
+    }
+
+    fn on_thinking_toggle(
+        &mut self,
+        index: usize,
+        _: &MouseUpEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Get access to the message queue
+        let mut updated = false;
+        let mut queue = self.message_queue.lock().unwrap();
+
+        // Only update if we have messages
+        if !queue.is_empty() {
+            // Get the last message container
+            let last_message = queue.last_mut().unwrap();
+
+            // Toggle the specified thinking block
+            updated = last_message.toggle_thinking_collapsed(index);
+        }
+
+        // Notify the UI to update if needed
+        if updated {
+            cx.notify();
+        }
     }
 }
 
@@ -132,17 +161,52 @@ impl Render for MessageView {
                                     .flex_col()
                                     .gap_2()
                                     .children(messages.into_iter().map(|msg| {
-                                        div()
+                                        // Count thinking blocks for click handlers
+                                        let elements = msg.elements();
+                                        let thinking_blocks = elements.iter().filter(|e| {
+                                            matches!(e, super::elements::MessageElement::ThinkingBlock(_))
+                                        }).count();
+
+                                        self.thinking_block_count = thinking_blocks;
+
+                                        // Create message container
+                                        let message_container = div()
                                             .bg(rgb(0x303030))
                                             .p_3()
                                             .rounded_md()
                                             .shadow_sm()
                                             .flex()
                                             .flex_col()
-                                            .gap_2()
-                                            .children(
-                                                msg.elements().into_iter().map(|element| element),
-                                            )
+                                            .gap_2();
+
+                                        // Process elements and add click handlers for thinking blocks
+                                        let mut thinking_index = 0;
+
+                                        let elements_with_handlers = elements.into_iter().map(|element| {
+                                            match &element {
+                                                super::elements::MessageElement::ThinkingBlock(_) => {
+                                                    // Create a closure for this specific thinking block
+                                                    let current_index = thinking_index;
+                                                    thinking_index += 1;
+
+                                                    // Wrap the element in a div with a click handler
+                                                    div()
+                                                        .child(element)
+                                                        .on_mouse_up(
+                                                            MouseButton::Left,
+                                                            cx.listener(move |view, event, window, cx| {
+                                                                // Always trigger the toggle - since we can't easily identify clickable elements
+                                                                // The click handler is attached to the entire thinking block anyway
+                                                                view.on_thinking_toggle(current_index, event, window, cx);
+                                                            })
+                                                        )
+                                                        .into_any_element()
+                                                },
+                                                _ => element.into_element(),
+                                            }
+                                        }).collect::<Vec<_>>();
+
+                                        message_container.children(elements_with_handlers)
                                     })),
                             )
                             // Add scrollbar

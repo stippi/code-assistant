@@ -31,33 +31,35 @@ pub struct FileIcons {
 }
 
 // Public icon type constants that already exist in file_types.json
-pub const DIRECTORY_COLLAPSED: &str = "collapsed_folder";  // folder.svg
-pub const DIRECTORY_EXPANDED: &str = "expanded_folder";    // folder_open.svg
-pub const CHEVRON_LEFT: &str = "chevron_left";            // chevron_left.svg
-pub const CHEVRON_RIGHT: &str = "chevron_right";          // chevron_right.svg
-pub const WORKING_MEMORY: &str = "brain";                 // brain.svg
-pub const LIBRARY: &str = "library";                      // library.svg
-pub const FILE_TREE: &str = "file_tree";                  // file_tree.svg
-pub const MAGNIFYING_GLASS: &str = "magnifying_glass";    // magnifying_glass.svg
-pub const HTML: &str = "template";                        // html.svg
-pub const DEFAULT: &str = "default";                      // file.svg
+pub const DIRECTORY_COLLAPSED: &str = "collapsed_folder"; // folder.svg
+pub const DIRECTORY_EXPANDED: &str = "expanded_folder"; // folder_open.svg
+pub const CHEVRON_LEFT: &str = "chevron_left"; // chevron_left.svg
+pub const CHEVRON_RIGHT: &str = "chevron_right"; // chevron_right.svg
+pub const CHEVRON_DOWN: &str = "chevron_down"; // chevron_down.svg
+pub const CHEVRON_UP: &str = "chevron_up"; // chevron_up.svg
+pub const WORKING_MEMORY: &str = "brain"; // brain.svg
+pub const LIBRARY: &str = "library"; // library.svg
+pub const FILE_TREE: &str = "file_tree"; // file_tree.svg
+pub const MAGNIFYING_GLASS: &str = "magnifying_glass"; // magnifying_glass.svg
+pub const HTML: &str = "template"; // html.svg
+pub const DEFAULT: &str = "default"; // file.svg
 
 // Tool-specific icon mappings to actual SVG files
 // These are direct constants defining the paths to SVG icons or existing types
-pub const TOOL_READ_FILES: &str = "search_code";          // search_code.svg
-pub const TOOL_LIST_FILES: &str = "reveal";               // reveal.svg
-pub const TOOL_EXECUTE_COMMAND: &str = "terminal";        // terminal.svg
-pub const TOOL_WRITE_FILE: &str = "pencil";               // pencil.svg
-pub const TOOL_REPLACE_IN_FILE: &str = "replace";         // replace.svg
-pub const TOOL_SEARCH_FILES: &str = "magnifying_glass";   // magnifying_glass.svg
-pub const TOOL_WEB_SEARCH: &str = "magnifying_glass";     // magnifying_glass.svg
-pub const TOOL_WEB_FETCH: &str = "template";              // html.svg (use template/html as fallback)
-pub const TOOL_DELETE_FILES: &str = "trash";              // trash.svg
-pub const TOOL_OPEN_PROJECT: &str = "expanded_folder";    // folder_open.svg
-pub const TOOL_USER_INPUT: &str = "person";               // person.svg
-pub const TOOL_COMPLETE_TASK: &str = "check_circle";      // check_circle.svg
-pub const TOOL_UPDATE_PLAN: &str = "file_generic";        // file_generic.svg
-pub const TOOL_GENERIC: &str = "file_code";               // file_code.svg
+pub const TOOL_READ_FILES: &str = "search_code"; // search_code.svg
+pub const TOOL_LIST_FILES: &str = "reveal"; // reveal.svg
+pub const TOOL_EXECUTE_COMMAND: &str = "terminal"; // terminal.svg
+pub const TOOL_WRITE_FILE: &str = "pencil"; // pencil.svg
+pub const TOOL_REPLACE_IN_FILE: &str = "replace"; // replace.svg
+pub const TOOL_SEARCH_FILES: &str = "magnifying_glass"; // magnifying_glass.svg
+pub const TOOL_WEB_SEARCH: &str = "magnifying_glass"; // magnifying_glass.svg
+pub const TOOL_WEB_FETCH: &str = "template"; // html.svg (use template/html as fallback)
+pub const TOOL_DELETE_FILES: &str = "trash"; // trash.svg
+pub const TOOL_OPEN_PROJECT: &str = "expanded_folder"; // folder_open.svg
+pub const TOOL_USER_INPUT: &str = "person"; // person.svg
+pub const TOOL_COMPLETE_TASK: &str = "check_circle"; // check_circle.svg
+pub const TOOL_UPDATE_PLAN: &str = "file_generic"; // file_generic.svg
+pub const TOOL_GENERIC: &str = "file_code"; // file_code.svg
 
 const FILE_TYPES_ASSET: &str = "icons/file_icons/file_types.json";
 
@@ -201,23 +203,27 @@ impl FileIcons {
         // These are SVG paths that don't depend on file_types.json
         let icon_path = match typ {
             TOOL_READ_FILES => Some("icons/search_code.svg"),
-            TOOL_LIST_FILES => Some("icons/reveal.svg"), 
+            TOOL_LIST_FILES => Some("icons/reveal.svg"),
             TOOL_EXECUTE_COMMAND => Some("icons/terminal.svg"),
             TOOL_WRITE_FILE => Some("icons/pencil.svg"),
             TOOL_REPLACE_IN_FILE => Some("icons/replace.svg"),
             TOOL_SEARCH_FILES => Some("icons/magnifying_glass.svg"),
-            TOOL_WEB_SEARCH => Some("icons/magnifying_glass.svg"),
+            // TOOL_WEB_SEARCH uses the same icon as SEARCH_FILES but is handled in the match condition above
             TOOL_DELETE_FILES => Some("icons/trash.svg"),
             TOOL_USER_INPUT => Some("icons/person.svg"),
             TOOL_COMPLETE_TASK => Some("icons/check_circle.svg"),
             TOOL_UPDATE_PLAN => Some("icons/file_generic.svg"),
             TOOL_GENERIC => Some("icons/file_code.svg"),
             // For file_types.json types we missed
-            _ => None, 
+            _ => None,
         };
 
         if let Some(path) = icon_path {
-            trace!("[FileIcons]: Using direct path for tool icon: '{}' -> '{}'", typ, path);
+            trace!(
+                "[FileIcons]: Using direct path for tool icon: '{}' -> '{}'",
+                typ,
+                path
+            );
             return Some(SharedString::from(path));
         }
 
@@ -230,7 +236,7 @@ impl FileIcons {
             TOOL_WRITE_FILE => Some(SharedString::from("✏️")),
             TOOL_REPLACE_IN_FILE => Some(SharedString::from("🔄")),
             TOOL_SEARCH_FILES => Some(SharedString::from("🔍")),
-            TOOL_WEB_SEARCH => Some(SharedString::from("🌐")),
+            // TOOL_WEB_SEARCH uses same icon as SEARCH_FILES - handled above
             TOOL_WEB_FETCH => Some(SharedString::from("📥")),
             TOOL_DELETE_FILES => Some(SharedString::from("🗑️")),
             TOOL_OPEN_PROJECT => Some(SharedString::from("📂")),
@@ -260,7 +266,7 @@ impl FileIcons {
             "update_plan" => TOOL_UPDATE_PLAN,
             _ => TOOL_GENERIC,
         };
-        
+
         self.get_type_icon(icon_type)
     }
 }

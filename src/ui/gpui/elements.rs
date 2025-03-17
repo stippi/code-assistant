@@ -1,6 +1,6 @@
 use crate::ui::gpui::file_icons;
 use crate::ui::ToolStatus;
-use gpui::{div, hsla, px, rgba, white, IntoElement};
+use gpui::{div, hsla, px, white, IntoElement, SharedString};
 use gpui::{prelude::*, FontWeight};
 use std::sync::{Arc, Mutex};
 
@@ -34,9 +34,9 @@ impl MessageContainer {
     #[allow(dead_code)]
     pub fn add_thinking_block(&self, content: impl Into<String>) {
         let mut elements = self.elements.lock().unwrap();
-        elements.push(MessageElement::ThinkingBlock(ThinkingBlock {
-            content: content.into(),
-        }));
+        elements.push(MessageElement::ThinkingBlock(ThinkingBlock::new(
+            content.into(),
+        )));
     }
 
     // Add a new tool use block
@@ -105,12 +105,23 @@ impl MessageContainer {
                     block.content.push_str(&content);
                     return;
                 }
-                _ => {}
+                _ => {
+                    // If the last element is not a thinking block, mark any previous
+                    // thinking blocks as completed
+                    for element in elements.iter_mut() {
+                        if let MessageElement::ThinkingBlock(thinking_block) = element {
+                            if !thinking_block.is_completed {
+                                thinking_block.is_completed = true;
+                                thinking_block.end_time = std::time::Instant::now();
+                            }
+                        }
+                    }
+                }
             }
         }
 
         // If we reach here, we need to add a new thinking block
-        elements.push(MessageElement::ThinkingBlock(ThinkingBlock { content }));
+        elements.push(MessageElement::ThinkingBlock(ThinkingBlock::new(content)));
     }
 
     // Add or update tool parameter
@@ -166,6 +177,28 @@ impl MessageContainer {
         // that the tool execution is complete
         let _id = id.into();
     }
+
+    // Toggle a thinking block's collapsed state by its index
+    pub fn toggle_thinking_collapsed(&self, index: usize) -> bool {
+        let mut elements = self.elements.lock().unwrap();
+        let mut changed = false;
+
+        // Get a count of thinking blocks to find the correct one
+        let mut thinking_index = 0;
+
+        for element in elements.iter_mut() {
+            if let MessageElement::ThinkingBlock(block) = element {
+                if thinking_index == index {
+                    block.is_collapsed = !block.is_collapsed;
+                    changed = true;
+                    break;
+                }
+                thinking_index += 1;
+            }
+        }
+
+        changed
+    }
 }
 
 /// Different types of elements that can appear in a message
@@ -182,10 +215,46 @@ pub struct TextBlock {
     pub content: String,
 }
 
-/// Thinking text block (displayed in italic/different color)
+/// Thinking text block with collapsible content
 #[derive(Debug, Clone)]
 pub struct ThinkingBlock {
     pub content: String,
+    pub is_collapsed: bool,
+    pub is_completed: bool,
+    pub start_time: std::time::Instant,
+    pub end_time: std::time::Instant,
+}
+
+impl ThinkingBlock {
+    pub fn new(content: String) -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            content,
+            is_collapsed: true,  // Default is collapsed
+            is_completed: false, // Default is not completed
+            start_time: now,
+            end_time: now, // Initially same as start_time
+        }
+    }
+
+    pub fn formatted_duration(&self) -> String {
+        // Calculate duration based on status
+        let duration = if self.is_completed {
+            // For completed blocks, use the stored end_time
+            self.end_time.duration_since(self.start_time)
+        } else {
+            // For ongoing blocks, show elapsed time
+            self.start_time.elapsed()
+        };
+
+        if duration.as_secs() < 60 {
+            format!("{}s", duration.as_secs())
+        } else {
+            let minutes = duration.as_secs() / 60;
+            let seconds = duration.as_secs() % 60;
+            format!("{}m{}s", minutes, seconds)
+        }
+    }
 }
 
 /// Tool use block with name and parameters
@@ -215,10 +284,121 @@ impl IntoElement for MessageElement {
                 div().text_color(white()).child(block.content).into_any()
             }
             MessageElement::ThinkingBlock(block) => {
+                // Get the appropriate icon based on completed state
+                let (icon, icon_text) = if block.is_completed {
+                    (
+                        file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
+                        "🧠",
+                    )
+                } else {
+                    (Some(SharedString::from("icons/arrow_circle.svg")), "🔄")
+                };
+
+                // Get the chevron icon based on collapsed state
+                let (chevron_icon, chevron_text) = if block.is_collapsed {
+                    (
+                        file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN),
+                        "▼",
+                    )
+                } else {
+                    (file_icons::get().get_type_icon(file_icons::CHEVRON_UP), "▲")
+                };
+
+                // Define header text based on state
+                let header_text = if block.is_completed {
+                    format!("Thought for {}", block.formatted_duration())
+                } else {
+                    "Thinking...".to_string()
+                };
+
+                // Create the thinking block container
                 div()
-                    .italic()
-                    .text_color(hsla(0., 0., 0.7, 0.8)) // Light gray color
-                    .child(block.content)
+                    .rounded_md()
+                    .p_2()
+                    .mb_2()
+                    .bg(hsla(280., 0.1, 0.2, 0.2)) // Very light purple background for thinking
+                    .border_1()
+                    .border_color(hsla(280., 0.3, 0.5, 0.3))
+                    .flex()
+                    .flex_col()
+                    .children(vec![
+                        // Header row with icon and text
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between() // Spread items
+                            .w_full()
+                            .mb_1()
+                            .children(vec![
+                                // Left side with icon and text
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
+                                    .children(vec![
+                                        // Rotating arrow or brain icon
+                                        if block.is_completed {
+                                            // Just render the brain icon normally
+                                            file_icons::render_icon_container(
+                                                &icon,
+                                                18.0,
+                                                hsla(280., 0.6, 0.6, 1.0), // Purple
+                                                icon_text,
+                                            )
+                                            .into_any()
+                                        } else {
+                                            // Use the custom rotating animation component
+                                            crate::ui::gpui::animations::RotatingArrow::new(
+                                                18.0,
+                                                hsla(280., 0.6, 0.6, 1.0), // Purple
+                                            )
+                                            .into_element()
+                                        },
+                                        // Header text
+                                        div()
+                                            .font_weight(FontWeight(500.0))
+                                            .text_color(hsla(280., 0.5, 0.7, 1.0)) // Purple text
+                                            .child(header_text)
+                                            .into_any(),
+                                    ])
+                                    .into_any(),
+                                // Right side with the expand/collapse button
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .size(px(24.))
+                                    .rounded_full()
+                                    .hover(|s| s.bg(hsla(280., 0.2, 0.3, 0.2)))
+                                    .child(file_icons::render_icon(
+                                        &chevron_icon,
+                                        16.0,
+                                        hsla(280., 0.5, 0.7, 1.0), // Purple
+                                        chevron_text,
+                                    ))
+                                    // GPUI has limited custom attribute support
+                                    // We'll identify it by position in the message instead
+                                    .into_any(),
+                            ])
+                            .into_any(),
+                        // Content (only shown when expanded)
+                        if !block.is_collapsed {
+                            div()
+                                .pt_2()
+                                .italic()
+                                .text_color(hsla(0., 0., 0.8, 0.9)) // Light gray color
+                                // Can't easily set whitespace style, just use normal text
+                                .border_t_1()
+                                .border_color(hsla(280., 0.3, 0.5, 0.2))
+                                .child(block.content.clone())
+                                .into_any()
+                        } else {
+                            div().into_any() // Empty div when collapsed
+                        },
+                    ])
                     .into_any()
             }
             MessageElement::ToolUse(block) => {
