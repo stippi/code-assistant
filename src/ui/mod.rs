@@ -6,6 +6,14 @@ use async_trait::async_trait;
 pub use streaming::DisplayFragment;
 use thiserror::Error;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ToolStatus {
+    Pending,  // Default status when a tool appears in the stream
+    Running,  // Tool is currently being executed
+    Success,  // Execution was successful
+    Error,    // Error during execution
+}
+
 #[derive(Debug, Clone)]
 pub enum UIMessage {
     // System actions that the agent takes
@@ -34,6 +42,9 @@ pub trait UserInterface: Send + Sync {
 
     /// Display a streaming fragment with specific type information
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError>;
+
+    /// Update tool status for a specific tool
+    async fn update_tool_status(&self, tool_id: &str, status: ToolStatus, message: Option<String>) -> Result<(), UIError>;
 
     /// Update memory view with current working memory
     async fn update_memory(&self, memory: &WorkingMemory) -> Result<(), UIError>;

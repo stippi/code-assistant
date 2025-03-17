@@ -3,7 +3,7 @@ use crate::agent::agent::parse_llm_response;
 use crate::llm::{types::*, LLMProvider, LLMRequest, StreamingCallback};
 use crate::persistence::MockStatePersistence;
 use crate::types::*;
-use crate::ui::{UIError, UIMessage, UserInterface};
+use crate::ui::{ToolStatus, UIError, UIMessage, UserInterface};
 use crate::utils::{CommandExecutor, CommandOutput};
 use agent::ToolMode;
 use anyhow::Result;
@@ -197,6 +197,16 @@ impl UserInterface for MockUI {
 
     async fn update_memory(&self, _memory: &WorkingMemory) -> Result<(), UIError> {
         // Mock implementation does nothing with memory updates
+        Ok(())
+    }
+
+    async fn update_tool_status(
+        &self,
+        _tool_id: &str,
+        _status: ToolStatus,
+        _message: Option<String>,
+    ) -> Result<(), UIError> {
+        // Mock implementation does nothing with the tool status
         Ok(())
     }
 }

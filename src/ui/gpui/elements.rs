@@ -1,3 +1,4 @@
+use crate::ui::ToolStatus;
 use gpui::{div, hsla, px, white, IntoElement};
 use gpui::{prelude::*, FontWeight};
 use std::sync::{Arc, Mutex};
@@ -44,7 +45,31 @@ impl MessageContainer {
             name: name.into(),
             id: id.into(),
             parameters: Vec::new(),
+            status: ToolStatus::Pending,
+            status_message: None,
         }));
+    }
+
+    // Update the status of a tool block
+    pub fn update_tool_status(
+        &self,
+        tool_id: &str,
+        status: ToolStatus,
+        message: Option<String>,
+    ) -> bool {
+        let mut elements = self.elements.lock().unwrap();
+
+        for element in elements.iter_mut() {
+            if let MessageElement::ToolUse(tool) = element {
+                if tool.id == tool_id {
+                    tool.status = status;
+                    tool.status_message = message;
+                    return true;
+                }
+            }
+        }
+
+        false // No matching tool found
     }
 
     // Add or append to text block
@@ -125,6 +150,8 @@ impl MessageContainer {
             name: "unknown".to_string(), // Default name since we only have ID
             id: tool_id,
             parameters: Vec::new(),
+            status: ToolStatus::Pending,
+            status_message: None,
         };
 
         tool.parameters.push(ParameterBlock { name, value });
@@ -166,6 +193,8 @@ pub struct ToolUseBlock {
     pub name: String,
     pub id: String,
     pub parameters: Vec<ParameterBlock>,
+    pub status: ToolStatus,
+    pub status_message: Option<String>,
 }
 
 /// Parameter for a tool
@@ -192,6 +221,14 @@ impl IntoElement for MessageElement {
                     .into_any()
             }
             MessageElement::ToolUse(block) => {
+                // Status color based on current status
+                let status_color = match block.status {
+                    ToolStatus::Pending => hsla(0., 0., 0.5, 0.5), // Gray
+                    ToolStatus::Running => hsla(210., 0.7, 0.5, 0.8), // Blue
+                    ToolStatus::Success => hsla(120., 0.7, 0.5, 0.8), // Green
+                    ToolStatus::Error => hsla(0., 0.7, 0.5, 0.8),  // Red
+                };
+
                 div()
                     .border_1()
                     .border_color(hsla(210., 0.5, 0.5, 0.3)) // Light blue border
@@ -202,19 +239,47 @@ impl IntoElement for MessageElement {
                     .flex()
                     .flex_col()
                     .children(vec![
-                        // Tool name header
+                        // Tool name header with status indicator
                         div()
-                            .font_weight(FontWeight(700.0))
-                            .text_color(hsla(210., 0.7, 0.7, 1.0)) // Blue text
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between() // Name left, status right
                             .mb_1()
-                            .child(format!("🔧 {}", block.name))
+                            .children(vec![
+                                // Tool name
+                                div()
+                                    .font_weight(FontWeight(700.0))
+                                    .text_color(hsla(210., 0.7, 0.7, 1.0)) // Blue text
+                                    .child(format!("🔧 {}", block.name))
+                                    .into_any(),
+                                // Status circle
+                                div()
+                                    .w(px(12.0))
+                                    .h(px(12.0))
+                                    .rounded_full()
+                                    .bg(status_color)
+                                    .into_any(),
+                            ])
                             .into_any(),
+                        // Status message (if any)
+                        if let Some(msg) = &block.status_message {
+                            div()
+                                .text_color(status_color)
+                                .italic()
+                                .text_sm()
+                                .mb_1()
+                                .child(msg.clone())
+                                .into_any()
+                        } else {
+                            div().h(px(0.0)).into_any() // Empty element
+                        },
                         // Parameters
                         div()
                             .flex()
                             .flex_col()
                             .pl_2()
-                            .children(block.parameters.into_iter().map(|param| {
+                            .children(block.parameters.iter().map(|param| {
                                 div()
                                     .flex()
                                     .flex_row()
@@ -226,12 +291,12 @@ impl IntoElement for MessageElement {
                                             .text_color(hsla(210., 0.5, 0.8, 1.0)) // Light blue text
                                             .min_w(px(100.))
                                             .mr_2()
-                                            .child(format!("{}:", param.name))
+                                            .child(format!("{}:", param.name.clone()))
                                             .into_any(),
                                         div()
                                             .text_color(white())
                                             .flex_1()
-                                            .child(param.value)
+                                            .child(param.value.clone())
                                             .into_any(),
                                     ])
                                     .into_any()

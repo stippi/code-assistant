@@ -348,6 +348,7 @@ pub struct ToolDefinition {
 pub struct AgentAction {
     pub tool: Tool,
     pub reasoning: String,
+    pub tool_id: String, // ID of the tool for UI status tracking
 }
 
 /// Result of a tool execution

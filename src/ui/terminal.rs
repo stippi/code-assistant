@@ -1,4 +1,4 @@
-use super::{DisplayFragment, UIError, UIMessage, UserInterface};
+use super::{DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use crate::types::WorkingMemory;
 use async_trait::async_trait;
 use crossterm::{
@@ -234,6 +234,33 @@ impl UserInterface for TerminalUI {
         }
 
         writer.flush()?;
+        Ok(())
+    }
+
+    async fn update_tool_status(&self, _tool_id: &str, status: ToolStatus, message: Option<String>) -> Result<(), UIError> {
+        // For terminal UI, we just print a status message if provided
+        if let Some(msg) = message {
+            // Choose color based on status
+            let color = match status {
+                ToolStatus::Pending => Color::DarkGrey,
+                ToolStatus::Running => Color::Blue,
+                ToolStatus::Success => Color::Green,
+                ToolStatus::Error => Color::Red,
+            };
+            
+            // Format status symbol
+            let symbol = match status {
+                ToolStatus::Pending => "⋯",
+                ToolStatus::Running => "⚙",
+                ToolStatus::Success => "✓",
+                ToolStatus::Error => "✗",
+            };
+            
+            // Format and print message
+            let formatted_msg = format!("{} {}", symbol.with(color), msg);
+            self.write_line(&formatted_msg).await?;
+        }
+        
         Ok(())
     }
 

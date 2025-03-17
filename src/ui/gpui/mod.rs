@@ -8,7 +8,7 @@ mod path_util;
 mod scrollbar;
 
 use crate::types::WorkingMemory;
-use crate::ui::{async_trait, DisplayFragment, UIError, UIMessage, UserInterface};
+use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use gpui::{AppContext, Focusable};
 use input::TextInput;
 pub use memory_view::MemoryView;
@@ -291,6 +291,27 @@ impl UserInterface for GPUI {
         // Update the message in the queue
         self.update_message(message);
 
+        Ok(())
+    }
+
+    async fn update_tool_status(&self, tool_id: &str, status: ToolStatus, message: Option<String>) -> Result<(), UIError> {
+        let queue = self.message_queue.lock().unwrap();
+        let mut updated = false;
+        
+        // Try to update the tool status in all message containers
+        for msg_container in queue.iter() {
+            if msg_container.update_tool_status(tool_id, status, message.clone()) {
+                updated = true;
+            }
+        }
+        
+        if updated {
+            // Request UI refresh
+            if let Ok(mut flag) = self.ui_update_needed.lock().unwrap() {
+                *flag = true;
+            }
+        }
+        
         Ok(())
     }
 

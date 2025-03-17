@@ -1,6 +1,6 @@
 use super::streaming::{DisplayFragment, StreamProcessor};
 use crate::llm::StreamingChunk;
-use crate::ui::{UIError, UserInterface};
+use crate::ui::{ToolStatus, UIError, UserInterface};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::VecDeque;
@@ -91,9 +91,19 @@ impl UserInterface for TestUI {
         guard.push_back(fragment.clone());
         Ok(())
     }
-    
+
     async fn update_memory(&self, _memory: &crate::types::WorkingMemory) -> Result<(), UIError> {
         // Test implementation does nothing with memory updates
+        Ok(())
+    }
+
+    async fn update_tool_status(
+        &self,
+        _tool_id: &str,
+        _status: ToolStatus,
+        _message: Option<String>,
+    ) -> Result<(), UIError> {
+        // Test implementation does nothing with tool status
         Ok(())
     }
 }

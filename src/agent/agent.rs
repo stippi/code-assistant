@@ -409,6 +409,9 @@ impl Agent {
     /// Executes an action and returns the result
     async fn execute_action(&mut self, action: &AgentAction) -> Result<ActionResult> {
         debug!("Executing action: {:?}", action.tool);
+        
+        // Update status to Running before execution
+        self.ui.update_tool_status(&action.tool_id, crate::ui::ToolStatus::Running, None).await?;
 
         let mut handler = AgentToolHandler::new(&mut self.working_memory);
 
@@ -422,10 +425,15 @@ impl Agent {
         )
         .await?;
 
-        // Display any tool output to the user
-        if !output.is_empty() {
-            self.ui.display(UIMessage::Action(output)).await?;
-        }
+        // Determine status based on result
+        let status = if tool_result.is_success() {
+            crate::ui::ToolStatus::Success
+        } else {
+            crate::ui::ToolStatus::Error
+        };
+        
+        // Update tool status with result
+        self.ui.update_tool_status(&action.tool_id, status, Some(output)).await?;
 
         Ok(ActionResult {
             tool: action.tool.clone(),
@@ -472,9 +480,12 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
 
                         // Parse and add the tool action
                         let tool = parse_tool_xml(tool_content)?;
+                        // Generate a unique tool ID for this action (based on position)
+                        let tool_id = format!("tool-xml-{}", actions.len());
                         actions.push(AgentAction {
                             tool,
                             reasoning: remove_thinking_tags(&reasoning).to_owned(),
+                            tool_id,
                         });
 
                         current_pos = abs_end;
@@ -494,11 +505,14 @@ pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse) -> Result<V
             }
         }
 
-        if let ContentBlock::ToolUse { name, input, .. } = block {
+        if let ContentBlock::ToolUse { name, input, id, .. } = block {
             let tool = parse_tool_json(name, input)?;
+            // Use the provided ID if available, otherwise generate one
+            let tool_id = id.clone().unwrap_or_else(|| format!("tool-json-{}", actions.len()));
             actions.push(AgentAction {
                 tool,
                 reasoning: remove_thinking_tags(&reasoning).to_owned(),
+                tool_id,
             });
             reasoning = String::new();
         }
