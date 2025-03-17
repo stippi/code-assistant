@@ -48,7 +48,12 @@ impl MemoryView {
         let icon = match entry.entry_type {
             FileSystemEntryType::Directory => {
                 // Get folder icon based on expanded state
-                file_icons::get().get_folder_icon(entry.is_expanded)
+                let icon_type = if entry.is_expanded {
+                    file_icons::DIRECTORY_EXPANDED
+                } else {
+                    file_icons::DIRECTORY_COLLAPSED
+                };
+                file_icons::get().get_type_icon(icon_type)
             }
             FileSystemEntryType::File => {
                 // Get file icon based on file extension
@@ -144,7 +149,7 @@ impl MemoryView {
                     .items_center()
                     .gap_2()
                     .child(file_icons::render_icon(
-                        &file_icons::get().get_library_icon(),
+                        &file_icons::get().get_type_icon(file_icons::LIBRARY),
                         16.0,
                         hsla(0., 0., 0.7, 1.0),
                         "📚",
@@ -173,8 +178,10 @@ impl MemoryView {
                 // Get appropriate icon for resource type
                 let icon = match resource {
                     LoadedResource::File(_) => file_icons::get().get_icon(path),
-                    LoadedResource::WebSearch { .. } => file_icons::get().get_search_icon(),
-                    LoadedResource::WebPage(_) => file_icons::get().get_web_icon(),
+                    LoadedResource::WebSearch { .. } => {
+                        file_icons::get().get_type_icon(file_icons::MAGNIFYING_GLASS)
+                    }
+                    LoadedResource::WebPage(_) => file_icons::get().get_type_icon(file_icons::HTML),
                 };
 
                 div()
@@ -278,7 +285,7 @@ impl MemoryView {
                     .items_center()
                     .gap_2()
                     .child(file_icons::render_icon(
-                        &file_icons::get().get_file_tree_icon(),
+                        &file_icons::get().get_type_icon(file_icons::FILE_TREE),
                         16.0,
                         hsla(0., 0., 0.7, 1.0),
                         "🌲",
@@ -384,7 +391,7 @@ impl Render for MemoryView {
                     .gap_2()
                     .child(if self.is_expanded {
                         file_icons::render_icon(
-                            &file_icons::get().get_working_memory_icon(),
+                            &file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
                             16.0,
                             hsla(0., 0., 0.7, 1.0),
                             "🧠",
@@ -406,7 +413,11 @@ impl Render for MemoryView {
                     .cursor_pointer()
                     .hover(|s| s.text_color(hsla(0., 0., 1.0, 1.0)))
                     .child(file_icons::render_icon(
-                        &file_icons::get().get_chevron_icon(self.is_expanded),
+                        &file_icons::get().get_type_icon(if self.is_expanded {
+                            file_icons::CHEVRON_RIGHT
+                        } else {
+                            file_icons::CHEVRON_LEFT
+                        }),
                         16.0,
                         hsla(0., 0., 0.7, 1.0),
                         "<",
