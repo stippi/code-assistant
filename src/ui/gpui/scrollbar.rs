@@ -1,3 +1,5 @@
+// Respectfully lifted from https://github.com/zed-industries/zed/blob/main/crates/ui/src/components/scrollbar.rs (GPL-v3)
+// Only change is the replacement of `cx.theme().colors()` for a hard-coded color.
 use std::{any::Any, cell::Cell, fmt::Debug, ops::Range, rc::Rc, sync::Arc};
 
 use gpui::{
