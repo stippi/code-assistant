@@ -1,7 +1,7 @@
 use crate::ui::gpui::file_icons;
 use crate::ui::ToolStatus;
 use gpui::{
-    bounce, div, ease_in_out, hsla, percentage, px, svg, white, Animation, AnimationExt,
+    bounce, div, ease_in_out, hsla, percentage, px, rgba, svg, white, Animation, AnimationExt,
     IntoElement, SharedString, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
@@ -28,6 +28,7 @@ impl MessageContainer {
 
     // Add a new text block
     pub fn add_text_block(&self, content: impl Into<String>) {
+        self.finish_any_thinking_blocks();
         let mut elements = self.elements.lock().unwrap();
         elements.push(MessageElement::TextBlock(TextBlock {
             content: content.into(),
@@ -37,6 +38,7 @@ impl MessageContainer {
     // Add a new thinking block
     #[allow(dead_code)]
     pub fn add_thinking_block(&self, content: impl Into<String>) {
+        self.finish_any_thinking_blocks();
         let mut elements = self.elements.lock().unwrap();
         elements.push(MessageElement::ThinkingBlock(ThinkingBlock::new(
             content.into(),
@@ -45,6 +47,7 @@ impl MessageContainer {
 
     // Add a new tool use block
     pub fn add_tool_use_block(&self, name: impl Into<String>, id: impl Into<String>) {
+        self.finish_any_thinking_blocks();
         let mut elements = self.elements.lock().unwrap();
         elements.push(MessageElement::ToolUse(ToolUseBlock {
             name: name.into(),
@@ -79,6 +82,8 @@ impl MessageContainer {
 
     // Add or append to text block
     pub fn add_or_append_to_text_block(&self, content: impl Into<String>) {
+        self.finish_any_thinking_blocks();
+
         let content = content.into();
         let mut elements = self.elements.lock().unwrap();
 
@@ -109,18 +114,7 @@ impl MessageContainer {
                     block.content.push_str(&content);
                     return;
                 }
-                _ => {
-                    // If the last element is not a thinking block, mark any previous
-                    // thinking blocks as completed
-                    for element in elements.iter_mut() {
-                        if let MessageElement::ThinkingBlock(thinking_block) = element {
-                            if !thinking_block.is_completed {
-                                thinking_block.is_completed = true;
-                                thinking_block.end_time = std::time::Instant::now();
-                            }
-                        }
-                    }
-                }
+                _ => {}
             }
         }
 
@@ -180,6 +174,19 @@ impl MessageContainer {
         // Currently no specific action needed, but could add visual indicator
         // that the tool execution is complete
         let _id = id.into();
+    }
+
+    fn finish_any_thinking_blocks(&self) {
+        let mut elements = self.elements.lock().unwrap();
+        // Mark any previous thinking blocks as completed
+        for element in elements.iter_mut() {
+            if let MessageElement::ThinkingBlock(thinking_block) = element {
+                if !thinking_block.is_completed {
+                    thinking_block.is_completed = true;
+                    thinking_block.end_time = std::time::Instant::now();
+                }
+            }
+        }
     }
 
     // Toggle a thinking block's collapsed state by its index
@@ -405,6 +412,7 @@ impl IntoElement for MessageElement {
                             div()
                                 .pt_2()
                                 .italic()
+                                .text_sm()
                                 .text_color(hsla(0., 0., 0.8, 0.9)) // Light gray color
                                 // Can't easily set whitespace style, just use normal text
                                 .border_t_1()
@@ -423,17 +431,16 @@ impl IntoElement for MessageElement {
 
                 // Get color based on status
                 let icon_color = match block.status {
-                    ToolStatus::Pending => hsla(0., 0., 0.5, 1.0), // Gray
-                    ToolStatus::Running => hsla(210., 0.7, 0.7, 1.0), // Blue
-                    ToolStatus::Success => hsla(120., 0.7, 0.5, 1.0), // Green
-                    ToolStatus::Error => hsla(0., 0.7, 0.5, 1.0),  // Red
+                    ToolStatus::Error => rgba(0xFD8E3FE0),
+                    _ => rgba(0xFFFFFFAA),
                 };
 
                 // Border color based on status (more subtle indication)
                 let border_color = match block.status {
-                    ToolStatus::Success => hsla(120., 0.3, 0.5, 0.4), // Success: light green
-                    ToolStatus::Error => hsla(0., 0.3, 0.5, 0.4),     // Error: light red
-                    _ => hsla(210., 0.5, 0.5, 0.3), // Others: light blue (default)
+                    ToolStatus::Pending => rgba(0x666666FF),
+                    ToolStatus::Running => rgba(0x56BBF6FF),
+                    ToolStatus::Success => rgba(0x47D136FF),
+                    ToolStatus::Error => rgba(0xFD8E3FFF),
                 };
 
                 // Render parameter badges for a more compact display
@@ -468,12 +475,11 @@ impl IntoElement for MessageElement {
                 };
 
                 div()
-                    .border_1()
+                    .border_l_1()
                     .border_color(border_color)
-                    .rounded_md()
-                    .p_2()
+                    .p_1()
                     .mb_2()
-                    .bg(hsla(210., 0.1, 0.2, 0.2)) // Very light blue background
+                    .bg(rgba(0x161616FF))
                     .flex()
                     .flex_col()
                     .children(vec![
@@ -482,16 +488,16 @@ impl IntoElement for MessageElement {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .mb_2() // Margin below header
+                            //.mb_2() // Margin below header
                             .children(vec![
                                 // Tool icon
-                                file_icons::render_icon_container(&icon, 18.0, icon_color, "🔧")
-                                    .mr_2()
+                                file_icons::render_icon_container(&icon, 16.0, icon_color, "🔧")
+                                    .mx_2()
                                     .into_any(),
                                 // Tool name
                                 div()
                                     .font_weight(FontWeight(700.0))
-                                    .text_color(hsla(210., 0.7, 0.7, 1.0))
+                                    .text_color(icon_color)
                                     .mr_2()
                                     .flex_none() // Prevent shrinking
                                     .child(block.name)
@@ -528,6 +534,7 @@ impl IntoElement for MessageElement {
                             div().into_any() // Empty element for non-error status
                         },
                     ])
+                    .shadow_md()
                     .into_any()
             }
         }

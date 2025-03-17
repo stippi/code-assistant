@@ -304,7 +304,7 @@ pub fn get() -> &'static FileIcons {
 pub fn render_icon(
     icon_opt: &Option<SharedString>,
     size: f32,
-    color: gpui::Hsla,
+    color: impl Into<gpui::Hsla>,
     fallback: &str,
 ) -> gpui::AnyElement {
     let size_px = px(size);
@@ -346,7 +346,7 @@ pub fn render_icon(
 pub fn render_icon_container(
     icon_opt: &Option<SharedString>,
     size: f32,
-    color: gpui::Hsla,
+    color: impl Into<gpui::Hsla>,
     fallback: &str,
 ) -> gpui::Div {
     let size_px = px(size);
