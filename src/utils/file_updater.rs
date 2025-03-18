@@ -12,7 +12,7 @@ pub fn apply_replacements(
 
         match matches.len() {
             0 => anyhow::bail!(
-                "Could not find search content:\n{}\nin file content",
+                "Could not match the following SEARCH block in the file contents:\n\n<<<<<<< SEARCH\n{}>>>>>>> END OF SEARCH",
                 replacement.search
             ),
             1 => {
