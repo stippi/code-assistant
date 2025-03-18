@@ -50,7 +50,7 @@ struct Args {
     #[arg(long, default_value = ".")]
     path: Option<PathBuf>,
 
-    /// Task to perform on the codebase (required in agent mode unless --continue or --ui is used)
+    /// Task to perform on the codebase (required in agent mode unless --continue is used, optional with --ui)
     #[arg(short, long)]
     task: Option<String>,
 
@@ -251,7 +251,9 @@ async fn main() -> Result<()> {
             }
 
             if !continue_task && task.is_none() && !use_gui {
-                anyhow::bail!("In agent mode, either --task, --continue, or --ui must be specified");
+                anyhow::bail!(
+                    "In agent mode, either --task, --continue, or --ui must be specified"
+                );
             }
 
             // Check if GUI mode is requested
@@ -303,8 +305,7 @@ async fn main() -> Result<()> {
                         } else if let Some(task_str) = task {
                             agent.start_with_task(task_str).await.unwrap();
                         } else {
-                            // In GUI mode with no task, we can start without a task
-                            // The UI will prompt the user for a task
+                            // In GUI mode with no task, prompt the user for a task
                             let task_prompt = "Please enter the task you want me to perform:";
                             let task_from_ui = agent.get_input_from_ui(task_prompt).await.unwrap();
                             agent.start_with_task(task_from_ui).await.unwrap();
