@@ -1,5 +1,30 @@
 use crate::types::FileReplacement;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum FileUpdaterError {
+    SearchBlockNotFound(String),
+    MultipleMatches(usize, String),
+    Other(String),
+}
+
+impl std::fmt::Display for FileUpdaterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileUpdaterError::SearchBlockNotFound(search) => {
+                write!(f, "Could not match the following SEARCH block in the file contents:\n\n<<<<<<< SEARCH\n{}>>>>>>> END OF SEARCH", search)
+            }
+            FileUpdaterError::MultipleMatches(count, search) => {
+                write!(f, "Found {} occurrences of search content:\n```\n{}\n```\nSearch text must match exactly one location. Try enlarging the section to replace.", count, search)
+            }
+            FileUpdaterError::Other(msg) => {
+                write!(f, "{}", msg)
+            }
+        }
+    }
+}
+
+impl std::error::Error for FileUpdaterError {}
+
 pub fn apply_replacements(
     content: &str,
     replacements: &[FileReplacement],
@@ -11,22 +36,22 @@ pub fn apply_replacements(
         let matches: Vec<_> = result.match_indices(&replacement.search).collect();
 
         match matches.len() {
-            0 => anyhow::bail!(
-                "Could not match the following SEARCH block in the file contents:\n\n<<<<<<< SEARCH\n{}>>>>>>> END OF SEARCH",
-                replacement.search
-            ),
+            0 => {
+                return Err(
+                    FileUpdaterError::SearchBlockNotFound(replacement.search.clone()).into(),
+                )
+            }
             1 => {
                 let (pos, _) = matches[0];
-                result.replace_range(
-                    pos..pos + replacement.search.len(),
-                    &replacement.replace
-                );
-            },
-            _ => anyhow::bail!(
-                "Found {} occurrences of search content:\n```\n{}\n```\nSearch text must match exactly one location. Try enlarging the section to replace.",
-                matches.len(),
-                replacement.search
-            ),
+                result.replace_range(pos..pos + replacement.search.len(), &replacement.replace);
+            }
+            _ => {
+                return Err(FileUpdaterError::MultipleMatches(
+                    matches.len(),
+                    replacement.search.clone(),
+                )
+                .into())
+            }
         }
     }
 
@@ -76,7 +101,7 @@ fn test_apply_replacements() -> Result<(), anyhow::Error> {
                 search: "not found".to_string(),
                 replace: "anything".to_string(),
             }],
-            Err("Could not find search content"), // Partial string match is fine for the test
+            Err("Could not match the following SEARCH block"), // Partial string match is fine for the test
         ),
     ];
 

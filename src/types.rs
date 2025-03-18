@@ -299,7 +299,7 @@ pub enum ToolResult {
     ReplaceInFile {
         path: PathBuf,
         content: String,
-        error: Option<String>,
+        error: Option<crate::utils::FileUpdaterError>,
     },
     DeleteFiles {
         deleted: Vec<PathBuf>,

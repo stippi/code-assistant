@@ -137,12 +137,8 @@ impl ToolResult {
                 }
             }
             ToolResult::ReplaceInFile { path, error, .. } => {
-                if error.is_some() {
-                    format!(
-                        "Failed to replace in file {}: {}",
-                        path.display(),
-                        error.as_ref().unwrap()
-                    )
+                if let Some(err) = error {
+                    format!("Failed to replace in file {}: {}", path.display(), err)
                 } else {
                     format!("Successfully replaced in file: {}", path.display())
                 }

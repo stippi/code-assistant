@@ -268,11 +268,21 @@ impl ToolExecutor {
                                 content: new_content,
                                 error: None,
                             },
-                            Err(e) => ToolResult::ReplaceInFile {
-                                path: path.clone(),
-                                content: String::new(), // Empty content on error
-                                error: Some(e.to_string()),
-                            },
+                            Err(e) => {
+                                // Extract FileUpdaterError if present or create Other variant
+                                use crate::utils::FileUpdaterError;
+                                let error = if let Some(file_err) = e.downcast_ref::<FileUpdaterError>() {
+                                    file_err.clone()
+                                } else {
+                                    FileUpdaterError::Other(e.to_string())
+                                };
+                                
+                                ToolResult::ReplaceInFile {
+                                    path: path.clone(),
+                                    content: String::new(), // Empty content on error
+                                    error: Some(error),
+                                }
+                            }
                         }
                     }
 

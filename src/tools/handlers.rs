@@ -176,13 +176,38 @@ impl ToolResultHandler for MCPToolHandler {
                 }
                 Ok(output)
             }
+            ToolResult::ReplaceInFile { path, error, .. } => {
+                // Handle special case for Search Block Not Found error
+                if let Some(error_value) = error {
+                    if let crate::utils::FileUpdaterError::SearchBlockNotFound(_) = error_value {
+                        // Try to read the current file content for context
+                        if let Ok(content) = std::fs::read_to_string(path) {
+                            let mut output = format!(
+                                "Failed to replace in file {}: {}\n\n",
+                                path.display(),
+                                error_value
+                            );
+                            output.push_str(&format!(
+                                ">>>>> CURRENT CONTENT:\n{}\n<<<<< END CURRENT CONTENT",
+                                content
+                            ));
+                            return Ok(output);
+                        }
+                    }
+                }
+                // Default to standard message for other errors
+                Ok(result.format_message())
+            }
             ToolResult::WebFetch { page, error } => {
                 // Format detailed output with page contents
                 let mut output = String::new();
                 if let Some(e) = error {
                     output.push_str(&format!("Failed to fetch page: {}", e));
                 } else {
-                    output.push_str(&format!("Page fetched successfully:\n{}\n", page.content));
+                    output.push_str(&format!(
+                        "Page fetched successfully:\n>>>>> CONTENT:\n{}\n<<<<< END CONTENT",
+                        page.content
+                    ));
                 }
                 Ok(output)
             }
