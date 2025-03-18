@@ -11,7 +11,7 @@ impl std::fmt::Display for FileUpdaterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FileUpdaterError::SearchBlockNotFound(search) => {
-                write!(f, "Could not match the following SEARCH block in the file contents:\n\n<<<<<<< SEARCH\n{}>>>>>>> END OF SEARCH", search)
+                write!(f, "Could not match the following SEARCH block in the file contents:\n\n<<<<<<< SEARCH\n{}\n>>>>>>> END OF SEARCH", search)
             }
             FileUpdaterError::MultipleMatches(count, search) => {
                 write!(f, "Found {} occurrences of search content:\n```\n{}\n```\nSearch text must match exactly one location. Try enlarging the section to replace.", count, search)

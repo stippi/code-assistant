@@ -176,23 +176,26 @@ impl ToolResultHandler for MCPToolHandler {
                 }
                 Ok(output)
             }
-            ToolResult::ReplaceInFile { path, error, .. } => {
+            ToolResult::ReplaceInFile {
+                path,
+                error,
+                content,
+                ..
+            } => {
                 // Handle special case for Search Block Not Found error
                 if let Some(error_value) = error {
                     if let crate::utils::FileUpdaterError::SearchBlockNotFound(_) = error_value {
-                        // Try to read the current file content for context
-                        if let Ok(content) = std::fs::read_to_string(path) {
-                            let mut output = format!(
-                                "Failed to replace in file {}: {}\n\n",
-                                path.display(),
-                                error_value
-                            );
-                            output.push_str(&format!(
-                                ">>>>> CURRENT CONTENT:\n{}\n<<<<< END CURRENT CONTENT",
-                                content
-                            ));
-                            return Ok(output);
-                        }
+                        // Use the content from the ToolResult
+                        let mut output = format!(
+                            "Failed to replace in file {}: {}\n\n",
+                            path.display(),
+                            error_value
+                        );
+                        output.push_str(&format!(
+                            ">>>>> CURRENT CONTENT:\n{}\n<<<<< END CURRENT CONTENT",
+                            content
+                        ));
+                        return Ok(output);
                     }
                 }
                 // Default to standard message for other errors

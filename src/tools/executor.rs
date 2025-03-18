@@ -262,6 +262,12 @@ impl ToolExecutor {
                         }
                         let full_path = explorer.root_dir().join(path);
 
+                        // Read the current content in order to return it in error case
+                        let current_content = match std::fs::read_to_string(&full_path) {
+                            Ok(content) => content,
+                            Err(_) => String::new(),
+                        };
+
                         match explorer.apply_replacements(&full_path, replacements) {
                             Ok(new_content) => ToolResult::ReplaceInFile {
                                 path: path.clone(),
@@ -271,15 +277,16 @@ impl ToolExecutor {
                             Err(e) => {
                                 // Extract FileUpdaterError if present or create Other variant
                                 use crate::utils::FileUpdaterError;
-                                let error = if let Some(file_err) = e.downcast_ref::<FileUpdaterError>() {
-                                    file_err.clone()
-                                } else {
-                                    FileUpdaterError::Other(e.to_string())
-                                };
-                                
+                                let error =
+                                    if let Some(file_err) = e.downcast_ref::<FileUpdaterError>() {
+                                        file_err.clone()
+                                    } else {
+                                        FileUpdaterError::Other(e.to_string())
+                                    };
+
                                 ToolResult::ReplaceInFile {
                                     path: path.clone(),
-                                    content: String::new(), // Empty content on error
+                                    content: current_content,
                                     error: Some(error),
                                 }
                             }
