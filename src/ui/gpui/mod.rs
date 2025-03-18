@@ -9,7 +9,7 @@ mod scrollbar;
 
 use crate::types::WorkingMemory;
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
-use gpui::{AppContext, Focusable};
+use gpui::{actions, AppContext, Focusable};
 use input::TextInput;
 pub use memory_view::MemoryView;
 use message::MessageView;
@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use elements::MessageContainer;
+
+actions!(code_assistant, [CloseWindow]);
 
 // Our main UI struct that implements the UserInterface trait
 pub struct GPUI {
@@ -82,6 +84,15 @@ impl GPUI {
         let app = gpui::Application::new().with_assets(asset_source);
 
         app.run(move |cx| {
+            // Setup window close listener
+            cx.bind_keys([gpui::KeyBinding::new("cmd-w", CloseWindow, None)]);
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+
             // Initialize file icons
             file_icons::init(cx);
 

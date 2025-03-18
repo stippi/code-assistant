@@ -2,6 +2,7 @@ use super::elements::MessageContainer;
 use super::input::TextInput;
 use super::memory_view::MemoryView;
 use super::scrollbar::{Scrollbar, ScrollbarState};
+use super::CloseWindow;
 use gpui::{
     div, prelude::*, px, rgb, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
     MouseButton, MouseUpEvent, ScrollHandle,
@@ -127,6 +128,9 @@ impl Render for MessageView {
             ScrollbarState::new(self.messages_scroll_handle.clone()).parent_entity(&cx.entity());
 
         div()
+            .on_action(|_: &CloseWindow, window, _| {
+                window.remove_window();
+            })
             .bg(rgb(0x2c2c2c))
             .track_focus(&self.focus_handle(cx))
             .flex()
