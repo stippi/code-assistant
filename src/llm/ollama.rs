@@ -59,17 +59,11 @@ pub struct OllamaClient {
 }
 
 impl OllamaClient {
-    pub fn new(model: String, num_ctx: usize) -> Self {
-        Self {
-            client: Client::new(),
-            base_url: "http://localhost:11434".to_string(),
-            model,
-            num_ctx,
-        }
+    pub fn default_base_url() -> String {
+        "http://localhost:11434".to_string()
     }
 
-    #[cfg(test)]
-    pub fn new_with_base_url(model: String, num_ctx: usize, base_url: String) -> Self {
+    pub fn new(model: String, base_url: String, num_ctx: usize) -> Self {
         Self {
             client: Client::new(),
             base_url,

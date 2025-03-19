@@ -634,7 +634,7 @@ async fn test_openai_provider() -> Result<()> {
     run_provider_tests(
         "OpenAI",
         |url| {
-            Box::new(OpenAIClient::new_with_base_url(
+            Box::new(OpenAIClient::new(
                 "test-key".to_string(),
                 "gpt-4".to_string(),
                 url.to_string(),
@@ -650,7 +650,7 @@ async fn test_anthropic_provider() -> Result<()> {
     run_provider_tests(
         "Anthropic",
         |url| {
-            Box::new(AnthropicClient::new_with_base_url(
+            Box::new(AnthropicClient::new(
                 "test-key".to_string(),
                 "claude-3".to_string(),
                 url.to_string(),
@@ -666,7 +666,7 @@ async fn test_vertex_provider() -> Result<()> {
     run_provider_tests(
         "Vertex",
         |url| {
-            Box::new(VertexClient::new_with_base_url(
+            Box::new(VertexClient::new(
                 "test-key".to_string(),
                 "gemini-pro".to_string(),
                 url.to_string(),
@@ -682,10 +682,10 @@ async fn test_ollama_provider() -> Result<()> {
     run_provider_tests(
         "Ollama",
         |url| {
-            Box::new(OllamaClient::new_with_base_url(
+            Box::new(OllamaClient::new(
                 "llama2".to_string(),
-                4096,
                 url.to_string(),
+                4096,
             ))
         },
         OllamaMockGenerator,
@@ -716,11 +716,7 @@ async fn test_anthropic_rate_limit_retry() -> Result<()> {
     let base_url = create_rate_limited_mock_server(2, error_response, headers).await;
 
     // Create client with fast retry timings for test
-    let client = AnthropicClient::new_with_base_url(
-        "test-key".to_string(),
-        "claude-3".to_string(),
-        base_url,
-    );
+    let client = AnthropicClient::new("test-key".to_string(), "claude-3".to_string(), base_url);
 
     // Send a test message that should trigger retries
     let request = LLMRequest {

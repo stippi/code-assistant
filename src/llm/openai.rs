@@ -240,17 +240,11 @@ pub struct OpenAIClient {
 }
 
 impl OpenAIClient {
-    pub fn new(api_key: String, model: String) -> Self {
-        Self {
-            client: Client::new(),
-            api_key,
-            base_url: "https://api.openai.com/v1".to_string(),
-            model,
-        }
+    pub fn default_base_url() -> String {
+        "https://api.openai.com/v1".to_string()
     }
 
-    #[cfg(test)]
-    pub fn new_with_base_url(api_key: String, model: String, base_url: String) -> Self {
+    pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
             client: Client::new(),
             api_key,

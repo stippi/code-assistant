@@ -83,33 +83,63 @@ An example configuration is given below:
 }
 ```
 
-## Agent Mode Usage
+## Usage
+
+Code Assistant can run in two modes:
+
+### Agent Mode (Default)
 
 ```bash
-code-assistant agent --task <TASK> [OPTIONS]
+code-assistant --task <TASK> [OPTIONS]
 ```
+
 Available options:
 - `--path <PATH>`: Path to the code directory to analyze (default: current directory)
-- `-t, --task <TASK>`: Required. The task to perform on the codebase
+- `-t, --task <TASK>`: Task to perform on the codebase (required unless `--continue-task` or `--ui` is used)
+- `--ui`: Start with GUI interface
+- `--continue-task`: Continue from previous state
 - `-v, --verbose`: Enable verbose logging
-- `-p, --provider <PROVIDER>`: LLM provider to use [anthropic, openai, ollama, vertex] (default: anthropic)
-- `-m, --model <MODEL>`: Model name to use (provider-specific)
+- `-p, --provider <PROVIDER>`: LLM provider to use [anthropic, open-ai, ollama, vertex] (default: anthropic)
+- `-m, --model <MODEL>`: Model name to use (defaults: anthropic="claude-3-7-sonnet-20250219", openai="gpt-4o", vertex="gemini-1.5-pro-latest")
+- `--base-url <URL>`: API base URL for the LLM provider
 - `--tools-type <TOOLS_TYPE>`: Type of tool declaration [native, xml] (default: xml) `native` = tools via LLM provider API, `xml` = custom system message
 - `--num-ctx <NUM>`: Context window size in tokens (default: 8192, only relevant for Ollama)
 - `--record <PATH>`: Record API responses to a file for testing (currently Anthropic only)
+- `--playback <PATH>`: Play back a recorded session from a file
+
 Environment variables:
 - `ANTHROPIC_API_KEY`: Required when using the Anthropic provider
 - `OPENAI_API_KEY`: Required when using the OpenAI provider
 - `GOOGLE_API_KEY`: Required when using the Vertex provider
-Example:
+
+Examples:
 ```bash
 # Analyze code in current directory using Anthropic's Claude
-code-assistant agent --task "Explain the purpose of this codebase"
+code-assistant --task "Explain the purpose of this codebase"
+
 # Use OpenAI to analyze a specific directory with verbose logging
-code-assistant agent -p openai --path ./my-project -t "List all API endpoints" -v
+code-assistant -p open-ai --path ./my-project -t "List all API endpoints" -v
+
 # Use Google's Vertex AI with a specific model
-code-assistant agent -p vertex --model gemini-1.5-flash -t "Analyze code complexity"
+code-assistant -p vertex --model gemini-1.5-flash -t "Analyze code complexity"
+
+# Continue a previously interrupted task
+code-assistant --continue-task
+
+# Start with GUI interface
+code-assistant --ui
 ```
+
+### Server Mode
+
+Runs as a Model Context Protocol server:
+
+```bash
+code-assistant server [OPTIONS]
+```
+
+Available options:
+- `-v, --verbose`: Enable verbose logging
 
 ## Contributing
 

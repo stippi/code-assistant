@@ -74,6 +74,10 @@ struct Args {
     #[arg(short = 'm', long)]
     model: Option<String>,
 
+    /// API base URL for the LLM provider to use
+    #[arg(long)]
+    base_url: Option<String>,
+
     /// Context window size (in tokens, only relevant for Ollama)
     #[arg(long, default_value = "8192")]
     num_ctx: Option<usize>,
@@ -104,6 +108,7 @@ enum Mode {
 fn create_llm_client(
     provider: LLMProviderType,
     model: Option<String>,
+    base_url: Option<String>,
     num_ctx: usize,
     record_path: Option<PathBuf>,
     playback_path: Option<PathBuf>,
@@ -134,48 +139,47 @@ fn create_llm_client(
         LLMProviderType::Anthropic => {
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .context("ANTHROPIC_API_KEY environment variable not set")?;
-
-            let model_name = model
-                .clone()
-                .unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string());
+            let model_name = model.unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string());
+            let base_url = base_url.unwrap_or(AnthropicClient::default_base_url());
 
             if let Some(path) = record_path {
                 Ok(Box::new(AnthropicClient::new_with_recorder(
-                    api_key, model_name, path,
+                    api_key, model_name, base_url, path,
                 )))
             } else {
-                Ok(Box::new(AnthropicClient::new(api_key, model_name)))
+                Ok(Box::new(AnthropicClient::new(
+                    api_key, model_name, base_url,
+                )))
             }
         }
 
         LLMProviderType::OpenAI => {
             let api_key = std::env::var("OPENAI_API_KEY")
                 .context("OPENAI_API_KEY environment variable not set")?;
+            let model_name = model.unwrap_or_else(|| "gpt-4o".to_string());
+            let base_url = base_url.unwrap_or(OpenAIClient::default_base_url());
 
-            Ok(Box::new(OpenAIClient::new(
-                api_key,
-                model.clone().unwrap_or_else(|| "gpt-4o".to_string()),
-            )))
+            Ok(Box::new(OpenAIClient::new(api_key, model_name, base_url)))
         }
 
         LLMProviderType::Vertex => {
             let api_key = std::env::var("GOOGLE_API_KEY")
                 .context("GOOGLE_API_KEY environment variable not set")?;
+            let model_name = model.unwrap_or_else(|| "gemini-1.5-pro-latest".to_string());
+            let base_url = base_url.unwrap_or(VertexClient::default_base_url());
 
-            Ok(Box::new(VertexClient::new(
-                api_key,
-                model
-                    .clone()
-                    .unwrap_or_else(|| "gemini-1.5-pro-latest".to_string()),
-            )))
+            Ok(Box::new(VertexClient::new(api_key, model_name, base_url)))
         }
 
-        LLMProviderType::Ollama => Ok(Box::new(OllamaClient::new(
-            model
-                .clone()
-                .context("Model name is required for Ollama provider")?,
-            num_ctx,
-        ))),
+        LLMProviderType::Ollama => {
+            let base_url = base_url.unwrap_or(OllamaClient::default_base_url());
+
+            Ok(Box::new(OllamaClient::new(
+                model.context("Model name is required for Ollama provider")?,
+                base_url,
+                num_ctx,
+            )))
+        }
     }
 }
 
@@ -231,6 +235,7 @@ async fn main() -> Result<()> {
             let verbose = args.verbose;
             let provider = args.provider.unwrap_or(LLMProviderType::Anthropic);
             let model = args.model;
+            let base_url = args.base_url;
             let num_ctx = args.num_ctx.unwrap_or(8192);
             let tools_type = args.tools_type.unwrap_or(ToolsType::Xml);
             let use_gui = args.ui;
@@ -280,6 +285,7 @@ async fn main() -> Result<()> {
                         let llm_client = create_llm_client(
                             provider,
                             model,
+                            base_url,
                             num_ctx,
                             args.record.clone(),
                             args.playback.clone(),
@@ -328,9 +334,15 @@ async fn main() -> Result<()> {
                 let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
 
                 // Setup LLM client with the specified provider
-                let llm_client =
-                    create_llm_client(provider, model, num_ctx, args.record, args.playback)
-                        .context("Failed to initialize LLM client")?;
+                let llm_client = create_llm_client(
+                    provider,
+                    model,
+                    base_url,
+                    num_ctx,
+                    args.record,
+                    args.playback,
+                )
+                .context("Failed to initialize LLM client")?;
 
                 // Initialize agent
                 let mut agent = Agent::new(

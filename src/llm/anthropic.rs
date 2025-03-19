@@ -295,11 +295,15 @@ pub struct AnthropicClient {
 }
 
 impl AnthropicClient {
-    pub fn new(api_key: String, model: String) -> Self {
+    pub fn default_base_url() -> String {
+        "https://api.anthropic.com/v1".to_string()
+    }
+
+    pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
             client: Client::new(),
             api_key,
-            base_url: "https://api.anthropic.com/v1".to_string(),
+            base_url,
             model,
             recorder: None,
         }
@@ -309,25 +313,15 @@ impl AnthropicClient {
     pub fn new_with_recorder<P: AsRef<std::path::Path>>(
         api_key: String,
         model: String,
+        base_url: String,
         recording_path: P,
     ) -> Self {
         Self {
             client: Client::new(),
             api_key,
-            base_url: "https://api.anthropic.com/v1".to_string(),
-            model,
-            recorder: Some(APIRecorder::new(recording_path)),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn new_with_base_url(api_key: String, model: String, base_url: String) -> Self {
-        Self {
-            client: Client::new(),
-            api_key,
             base_url,
             model,
-            recorder: None,
+            recorder: Some(APIRecorder::new(recording_path)),
         }
     }
 
