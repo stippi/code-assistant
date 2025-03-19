@@ -135,17 +135,11 @@ pub struct VertexClient {
 }
 
 impl VertexClient {
-    pub fn new(api_key: String, model: String) -> Self {
-        Self {
-            client: Client::new(),
-            api_key,
-            model,
-            base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
-        }
+    pub fn default_base_url() -> String {
+        "https://generativelanguage.googleapis.com/v1beta".to_string()
     }
 
-    #[cfg(test)]
-    pub fn new_with_base_url(api_key: String, model: String, base_url: String) -> Self {
+    pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
             client: Client::new(),
             api_key,
