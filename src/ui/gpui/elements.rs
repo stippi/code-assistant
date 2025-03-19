@@ -475,65 +475,73 @@ impl IntoElement for MessageElement {
                 };
 
                 div()
-                    .border_l_1()
-                    .border_color(border_color)
-                    .p_1()
+                    .rounded(px(3.))
                     .mb_2()
                     .bg(rgba(0x161616FF))
                     .flex()
-                    .flex_col()
+                    .flex_row()
+                    .overflow_hidden()
                     .children(vec![
-                        // Tool header: icon and name in a row
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            //.mb_2() // Margin below header
-                            .children(vec![
-                                // Tool icon
-                                file_icons::render_icon_container(&icon, 16.0, icon_color, "🔧")
-                                    .mx_2()
-                                    .into_any(),
-                                // Tool name
-                                div()
-                                    .font_weight(FontWeight(700.0))
-                                    .text_color(icon_color)
-                                    .mr_2()
-                                    .flex_none() // Prevent shrinking
-                                    .child(block.name)
-                                    .into_any(),
-                                // Parameters in a flex wrap container
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .flex_grow() // Take remaining space
-                                    .children(block.parameters.iter().map(render_parameter_badge))
-                                    .into_any(),
-                            ])
-                            .into_any(),
-                        // Error message (only shown for error status)
-                        if block.status == ToolStatus::Error {
-                            if let Some(msg) = &block.status_message {
+                        div().w(px(3.)).h_full().bg(border_color).rounded_l(px(3.)),
+                        div().flex_grow().h_full().child(
+                            div().size_full().flex().flex_col().p_1().children(vec![
+                                // Tool header: icon and name in a row
                                 div()
                                     .flex()
                                     .flex_row()
                                     .items_center()
-                                    .p_2()
-                                    .rounded_md()
-                                    .bg(hsla(0., 0.15, 0.2, 0.2)) // Light red background for errors
-                                    .border_l_2()
-                                    .border_color(hsla(0., 0.5, 0.5, 0.5))
-                                    .text_color(hsla(0., 0.3, 0.9, 1.0))
-                                    .text_sm()
-                                    .child(msg.clone())
-                                    .into_any()
-                            } else {
-                                div().into_any() // Empty element if no message
-                            }
-                        } else {
-                            div().into_any() // Empty element for non-error status
-                        },
+                                    .children(vec![
+                                        // Tool icon
+                                        file_icons::render_icon_container(
+                                            &icon, 16.0, icon_color, "🔧",
+                                        )
+                                        .mx_2()
+                                        .into_any(),
+                                        // Tool name
+                                        div()
+                                            .font_weight(FontWeight(700.0))
+                                            .text_color(icon_color)
+                                            .mr_2()
+                                            .flex_none() // Prevent shrinking
+                                            .child(block.name)
+                                            .into_any(),
+                                        // Parameters in a flex wrap container
+                                        div()
+                                            .flex()
+                                            .flex_wrap()
+                                            .flex_grow() // Take remaining space
+                                            .children(
+                                                block.parameters.iter().map(render_parameter_badge),
+                                            )
+                                            .into_any(),
+                                    ])
+                                    .into_any(),
+                                // Error message (only shown for error status)
+                                if block.status == ToolStatus::Error {
+                                    if let Some(msg) = &block.status_message {
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .p_2()
+                                            .rounded_md()
+                                            .bg(hsla(0., 0.15, 0.2, 0.2)) // Light red background for errors
+                                            .border_l_2()
+                                            .border_color(hsla(0., 0.5, 0.5, 0.5))
+                                            .text_color(hsla(0., 0.3, 0.9, 1.0))
+                                            .text_sm()
+                                            .child(msg.clone())
+                                            .into_any()
+                                    } else {
+                                        div().into_any() // Empty element if no message
+                                    }
+                                } else {
+                                    div().into_any() // Empty element for non-error status
+                                },
+                            ]),
+                        ),
                     ])
+                    //.children()
                     .shadow_md()
                     .into_any()
             }
