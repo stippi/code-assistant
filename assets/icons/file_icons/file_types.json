@@ -342,9 +342,6 @@
     "template": {
       "icon": "icons/file_icons/html.svg"
     },
-    "terminal": {
-      "icon": "icons/file_icons/terminal.svg"
-    },
     "terraform": {
       "icon": "icons/file_icons/terraform.svg"
     },
@@ -371,6 +368,9 @@
     },
     "file_tree": {
       "icon": "icons/file_tree.svg"
+    },
+    "terminal": {
+      "icon": "icons/terminal.svg"
     }
   }
 }
