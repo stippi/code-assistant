@@ -192,7 +192,7 @@ impl ToolResultHandler for MCPToolHandler {
                             error_value
                         );
                         output.push_str(&format!(
-                            ">>>>> CURRENT CONTENT:\n{}\n<<<<< END CURRENT CONTENT",
+                            "Please retry and adjust your SEARCH block to the current contents of the file:\n>>>>> CURRENT CONTENT:\n{}\n<<<<< END CURRENT CONTENT",
                             content
                         ));
                         return Ok(output);
