@@ -184,7 +184,7 @@ impl ToolResultHandler for MCPToolHandler {
             } => {
                 // Handle special case for Search Block Not Found error
                 if let Some(error_value) = error {
-                    if let crate::utils::FileUpdaterError::SearchBlockNotFound(_) = error_value {
+                    if let crate::utils::FileUpdaterError::SearchBlockNotFound(_, _) = error_value {
                         // Use the content from the ToolResult
                         let mut output = format!(
                             "Failed to replace in file {}: {}\n\n",

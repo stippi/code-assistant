@@ -2,19 +2,23 @@ use crate::types::FileReplacement;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FileUpdaterError {
-    SearchBlockNotFound(String),
-    MultipleMatches(usize, String),
+    SearchBlockNotFound(usize, String),
+    MultipleMatches(usize, usize, String),
     Other(String),
 }
 
 impl std::fmt::Display for FileUpdaterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FileUpdaterError::SearchBlockNotFound(search) => {
-                write!(f, "Could not match the following SEARCH block in the file contents:\n\n<<<<<<< SEARCH\n{}\n>>>>>>> END OF SEARCH", search)
+            FileUpdaterError::SearchBlockNotFound(index, ..) => {
+                write!(
+                    f,
+                    "Could not find SEARCH block with index {} in the file contents",
+                    index
+                )
             }
-            FileUpdaterError::MultipleMatches(count, search) => {
-                write!(f, "Found {} occurrences of search content:\n```\n{}\n```\nSearch text must match exactly one location. Try enlarging the section to replace.", count, search)
+            FileUpdaterError::MultipleMatches(count, index, _) => {
+                write!(f, "Found {} occurrences of SEARCH block with index {}\nA SEARCH block must match exactly one location. Try enlarging the section to replace.", count, index)
             }
             FileUpdaterError::Other(msg) => {
                 write!(f, "{}", msg)
@@ -31,15 +35,17 @@ pub fn apply_replacements(
 ) -> Result<String, anyhow::Error> {
     let mut result = content.to_string();
 
-    for replacement in replacements {
+    for (index, replacement) in replacements.iter().enumerate() {
         // Count occurrences to ensure uniqueness
         let matches: Vec<_> = result.match_indices(&replacement.search).collect();
 
         match matches.len() {
             0 => {
-                return Err(
-                    FileUpdaterError::SearchBlockNotFound(replacement.search.clone()).into(),
+                return Err(FileUpdaterError::SearchBlockNotFound(
+                    index,
+                    replacement.search.clone(),
                 )
+                .into())
             }
             1 => {
                 let (pos, _) = matches[0];
@@ -48,6 +54,7 @@ pub fn apply_replacements(
             _ => {
                 return Err(FileUpdaterError::MultipleMatches(
                     matches.len(),
+                    index,
                     replacement.search.clone(),
                 )
                 .into())
