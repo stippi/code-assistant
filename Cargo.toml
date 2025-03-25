@@ -59,6 +59,9 @@ encoding_rs = "0.8.35"
 unicode-segmentation = "1.12.0"
 rand = "0.8.5"
 
+# Diff visualization
+similar = { version = "2.5.0", features = ["inline"] }
+
 [dev-dependencies]
 axum = "0.7"
 bytes = "1.10"
