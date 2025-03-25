@@ -127,7 +127,7 @@ fn create_llm_client(
     }
 
     // Otherwise continue with normal provider setup
-    if let Some(_) = record_path {
+    if record_path.is_some() {
         match provider {
             LLMProviderType::Anthropic => {}
             _ => {
