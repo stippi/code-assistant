@@ -986,7 +986,7 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
     assert_eq!(error_request.messages.len(), 3); // Working Memory + Tool Response + Error
     if let MessageContent::Text(content) = &error_request.messages[2].content {
         assert!(
-            content.contains("Could not match the following SEARCH block"),
+            content.contains("Could not find SEARCH block"),
             "Expected error message about missing search content, got:\n{}",
             content
         );

@@ -99,7 +99,7 @@ fn test_apply_replacements() -> Result<(), anyhow::Error> {
                 search: "test".to_string(),
                 replace: "replaced".to_string(),
             }],
-            Err("Found 3 occurrences of search content"), // Partial string match is fine for the test
+            Err("Found 3 occurrences of SEARCH block"), // Partial string match is fine for the test
         ),
         // Test error with not found content
         (
@@ -108,7 +108,7 @@ fn test_apply_replacements() -> Result<(), anyhow::Error> {
                 search: "not found".to_string(),
                 replace: "anything".to_string(),
             }],
-            Err("Could not match the following SEARCH block"), // Partial string match is fine for the test
+            Err("Could not find SEARCH block"), // Partial string match is fine for the test
         ),
     ];
 
