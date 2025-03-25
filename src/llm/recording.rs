@@ -106,8 +106,9 @@ impl APIRecorder {
                     writeln!(file, "[")?;
                 } else {
                     // If file already has content, add a comma
-                    // Go to position before the last bracket
-                    file.set_len(file_size - 1)?;
+                    // Go to position after the last } bracket,
+                    // i.e. skip "\n]\n" backwards from the end of the file
+                    file.set_len(file_size - 3)?;
                     file.seek(std::io::SeekFrom::End(0))?;
                     writeln!(file, ",")?;
                 }
