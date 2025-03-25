@@ -1,8 +1,9 @@
 use crate::ui::gpui::file_icons;
+use crate::ui::gpui::parameter_renderers::ParameterRendererRegistry;
 use crate::ui::ToolStatus;
 use gpui::{
     bounce, div, ease_in_out, hsla, percentage, px, rgba, svg, white, Animation, AnimationExt,
-    IntoElement, SharedString, Transformation,
+    IntoElement, SharedString, Styled, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
 use std::sync::{Arc, Mutex};
@@ -431,48 +432,51 @@ impl IntoElement for MessageElement {
 
                 // Get color based on status
                 let icon_color = match block.status {
-                    ToolStatus::Error => rgba(0xFD8E3FE0),
+                    crate::ui::ToolStatus::Error => rgba(0xFD8E3FE0),
                     _ => rgba(0xFFFFFFAA),
                 };
 
                 // Border color based on status (more subtle indication)
                 let border_color = match block.status {
-                    ToolStatus::Pending => rgba(0x666666FF),
-                    ToolStatus::Running => rgba(0x56BBF6FF),
-                    ToolStatus::Success => rgba(0x47D136FF),
-                    ToolStatus::Error => rgba(0xFD8E3FFF),
+                    crate::ui::ToolStatus::Pending => rgba(0x666666FF),
+                    crate::ui::ToolStatus::Running => rgba(0x56BBF6FF),
+                    crate::ui::ToolStatus::Success => rgba(0x47D136FF),
+                    crate::ui::ToolStatus::Error => rgba(0xFD8E3FFF),
                 };
 
-                // Render parameter badges for a more compact display
-                let render_parameter_badge = |param: &ParameterBlock| {
-                    div()
-                        .rounded_md()
-                        .px_2()
-                        .py_1()
-                        .mr_1()
-                        .mb_1() // Add margin to allow wrapping
-                        .text_sm()
-                        .bg(hsla(210., 0.1, 0.3, 0.3))
-                        .child(
+                // Parameter rendering function that uses the global registry if available
+                let render_parameter =
+                    |param: &ParameterBlock| {
+                        // Try to get the global registry
+                        if let Some(registry) = ParameterRendererRegistry::global() {
+                            // Use the registry to render the parameter
+                            registry.render_parameter(&block.name, &param.name, &param.value)
+                        } else {
+                            // Fallback to default rendering if no registry is available
                             div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap_1()
-                                .children(vec![
-                                    div()
-                                        .font_weight(FontWeight(500.0))
-                                        .text_color(hsla(210., 0.5, 0.8, 1.0))
-                                        .child(format!("{}:", param.name))
-                                        .into_any(),
-                                    div()
-                                        .text_color(white())
-                                        .child(param.value.clone())
-                                        .into_any(),
-                                ]),
-                        )
-                        .into_any_element()
-                };
+                                .rounded_md()
+                                .px_2()
+                                .py_1()
+                                .mr_1()
+                                .mb_1() // Add margin to allow wrapping
+                                .text_sm()
+                                .bg(hsla(210., 0.1, 0.3, 0.3))
+                                .child(div().flex().flex_row().items_center().gap_1().children(
+                                    vec![
+                                        div()
+                                            .font_weight(FontWeight(500.0))
+                                            .text_color(hsla(210., 0.5, 0.8, 1.0))
+                                            .child(format!("{}:", param.name))
+                                            .into_any(),
+                                        div()
+                                            .text_color(white())
+                                            .child(param.value.clone())
+                                            .into_any(),
+                                    ],
+                                ))
+                                .into_any_element()
+                        }
+                    };
 
                 div()
                     .rounded(px(3.))
@@ -503,21 +507,19 @@ impl IntoElement for MessageElement {
                                             .text_color(icon_color)
                                             .mr_2()
                                             .flex_none() // Prevent shrinking
-                                            .child(block.name)
+                                            .child(block.name.clone())
                                             .into_any(),
                                         // Parameters in a flex wrap container
                                         div()
                                             .flex()
                                             .flex_wrap()
                                             .flex_grow() // Take remaining space
-                                            .children(
-                                                block.parameters.iter().map(render_parameter_badge),
-                                            )
+                                            .children(block.parameters.iter().map(render_parameter))
                                             .into_any(),
                                     ])
                                     .into_any(),
                                 // Error message (only shown for error status)
-                                if block.status == ToolStatus::Error {
+                                if block.status == crate::ui::ToolStatus::Error {
                                     if let Some(msg) = &block.status_message {
                                         div()
                                             .flex()
@@ -541,7 +543,6 @@ impl IntoElement for MessageElement {
                             ]),
                         ),
                     ])
-                    //.children()
                     .shadow_md()
                     .into_any()
             }
