@@ -1,5 +1,8 @@
 use crate::ui::gpui::parameter_renderers::ParameterRenderer;
-use gpui::{div, hsla, rgb, rgba, Element, FontWeight, IntoElement, ParentElement, Styled};
+use gpui::{
+    div, hsla, rgb, rgba, Element, FontWeight, HighlightStyle, IntoElement, ParentElement, Styled,
+    StyledText, TextStyle,
+};
 use similar::{ChangeTag, TextDiff};
 
 /// Renderer for the "diff" parameter of the replace_in_file tool
@@ -131,7 +134,7 @@ struct DiffLine {
 /// Render a diff section with enhanced visualization
 fn render_enhanced_diff_section(section: DiffSection) -> gpui::AnyElement {
     if section.in_search || section.in_replace {
-        // Für streaming-Blöcke verwenden wir das einfache Rendering - eine neue Funktion, die direkt AnyElement zurückgibt
+        // For streaming blocks we use the simple rendering - a function that returns AnyElement directly
         return render_streaming_diff_section(section);
     }
 
@@ -141,16 +144,13 @@ fn render_enhanced_diff_section(section: DiffSection) -> gpui::AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap_1()
         .children(diff_lines.into_iter().map(|line| {
             match line.change_type {
                 LineChangeType::Unchanged => {
                     // Unchanged line
                     div()
-                        .rounded_md()
                         .bg(rgba(0x1A1A1AFF))
                         .px_2()
-                        .py_1()
                         .border_l_2()
                         .border_color(rgba(0x444444FF))
                         .text_color(rgba(0xFFFFFFAA))
@@ -165,10 +165,8 @@ fn render_enhanced_diff_section(section: DiffSection) -> gpui::AnyElement {
                     } else {
                         // Without inline highlighting
                         div()
-                            .rounded_md()
                             .bg(hsla(0., 0.15, 0.2, 0.5))
                             .px_2()
-                            .py_1()
                             .border_l_2()
                             .border_color(rgb(0xCC5555))
                             .text_color(rgb(0xFFBBBB))
@@ -184,10 +182,8 @@ fn render_enhanced_diff_section(section: DiffSection) -> gpui::AnyElement {
                     } else {
                         // Without inline highlighting
                         div()
-                            .rounded_md()
                             .bg(hsla(120., 0.15, 0.2, 0.5))
                             .px_2()
-                            .py_1()
                             .border_l_2()
                             .border_color(rgb(0x55CC55))
                             .text_color(rgb(0xBBFFBB))
@@ -396,14 +392,14 @@ fn extract_inline_changes<'a>(
     changes
 }
 
-/// Render a line with inline diff highlighting
+/// Render a line with inline diff highlighting using StyledText
 fn render_inline_diff_line(
     content: String,
     inline_changes: Vec<(usize, usize, LineChangeType)>,
     is_deletion: bool,
 ) -> gpui::AnyElement {
     // Base styles for the line container
-    let mut line_div = div().rounded_md().px_2().py_1().border_l_2();
+    let mut line_div = div().px_2().border_l_2();
 
     // Apply styles based on line type
     if is_deletion {
@@ -418,55 +414,54 @@ fn render_inline_diff_line(
             .text_color(rgb(0xBBFFBB));
     }
 
-    // Create spans for inline highlighting
-    let mut spans = Vec::new();
-    let mut last_pos = 0;
+    // Create a base text style
+    let base_text_style = TextStyle {
+        color: if is_deletion {
+            rgb(0xFFBBBB).into()
+        } else {
+            rgb(0xBBFFBB).into()
+        },
+        ..Default::default()
+    };
+
+    // Prepare highlights for StyledText
+    let mut highlights = Vec::with_capacity(inline_changes.len());
 
     // Sort inline changes by start position
-    let mut sorted_changes = inline_changes.clone();
+    let mut sorted_changes = inline_changes;
     sorted_changes.sort_by_key(|(start, _, _)| *start);
 
     for (start, end, _) in sorted_changes {
-        // Sicherstellen, dass die Indizes innerhalb gültiger Grenzen liegen
+        // Skip invalid ranges
         if start >= content.len() || end > content.len() || start >= end {
-            continue; // Überspringe ungültige Bereiche
+            continue;
         }
 
-        // Add unchanged text before this change
-        if start > last_pos {
-            spans.push(div().child(content[last_pos..start].to_string()).into_any());
-        }
-
-        // Add highlighted text
-        let highlight_color = if is_deletion {
-            rgba(0xFF6666FF) // Brighter red for deleted parts
-        } else {
-            rgba(0x66FF66FF) // Brighter green for added parts
+        // Create highlight style for this range
+        let highlight_style = HighlightStyle {
+            background_color: Some(if is_deletion {
+                rgba(0xFF666622).into()
+            } else {
+                rgba(0x66FF6622).into()
+            }),
+            color: Some(if is_deletion {
+                rgba(0xFF6666FF).into() // Brighter red for deleted parts
+            } else {
+                rgba(0x66FF66FF).into() // Brighter green for added parts
+            }),
+            font_weight: Some(FontWeight(700.0)),
+            ..Default::default()
         };
 
-        spans.push(
-            div()
-                .child(content[start..end].to_string())
-                .bg(if is_deletion {
-                    rgba(0xFF666622)
-                } else {
-                    rgba(0x66FF6622)
-                })
-                .text_color(highlight_color)
-                .font_weight(FontWeight(700.0))
-                .into_any(),
-        );
-
-        last_pos = end;
+        highlights.push((start..end, highlight_style));
     }
 
-    // Add any remaining text
-    if last_pos < content.len() {
-        spans.push(div().child(content[last_pos..].to_string()).into_any());
-    }
+    // Create the StyledText with highlighted ranges
+    let styled_text =
+        StyledText::new(content).with_default_highlights(&base_text_style, highlights);
 
-    // Return the line with all spans
-    line_div.children(spans).into_any()
+    // Return the line with the styled text
+    line_div.child(styled_text).into_any()
 }
 
 /// Helper function specifically for rendering streaming diff blocks, returns AnyElement directly
