@@ -11,7 +11,7 @@ pub struct DeploymentConfig {
 }
 
 impl DeploymentConfig {
-    const SERVICE_NAME: &'static str = "anthropic-proxy";
+    const SERVICE_NAME: &'static str = "code-assistant";
     const USERNAME: &'static str = "default";
 
     pub fn load() -> Result<Self> {

@@ -3,13 +3,13 @@ use crate::llm::{
     StreamingCallback, StreamingChunk,
 };
 use anyhow::Result;
-use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::{self};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
 
@@ -366,6 +366,7 @@ impl AiCoreClient {
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
         let token = self.token_manager.get_valid_token().await?;
+        println!("API Token: {}", token);
 
         let request_builder = self
             .client
