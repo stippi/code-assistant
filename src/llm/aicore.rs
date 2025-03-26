@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::str::{self};
 use std::sync::Arc;
 use std::time::Duration;
@@ -674,9 +673,11 @@ impl AiCoreClient {
             let converse_response: ConverseResponse = serde_json::from_str(&response_text)
                 .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
 
-            // TODO: Convert converse_response.output to LLMResponse content field type
+            let content = match converse_response.output.message.content {
+                MessageContent::Text(text) => vec![ContentBlock::Text { text }],
+                MessageContent::Structured(blocks) => blocks,
+            };
 
-            // Convert AnthropicResponse to LLMResponse
             let llm_response = LLMResponse {
                 content,
                 usage: Usage {
@@ -754,18 +755,30 @@ impl LLMProvider for AiCoreClient {
         });
         let max_tokens = 128000;
 
-        let anthropic_request = ConverseRequest {
-            thinking,
-            messages: request.messages,
-            max_tokens,
-            temperature: 1.0,
-            system,
-            stream: streaming_callback.map(|_| true),
-            tool_choice,
-            tools,
+        // In der send_message-Methode
+        let tool_config = if has_tools {
+            Some(ToolConfiguration { tools, tool_choice })
+        } else {
+            None
         };
 
-        self.send_with_retry(&anthropic_request, streaming_callback, 3)
+        let inference_config = Some(InferenceConfiguration {
+            max_tokens,
+            temperature: 1.0,
+        });
+
+        let converse_request = ConverseRequest {
+            messages: request.messages,
+            system,
+            inference_config,
+            tool_config,
+            additional_model_request_fields: Some(serde_json::json!({
+                "streaming": streaming_callback.is_some(),
+                "thinking": thinking
+            })),
+        };
+
+        self.send_with_retry(&converse_request, streaming_callback, 3)
             .await
     }
 }
