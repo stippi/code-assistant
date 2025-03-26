@@ -13,7 +13,9 @@ mod web;
 
 use crate::agent::Agent;
 use crate::explorer::Explorer;
-use crate::llm::{AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient};
+use crate::llm::{AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient};
+use crate::llm::auth::TokenManager;
+use crate::llm::config::DeploymentConfig;
 use crate::mcp::MCPServer;
 use crate::ui::terminal::TerminalUI;
 use crate::ui::UserInterface;
@@ -27,6 +29,7 @@ use tracing_subscriber::fmt::SubscriberBuilder;
 
 #[derive(ValueEnum, Debug, Clone)]
 enum LLMProviderType {
+    AiCore,
     Anthropic,
     OpenAI,
     Ollama,
@@ -105,7 +108,7 @@ enum Mode {
     },
 }
 
-fn create_llm_client(
+async fn create_llm_client(
     provider: LLMProviderType,
     model: Option<String>,
     base_url: Option<String>,
@@ -129,13 +132,34 @@ fn create_llm_client(
     // Otherwise continue with normal provider setup
     if record_path.is_some() {
         match provider {
-            LLMProviderType::Anthropic => {}
+            LLMProviderType::Anthropic | LLMProviderType::AiCore => {}
             _ => {
-                eprintln!("Warning: Recording is only supported for the Anthropic provider");
+                eprintln!("Warning: Recording is only supported for the Anthropic and AiCore providers");
             }
         }
     }
     match provider {
+        LLMProviderType::AiCore => {
+            let config = DeploymentConfig::load()
+                .context("Failed to load AiCore deployment configuration")?;
+            let token_manager = TokenManager::new(&config)
+                .await
+                .context("Failed to initialize token manager")?;
+            
+            let model_name = model.unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string());
+            let base_url = base_url.unwrap_or_else(|| config.api_base_url.clone());
+            
+            if let Some(path) = record_path {
+                Ok(Box::new(AiCoreClient::new_with_recorder(
+                    token_manager, model_name, base_url, path,
+                )))
+            } else {
+                Ok(Box::new(AiCoreClient::new(
+                    token_manager, model_name, base_url,
+                )))
+            }
+        }
+        
         LLMProviderType::Anthropic => {
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .context("ANTHROPIC_API_KEY environment variable not set")?;
@@ -290,6 +314,7 @@ async fn main() -> Result<()> {
                             args.record.clone(),
                             args.playback.clone(),
                         )
+                        .await
                         .expect("Failed to initialize LLM client");
 
                         // Initialize agent
@@ -342,6 +367,7 @@ async fn main() -> Result<()> {
                     args.record,
                     args.playback,
                 )
+                .await
                 .context("Failed to initialize LLM client")?;
 
                 // Initialize agent

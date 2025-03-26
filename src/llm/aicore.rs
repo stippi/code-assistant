@@ -3,6 +3,7 @@ use crate::llm::{
     StreamingCallback, StreamingChunk,
 };
 use anyhow::Result;
+use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, Response};
@@ -290,7 +291,7 @@ enum ContentDelta {
 }
 
 pub struct AiCoreClient {
-    token_manager: TokenManager,
+    token_manager: Arc<TokenManager>,
     client: Client,
     base_url: String,
     model: String,
@@ -298,7 +299,7 @@ pub struct AiCoreClient {
 }
 
 impl AiCoreClient {
-    pub fn new(token_manager: TokenManager, model: String, base_url: String) -> Self {
+    pub fn new(token_manager: Arc<TokenManager>, model: String, base_url: String) -> Self {
         Self {
             token_manager,
             client: Client::new(),
@@ -310,7 +311,7 @@ impl AiCoreClient {
 
     /// Create a new client with recording capability
     pub fn new_with_recorder<P: AsRef<std::path::Path>>(
-        token_manager: TokenManager,
+        token_manager: Arc<TokenManager>,
         model: String,
         base_url: String,
         recording_path: P,

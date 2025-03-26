@@ -24,6 +24,7 @@ pub mod recording;
 pub mod types;
 pub mod vertex;
 
+pub use aicore::AiCoreClient;
 pub use anthropic::AnthropicClient;
 pub use ollama::OllamaClient;
 pub use openai::OpenAIClient;
