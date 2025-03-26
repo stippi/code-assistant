@@ -254,9 +254,9 @@ fn create_diff_lines(old_text: &str, new_text: &str) -> Vec<DiffLine> {
 
 /// Process blocks of deleted and added lines to compute word-level diffs
 fn process_diff_blocks(
-    result: &mut Vec<DiffLine>, 
-    deleted_block: &[String], 
-    added_block: &[String]
+    result: &mut Vec<DiffLine>,
+    deleted_block: &[String],
+    added_block: &[String],
 ) {
     // If both blocks have content, do word-level diffing between them
     if !deleted_block.is_empty() && !added_block.is_empty() {
@@ -278,12 +278,17 @@ fn process_diff_blocks(
                 0
             };
 
-            let inline_changes = extract_inline_changes(&word_diff, line, offset, LineChangeType::Deleted);
-            
+            let inline_changes =
+                extract_inline_changes(&word_diff, line, offset, LineChangeType::Deleted);
+
             result.push(DiffLine {
                 content: line.clone(),
                 change_type: LineChangeType::Deleted,
-                inline_changes: if inline_changes.is_empty() { None } else { Some(inline_changes) },
+                inline_changes: if inline_changes.is_empty() {
+                    None
+                } else {
+                    Some(inline_changes)
+                },
             });
         }
 
@@ -295,12 +300,17 @@ fn process_diff_blocks(
                 0
             };
 
-            let inline_changes = extract_inline_changes(&word_diff, line, offset, LineChangeType::Added);
-            
+            let inline_changes =
+                extract_inline_changes(&word_diff, line, offset, LineChangeType::Added);
+
             result.push(DiffLine {
                 content: line.clone(),
                 change_type: LineChangeType::Added,
-                inline_changes: if inline_changes.is_empty() { None } else { Some(inline_changes) },
+                inline_changes: if inline_changes.is_empty() {
+                    None
+                } else {
+                    Some(inline_changes)
+                },
             });
         }
     } else {
@@ -344,19 +354,19 @@ fn extract_inline_changes<'a>(
         if change.tag() == relevant_tag {
             // We need to find this change in our current line
             let value = change.value();
-            
+
             // Simple string searching to find all occurrences in the line
             let mut start_idx = 0;
             while let Some(pos) = line[start_idx..].find(value) {
                 let abs_pos = start_idx + pos;
                 let end_pos = abs_pos + value.len();
-                
+
                 // Add this change
                 changes.push((abs_pos, end_pos, line_type));
-                
+
                 // Move past this occurrence
                 start_idx = abs_pos + 1;
-                
+
                 // Safety check to prevent infinite loops with empty strings
                 if value.is_empty() {
                     break;
@@ -367,13 +377,13 @@ fn extract_inline_changes<'a>(
 
     // Sort by start position
     changes.sort_by_key(|(start, _, _)| *start);
-    
+
     // Merge overlapping changes
     let mut i = 0;
     while i + 1 < changes.len() {
         let (start1, end1, _) = changes[i];
         let (start2, end2, _) = changes[i + 1];
-        
+
         if start2 <= end1 {
             // Merge these changes
             changes[i] = (start1, end2.max(end1), line_type);
@@ -419,16 +429,12 @@ fn render_inline_diff_line(
     for (start, end, _) in sorted_changes {
         // Sicherstellen, dass die Indizes innerhalb gültiger Grenzen liegen
         if start >= content.len() || end > content.len() || start >= end {
-            continue;  // Überspringe ungültige Bereiche
+            continue; // Überspringe ungültige Bereiche
         }
 
         // Add unchanged text before this change
         if start > last_pos {
-            spans.push(
-                div()
-                    .child(content[last_pos..start].to_string())
-                    .into_any(),
-            );
+            spans.push(div().child(content[last_pos..start].to_string()).into_any());
         }
 
         // Add highlighted text
@@ -456,11 +462,7 @@ fn render_inline_diff_line(
 
     // Add any remaining text
     if last_pos < content.len() {
-        spans.push(
-            div()
-                .child(content[last_pos..].to_string())
-                .into_any(),
-        );
+        spans.push(div().child(content[last_pos..].to_string()).into_any());
     }
 
     // Return the line with all spans
