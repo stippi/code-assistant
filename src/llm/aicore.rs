@@ -155,114 +155,126 @@ struct ThinkingConfiguration {
     budget_tokens: usize,
 }
 
-/// Anthropic-specific request structure
+/// AWS Bedrock Converse request structure for all models
 #[derive(Debug, Serialize)]
-struct AnthropicRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thinking: Option<ThinkingConfiguration>,
+struct ConverseRequest {
     messages: Vec<Message>,
-    max_tokens: usize,
-    temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<Vec<SystemBlock>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "inferenceConfig")]
+    inference_config: Option<InferenceConfiguration>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "additionalModelRequestFields"
+    )]
+    additional_model_request_fields: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "toolConfig")]
+    tool_config: Option<ToolConfiguration>,
+}
+
+#[derive(Debug, Serialize)]
+struct InferenceConfiguration {
+    max_tokens: usize,
+    temperature: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct ToolConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stream: Option<bool>,
+}
+/// Response structure for AWS Bedrock API responses
+#[derive(Debug, Deserialize)]
+struct ConverseResponse {
+    output: ConverseOutput,
+    #[serde(default)]
+    #[allow(dead_code)]
+    stop_reason: String,
+    usage: TokenUsage,
 }
 
-/// Response structure for Anthropic API responses
 #[derive(Debug, Deserialize)]
-struct AnthropicResponse {
-    content: Vec<ContentBlock>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    id: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    model: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    role: String,
-    #[serde(rename = "type", default)]
-    #[allow(dead_code)]
-    response_type: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    stop_reason: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    stop_sequence: Option<String>,
-    usage: AnthropicUsage,
+struct ConverseOutput {
+    message: Message,
 }
 
-/// Usage information from Anthropic API
+/// Usage information from AWS Bedrock API
 #[derive(Debug, Deserialize)]
-struct AnthropicUsage {
-    #[serde(default)]
+struct TokenUsage {
+    #[serde(default, rename = "inputTokens")]
     input_tokens: u32,
-    #[serde(default)]
+    #[serde(default, rename = "outputTokens")]
     output_tokens: u32,
-    #[serde(default)]
+    #[serde(default, rename = "totalTokens")]
+    total_tokens: u32,
+    #[serde(default, rename = "cacheCreationInputTokens")]
     cache_creation_input_tokens: u32,
-    #[serde(default)]
+    #[serde(default, rename = "cacheReadInputTokens")]
     cache_read_input_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
 struct StreamEventCommon {
+    #[serde(rename = "contentBlockIndex")]
     index: usize,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "messageStart", rename_all = "camelCase")]
 enum StreamEvent {
-    #[allow(dead_code)]
-    #[serde(rename = "message_start")]
-    MessageStart { message: MessageStart },
-    #[serde(rename = "content_block_start")]
+    #[serde(rename = "messageStart")]
+    MessageStart {
+        role: String,
+    },
+    #[serde(rename = "contentBlockStart")]
     ContentBlockStart {
         #[serde(flatten)]
         common: StreamEventCommon,
-        content_block: StreamContentBlock,
+        start: StreamContentBlockStart,
     },
-    #[serde(rename = "content_block_delta")]
+    #[serde(rename = "contentBlockDelta")]
     ContentBlockDelta {
         #[serde(flatten)]
         common: StreamEventCommon,
         delta: ContentDelta,
     },
-    #[serde(rename = "content_block_stop")]
+    #[serde(rename = "contentBlockStop")]
     ContentBlockStop {
         #[serde(flatten)]
         common: StreamEventCommon,
     },
-    #[serde(rename = "message_delta")]
-    MessageDelta { usage: AnthropicUsage },
-    #[serde(rename = "message_stop")]
-    MessageStop,
-    #[serde(rename = "ping")]
+    #[serde(rename = "messageStop")]
+    MessageStop {
+        #[serde(rename = "stopReason")]
+        stop_reason: String,
+        #[serde(default, rename = "additionalModelResponseFields")]
+        additional_model_response_fields: Option<serde_json::Value>,
+    },
+    #[serde(rename = "metadata")]
+    Metadata {
+        usage: Option<TokenUsage>,
+        metrics: Option<ConverseMetrics>,
+        trace: Option<ConverseTrace>,
+    },
     Ping,
 }
 
 #[derive(Debug, Deserialize)]
-struct MessageStart {
-    #[allow(dead_code)]
-    id: String,
-    #[allow(dead_code)]
-    #[serde(rename = "type")]
-    message_type: String,
-    #[allow(dead_code)]
-    role: String,
-    #[allow(dead_code)]
-    model: String,
-    usage: AnthropicUsage,
+struct ConverseMetrics {
+    #[serde(rename = "latencyMs")]
+    latency_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]
-struct StreamContentBlock {
+struct ConverseTrace {
+    guardrail: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamContentBlockStart {
     #[serde(rename = "type")]
     block_type: String,
     // Fields for text blocks
@@ -279,14 +291,17 @@ struct StreamContentBlock {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum ContentDelta {
-    #[serde(rename = "thinking_delta")]
-    ThinkingDelta { thinking: String },
-    #[serde(rename = "signature_delta")]
-    SignatureDelta { signature: String },
-    #[serde(rename = "text_delta")]
+    #[serde(rename = "reasoningContent")]
+    ReasoningDelta {
+        text: Option<String>,
+        signature: Option<String>,
+        #[serde(rename = "redactedContent")]
+        redacted_content: Option<String>,
+    },
+    #[serde(rename = "text")]
     TextDelta { text: String },
-    #[serde(rename = "input_json_delta")]
-    InputJsonDelta { partial_json: String },
+    #[serde(rename = "toolUse")]
+    ToolUseDelta { partial_json: String },
 }
 
 pub struct AiCoreClient {
@@ -322,15 +337,15 @@ impl AiCoreClient {
 
     fn get_url(&self, streaming: bool) -> String {
         if streaming {
-            format!("{}/invoke-with-response-stream", self.base_url)
+            format!("{}/converse-stream", self.base_url)
         } else {
-            format!("{}/invoke", self.base_url)
+            format!("{}/converse", self.base_url)
         }
     }
 
     async fn send_with_retry(
         &self,
-        request: &AnthropicRequest,
+        request: &ConverseRequest,
         streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
     ) -> Result<LLMResponse> {
@@ -362,7 +377,7 @@ impl AiCoreClient {
 
     async fn try_send_request(
         &self,
-        request: &AnthropicRequest,
+        request: &ConverseRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
         let token = self.token_manager.get_valid_token().await?;
@@ -373,17 +388,7 @@ impl AiCoreClient {
             .post(&self.get_url(streaming_callback.is_some()))
             .header("AI-Resource-Group", "default")
             .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", token))
-            .header("anthropic-beta", "output-128k-2025-02-19");
-
-        let mut request = serde_json::to_value(request)?;
-        if let Value::Object(ref mut map) = request {
-            map.remove("stream"); // Remove stream after we redirect to /invoke-with-response-stream
-            map.insert(
-                "anthropic_version".to_string(),
-                Value::String("bedrock-2023-05-31".to_string()),
-            );
-        }
+            .header("Authorization", format!("Bearer {}", token));
 
         let response = request_builder
             .json(&request)
@@ -404,9 +409,10 @@ impl AiCoreClient {
             let mut blocks: Vec<ContentBlock> = Vec::new();
             let mut current_content = String::new();
             let mut line_buffer = String::new();
-            let mut usage = AnthropicUsage {
+            let mut usage = TokenUsage {
                 input_tokens: 0,
                 output_tokens: 0,
+                total_tokens: 0,
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens: 0,
             };
@@ -415,7 +421,7 @@ impl AiCoreClient {
                 chunk: &[u8],
                 line_buffer: &mut String,
                 blocks: &mut Vec<ContentBlock>,
-                usage: &mut AnthropicUsage,
+                usage: &mut TokenUsage,
                 current_content: &mut String,
                 callback: &StreamingCallback,
                 recorder: &Option<APIRecorder>,
@@ -445,7 +451,7 @@ impl AiCoreClient {
             fn process_sse_line(
                 line: &str,
                 blocks: &mut Vec<ContentBlock>,
-                usage: &mut AnthropicUsage,
+                usage: &mut TokenUsage,
                 current_content: &mut String,
                 callback: &StreamingCallback,
                 recorder: &Option<APIRecorder>,
@@ -484,37 +490,37 @@ impl AiCoreClient {
                                     ));
                                 }
                             }
-                            StreamEvent::MessageStart { message } => {
-                                usage.input_tokens = message.usage.input_tokens;
-                                usage.output_tokens = message.usage.output_tokens;
-                                usage.cache_creation_input_tokens =
-                                    message.usage.cache_creation_input_tokens;
-                                usage.cache_read_input_tokens =
-                                    message.usage.cache_read_input_tokens;
-                                return Ok(());
-                            }
-                            StreamEvent::MessageDelta { usage: delta_usage } => {
-                                usage.output_tokens = delta_usage.output_tokens;
-                                return Ok(());
-                            }
+                            // StreamEvent::Metadata { usage } => {
+                            //     usage.input_tokens = usage.input_tokens;
+                            //     usage.output_tokens = usage.output_tokens;
+                            //     usage.cache_creation_input_tokens =
+                            //         message.usage.cache_creation_input_tokens;
+                            //     usage.cache_read_input_tokens =
+                            //         message.usage.cache_read_input_tokens;
+                            //     return Ok(());
+                            // }
+                            // StreamEvent::MessageDelta { usage: delta_usage } => {
+                            //     usage.output_tokens = delta_usage.output_tokens;
+                            //     return Ok(());
+                            // }
                             _ => return Ok(()), // Early return for events without index
                         }
 
                         match event {
-                            StreamEvent::ContentBlockStart { content_block, .. } => {
+                            StreamEvent::ContentBlockStart { start, .. } => {
                                 current_content.clear();
-                                let block = match content_block.block_type.as_str() {
+                                let block = match start.block_type.as_str() {
                                     "thinking" => {
-                                        if let Some(thinking) = content_block.thinking {
+                                        if let Some(thinking) = start.thinking {
                                             current_content.push_str(&thinking);
                                         }
                                         ContentBlock::Thinking {
-                                            thinking: content_block.signature.unwrap_or_default(),
+                                            thinking: start.signature.unwrap_or_default(),
                                             signature: String::new(),
                                         }
                                     }
                                     "text" => {
-                                        if let Some(text) = content_block.text {
+                                        if let Some(text) = start.text {
                                             current_content.push_str(&text);
                                         }
                                         ContentBlock::Text {
@@ -522,12 +528,12 @@ impl AiCoreClient {
                                         }
                                     }
                                     "tool_use" => {
-                                        if let Some(input) = content_block.input {
+                                        if let Some(input) = start.input {
                                             current_content.push_str(&input);
                                         }
                                         ContentBlock::ToolUse {
-                                            id: content_block.id.unwrap_or_default(),
-                                            name: content_block.name.unwrap_or_default(),
+                                            id: start.id.unwrap_or_default(),
+                                            name: start.name.unwrap_or_default(),
                                             input: serde_json::Value::Null,
                                         }
                                     }
@@ -539,28 +545,30 @@ impl AiCoreClient {
                             }
                             StreamEvent::ContentBlockDelta { delta, .. } => {
                                 match &delta {
-                                    ContentDelta::ThinkingDelta {
-                                        thinking: delta_text,
+                                    ContentDelta::ReasoningDelta {
+                                        text,
+                                        signature,
+                                        redacted_content,
                                     } => {
-                                        callback(&StreamingChunk::Thinking(delta_text.clone()))?;
-                                        current_content.push_str(delta_text);
-                                    }
-                                    ContentDelta::SignatureDelta {
-                                        signature: signature_delta,
-                                    } => {
-                                        // Update the signature in the last block if it's a thinking block
-                                        match blocks.last_mut().unwrap() {
-                                            ContentBlock::Thinking { signature, .. } => {
-                                                *signature = signature_delta.clone();
+                                        if let Some(text) = text {
+                                            callback(&StreamingChunk::Thinking(text.clone()))?;
+                                            current_content.push_str(text);
+                                        }
+                                        if let Some(signature_delta) = signature {
+                                            // Update the signature in the last block if it's a thinking block
+                                            match blocks.last_mut().unwrap() {
+                                                ContentBlock::Thinking { signature, .. } => {
+                                                    *signature = signature_delta.clone();
+                                                }
+                                                _ => {}
                                             }
-                                            _ => {}
                                         }
                                     }
                                     ContentDelta::TextDelta { text: delta_text } => {
                                         callback(&StreamingChunk::Text(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
                                     }
-                                    ContentDelta::InputJsonDelta { partial_json } => {
+                                    ContentDelta::ToolUseDelta { partial_json } => {
                                         // Accumulate JSON parts as string and send as specific type
                                         /*
                                         // TODO: Keep this here, but disable it. For now, the other providers don't send parameter chunks.
@@ -663,19 +671,21 @@ impl AiCoreClient {
                 .await
                 .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
-            let anthropic_response: AnthropicResponse = serde_json::from_str(&response_text)
+            let converse_response: ConverseResponse = serde_json::from_str(&response_text)
                 .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
+
+            // TODO: Convert converse_response.output to LLMResponse content field type
 
             // Convert AnthropicResponse to LLMResponse
             let llm_response = LLMResponse {
-                content: anthropic_response.content,
+                content,
                 usage: Usage {
-                    input_tokens: anthropic_response.usage.input_tokens,
-                    output_tokens: anthropic_response.usage.output_tokens,
-                    cache_creation_input_tokens: anthropic_response
+                    input_tokens: converse_response.usage.input_tokens,
+                    output_tokens: converse_response.usage.output_tokens,
+                    cache_creation_input_tokens: converse_response
                         .usage
                         .cache_creation_input_tokens,
-                    cache_read_input_tokens: anthropic_response.usage.cache_read_input_tokens,
+                    cache_read_input_tokens: converse_response.usage.cache_read_input_tokens,
                 },
             };
 
@@ -744,7 +754,7 @@ impl LLMProvider for AiCoreClient {
         });
         let max_tokens = 128000;
 
-        let anthropic_request = AnthropicRequest {
+        let anthropic_request = ConverseRequest {
             thinking,
             messages: request.messages,
             max_tokens,
