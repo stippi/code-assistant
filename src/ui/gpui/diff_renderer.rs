@@ -1,9 +1,6 @@
 use crate::ui::gpui::parameter_renderers::ParameterRenderer;
-use gpui::{
-    div, hsla, rgb, rgba, Element, FontWeight, IntoElement, ParentElement, SharedString, Styled,
-};
+use gpui::{div, hsla, rgb, rgba, Element, FontWeight, IntoElement, ParentElement, Styled};
 use similar::{ChangeTag, TextDiff};
-use std::sync::Arc;
 
 /// Renderer for the "diff" parameter of the replace_in_file tool
 pub struct DiffParameterRenderer;
@@ -107,6 +104,7 @@ fn parse_diff_sections(diff_text: &str) -> Vec<DiffSection> {
 }
 
 /// A section of a diff with search and replace content
+#[derive(Clone)]
 struct DiffSection {
     search_content: String,
     replace_content: String,
@@ -115,7 +113,7 @@ struct DiffSection {
 }
 
 /// Enum to represent the type of change in a line
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 enum LineChangeType {
     Unchanged,
     Deleted,
@@ -131,7 +129,12 @@ struct DiffLine {
 }
 
 /// Render a diff section with enhanced visualization
-fn render_enhanced_diff_section(section: DiffSection) -> impl IntoElement {
+fn render_enhanced_diff_section(section: DiffSection) -> gpui::AnyElement {
+    if section.in_search || section.in_replace {
+        // Für streaming-Blöcke verwenden wir das einfache Rendering - eine neue Funktion, die direkt AnyElement zurückgibt
+        return render_streaming_diff_section(section);
+    }
+
     // Create the refined diff using similar
     let diff_lines = create_diff_lines(&section.search_content, &section.replace_content);
 
@@ -194,6 +197,7 @@ fn render_enhanced_diff_section(section: DiffSection) -> impl IntoElement {
                 }
             }
         }))
+        .into_any()
 }
 
 /// Create a list of diff lines with change information
@@ -205,12 +209,24 @@ fn create_diff_lines(old_text: &str, new_text: &str) -> Vec<DiffLine> {
         .newline_terminated(true)
         .diff_lines(old_text, new_text);
 
-    // Process line changes
+    // Process line changes and collect blocks of changes
+    let mut deleted_block = Vec::new();
+    let mut added_block = Vec::new();
+
+    // Process all changes to identify blocks
     for change in diff.iter_all_changes() {
         let line_content = change.value().to_string();
 
         match change.tag() {
             ChangeTag::Equal => {
+                // Process any pending blocks first
+                if !deleted_block.is_empty() || !added_block.is_empty() {
+                    process_diff_blocks(&mut result, &deleted_block, &added_block);
+                    deleted_block.clear();
+                    added_block.clear();
+                }
+
+                // Add unchanged line
                 result.push(DiffLine {
                     content: line_content,
                     change_type: LineChangeType::Unchanged,
@@ -218,92 +234,156 @@ fn create_diff_lines(old_text: &str, new_text: &str) -> Vec<DiffLine> {
                 });
             }
             ChangeTag::Delete => {
-                result.push(DiffLine {
-                    content: line_content,
-                    change_type: LineChangeType::Deleted,
-                    inline_changes: None, // We'll add inline highlighting later
-                });
+                // Add to deleted block
+                deleted_block.push(line_content);
             }
             ChangeTag::Insert => {
-                result.push(DiffLine {
-                    content: line_content,
-                    change_type: LineChangeType::Added,
-                    inline_changes: None, // We'll add inline highlighting later
-                });
+                // Add to added block
+                added_block.push(line_content);
             }
         }
     }
 
-    // Find pairs of deleted and added lines to perform inline diff
-    let mut i = 0;
-    while i < result.len().saturating_sub(1) {
-        if result[i].change_type == LineChangeType::Deleted
-            && result[i + 1].change_type == LineChangeType::Added
-        {
-            // Get word-level changes
-            let old_line = &result[i].content;
-            let new_line = &result[i + 1].content;
-
-            // Create word-level diff
-            let word_diff = TextDiff::configure()
-                .timeout(std::time::Duration::from_millis(100))
-                .algorithm(similar::Algorithm::Myers)
-                .diff_words(old_line, new_line);
-
-            // Process word changes for the deleted line
-            let mut old_inline_changes = Vec::new();
-            let mut word_index = 0;
-
-            for change in word_diff.iter_all_changes() {
-                let word_len = change.value().len();
-
-                if change.tag() != ChangeTag::Equal {
-                    old_inline_changes.push((
-                        word_index,
-                        word_index + word_len,
-                        LineChangeType::Deleted,
-                    ));
-                }
-
-                if change.tag() != ChangeTag::Insert {
-                    word_index += word_len;
-                }
-            }
-
-            // Process word changes for the added line
-            let mut new_inline_changes = Vec::new();
-            let mut word_index = 0;
-
-            for change in word_diff.iter_all_changes() {
-                let word_len = change.value().len();
-
-                if change.tag() != ChangeTag::Equal {
-                    new_inline_changes.push((
-                        word_index,
-                        word_index + word_len,
-                        LineChangeType::Added,
-                    ));
-                }
-
-                if change.tag() != ChangeTag::Delete {
-                    word_index += word_len;
-                }
-            }
-
-            // Apply inline changes
-            if !old_inline_changes.is_empty() {
-                result[i].inline_changes = Some(old_inline_changes);
-            }
-
-            if !new_inline_changes.is_empty() {
-                result[i + 1].inline_changes = Some(new_inline_changes);
-            }
-        }
-
-        i += 1;
+    // Process any remaining blocks
+    if !deleted_block.is_empty() || !added_block.is_empty() {
+        process_diff_blocks(&mut result, &deleted_block, &added_block);
     }
 
     result
+}
+
+/// Process blocks of deleted and added lines to compute word-level diffs
+fn process_diff_blocks(
+    result: &mut Vec<DiffLine>, 
+    deleted_block: &[String], 
+    added_block: &[String]
+) {
+    // If both blocks have content, do word-level diffing between them
+    if !deleted_block.is_empty() && !added_block.is_empty() {
+        // Join blocks for comparison
+        let deleted_text = deleted_block.join("\n");
+        let added_text = added_block.join("\n");
+
+        // Create word-level diff
+        let word_diff = TextDiff::configure()
+            .timeout(std::time::Duration::from_millis(100))
+            .algorithm(similar::Algorithm::Myers)
+            .diff_words(&deleted_text, &added_text);
+
+        // Process deleted lines with inline highlighting
+        for (i, line) in deleted_block.iter().enumerate() {
+            let offset = if i > 0 {
+                deleted_block[..i].join("\n").len() + 1 // +1 for newline
+            } else {
+                0
+            };
+
+            let inline_changes = extract_inline_changes(&word_diff, line, offset, LineChangeType::Deleted);
+            
+            result.push(DiffLine {
+                content: line.clone(),
+                change_type: LineChangeType::Deleted,
+                inline_changes: if inline_changes.is_empty() { None } else { Some(inline_changes) },
+            });
+        }
+
+        // Process added lines with inline highlighting
+        for (i, line) in added_block.iter().enumerate() {
+            let offset = if i > 0 {
+                added_block[..i].join("\n").len() + 1 // +1 for newline
+            } else {
+                0
+            };
+
+            let inline_changes = extract_inline_changes(&word_diff, line, offset, LineChangeType::Added);
+            
+            result.push(DiffLine {
+                content: line.clone(),
+                change_type: LineChangeType::Added,
+                inline_changes: if inline_changes.is_empty() { None } else { Some(inline_changes) },
+            });
+        }
+    } else {
+        // If only one type of block exists, add them without inline highlighting
+        for line in deleted_block {
+            result.push(DiffLine {
+                content: line.clone(),
+                change_type: LineChangeType::Deleted,
+                inline_changes: None,
+            });
+        }
+
+        for line in added_block {
+            result.push(DiffLine {
+                content: line.clone(),
+                change_type: LineChangeType::Added,
+                inline_changes: None,
+            });
+        }
+    }
+}
+
+/// Extract inline changes from a word diff for a specific line
+fn extract_inline_changes<'a>(
+    word_diff: &TextDiff<'a, 'a, 'a, str>,
+    line: &str,
+    _line_offset: usize,
+    line_type: LineChangeType,
+) -> Vec<(usize, usize, LineChangeType)> {
+    let mut changes = Vec::new();
+
+    // Get the relevant tag for this line type
+    let relevant_tag = match line_type {
+        LineChangeType::Deleted => ChangeTag::Delete,
+        LineChangeType::Added => ChangeTag::Insert,
+        _ => return changes, // Should not happen
+    };
+
+    // Iterate over changes and collect those that apply to this line
+    for change in word_diff.iter_all_changes() {
+        if change.tag() == relevant_tag {
+            // We need to find this change in our current line
+            let value = change.value();
+            
+            // Simple string searching to find all occurrences in the line
+            let mut start_idx = 0;
+            while let Some(pos) = line[start_idx..].find(value) {
+                let abs_pos = start_idx + pos;
+                let end_pos = abs_pos + value.len();
+                
+                // Add this change
+                changes.push((abs_pos, end_pos, line_type));
+                
+                // Move past this occurrence
+                start_idx = abs_pos + 1;
+                
+                // Safety check to prevent infinite loops with empty strings
+                if value.is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Sort by start position
+    changes.sort_by_key(|(start, _, _)| *start);
+    
+    // Merge overlapping changes
+    let mut i = 0;
+    while i + 1 < changes.len() {
+        let (start1, end1, _) = changes[i];
+        let (start2, end2, _) = changes[i + 1];
+        
+        if start2 <= end1 {
+            // Merge these changes
+            changes[i] = (start1, end2.max(end1), line_type);
+            changes.remove(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+
+    changes
 }
 
 /// Render a line with inline diff highlighting
@@ -337,11 +417,16 @@ fn render_inline_diff_line(
     sorted_changes.sort_by_key(|(start, _, _)| *start);
 
     for (start, end, _) in sorted_changes {
+        // Sicherstellen, dass die Indizes innerhalb gültiger Grenzen liegen
+        if start >= content.len() || end > content.len() || start >= end {
+            continue;  // Überspringe ungültige Bereiche
+        }
+
         // Add unchanged text before this change
         if start > last_pos {
             spans.push(
                 div()
-                    .child(content[last_pos..start].to_string()) /*.inline()*/
+                    .child(content[last_pos..start].to_string())
                     .into_any(),
             );
         }
@@ -363,7 +448,6 @@ fn render_inline_diff_line(
                 })
                 .text_color(highlight_color)
                 .font_weight(FontWeight(700.0))
-                //.inline()
                 .into_any(),
         );
 
@@ -374,7 +458,7 @@ fn render_inline_diff_line(
     if last_pos < content.len() {
         spans.push(
             div()
-                .child(content[last_pos..].to_string()) /*.inline()*/
+                .child(content[last_pos..].to_string())
                 .into_any(),
         );
     }
@@ -383,30 +467,35 @@ fn render_inline_diff_line(
     line_div.children(spans).into_any()
 }
 
-/// Legacy render function - kept for backward compatibility during streaming
-fn render_diff_section(section: DiffSection) -> impl IntoElement {
-    div().flex().flex_col().gap_1().children(vec![
-        // Search content with red background
-        div()
-            .rounded_md()
-            .bg(hsla(0., 0.15, 0.2, 0.5))
-            .px_2()
-            .py_1()
-            .border_l_2()
-            .border_color(rgb(0xCC5555))
-            .text_color(rgb(0xFFBBBB))
-            .child(section.search_content.clone())
-            .into_any(),
-        // Replace content with green background
-        div()
-            .rounded_md()
-            .bg(hsla(120., 0.15, 0.2, 0.5))
-            .px_2()
-            .py_1()
-            .border_l_2()
-            .border_color(rgb(0x55CC55))
-            .text_color(rgb(0xBBFFBB))
-            .child(section.replace_content.clone())
-            .into_any(),
-    ])
+/// Helper function specifically for rendering streaming diff blocks, returns AnyElement directly
+fn render_streaming_diff_section(section: DiffSection) -> gpui::AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .children(vec![
+            // Search content with red background
+            div()
+                .rounded_md()
+                .bg(hsla(0., 0.15, 0.2, 0.5))
+                .px_2()
+                .py_1()
+                .border_l_2()
+                .border_color(rgb(0xCC5555))
+                .text_color(rgb(0xFFBBBB))
+                .child(section.search_content.clone())
+                .into_any(),
+            // Replace content with green background
+            div()
+                .rounded_md()
+                .bg(hsla(120., 0.15, 0.2, 0.5))
+                .px_2()
+                .py_1()
+                .border_l_2()
+                .border_color(rgb(0x55CC55))
+                .text_color(rgb(0xBBFFBB))
+                .child(section.replace_content.clone())
+                .into_any(),
+        ])
+        .into_any()
 }
