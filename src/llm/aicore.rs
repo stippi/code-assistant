@@ -227,26 +227,26 @@ struct StreamEvent {
     #[serde(default)]
     #[serde(rename = "messageStart")]
     message_start: Option<MessageStartEvent>,
-    
+
     #[serde(default)]
     #[serde(rename = "contentBlockStart")]
     content_block_start: Option<ContentBlockStartEvent>,
-    
+
     #[serde(default)]
     #[serde(rename = "contentBlockDelta")]
     content_block_delta: Option<ContentBlockDeltaEvent>,
-    
+
     #[serde(default)]
     #[serde(rename = "contentBlockStop")]
     content_block_stop: Option<ContentBlockStopEvent>,
-    
+
     #[serde(default)]
     #[serde(rename = "messageStop")]
     message_stop: Option<MessageStopEvent>,
-    
+
     #[serde(default)]
     metadata: Option<MetadataEvent>,
-    
+
     #[serde(default)]
     ping: Option<serde_json::Value>,
 }
@@ -318,24 +318,8 @@ struct StreamContentBlockStart {
     input: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-enum ContentDelta {
-    #[serde(rename = "reasoningContent")]
-    ReasoningDelta {
-        text: Option<String>,
-        signature: Option<String>,
-        #[serde(rename = "redactedContent")]
-        redacted_content: Option<String>,
-    },
-    #[serde(rename = "text")]
-    TextDelta { text: String },
-    #[serde(rename = "toolUse")]
-    ToolUseDelta {
-        #[serde(rename = "partialJson")]
-        partial_json: String,
-    },
-}
+// We use serde_json::Value directly for content deltas since
+// the response structure can vary and may be transformed by proxies
 
 pub struct AiCoreClient {
     token_manager: Arc<TokenManager>,
@@ -496,129 +480,136 @@ impl AiCoreClient {
                             recorder.record_chunk(data)?;
                         }
 
-                        // Extract and check index for relevant events
-                        match &event {
-                            StreamEvent::ContentBlockStart { common, .. } => {
-                                if common.index != blocks.len() {
-                                    return Err(anyhow::anyhow!(
-                                        "Start index {} does not match expected block {}",
-                                        common.index,
-                                        blocks.len()
-                                    ));
+                        // Process based on which event type was received
+                        if let Some(content_start) = &event.content_block_start {
+                            // Check the index matches expected
+                            let index = content_start.index;
+                            if index != blocks.len() {
+                                return Err(anyhow::anyhow!(
+                                    "Start index {} does not match expected block {}",
+                                    index,
+                                    blocks.len()
+                                ));
+                            }
+
+                            current_content.clear();
+                            let block = match content_start.start.block_type.as_str() {
+                                "thinking" => {
+                                    if let Some(thinking) = &content_start.start.thinking {
+                                        current_content.push_str(thinking);
+                                    }
+                                    ContentBlock::Thinking {
+                                        thinking: current_content.clone(),
+                                        signature: content_start
+                                            .start
+                                            .signature
+                                            .clone()
+                                            .unwrap_or_default(),
+                                    }
+                                }
+                                "text" => {
+                                    if let Some(text) = &content_start.start.text {
+                                        current_content.push_str(text);
+                                    }
+                                    ContentBlock::Text {
+                                        text: current_content.clone(),
+                                    }
+                                }
+                                "tool_use" => {
+                                    if let Some(input) = &content_start.start.input {
+                                        current_content.push_str(input);
+                                    }
+                                    ContentBlock::ToolUse {
+                                        id: content_start.start.id.clone().unwrap_or_default(),
+                                        name: content_start.start.name.clone().unwrap_or_default(),
+                                        input: serde_json::Value::Null,
+                                    }
+                                }
+                                _ => ContentBlock::Text {
+                                    text: String::new(),
+                                },
+                            };
+                            blocks.push(block);
+                        } else if let Some(content_delta) = &event.content_block_delta {
+                            let index = content_delta.index;
+
+                            // Check if we have any blocks at all
+                            if blocks.is_empty() {
+                                return Err(anyhow::anyhow!("Received Delta but no blocks exist"));
+                            }
+
+                            if index != blocks.len() - 1 {
+                                return Err(anyhow::anyhow!(
+                                    "Delta index {} does not match current block {}",
+                                    index,
+                                    blocks.len() - 1
+                                ));
+                            }
+
+                            // Try to extract the text from the delta
+                            if let Some(text_obj) = content_delta.delta.get("text") {
+                                if let Some(text) = text_obj.as_str() {
+                                    callback(&StreamingChunk::Text(text.to_string()))?;
+                                    current_content.push_str(text);
+                                }
+                            } else if content_delta.delta.get("SDK_UNKNOWN_MEMBER").is_some() {
+                                // This is the reasoningContent delta
+                                if let Some(reasoning) =
+                                    content_delta.delta["SDK_UNKNOWN_MEMBER"].get("name")
+                                {
+                                    if reasoning.as_str() == Some("reasoningContent") {
+                                        // Treat this as thinking content for now
+                                        // In a real implementation, we'd extract the text, but it's not available in the payload
+                                        callback(&StreamingChunk::Thinking(
+                                            "Thinking...".to_string(),
+                                        ))?;
+                                    }
+                                }
+                            } else if let Some(partial_json) =
+                                content_delta.delta.get("partialJson")
+                            {
+                                if let Some(partial_json_str) = partial_json.as_str() {
+                                    current_content.push_str(partial_json_str);
                                 }
                             }
-                            StreamEvent::ContentBlockDelta { common, .. }
-                            | StreamEvent::ContentBlockStop { common } => {
-                                // Check if we have any blocks at all
-                                if blocks.is_empty() {
-                                    return Err(anyhow::anyhow!(
-                                        "Received Delta/Stop but no blocks exist"
-                                    ));
-                                }
-                                if common.index != blocks.len() - 1 {
-                                    return Err(anyhow::anyhow!(
-                                        "Delta/Stop index {} does not match current block {}",
-                                        common.index,
-                                        blocks.len() - 1
-                                    ));
-                                }
+                        } else if let Some(content_stop) = &event.content_block_stop {
+                            let index = content_stop.index;
+
+                            // Check if we have any blocks at all
+                            if blocks.is_empty() {
+                                return Err(anyhow::anyhow!("Received Stop but no blocks exist"));
                             }
-                            StreamEvent::Metadata {
-                                usage: Some(meta_usage),
-                                ..
-                            } => {
+
+                            if index != blocks.len() - 1 {
+                                return Err(anyhow::anyhow!(
+                                    "Stop index {} does not match current block {}",
+                                    index,
+                                    blocks.len() - 1
+                                ));
+                            }
+
+                            match blocks.last_mut().unwrap() {
+                                ContentBlock::Text { text } => {
+                                    *text = current_content.clone();
+                                }
+                                ContentBlock::ToolUse { input, .. } => {
+                                    if let Ok(json) = serde_json::from_str(&current_content) {
+                                        *input = json;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        } else if let Some(metadata) = &event.metadata {
+                            if let Some(meta_usage) = &metadata.usage {
                                 usage.input_tokens = meta_usage.input_tokens;
                                 usage.output_tokens = meta_usage.output_tokens;
                                 usage.cache_creation_input_tokens =
                                     meta_usage.cache_creation_input_tokens;
                                 usage.cache_read_input_tokens = meta_usage.cache_read_input_tokens;
-                                return Ok(());
                             }
-                            _ => return Ok(()), // Early return for events without index
                         }
-
-                        match event {
-                            StreamEvent::ContentBlockStart { start, .. } => {
-                                current_content.clear();
-                                let block = match start.block_type.as_str() {
-                                    "thinking" => {
-                                        if let Some(thinking) = start.thinking {
-                                            current_content.push_str(&thinking);
-                                        }
-                                        ContentBlock::Thinking {
-                                            thinking: current_content.clone(),
-                                            signature: start.signature.unwrap_or_default(),
-                                        }
-                                    }
-                                    "text" => {
-                                        if let Some(text) = start.text {
-                                            current_content.push_str(&text);
-                                        }
-                                        ContentBlock::Text {
-                                            text: current_content.clone(),
-                                        }
-                                    }
-                                    "tool_use" => {
-                                        if let Some(input) = start.input {
-                                            current_content.push_str(&input);
-                                        }
-                                        ContentBlock::ToolUse {
-                                            id: start.id.unwrap_or_default(),
-                                            name: start.name.unwrap_or_default(),
-                                            input: serde_json::Value::Null,
-                                        }
-                                    }
-                                    _ => ContentBlock::Text {
-                                        text: String::new(),
-                                    },
-                                };
-                                blocks.push(block);
-                            }
-                            StreamEvent::ContentBlockDelta { delta, .. } => {
-                                match &delta {
-                                    ContentDelta::ReasoningDelta {
-                                        text,
-                                        signature,
-                                        redacted_content: _,
-                                    } => {
-                                        if let Some(text) = text {
-                                            callback(&StreamingChunk::Thinking(text.clone()))?;
-                                            current_content.push_str(text);
-                                        }
-                                        if let Some(signature_delta) = signature {
-                                            // Update the signature in the last block if it's a thinking block
-                                            match blocks.last_mut().unwrap() {
-                                                ContentBlock::Thinking { signature, .. } => {
-                                                    *signature = signature_delta.clone();
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    }
-                                    ContentDelta::TextDelta { text: delta_text } => {
-                                        callback(&StreamingChunk::Text(delta_text.clone()))?;
-                                        current_content.push_str(delta_text);
-                                    }
-                                    ContentDelta::ToolUseDelta { partial_json } => {
-                                        current_content.push_str(partial_json);
-                                    }
-                                }
-                            }
-                            StreamEvent::ContentBlockStop { .. } => {
-                                match blocks.last_mut().unwrap() {
-                                    ContentBlock::Text { text } => {
-                                        *text = current_content.clone();
-                                    }
-                                    ContentBlock::ToolUse { input, .. } => {
-                                        if let Ok(json) = serde_json::from_str(current_content) {
-                                            *input = json;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            _ => {}
-                        }
+                    } else {
+                        println!("[ERROR] Failed to parse event");
                     }
                 }
                 Ok(())
