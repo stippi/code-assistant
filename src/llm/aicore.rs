@@ -158,7 +158,6 @@ struct ThinkingConfiguration {
 /// Anthropic-specific request structure
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
-    model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfiguration>,
     messages: Vec<Message>,
@@ -294,17 +293,15 @@ pub struct AiCoreClient {
     token_manager: Arc<TokenManager>,
     client: Client,
     base_url: String,
-    model: String,
     recorder: Option<APIRecorder>,
 }
 
 impl AiCoreClient {
-    pub fn new(token_manager: Arc<TokenManager>, model: String, base_url: String) -> Self {
+    pub fn new(token_manager: Arc<TokenManager>, base_url: String) -> Self {
         Self {
             token_manager,
             client: Client::new(),
             base_url,
-            model,
             recorder: None,
         }
     }
@@ -312,7 +309,6 @@ impl AiCoreClient {
     /// Create a new client with recording capability
     pub fn new_with_recorder<P: AsRef<std::path::Path>>(
         token_manager: Arc<TokenManager>,
-        model: String,
         base_url: String,
         recording_path: P,
     ) -> Self {
@@ -320,7 +316,6 @@ impl AiCoreClient {
             token_manager,
             client: Client::new(),
             base_url,
-            model,
             recorder: Some(APIRecorder::new(recording_path)),
         }
     }
@@ -372,20 +367,16 @@ impl AiCoreClient {
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
         let token = self.token_manager.get_valid_token().await?;
 
-        let mut request_builder = self
+        let request_builder = self
             .client
             .post(&self.get_url(streaming_callback.is_some()))
             .header("AI-Resource-Group", "default")
             .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", token));
-
-        if self.model.starts_with("claude-3-7-sonnet") {
-            request_builder = request_builder.header("anthropic-beta", "output-128k-2025-02-19");
-        }
+            .header("Authorization", format!("Bearer {}", token))
+            .header("anthropic-beta", "output-128k-2025-02-19");
 
         let mut request = serde_json::to_value(request)?;
         if let Value::Object(ref mut map) = request {
-            map.remove("model"); // Remove model as it's not needed
             map.remove("stream"); // Remove stream after we redirect to /invoke-with-response-stream
             map.insert(
                 "anthropic_version".to_string(),
@@ -745,20 +736,14 @@ impl LLMProvider for AiCoreClient {
             tools_json
         });
 
-        let (thinking, max_tokens) = if self.model.starts_with("claude-3-7-sonnet") {
-            (
-                Some(ThinkingConfiguration {
-                    thinking_type: "enabled".to_string(),
-                    budget_tokens: 4000,
-                }),
-                128000,
-            )
-        } else {
-            (None, 8192)
-        };
+        // Always enable thinking mode and max tokens for large models
+        let thinking = Some(ThinkingConfiguration {
+            thinking_type: "enabled".to_string(),
+            budget_tokens: 4000,
+        });
+        let max_tokens = 128000;
 
         let anthropic_request = AnthropicRequest {
-            model: self.model.clone(),
             thinking,
             messages: request.messages,
             max_tokens,

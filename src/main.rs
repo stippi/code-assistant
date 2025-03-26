@@ -146,16 +146,15 @@ async fn create_llm_client(
                 .await
                 .context("Failed to initialize token manager")?;
             
-            let model_name = model.unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string());
             let base_url = base_url.unwrap_or_else(|| config.api_base_url.clone());
             
             if let Some(path) = record_path {
                 Ok(Box::new(AiCoreClient::new_with_recorder(
-                    token_manager, model_name, base_url, path,
+                    token_manager, base_url, path,
                 )))
             } else {
                 Ok(Box::new(AiCoreClient::new(
-                    token_manager, model_name, base_url,
+                    token_manager, base_url,
                 )))
             }
         }
