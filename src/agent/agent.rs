@@ -330,9 +330,13 @@ impl Agent {
         messages: Vec<Message>,
     ) -> Result<(Vec<AgentAction>, Message), AgentError> {
         // Inform UI that a new LLM request is starting
-        let request_id = self.ui.begin_llm_request().await.map_err(|e| AgentError::LLMError(e.into()))?;
+        let request_id = self
+            .ui
+            .begin_llm_request()
+            .await
+            .map_err(|e| AgentError::LLMError(e.into()))?;
         debug!("Starting LLM request with ID: {}", request_id);
-        
+
         let request = LLMRequest {
             messages,
             system_prompt: match self.tool_mode {
@@ -367,11 +371,11 @@ impl Agent {
             .send_message(request, Some(&streaming_callback))
             .await?;
 
-        debug!("Raw LLM response:");
+        println!("Raw LLM response:");
         for block in &response.content {
             match block {
                 ContentBlock::Text { text } => {
-                    debug!("---\n{}\n---", text);
+                    println!("---\n{}\n---", text);
                 }
                 ContentBlock::ToolUse { name, input, .. } => {
                     debug!("---\ntool: {}, input: {}\n---", name, input);
@@ -455,7 +459,10 @@ impl Agent {
     }
 }
 
-pub(crate) fn parse_llm_response(response: &crate::llm::LLMResponse, request_id: u64) -> Result<Vec<AgentAction>> {
+pub(crate) fn parse_llm_response(
+    response: &crate::llm::LLMResponse,
+    request_id: u64,
+) -> Result<Vec<AgentAction>> {
     let mut actions = Vec::new();
 
     let mut reasoning = String::new();

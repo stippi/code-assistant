@@ -138,6 +138,9 @@ fn render_enhanced_diff_section(section: DiffSection) -> gpui::AnyElement {
         return render_streaming_diff_section(section);
     }
 
+    //println!("SEARCH block:\n{}", section.search_content);
+    //println!("REPLACE block:\n{}", section.replace_content);
+
     // Create the refined diff using similar
     let diff_lines = create_diff_lines(&section.search_content, &section.replace_content);
 
