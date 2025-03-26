@@ -107,7 +107,7 @@ impl ToolExecutor {
                     anyhow::anyhow!("This tool requires an active project. Use open_project first.")
                 })?;
                 match tool {
-                    Tool::ReadFiles { paths } => {
+                    Tool::ReadFiles { paths, start_line, end_line } => {
                         // Check for absolute paths
                         for path in paths {
                             if let Some(error) = check_absolute_path(path) {
@@ -119,7 +119,15 @@ impl ToolExecutor {
 
                         for path in paths {
                             let full_path = explorer.root_dir().join(path);
-                            match explorer.read_file(&full_path) {
+                            
+                            // Use read_file_range if line parameters are specified
+                            let read_result = if start_line.is_some() || end_line.is_some() {
+                                explorer.read_file_range(&full_path, *start_line, *end_line)
+                            } else {
+                                explorer.read_file(&full_path)
+                            };
+                            
+                            match read_result {
                                 Ok(content) => {
                                     loaded_files.insert(path.clone(), content);
                                 }

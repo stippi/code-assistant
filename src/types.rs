@@ -214,7 +214,14 @@ pub enum Tool {
         max_depth: Option<usize>,
     },
     /// Read content of one or multiple files into working memory
-    ReadFiles { paths: Vec<PathBuf> },
+    /// With optional line range parameters to read only part of a file
+    ReadFiles { 
+        paths: Vec<PathBuf>,
+        /// Optional start line (1-based, inclusive)
+        start_line: Option<usize>,
+        /// Optional end line (1-based, inclusive)
+        end_line: Option<usize>,
+    },
     /// Write content to a file
     WriteFile {
         path: PathBuf,
@@ -420,6 +427,8 @@ pub trait CodeExplorer: Send + Sync {
     fn root_dir(&self) -> PathBuf;
     /// Reads the content of a file
     fn read_file(&self, path: &PathBuf) -> Result<String>;
+    /// Reads the content of a file between specific line numbers
+    fn read_file_range(&self, path: &PathBuf, start_line: Option<usize>, end_line: Option<usize>) -> Result<String>;
     /// Write the content of a file
     fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()>;
     fn delete_file(&self, path: &PathBuf) -> Result<()>;
