@@ -200,7 +200,7 @@ struct ConverseOutput {
     message: Message,
 }
 
-/// Usage information from AWS Bedrock API
+/// Usage information from AiCore Converse API
 #[derive(Debug, Deserialize)]
 struct TokenUsage {
     #[serde(default, rename = "inputTokens")]
@@ -221,44 +221,75 @@ struct StreamEventCommon {
     index: usize,
 }
 
+// Structure to parse SSE events from the API
 #[derive(Debug, Deserialize)]
-#[serde(tag = "messageStart", rename_all = "camelCase")]
-enum StreamEvent {
+struct StreamEvent {
+    #[serde(default)]
     #[serde(rename = "messageStart")]
-    MessageStart {
-        role: String,
-    },
+    message_start: Option<MessageStartEvent>,
+    
+    #[serde(default)]
     #[serde(rename = "contentBlockStart")]
-    ContentBlockStart {
-        #[serde(flatten)]
-        common: StreamEventCommon,
-        start: StreamContentBlockStart,
-    },
+    content_block_start: Option<ContentBlockStartEvent>,
+    
+    #[serde(default)]
     #[serde(rename = "contentBlockDelta")]
-    ContentBlockDelta {
-        #[serde(flatten)]
-        common: StreamEventCommon,
-        delta: ContentDelta,
-    },
+    content_block_delta: Option<ContentBlockDeltaEvent>,
+    
+    #[serde(default)]
     #[serde(rename = "contentBlockStop")]
-    ContentBlockStop {
-        #[serde(flatten)]
-        common: StreamEventCommon,
-    },
+    content_block_stop: Option<ContentBlockStopEvent>,
+    
+    #[serde(default)]
     #[serde(rename = "messageStop")]
-    MessageStop {
-        #[serde(rename = "stopReason")]
-        stop_reason: String,
-        #[serde(default, rename = "additionalModelResponseFields")]
-        additional_model_response_fields: Option<serde_json::Value>,
-    },
-    #[serde(rename = "metadata")]
-    Metadata {
-        usage: Option<TokenUsage>,
-        metrics: Option<ConverseMetrics>,
-        trace: Option<ConverseTrace>,
-    },
-    Ping,
+    message_stop: Option<MessageStopEvent>,
+    
+    #[serde(default)]
+    metadata: Option<MetadataEvent>,
+    
+    #[serde(default)]
+    ping: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageStartEvent {
+    role: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContentBlockStartEvent {
+    start: StreamContentBlockStart,
+    #[serde(rename = "contentBlockIndex")]
+    index: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContentBlockDeltaEvent {
+    delta: serde_json::Value,
+    #[serde(rename = "contentBlockIndex")]
+    index: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContentBlockStopEvent {
+    #[serde(rename = "contentBlockIndex")]
+    index: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageStopEvent {
+    #[serde(rename = "stopReason")]
+    stop_reason: String,
+    #[serde(default)]
+    #[serde(rename = "additionalModelResponseFields")]
+    additional_model_response_fields: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetadataEvent {
+    usage: Option<TokenUsage>,
+    metrics: Option<ConverseMetrics>,
+    trace: Option<ConverseTrace>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -300,7 +331,10 @@ enum ContentDelta {
     #[serde(rename = "text")]
     TextDelta { text: String },
     #[serde(rename = "toolUse")]
-    ToolUseDelta { partial_json: String },
+    ToolUseDelta {
+        #[serde(rename = "partialJson")]
+        partial_json: String,
+    },
 }
 
 pub struct AiCoreClient {
@@ -380,7 +414,6 @@ impl AiCoreClient {
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
         let token = self.token_manager.get_valid_token().await?;
-        println!("API Token: {}", token);
 
         let request_builder = self
             .client
@@ -456,6 +489,7 @@ impl AiCoreClient {
                 recorder: &Option<APIRecorder>,
             ) -> Result<()> {
                 if let Some(data) = line.strip_prefix("data: ") {
+                    println!("SSE line: {}", data);
                     if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
                         // Record the chunk if recorder is available
                         if let Some(recorder) = &recorder {
@@ -489,19 +523,17 @@ impl AiCoreClient {
                                     ));
                                 }
                             }
-                            // StreamEvent::Metadata { usage } => {
-                            //     usage.input_tokens = usage.input_tokens;
-                            //     usage.output_tokens = usage.output_tokens;
-                            //     usage.cache_creation_input_tokens =
-                            //         message.usage.cache_creation_input_tokens;
-                            //     usage.cache_read_input_tokens =
-                            //         message.usage.cache_read_input_tokens;
-                            //     return Ok(());
-                            // }
-                            // StreamEvent::MessageDelta { usage: delta_usage } => {
-                            //     usage.output_tokens = delta_usage.output_tokens;
-                            //     return Ok(());
-                            // }
+                            StreamEvent::Metadata {
+                                usage: Some(meta_usage),
+                                ..
+                            } => {
+                                usage.input_tokens = meta_usage.input_tokens;
+                                usage.output_tokens = meta_usage.output_tokens;
+                                usage.cache_creation_input_tokens =
+                                    meta_usage.cache_creation_input_tokens;
+                                usage.cache_read_input_tokens = meta_usage.cache_read_input_tokens;
+                                return Ok(());
+                            }
                             _ => return Ok(()), // Early return for events without index
                         }
 
@@ -514,8 +546,8 @@ impl AiCoreClient {
                                             current_content.push_str(&thinking);
                                         }
                                         ContentBlock::Thinking {
-                                            thinking: start.signature.unwrap_or_default(),
-                                            signature: String::new(),
+                                            thinking: current_content.clone(),
+                                            signature: start.signature.unwrap_or_default(),
                                         }
                                     }
                                     "text" => {
@@ -547,7 +579,7 @@ impl AiCoreClient {
                                     ContentDelta::ReasoningDelta {
                                         text,
                                         signature,
-                                        redacted_content,
+                                        redacted_content: _,
                                     } => {
                                         if let Some(text) = text {
                                             callback(&StreamingChunk::Thinking(text.clone()))?;
@@ -568,30 +600,6 @@ impl AiCoreClient {
                                         current_content.push_str(delta_text);
                                     }
                                     ContentDelta::ToolUseDelta { partial_json } => {
-                                        // Accumulate JSON parts as string and send as specific type
-                                        /*
-                                        // TODO: Keep this here, but disable it. For now, the other providers don't send parameter chunks.
-                                        // The StreamingProcessor shall eventuall emit DisplayFragment::ToolParameter chunks,
-                                        // but the implementation is incomplete anyway. It does work already in XML-tools mode.
-                                        callback(&StreamingChunk::InputJson {
-                                            content: partial_json.clone(),
-                                            tool_name: blocks.last().and_then(|block| {
-                                                if let ContentBlock::ToolUse { name, .. } = block {
-                                                    Some(name.clone())
-                                                } else {
-                                                    None
-                                                }
-                                            }),
-                                            tool_id: blocks.last().and_then(|block| {
-                                                if let ContentBlock::ToolUse { id, .. } = block {
-                                                    Some(id.clone())
-                                                } else {
-                                                    None
-                                                }
-                                            }),
-                                        })?;
-                                         */
-
                                         current_content.push_str(partial_json);
                                     }
                                 }
@@ -767,15 +775,26 @@ impl LLMProvider for AiCoreClient {
             temperature: 1.0,
         });
 
+        let messages = request
+            .messages
+            .into_iter()
+            .map(|mut message| {
+                if let MessageContent::Text(text) = message.content {
+                    message.content = MessageContent::Structured(vec![ContentBlock::Text { text }]);
+                }
+                message
+            })
+            .collect();
+
         let converse_request = ConverseRequest {
-            messages: request.messages,
+            messages,
             system,
             inference_config,
             tool_config,
             additional_model_request_fields: Some(serde_json::json!({
-                "streaming": streaming_callback.is_some(),
-                "thinking": thinking
-            })),
+            //                "streaming": streaming_callback.is_some(),
+                            "thinking": thinking
+                        })),
         };
 
         self.send_with_retry(&converse_request, streaming_callback, 3)

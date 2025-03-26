@@ -368,7 +368,7 @@ impl Agent {
 
         let response = self
             .llm_provider
-            .send_message(request, None) //Some(&streaming_callback))
+            .send_message(request, Some(&streaming_callback))
             .await?;
 
         debug!("Raw LLM response:");
