@@ -13,7 +13,11 @@ mod tests;
 
 mod utils;
 
+pub mod aicore;
 pub mod anthropic;
+pub mod auth;
+pub mod config;
+mod error;
 pub mod ollama;
 pub mod openai;
 pub mod recording;
