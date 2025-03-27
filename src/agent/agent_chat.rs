@@ -158,10 +158,6 @@ impl AgentChat {
 
         self.working_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
 
-        // Save initial state
-        self.state_persistence
-            .save_state(task, self.working_memory.action_history.clone())?;
-
         // Notify UI of initial working memory
         let _ = self.ui.update_memory(&self.working_memory).await;
 
