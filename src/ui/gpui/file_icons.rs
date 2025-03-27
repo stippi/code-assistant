@@ -1,8 +1,8 @@
 use gpui::{div, px, svg, App, AssetSource, IntoElement, ParentElement, SharedString, Styled};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use tracing::{debug, trace, warn};
 
 use crate::ui::gpui::path_util::PathExt;
@@ -28,6 +28,8 @@ pub struct FileIcons {
     /// Fallback emoji icons for when SVGs aren't available
     fallback_stems: HashMap<String, String>,
     fallback_suffixes: HashMap<String, String>,
+    /// Set of already logged missing icon paths to avoid duplicate warnings
+    logged_missing_icons: Mutex<HashSet<String>>,
 }
 
 // Public icon type constants that already exist in file_types.json
@@ -95,6 +97,7 @@ impl FileIcons {
             config,
             fallback_stems,
             fallback_suffixes,
+            logged_missing_icons: Mutex::new(HashSet::new()),
         }
     }
 
@@ -130,13 +133,26 @@ impl FileIcons {
         FileTypesConfig::default()
     }
 
+    /// Log a missing icon only if it hasn't been logged before
+    fn log_missing_icon(&self, message: &str, identifier: &str) {
+        let mut logged = self.logged_missing_icons.lock().unwrap();
+        if !logged.contains(identifier) {
+            warn!("{}", message);
+            logged.insert(identifier.to_string());
+        }
+    }
+
     /// Get the appropriate icon for a file path
     pub fn get_icon(&self, path: &Path) -> Option<SharedString> {
         // Extract the stem or suffix from the path
         let suffix = match path.icon_stem_or_suffix() {
             Some(s) => s,
             None => {
-                warn!("[FileIcons]: No suffix found for path: {:?}", path);
+                let path_str = path.to_string_lossy().to_string();
+                self.log_missing_icon(
+                    &format!("[FileIcons]: No suffix found for path: {:?}", path),
+                    &format!("no_suffix:{}", path_str),
+                );
                 return self.get_type_icon(DEFAULT);
             }
         };
@@ -181,7 +197,11 @@ impl FileIcons {
         }
 
         // Default icon
-        debug!("[FileIcons]: Using default icon for: {:?}", path);
+        let path_str = path.to_string_lossy().to_string();
+        self.log_missing_icon(
+            &format!("[FileIcons]: Using default icon for: {:?}", path),
+            &format!("default_icon:{}", path_str),
+        );
         self.get_type_icon(DEFAULT)
     }
 
@@ -228,7 +248,11 @@ impl FileIcons {
         }
 
         // Finally, if everything else fails, fall back to emojis
-        warn!("[FileIcons]: No icon found for type: '{}'", typ);
+        self.log_missing_icon(
+            &format!("[FileIcons]: No icon found for type: '{}'", typ),
+            &format!("no_icon_type:{}", typ),
+        );
+
         match typ {
             TOOL_READ_FILES => Some(SharedString::from("📄")),
             TOOL_LIST_FILES => Some(SharedString::from("📂")),

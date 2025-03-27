@@ -380,7 +380,7 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))?
             .clone();
 
-        let updated_content = crate::utils::apply_replacements(&content, replacements)?;
+        let updated_content = crate::utils::apply_replacements_normalized(&content, replacements)?;
 
         // Update the stored content
         files.insert(path.to_path_buf(), updated_content.clone());

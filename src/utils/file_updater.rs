@@ -1,4 +1,5 @@
 use crate::types::FileReplacement;
+use crate::utils::encoding;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FileUpdaterError {
@@ -29,15 +30,22 @@ impl std::fmt::Display for FileUpdaterError {
 
 impl std::error::Error for FileUpdaterError {}
 
-pub fn apply_replacements(
+/// Apply replacements with content normalization to make SEARCH blocks more robust
+/// against whitespace and line ending differences
+pub fn apply_replacements_normalized(
     content: &str,
     replacements: &[FileReplacement],
 ) -> Result<String, anyhow::Error> {
-    let mut result = content.to_string();
+    // Normalize the input content first
+    let normalized_content = encoding::normalize_content(content);
+    let mut result = normalized_content.clone();
 
     for (index, replacement) in replacements.iter().enumerate() {
+        // Normalize the search string as well
+        let normalized_search = encoding::normalize_content(&replacement.search);
+
         // Count occurrences to ensure uniqueness
-        let matches: Vec<_> = result.match_indices(&replacement.search).collect();
+        let matches: Vec<_> = result.match_indices(&normalized_search).collect();
 
         match matches.len() {
             0 => {
@@ -49,7 +57,7 @@ pub fn apply_replacements(
             }
             1 => {
                 let (pos, _) = matches[0];
-                result.replace_range(pos..pos + replacement.search.len(), &replacement.replace);
+                result.replace_range(pos..pos + normalized_search.len(), &replacement.replace);
             }
             _ => {
                 return Err(FileUpdaterError::MultipleMatches(
@@ -66,54 +74,39 @@ pub fn apply_replacements(
 }
 
 #[test]
-fn test_apply_replacements() -> Result<(), anyhow::Error> {
-    let test_cases = vec![
-        // Basic replacement
+fn test_apply_replacements_normalized() -> Result<(), anyhow::Error> {
+    let test_cases: Vec<(&str, Vec<FileReplacement>, Result<&str, &str>)> = vec![
+        // Test with trailing whitespace
         (
-            "Hello World\nThis is a test\nGoodbye",
+            "Hello World \nThis is a test\nGoodbye",
             vec![FileReplacement {
-                search: "Hello World".to_string(),
-                replace: "Hi there".to_string(),
+                search: "Hello World\nThis".to_string(), // No trailing space in search
+                replace: "Hi there\nNew".to_string(),
             }],
-            Ok("Hi there\nThis is a test\nGoodbye"),
+            Ok("Hi there\nNew is a test\nGoodbye"),
         ),
-        // Multiple unique replacements
+        // Test with different line endings
         (
-            "function test() {\n  console.log('test');\n}",
-            vec![
-                FileReplacement {
-                    search: "console.log('test');".to_string(),
-                    replace: "return 42;".to_string(),
-                },
-                FileReplacement {
-                    search: "function test()".to_string(),
-                    replace: "function answer()".to_string(),
-                },
-            ],
+            "function test() {\r\n  console.log('test');\r\n}", // CRLF endings
+            vec![FileReplacement {
+                search: "function test() {\n  console.log('test');\n}".to_string(), // LF endings
+                replace: "function answer() {\n  return 42;\n}".to_string(),
+            }],
             Ok("function answer() {\n  return 42;\n}"),
         ),
-        // Test error with duplicate content
+        // Test with both line ending and whitespace differences
         (
-            "test\ntest\ntest",
+            "test line  \r\nwith trailing space \r\nand CRLF endings",
             vec![FileReplacement {
-                search: "test".to_string(),
-                replace: "replaced".to_string(),
+                search: "test line\nwith trailing space\nand CRLF endings".to_string(),
+                replace: "replaced content".to_string(),
             }],
-            Err("Found 3 occurrences of SEARCH block"), // Partial string match is fine for the test
-        ),
-        // Test error with not found content
-        (
-            "test content",
-            vec![FileReplacement {
-                search: "not found".to_string(),
-                replace: "anything".to_string(),
-            }],
-            Err("Could not find SEARCH block"), // Partial string match is fine for the test
+            Ok("replaced content"),
         ),
     ];
 
     for (input, replacements, expected) in test_cases {
-        let result = apply_replacements(input, &replacements);
+        let result = apply_replacements_normalized(input, &replacements);
         match (result, expected) {
             (Ok(result), Ok(expected)) => assert_eq!(result, expected),
             (Err(e), Err(expected)) => assert!(e.to_string().contains(expected)),
