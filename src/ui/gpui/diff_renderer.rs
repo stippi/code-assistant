@@ -1,7 +1,7 @@
 use crate::ui::gpui::parameter_renderers::ParameterRenderer;
 use gpui::{
-    div, hsla, rgb, rgba, Element, FontWeight, HighlightStyle, IntoElement, ParentElement, Styled,
-    StyledText, TextStyle,
+    div, hsla, px, rgb, rgba, Element, FontWeight, HighlightStyle, IntoElement, ParentElement,
+    Styled, StyledText, TextStyle,
 };
 use similar::{ChangeTag, TextDiff};
 
@@ -19,7 +19,7 @@ impl ParameterRenderer for DiffParameterRenderer {
             .rounded_md()
             .bg(rgba(0x0A0A0AFF))
             .p_2()
-            .text_sm()
+            .text_size(px(15.))
             // Verwende einen generischen Font statt monospace, da FontFamilyId::monospace() nicht verfügbar ist
             .font_weight(FontWeight(500.0))
             .child(parse_and_render_diff(param_value))

@@ -1,4 +1,4 @@
-use gpui::{Element, IntoElement, ParentElement, Styled};
+use gpui::{px, Element, IntoElement, ParentElement, Styled};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -116,7 +116,7 @@ impl ParameterRenderer for DefaultParameterRenderer {
             .py_1()
             .mr_1()
             .mb_1() // Add margin to allow wrapping
-            .text_sm()
+            .text_size(px(15.))
             .bg(hsla(210., 0.1, 0.3, 0.3))
             .child(
                 div()

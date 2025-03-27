@@ -413,7 +413,7 @@ impl IntoElement for MessageElement {
                             div()
                                 .pt_2()
                                 .italic()
-                                .text_sm()
+                                .text_size(px(16.))
                                 .text_color(hsla(0., 0., 0.8, 0.9)) // Light gray color
                                 // Can't easily set whitespace style, just use normal text
                                 .border_t_1()
@@ -459,7 +459,7 @@ impl IntoElement for MessageElement {
                                 .py_1()
                                 .mr_1()
                                 .mb_1() // Add margin to allow wrapping
-                                .text_sm()
+                                .text_size(px(16.))
                                 .bg(hsla(210., 0.1, 0.3, 0.3))
                                 .child(div().flex().flex_row().items_center().gap_1().children(
                                     vec![
@@ -531,7 +531,7 @@ impl IntoElement for MessageElement {
                                             .border_l_2()
                                             .border_color(hsla(0., 0.5, 0.5, 0.5))
                                             .text_color(hsla(0., 0.3, 0.9, 1.0))
-                                            .text_sm()
+                                            .text_size(px(14.))
                                             .child(msg.clone())
                                             .into_any()
                                     } else {
