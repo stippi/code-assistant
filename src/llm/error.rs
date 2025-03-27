@@ -15,6 +15,7 @@ pub enum ProxyError {
     Http(#[from] reqwest::Error),
 
     #[error("HTTP error: {0}")]
+    #[allow(dead_code)]
     HttpGeneral(String),
 
     #[error("JSON serialization error: {0}")]
