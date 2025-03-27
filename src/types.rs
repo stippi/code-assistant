@@ -214,13 +214,9 @@ pub enum Tool {
         max_depth: Option<usize>,
     },
     /// Read content of one or multiple files into working memory
-    /// With optional line range parameters to read only part of a file
+    /// Supports line range syntax in paths like 'file.txt:10-20' to read lines 10-20
     ReadFiles { 
-        paths: Vec<PathBuf>,
-        /// Optional start line (1-based, inclusive)
-        start_line: Option<usize>,
-        /// Optional end line (1-based, inclusive)
-        end_line: Option<usize>,
+        paths: Vec<PathBuf> 
     },
     /// Write content to a file
     WriteFile {

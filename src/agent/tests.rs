@@ -243,6 +243,7 @@ impl CodeExplorer for MockExplorer {
     }
 
     fn read_file(&self, path: &PathBuf) -> Result<String, anyhow::Error> {
+        println!("read_file({})", path.display());
         self.files
             .lock()
             .unwrap()
@@ -257,6 +258,12 @@ impl CodeExplorer for MockExplorer {
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String, anyhow::Error> {
+        println!(
+            "read_file_range({}, {:?}, {:?})",
+            path.display(),
+            start_line,
+            end_line
+        );
         let content = self.read_file(path)?;
 
         // If no line range is specified, return the whole file
@@ -506,20 +513,16 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
             }
             serde_json::Value::Object(map)
         }
-        Tool::ReadFiles {
-            paths,
-            start_line,
-            end_line,
-        } => {
-            let mut map = serde_json::Map::new();
-            map.insert("paths".to_string(), serde_json::json!(paths));
-            if let Some(sl) = start_line {
-                map.insert("start_line".to_string(), serde_json::json!(sl));
-            }
-            if let Some(el) = end_line {
-                map.insert("end_line".to_string(), serde_json::json!(el));
-            }
-            serde_json::Value::Object(map)
+        Tool::ReadFiles { paths } => {
+            // For testing convenience, we convert paths with special format
+            // For example, "filename.txt:10-20" should read only lines 10-20
+            let paths_with_ranges: Vec<String> = paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+            serde_json::json!({
+                "paths": paths_with_ranges
+            })
         }
         Tool::WriteFile {
             path,
@@ -760,8 +763,6 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
         Tool::ReadFiles {
             paths: vec![PathBuf::from("test.txt")],
-            start_line: None,
-            end_line: None,
         },
         "Reading test file (full content)",
     ))]);
@@ -803,9 +804,7 @@ async fn test_agent_read_files_with_line_range() -> Result<(), anyhow::Error> {
     // Test with line range (only lines 1-2)
     let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
         Tool::ReadFiles {
-            paths: vec![PathBuf::from("test.txt")],
-            start_line: Some(1),
-            end_line: Some(2),
+            paths: vec![PathBuf::from("test.txt:1-2")],
         },
         "Reading test file (limited range)",
     ))]);
@@ -1043,8 +1042,6 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
         Ok(create_test_response(
             Tool::ReadFiles {
                 paths: vec![PathBuf::from("test.rs")],
-                start_line: None,
-                end_line: None,
             },
             "Reading test file",
         )),
@@ -1161,16 +1158,12 @@ async fn test_read_files_error_handling() -> Result<()> {
         Ok(create_test_response(
             Tool::ReadFiles {
                 paths: vec![PathBuf::from("test.txt")],
-                start_line: None,
-                end_line: None,
             },
             "Reading existing file",
         )),
         Ok(create_test_response(
             Tool::ReadFiles {
                 paths: vec![PathBuf::from("nonexistent.txt")],
-                start_line: None,
-                end_line: None,
             },
             "Attempting to read non-existent file",
         )),
@@ -1270,16 +1263,12 @@ async fn test_read_files_line_range_error_handling() -> Result<()> {
         Ok(create_test_response(
             Tool::ReadFiles {
                 paths: vec![PathBuf::from("test.txt")],
-                start_line: Some(1),
-                end_line: Some(3),
             },
             "Reading existing file with valid line range",
         )),
         Ok(create_test_response(
             Tool::ReadFiles {
-                paths: vec![PathBuf::from("test.txt")],
-                start_line: Some(10), // Beyond file length
-                end_line: Some(20),
+                paths: vec![PathBuf::from("test.txt:10-20")],
             },
             "Attempting to read with invalid line range",
         )),
@@ -1298,6 +1287,8 @@ async fn test_read_files_line_range_error_handling() -> Result<()> {
     agent
         .start_with_task("Read file with line range".to_string())
         .await?;
+
+    mock_llm_ref.print_requests();
 
     let requests = mock_llm_ref.requests.lock().unwrap();
 
@@ -1326,8 +1317,6 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         Ok(create_test_response(
             Tool::ReadFiles {
                 paths: vec![PathBuf::from("test.txt")],
-                start_line: None,
-                end_line: None,
             },
             "Reading file after getting unknown tool error",
         )),
@@ -1381,8 +1370,6 @@ async fn test_parse_error_handling() -> Result<()> {
         Ok(create_test_response(
             Tool::ReadFiles {
                 paths: vec![PathBuf::from("test.txt")],
-                start_line: None,
-                end_line: None,
             },
             "Reading with correct parameters",
         )),
