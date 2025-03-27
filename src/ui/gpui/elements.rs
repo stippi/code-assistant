@@ -518,7 +518,12 @@ impl IntoElement for MessageElement {
                     .flex_row()
                     .overflow_hidden()
                     .children(vec![
-                        div().w(px(3.)).h_full().bg(border_color).rounded_l(px(3.)),
+                        div()
+                            .w(px(3.))
+                            .flex_none()
+                            .h_full()
+                            .bg(border_color)
+                            .rounded_l(px(3.)),
                         div().flex_grow().h_full().child(
                             div().size_full().flex().flex_col().p_1().children({
                                 let mut elements = Vec::new();
