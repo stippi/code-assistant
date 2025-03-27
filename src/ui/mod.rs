@@ -20,6 +20,8 @@ pub enum UIMessage {
     Action(String),
     // Questions to the user that need a response
     Question(String),
+    // User input messages
+    UserInput(String),
 }
 
 #[derive(Error, Debug)]

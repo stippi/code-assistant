@@ -9,17 +9,36 @@ use gpui::{prelude::*, FontWeight};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Role of a message in the conversation
+#[derive(Debug, Clone, PartialEq)]
+pub enum MessageRole {
+    User,
+    Assistant,
+}
+
 /// Container for all elements within a message
 #[derive(Clone)]
 pub struct MessageContainer {
     elements: Arc<Mutex<Vec<MessageElement>>>,
+    role: MessageRole,
 }
 
 impl MessageContainer {
-    pub fn new() -> Self {
+    pub fn with_role(role: MessageRole) -> Self {
         Self {
             elements: Arc::new(Mutex::new(Vec::new())),
+            role,
         }
+    }
+
+    /// Get the role of this message container
+    pub fn role(&self) -> MessageRole {
+        self.role.clone()
+    }
+
+    /// Check if this is a user message
+    pub fn is_user_message(&self) -> bool {
+        self.role == MessageRole::User
     }
 
     pub fn elements(&self) -> Vec<MessageElement> {

@@ -150,6 +150,7 @@ impl UserInterface for TerminalUI {
                 let formatted_question = self.frame_content(&msg, Some("Question"), Color::Cyan);
                 self.write_line(&formatted_question).await?
             }
+            _ => {}
         }
         Ok(())
     }
