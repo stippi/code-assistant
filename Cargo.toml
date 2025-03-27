@@ -26,6 +26,8 @@ percent-encoding = "2.3"
 scraper = "0.18"
 url = "2.5"
 htmd = "0.1.6"
+oauth2 = "4.4"
+base64 = "0.21"
 
 # WebSocket Support
 tokio-tungstenite = "0.24"
@@ -49,6 +51,7 @@ clap = { version = "4.5", features = ["derive"] }
 async-trait = "0.1"
 dotenv = "0.15"
 dirs = "5.0"
+keyring = "2.3"
 
 # Date and time handling
 chrono = { version = "0.4", features = ["serde"] }
