@@ -161,15 +161,18 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool, ToolError> {
 fn parse_search_replace_blocks(content: &str) -> Result<Vec<FileReplacement>, ToolError> {
     let mut replacements = Vec::new();
     let mut lines = content.lines().peekable();
+    let mut block_index = 0;
 
     while let Some(line) = lines.next() {
         if line.trim() == "<<<<<<< SEARCH" {
             let mut search = String::new();
             let mut replace = String::new();
+            let mut found_separator = false;
 
             // Collect search content
             while let Some(line) = lines.next() {
                 if line.trim() == "=======" {
+                    found_separator = true;
                     break;
                 }
                 if !search.is_empty() {
@@ -178,9 +181,18 @@ fn parse_search_replace_blocks(content: &str) -> Result<Vec<FileReplacement>, To
                 search.push_str(line);
             }
 
+            if !found_separator {
+                return Err(ToolError::ParseError(format!(
+                    "Missing '=======' separator in search/replace block {}",
+                    block_index
+                )));
+            }
+
+            let mut found_end = false;
             // Collect replace content
             while let Some(line) = lines.next() {
                 if line.trim() == ">>>>>>> REPLACE" {
+                    found_end = true;
                     break;
                 }
                 if !replace.is_empty() {
@@ -189,8 +201,30 @@ fn parse_search_replace_blocks(content: &str) -> Result<Vec<FileReplacement>, To
                 replace.push_str(line);
             }
 
+            if !found_end {
+                return Err(ToolError::ParseError(format!(
+                    "Missing '>>>>>>> REPLACE' end marker in search/replace block {}",
+                    block_index
+                )));
+            }
+
+            if search.is_empty() {
+                return Err(ToolError::ParseError(format!(
+                    "Empty search text in search/replace block {}",
+                    block_index
+                )));
+            }
+
             replacements.push(FileReplacement { search, replace });
+            block_index += 1;
         }
+    }
+
+    if replacements.is_empty() {
+        return Err(ToolError::ParseError(
+            "No valid search/replace blocks found. Each block must start with '<<<<<<< SEARCH', \
+             have a '=======' separator, and end with '>>>>>>> REPLACE'".into()
+        ));
     }
 
     Ok(replacements)

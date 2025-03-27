@@ -320,6 +320,18 @@ You have access to two tools for working with files: **write_file** and **replac
 - More efficient for minor edits, since you don't need to supply the entire file content.
 - Reduces the chance of errors that can occur when overwriting large files.
 
+## Troubleshooting Search/Replace Blocks
+
+If your `replace_in_file` operations frequently fail with "Could not find SEARCH block" errors:
+
+1. **Use Exact Content**: Ensure your SEARCH block is **character-for-character** identical to the file content, including all whitespace, line endings, and indentation.
+
+2. **Expand the Context**: Include a few more lines around your change to make the search more unique. Adding 1-2 lines before and after the section you want to change often helps.
+
+3. **Verify Line Endings**: Make sure your SEARCH block uses the same line endings (LF or CRLF) as the target file. WSL and Windows environments can have mixed line endings.
+
+4. **If It Still Fails**: When `replace_in_file` operations consistently fail, consider using `write_file` instead for that particular change, especially after seeing the exact file content in error messages.
+
 # Choosing the Appropriate Tool
 
 - **Default to replace_in_file** for most changes. It's the safer, more precise option that minimizes potential issues.
