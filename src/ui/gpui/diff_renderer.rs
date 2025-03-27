@@ -1,5 +1,5 @@
 use crate::ui::gpui::parameter_renderers::ParameterRenderer;
-use gpui::{div, hsla, px, rgb, rgba, Element, FontWeight, IntoElement, ParentElement, Styled};
+use gpui::{div, px, rgb, rgba, Element, FontWeight, IntoElement, ParentElement, Styled};
 use similar::{ChangeTag, TextDiff};
 
 /// Renderer for the "diff" parameter of the replace_in_file tool
@@ -137,47 +137,84 @@ fn render_enhanced_diff_section(section: DiffSection) -> gpui::AnyElement {
     // Create the refined diff using similar
     let diff_lines = create_diff_lines(&section.search_content, &section.replace_content);
 
+    // Group consecutive lines of the same type
+    let grouped_lines = group_consecutive_lines(diff_lines);
+
     div()
         .flex()
         .flex_col()
-        .children(diff_lines.into_iter().map(|line| {
-            match line.change_type {
+        .children(grouped_lines.into_iter().map(|(change_type, lines)| {
+            // Join lines with newlines
+            let content = lines.join("\n");
+
+            match change_type {
                 LineChangeType::Unchanged => {
-                    // Unchanged line
+                    // Unchanged lines group
                     div()
-                        .bg(rgba(0x1A1A1AFF))
                         .px_2()
                         .border_l_2()
                         .border_color(rgba(0x444444FF))
                         .text_color(rgba(0xFFFFFFAA))
-                        .child(line.content)
+                        .child(content)
                         .into_any()
                 }
                 LineChangeType::Deleted => {
-                    // Deleted line
+                    // Deleted lines group
                     div()
-                        .bg(hsla(0., 0.15, 0.2, 0.5))
                         .px_2()
                         .border_l_2()
                         .border_color(rgb(0xCC5555))
                         .text_color(rgb(0xFFBBBB))
-                        .child(line.content)
+                        .child(content)
                         .into_any()
                 }
                 LineChangeType::Added => {
-                    // Added line
+                    // Added lines group
                     div()
-                        .bg(hsla(120., 0.15, 0.2, 0.5))
                         .px_2()
                         .border_l_2()
                         .border_color(rgb(0x55CC55))
                         .text_color(rgb(0xBBFFBB))
-                        .child(line.content)
+                        .child(content)
                         .into_any()
                 }
             }
         }))
         .into_any()
+}
+
+// Helper function to group consecutive lines of the same type
+fn group_consecutive_lines(diff_lines: Vec<DiffLine>) -> Vec<(LineChangeType, Vec<String>)> {
+    let mut grouped = Vec::new();
+    let mut current_type: Option<LineChangeType> = None;
+    let mut current_lines = Vec::new();
+
+    for line in diff_lines {
+        if let Some(line_type) = current_type {
+            if line_type == line.change_type {
+                // Same type, add to current group
+                current_lines.push(line.content);
+            } else {
+                // Different type, finish current group and start a new one
+                grouped.push((line_type, std::mem::take(&mut current_lines)));
+                current_type = Some(line.change_type);
+                current_lines.push(line.content);
+            }
+        } else {
+            // First line
+            current_type = Some(line.change_type);
+            current_lines.push(line.content);
+        }
+    }
+
+    // Add the last group if any
+    if let Some(line_type) = current_type {
+        if !current_lines.is_empty() {
+            grouped.push((line_type, current_lines));
+        }
+    }
+
+    grouped
 }
 
 /// Create a list of diff lines with change information
@@ -228,10 +265,9 @@ fn render_streaming_diff_section(section: DiffSection) -> gpui::AnyElement {
         .flex_col()
         .gap_1()
         .children(vec![
-            // Search content with red background
+            // Search content with red border
             div()
                 .rounded_md()
-                .bg(hsla(0., 0.15, 0.2, 0.5))
                 .px_2()
                 .py_1()
                 .border_l_2()
@@ -239,10 +275,9 @@ fn render_streaming_diff_section(section: DiffSection) -> gpui::AnyElement {
                 .text_color(rgb(0xFFBBBB))
                 .child(section.search_content.clone())
                 .into_any(),
-            // Replace content with green background
+            // Replace content with green border
             div()
                 .rounded_md()
-                .bg(hsla(120., 0.15, 0.2, 0.5))
                 .px_2()
                 .py_1()
                 .border_l_2()
