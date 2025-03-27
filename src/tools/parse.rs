@@ -158,18 +158,21 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool, ToolError> {
     parse_tool_from_params(&tool_name, &params)
 }
 
-fn parse_search_replace_blocks(content: &str) -> Result<Vec<FileReplacement>, ToolError> {
+pub(crate) fn parse_search_replace_blocks(
+    content: &str,
+) -> Result<Vec<FileReplacement>, ToolError> {
     let mut replacements = Vec::new();
     let mut lines = content.lines().peekable();
 
     while let Some(line) = lines.next() {
-        if line.trim() == "<<<<<<< SEARCH" {
+        // Match the exact marker without trimming leading whitespace
+        if line.trim_end() == "<<<<<<< SEARCH" {
             let mut search = String::new();
             let mut replace = String::new();
 
-            // Collect search content
+            // Collect search content until we find the separator
             while let Some(line) = lines.next() {
-                if line.trim() == "=======" {
+                if line.trim_end() == "=======" {
                     break;
                 }
                 if !search.is_empty() {
@@ -179,14 +182,28 @@ fn parse_search_replace_blocks(content: &str) -> Result<Vec<FileReplacement>, To
             }
 
             // Collect replace content
-            while let Some(line) = lines.next() {
-                if line.trim() == ">>>>>>> REPLACE" {
+            while let Some(current_line) = lines.next() {
+                // Check for end marker
+                if current_line.trim_end() == ">>>>>>> REPLACE" {
                     break;
                 }
+
+                // Check if the next line is the end marker and the current line is a separator
+                // This handles the case when LLM accidentally adds a separator right before the end marker
+                if current_line.trim_end() == "=======" {
+                    if let Some(next_line) = lines.peek() {
+                        if next_line.trim_end() == ">>>>>>> REPLACE" {
+                            // Skip this separator - it's a mistake before the end marker
+                            continue;
+                        }
+                    }
+                }
+
+                // Regular content line - add to replace content
                 if !replace.is_empty() {
                     replace.push('\n');
                 }
-                replace.push_str(line);
+                replace.push_str(current_line);
             }
 
             replacements.push(FileReplacement { search, replace });
@@ -495,5 +512,88 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
             }),
         }),
         _ => Err(ToolError::UnknownTool(name.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::parse::parse_search_replace_blocks;
+
+    #[test]
+    fn test_parse_search_replace_blocks_normal() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "if a > b {\n",
+            "    return a;\n",
+            "}\n",
+            "=======\n",
+            "if a >= b {\n",
+            "    return a;\n",
+            "}\n",
+            ">>>>>>> REPLACE"
+        );
+
+        let result = parse_search_replace_blocks(content).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].search, "if a > b {\n    return a;\n}");
+        assert_eq!(result[0].replace, "if a >= b {\n    return a;\n}");
+    }
+
+    #[test]
+    fn test_parse_search_replace_blocks_multiple() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "if a > b {\n",
+            "=======\n",
+            "if a >= b {\n",
+            ">>>>>>> REPLACE\n",
+            "<<<<<<< SEARCH\n",
+            "return a;\n",
+            "=======\n",
+            "return a + 1;\n",
+            ">>>>>>> REPLACE"
+        );
+
+        let result = parse_search_replace_blocks(content).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].search, "if a > b {");
+        assert_eq!(result[0].replace, "if a >= b {");
+        assert_eq!(result[1].search, "return a;");
+        assert_eq!(result[1].replace, "return a + 1;");
+    }
+
+    #[test]
+    fn test_parse_search_replace_blocks_with_second_separator() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "if a > b {\n",
+            "    return a;\n",
+            "}\n",
+            "=======\n",
+            "if a >= b {\n",
+            "    // Add a comment\n",
+            "=======\n",
+            ">>>>>>> REPLACE"
+        );
+
+        let result = parse_search_replace_blocks(content).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].search, "if a > b {\n    return a;\n}");
+        assert_eq!(result[0].replace, "if a >= b {\n    // Add a comment");
+    }
+
+    #[test]
+    fn test_parse_search_replace_blocks_empty_sections() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "// This comment will be removed\n",
+            "=======\n",
+            ">>>>>>> REPLACE"
+        );
+
+        let result = parse_search_replace_blocks(content).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].search, "// This comment will be removed");
+        assert_eq!(result[0].replace, "");
     }
 }

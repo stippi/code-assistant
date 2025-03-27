@@ -1,4 +1,4 @@
-use crate::types::FileEncoding;
+use crate::types::{FileEncoding, FileFormat, LineEnding};
 use anyhow::Result;
 use content_inspector::{self, ContentType};
 use encoding_rs::{Encoding, UTF_8};
@@ -137,4 +137,125 @@ pub fn write_file_with_encoding(path: &Path, content: &str, encoding: &FileEncod
     let (bytes, _, _) = encoding.encode(content);
     std::fs::write(path, &bytes)?;
     Ok(())
+}
+
+/// Detects the line ending used in a string
+pub fn detect_line_ending(content: &str) -> LineEnding {
+    if content.contains("\r\n") {
+        LineEnding::CRLF
+    } else if content.contains('\r') && !content.contains('\n') {
+        LineEnding::CR
+    } else {
+        LineEnding::LF
+    }
+}
+
+/// Normalizes text content by:
+/// 1. Converting all line endings to LF (\n)
+/// 2. Removing trailing whitespace from each line
+pub fn normalize_content(content: &str) -> String {
+    // First normalize all line endings to LF
+    let content = content.replace("\r\n", "\n").replace('\r', "\n");
+
+    // Remove trailing whitespace
+    content
+        .lines()
+        .map(|line| line.trim_end())
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+/// Restores the original line endings of content
+pub fn restore_format(content: &str, format: &FileFormat) -> String {
+    let mut result = content.to_string();
+
+    // Restore line endings
+    match format.line_ending {
+        LineEnding::CRLF => {
+            result = result.replace('\n', "\r\n");
+        }
+        LineEnding::CR => {
+            result = result.replace('\n', "\r");
+        }
+        LineEnding::LF => {} // Already in LF format
+    }
+
+    result
+}
+
+/// Writes content to a file using the specified file format
+pub fn write_file_with_format(path: &Path, content: &str, format: &FileFormat) -> Result<()> {
+    // First restore the original format
+    let formatted_content = restore_format(content, format);
+
+    // Then write with the correct encoding
+    write_file_with_encoding(path, &formatted_content, &format.encoding)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{FileFormat, LineEnding};
+
+    #[test]
+    fn test_normalize_content() {
+        let input_cases = [
+            // Test case with trailing whitespace
+            "Line1  \nLine2 \nLine3",
+            // Test case with mixed line endings
+            "Line1\r\nLine2\rLine3\n",
+            // Test case with both
+            "Line1  \r\nLine2 \rLine3 \n",
+        ];
+
+        let expected_outputs = [
+            "Line1\nLine2\nLine3",
+            "Line1\nLine2\nLine3",
+            "Line1\nLine2\nLine3",
+        ];
+
+        for (input, expected) in input_cases.iter().zip(expected_outputs.iter()) {
+            let result = normalize_content(input);
+            assert_eq!(&result, expected);
+        }
+    }
+
+    #[test]
+    fn test_detect_line_ending() {
+        assert_eq!(detect_line_ending("Line1\nLine2\nLine3"), LineEnding::LF);
+        assert_eq!(
+            detect_line_ending("Line1\r\nLine2\r\nLine3"),
+            LineEnding::CRLF
+        );
+        assert_eq!(detect_line_ending("Line1\rLine2\rLine3"), LineEnding::CR);
+        // Mixed should prioritize CRLF
+        assert_eq!(
+            detect_line_ending("Line1\r\nLine2\nLine3"),
+            LineEnding::CRLF
+        );
+    }
+
+    #[test]
+    fn test_restore_format() {
+        let lf_content = "Line1\nLine2\nLine3";
+
+        let crlf_format = FileFormat {
+            encoding: FileEncoding::UTF8,
+            line_ending: LineEnding::CRLF,
+        };
+
+        let cr_format = FileFormat {
+            encoding: FileEncoding::UTF8,
+            line_ending: LineEnding::CR,
+        };
+
+        assert_eq!(
+            restore_format(lf_content, &crlf_format),
+            "Line1\r\nLine2\r\nLine3"
+        );
+        assert_eq!(
+            restore_format(lf_content, &cr_format),
+            "Line1\rLine2\rLine3"
+        );
+    }
 }
