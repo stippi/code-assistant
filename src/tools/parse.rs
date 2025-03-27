@@ -151,14 +151,33 @@ pub fn parse_tool_from_params(
                 .map_err(|_| ToolError::ParseError("Invalid max_depth parameter".into()))?,
         }),
 
-        "read_files" => Ok(Tool::ReadFiles {
-            paths: params
-                .get("path")
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: path".into()))?
-                .iter()
-                .map(|s| PathBuf::from(s.trim()))
-                .collect(),
-        }),
+        "read_files" => {
+            // Parse start_line and end_line if present
+            let start_line = params
+                .get("start_line")
+                .and_then(|v| v.first())
+                .map(|v| v.trim().parse::<usize>())
+                .transpose()
+                .map_err(|_| ToolError::ParseError("Invalid start_line parameter".into()))?;
+
+            let end_line = params
+                .get("end_line")
+                .and_then(|v| v.first())
+                .map(|v| v.trim().parse::<usize>())
+                .transpose()
+                .map_err(|_| ToolError::ParseError("Invalid end_line parameter".into()))?;
+
+            Ok(Tool::ReadFiles {
+                paths: params
+                    .get("path")
+                    .ok_or_else(|| ToolError::ParseError("Missing required parameter: path".into()))?
+                    .iter()
+                    .map(|s| PathBuf::from(s.trim()))
+                    .collect(),
+                start_line,
+                end_line,
+            })
+        },
 
         "summarize" => Ok(Tool::Summarize {
             resources: params
@@ -314,9 +333,17 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
             paths: parse_path_array(&params["paths"], "paths")?,
             max_depth: params["max_depth"].as_u64().map(|d| d as usize),
         }),
-        "read_files" => Ok(Tool::ReadFiles {
-            paths: parse_path_array(&params["paths"], "paths")?,
-        }),
+        "read_files" => {
+            // Get optional line range parameters
+            let start_line = params.get("start_line").and_then(|v| v.as_u64()).map(|n| n as usize);
+            let end_line = params.get("end_line").and_then(|v| v.as_u64()).map(|n| n as usize);
+            
+            Ok(Tool::ReadFiles {
+                paths: parse_path_array(&params["paths"], "paths")?,
+                start_line,
+                end_line,
+            })
+        },
         "summarize" => Ok(Tool::Summarize {
             resources: params["resources"]
                 .as_array()

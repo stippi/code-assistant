@@ -146,7 +146,7 @@ impl Tools {
     pub fn read_files() -> ToolDefinition {
         ToolDefinition {
             name: "read_files".to_string(),
-            description: "Load files into working memory".to_string(),
+            description: "Load files into working memory. Can optionally specify line ranges to read only part of a file.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -156,6 +156,14 @@ impl Tools {
                         "items": {
                             "type": "string"
                         }
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "Optional: Start line number (1-based, inclusive). If specified, only lines from this number will be included."
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "Optional: End line number (1-based, inclusive). If specified, only lines up to this number will be included."
                     }
                 },
                 "required": ["paths"]
