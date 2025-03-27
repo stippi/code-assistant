@@ -343,13 +343,17 @@ impl IntoElement for MessageElement {
                 };
 
                 // Create the thinking block container
+                // Use the specific blue color 5BC1FE and its variants with rgba
+                let blue_base = rgba(0x5BC1FEFF); // 5BC1FE base color
+                let blue_light_bg = rgba(0x00142060); // Very light blue background
+
                 div()
                     .rounded_md()
                     .p_2()
                     .mb_2()
-                    .bg(hsla(280., 0.1, 0.2, 0.2)) // Very light purple background for thinking
-                    .border_1()
-                    .border_color(hsla(280., 0.3, 0.5, 0.3))
+                    .bg(blue_light_bg)
+                    //.border_1()
+                    //.border_color(blue_border)
                     .flex()
                     .flex_col()
                     .children(vec![
@@ -373,17 +377,14 @@ impl IntoElement for MessageElement {
                                         if block.is_completed {
                                             // Just render the brain icon normally
                                             file_icons::render_icon_container(
-                                                &icon,
-                                                18.0,
-                                                hsla(280., 0.6, 0.6, 1.0), // Purple
-                                                icon_text,
+                                                &icon, 18.0, blue_base, icon_text,
                                             )
                                             .into_any()
                                         } else {
                                             svg()
                                                 .size(px(18.))
                                                 .path(SharedString::from("icons/arrow_circle.svg"))
-                                                .text_color(hsla(280., 0.6, 0.6, 1.0))
+                                                .text_color(blue_base)
                                                 .with_animation(
                                                     "image_circle",
                                                     Animation::new(Duration::from_secs(2))
@@ -402,7 +403,7 @@ impl IntoElement for MessageElement {
                                         // Header text
                                         div()
                                             .font_weight(FontWeight(500.0))
-                                            .text_color(hsla(280., 0.5, 0.7, 1.0)) // Purple text
+                                            .text_color(blue_base)
                                             .child(header_text)
                                             .into_any(),
                                     ])
@@ -415,11 +416,11 @@ impl IntoElement for MessageElement {
                                     .cursor_pointer()
                                     .size(px(24.))
                                     .rounded_full()
-                                    .hover(|s| s.bg(hsla(280., 0.2, 0.3, 0.2)))
+                                    .hover(|s| s.bg(rgba(0x5BC1FE20)))
                                     .child(file_icons::render_icon(
                                         &chevron_icon,
                                         16.0,
-                                        hsla(280., 0.5, 0.7, 1.0), // Purple
+                                        rgba(0x0099EEFF),
                                         chevron_text,
                                     ))
                                     // GPUI has limited custom attribute support
@@ -433,10 +434,9 @@ impl IntoElement for MessageElement {
                                 .pt_2()
                                 .italic()
                                 .text_size(px(16.))
-                                .text_color(hsla(0., 0., 0.8, 0.9)) // Light gray color
-                                // Can't easily set whitespace style, just use normal text
+                                .text_color(rgba(0x93B8CEFF))
                                 .border_t_1()
-                                .border_color(hsla(280., 0.3, 0.5, 0.2))
+                                .border_color(rgba(0x5BC1FEA0))
                                 .child(block.content.clone())
                                 .into_any()
                         } else {
