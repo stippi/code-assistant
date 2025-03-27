@@ -192,6 +192,61 @@ impl Explorer {
         entry.is_expanded = true;
         Ok(())
     }
+    
+    /// Reads a portion of a file between the specified line ranges
+    ///
+    /// # Arguments
+    /// * `path` - Path to the file
+    /// * `start_line` - Starting line number (1-based, inclusive)
+    /// * `end_line` - Ending line number (1-based, inclusive)
+    ///
+    /// # Returns
+    /// * `Ok(String)` - The content of the specified line range
+    /// * `Err(...)` - If an error occurs during file reading or line extraction
+    fn read_file_lines(&self, path: &PathBuf, start_line: Option<usize>, end_line: Option<usize>) -> Result<String> {
+        debug!("Reading file with line range - path: {}, start_line: {:?}, end_line: {:?}", 
+               path.display(), start_line, end_line);
+        
+        // If no line range is specified, read the whole file
+        if start_line.is_none() && end_line.is_none() {
+            return self.read_file(path);
+        }
+        
+        // Check if the file is a text file
+        if !crate::utils::encoding::is_text_file(path) {
+            return Err(anyhow::anyhow!("Not a text file: {}", path.display()));
+        }
+        
+        // Read the file with encoding detection
+        let (content, encoding) = crate::utils::encoding::read_file_with_encoding(path)?;
+        
+        // Store the detected encoding
+        let mut encodings = self.file_encodings.write().unwrap();
+        encodings.insert(path.clone(), encoding);
+        
+        // If we have line range parameters, extract the specified lines
+        let lines: Vec<&str> = content.lines().collect();
+        let total_lines = lines.len();
+        
+        // Convert to 0-based indexing
+        let start = start_line.map(|s| s.max(1) - 1).unwrap_or(0);
+        let end = end_line.map(|e| (e.max(1) - 1).min(total_lines - 1)).unwrap_or(total_lines - 1);
+        
+        // Validate line range
+        if start > end || start >= total_lines {
+            return Err(anyhow::anyhow!(
+                "Invalid line range: start={}, end={}, total_lines={}",
+                start + 1, // Convert back to 1-based for the error message
+                end + 1,   // Convert back to 1-based for the error message
+                total_lines
+            ));
+        }
+        
+        // Extract the lines within the specified range
+        let selected_content = lines[start..=end].join("\n");
+        
+        Ok(selected_content)
+    }
 }
 
 impl CodeExplorer for Explorer {
@@ -218,7 +273,7 @@ impl CodeExplorer for Explorer {
     }
 
     fn read_file(&self, path: &PathBuf) -> Result<String> {
-        debug!("Reading file: {}", path.display());
+        debug!("Reading entire file: {}", path.display());
         // Prüfe, ob die Datei ein Textfile ist
         if !crate::utils::encoding::is_text_file(path) {
             return Err(anyhow::anyhow!("Not a text file: {}", path.display()));
@@ -232,6 +287,11 @@ impl CodeExplorer for Explorer {
         encodings.insert(path.clone(), encoding);
 
         Ok(content)
+    }
+    
+    // New method for reading partial files with line ranges
+    fn read_file_range(&self, path: &PathBuf, start_line: Option<usize>, end_line: Option<usize>) -> Result<String> {
+        self.read_file_lines(path, start_line, end_line)
     }
 
     fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()> {
@@ -553,6 +613,31 @@ mod tests {
 
         let result = explorer.read_file(&file_path)?;
         assert_eq!(result, test_content);
+        Ok(())
+    }
+    
+    #[test]
+    fn test_read_file_range() -> Result<()> {
+        let (temp_dir, explorer) = setup_test_directory()?;
+        let test_content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5";
+        let file_path = create_test_file(temp_dir.path(), "test_lines.txt", test_content)?;
+
+        // Test reading a specific line range
+        let result = explorer.read_file_range(&file_path, Some(2), Some(4))?;
+        assert_eq!(result, "Line 2\nLine 3\nLine 4");
+        
+        // Test reading from a specific line to the end
+        let result = explorer.read_file_range(&file_path, Some(4), None)?;
+        assert_eq!(result, "Line 4\nLine 5");
+        
+        // Test reading from the beginning to a specific line
+        let result = explorer.read_file_range(&file_path, None, Some(2))?;
+        assert_eq!(result, "Line 1\nLine 2");
+        
+        // Test invalid ranges
+        let result = explorer.read_file_range(&file_path, Some(10), Some(15));
+        assert!(result.is_err());
+        
         Ok(())
     }
 

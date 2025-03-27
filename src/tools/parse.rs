@@ -6,7 +6,87 @@ use tracing::trace;
 pub const TOOL_TAG_PREFIX: &str = "tool:";
 const PARAM_TAG_PREFIX: &str = "param:";
 
-// Helper function to parse JSON arrays containing paths
+/// Represents a parsed path with optional line ranges
+#[derive(Debug, Clone)]
+pub struct PathWithLineRange {
+    pub path: PathBuf,
+    pub start_line: Option<usize>,
+    pub end_line: Option<usize>,
+}
+
+impl PathWithLineRange {
+    /// Parse a path string that may contain line ranges like "file.txt:10-20"
+    pub fn parse(path_str: &str) -> Result<Self, ToolError> {
+        // Check if the path contains a colon (not part of Windows drive letter)
+        if let Some(colon_pos) = path_str.rfind(':') {
+            // Skip Windows drive letter (e.g., C:)
+            if colon_pos > 1
+                || (colon_pos == 1 && !path_str.chars().next().unwrap().is_alphabetic())
+            {
+                let (file_path, line_range) = path_str.split_at(colon_pos);
+                let line_range = &line_range[1..]; // Skip the colon
+
+                // Parse the line range
+                if line_range.is_empty() {
+                    // Just a colon with nothing after it, treat as normal path
+                    return Ok(Self {
+                        path: PathBuf::from(path_str),
+                        start_line: None,
+                        end_line: None,
+                    });
+                }
+
+                if let Some(dash_pos) = line_range.find('-') {
+                    // Range with dash: file.txt:10-20
+                    let (start, end) = line_range.split_at(dash_pos);
+                    let end = &end[1..]; // Skip the dash
+
+                    let start_line = if start.is_empty() {
+                        None // file.txt:-20
+                    } else {
+                        Some(start.parse::<usize>().map_err(|_| {
+                            ToolError::ParseError(format!("Invalid start line number: {}", start))
+                        })?)
+                    };
+
+                    let end_line = if end.is_empty() {
+                        None // file.txt:10-
+                    } else {
+                        Some(end.parse::<usize>().map_err(|_| {
+                            ToolError::ParseError(format!("Invalid end line number: {}", end))
+                        })?)
+                    };
+
+                    return Ok(Self {
+                        path: PathBuf::from(file_path),
+                        start_line,
+                        end_line,
+                    });
+                } else {
+                    // Single line: file.txt:15
+                    let line_num = line_range.parse::<usize>().map_err(|_| {
+                        ToolError::ParseError(format!("Invalid line number: {}", line_range))
+                    })?;
+
+                    return Ok(Self {
+                        path: PathBuf::from(file_path),
+                        start_line: Some(line_num),
+                        end_line: Some(line_num),
+                    });
+                }
+            }
+        }
+
+        // No line range specified
+        Ok(Self {
+            path: PathBuf::from(path_str),
+            start_line: None,
+            end_line: None,
+        })
+    }
+}
+
+// Helper function to parse JSON arrays containing paths with optional line ranges
 fn parse_path_array(arr: &serde_json::Value, param_name: &str) -> Result<Vec<PathBuf>, ToolError> {
     arr.as_array()
         .ok_or_else(|| {
@@ -14,9 +94,12 @@ fn parse_path_array(arr: &serde_json::Value, param_name: &str) -> Result<Vec<Pat
         })?
         .iter()
         .map(|p| {
-            Ok(PathBuf::from(p.as_str().ok_or_else(|| {
+            let path_str = p.as_str().ok_or_else(|| {
                 ToolError::ParseError(format!("Invalid path in {} array", param_name))
-            })?))
+            })?;
+
+            let parsed = PathWithLineRange::parse(path_str)?;
+            Ok(parsed.path)
         })
         .collect::<Result<Vec<_>, _>>()
 }
@@ -156,8 +239,11 @@ pub fn parse_tool_from_params(
                 .get("path")
                 .ok_or_else(|| ToolError::ParseError("Missing required parameter: path".into()))?
                 .iter()
-                .map(|s| PathBuf::from(s.trim()))
-                .collect(),
+                .map(|s| {
+                    // Keep the original path string including line ranges in the PathBuf
+                    Ok(PathBuf::from(s.trim()))
+                })
+                .collect::<Result<Vec<PathBuf>, ToolError>>()?,
         }),
 
         "summarize" => Ok(Tool::Summarize {
@@ -315,7 +401,22 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
             max_depth: params["max_depth"].as_u64().map(|d| d as usize),
         }),
         "read_files" => Ok(Tool::ReadFiles {
-            paths: parse_path_array(&params["paths"], "paths")?,
+            paths: params["paths"]
+                .as_array()
+                .ok_or_else(|| {
+                    ToolError::ParseError("Missing required parameter: paths array".into())
+                })?
+                .iter()
+                .map(|p| {
+                    let path_str = p.as_str().ok_or_else(|| {
+                        ToolError::ParseError("Invalid path in paths array".into())
+                    })?;
+
+                    // Just use the original path string in the PathBuf
+                    // The line range parsing will happen in the executor
+                    Ok(PathBuf::from(path_str))
+                })
+                .collect::<Result<Vec<PathBuf>, ToolError>>()?,
         }),
         "summarize" => Ok(Tool::Summarize {
             resources: params["resources"]

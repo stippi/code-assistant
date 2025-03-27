@@ -146,13 +146,13 @@ impl Tools {
     pub fn read_files() -> ToolDefinition {
         ToolDefinition {
             name: "read_files".to_string(),
-            description: "Load files into working memory".to_string(),
+            description: "Load files into working memory. You can specify line ranges by appending them to the file path using a colon.\n\nExamples:\n- file.txt - Read the entire file\n- file.txt:10-20 - Read only lines 10 to 20\n- file.txt:10- - Read from line 10 to the end\n- file.txt:-20 - Read from the beginning to line 20\n- file.txt:15 - Read only line 15".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "paths": {
                         "type": "array",
-                        "description": "Paths to the files relative to the workspace root directory",
+                        "description": "Paths to the files relative to the workspace root directory. Can include line ranges using 'file.txt:10-20' syntax.",
                         "items": {
                             "type": "string"
                         }

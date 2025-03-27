@@ -247,7 +247,7 @@ impl Agent {
                     };
                     existing_files.insert(abs_path);
                 }
-                Tool::ReadFiles { paths } => {
+                Tool::ReadFiles { paths, .. } => {
                     for path in paths {
                         // Convert relative to absolute path
                         let abs_path = if path.is_absolute() {

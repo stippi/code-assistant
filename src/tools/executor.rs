@@ -117,9 +117,39 @@ impl ToolExecutor {
                         let mut loaded_files = HashMap::new();
                         let mut failed_files = Vec::new();
 
+                        // Parse the path string to extract line range information
+                        use super::parse;
+
                         for path in paths {
-                            let full_path = explorer.root_dir().join(path);
-                            match explorer.read_file(&full_path) {
+                            // Get the path string and parse it for line range information
+                            let path_str = path.to_string_lossy();
+                            let parsed_path = match parse::PathWithLineRange::parse(&path_str) {
+                                Ok(parsed) => parsed,
+                                Err(e) => {
+                                    failed_files.push((path.clone(), e.to_string()));
+                                    continue;
+                                }
+                            };
+
+                            // Join with root_dir to get full path
+                            let full_path = explorer.root_dir().join(&parsed_path.path);
+
+                            // Use either read_file_range or read_file based on whether we have line range info
+                            let read_result = if parsed_path.start_line.is_some()
+                                || parsed_path.end_line.is_some()
+                            {
+                                // We have line range information, use read_file_range
+                                explorer.read_file_range(
+                                    &full_path,
+                                    parsed_path.start_line,
+                                    parsed_path.end_line,
+                                )
+                            } else {
+                                // No line range specified, read the whole file
+                                explorer.read_file(&full_path)
+                            };
+
+                            match read_result {
                                 Ok(content) => {
                                     loaded_files.insert(path.clone(), content);
                                 }

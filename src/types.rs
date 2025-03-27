@@ -214,7 +214,10 @@ pub enum Tool {
         max_depth: Option<usize>,
     },
     /// Read content of one or multiple files into working memory
-    ReadFiles { paths: Vec<PathBuf> },
+    /// Supports line range syntax in paths like 'file.txt:10-20' to read lines 10-20
+    ReadFiles { 
+        paths: Vec<PathBuf> 
+    },
     /// Write content to a file
     WriteFile {
         path: PathBuf,
@@ -420,6 +423,8 @@ pub trait CodeExplorer: Send + Sync {
     fn root_dir(&self) -> PathBuf;
     /// Reads the content of a file
     fn read_file(&self, path: &PathBuf) -> Result<String>;
+    /// Reads the content of a file between specific line numbers
+    fn read_file_range(&self, path: &PathBuf, start_line: Option<usize>, end_line: Option<usize>) -> Result<String>;
     /// Write the content of a file
     fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()>;
     fn delete_file(&self, path: &PathBuf) -> Result<()>;
