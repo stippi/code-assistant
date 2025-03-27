@@ -474,142 +474,154 @@ impl AiCoreClient {
             ) -> Result<()> {
                 if let Some(data) = line.strip_prefix("data: ") {
                     println!("SSE line: {}", data);
-                    if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
-                        // Record the chunk if recorder is available
-                        if let Some(recorder) = &recorder {
-                            recorder.record_chunk(data)?;
-                        }
-
-                        // Process based on which event type was received
-                        if let Some(content_start) = &event.content_block_start {
-                            // Check the index matches expected
-                            let index = content_start.index;
-                            if index != blocks.len() {
-                                return Err(anyhow::anyhow!(
-                                    "Start index {} does not match expected block {}",
-                                    index,
-                                    blocks.len()
-                                ));
+                    match serde_json::from_str::<StreamEvent>(data) {
+                        Ok(event) => {
+                            // Record the chunk if recorder is available
+                            if let Some(recorder) = &recorder {
+                                recorder.record_chunk(data)?;
                             }
 
-                            current_content.clear();
-                            let block = match content_start.start.block_type.as_str() {
-                                "thinking" => {
-                                    if let Some(thinking) = &content_start.start.thinking {
-                                        current_content.push_str(thinking);
-                                    }
-                                    ContentBlock::Thinking {
-                                        thinking: current_content.clone(),
-                                        signature: content_start
-                                            .start
-                                            .signature
-                                            .clone()
-                                            .unwrap_or_default(),
-                                    }
+                            // Process based on which event type was received
+                            if let Some(content_start) = &event.content_block_start {
+                                // Check the index matches expected
+                                let index = content_start.index;
+                                if index != blocks.len() {
+                                    return Err(anyhow::anyhow!(
+                                        "Start index {} does not match expected block {}",
+                                        index,
+                                        blocks.len()
+                                    ));
                                 }
-                                "text" => {
-                                    if let Some(text) = &content_start.start.text {
+
+                                current_content.clear();
+                                let block = match content_start.start.block_type.as_str() {
+                                    "thinking" => {
+                                        if let Some(thinking) = &content_start.start.thinking {
+                                            current_content.push_str(thinking);
+                                        }
+                                        ContentBlock::Thinking {
+                                            thinking: current_content.clone(),
+                                            signature: content_start
+                                                .start
+                                                .signature
+                                                .clone()
+                                                .unwrap_or_default(),
+                                        }
+                                    }
+                                    "text" => {
+                                        if let Some(text) = &content_start.start.text {
+                                            current_content.push_str(text);
+                                        }
+                                        ContentBlock::Text {
+                                            text: current_content.clone(),
+                                        }
+                                    }
+                                    "tool_use" => {
+                                        if let Some(input) = &content_start.start.input {
+                                            current_content.push_str(input);
+                                        }
+                                        ContentBlock::ToolUse {
+                                            id: content_start.start.id.clone().unwrap_or_default(),
+                                            name: content_start
+                                                .start
+                                                .name
+                                                .clone()
+                                                .unwrap_or_default(),
+                                            input: serde_json::Value::Null,
+                                        }
+                                    }
+                                    _ => ContentBlock::Text {
+                                        text: String::new(),
+                                    },
+                                };
+                                blocks.push(block);
+                            } else if let Some(content_delta) = &event.content_block_delta {
+                                let index = content_delta.index;
+
+                                // Check if we have any blocks at all
+                                if blocks.is_empty() {
+                                    return Err(anyhow::anyhow!(
+                                        "Received Delta but no blocks exist"
+                                    ));
+                                }
+
+                                if index != blocks.len() - 1 {
+                                    return Err(anyhow::anyhow!(
+                                        "Delta index {} does not match current block {}",
+                                        index,
+                                        blocks.len() - 1
+                                    ));
+                                }
+
+                                // Try to extract the text from the delta
+                                if let Some(text_obj) = content_delta.delta.get("text") {
+                                    if let Some(text) = text_obj.as_str() {
+                                        callback(&StreamingChunk::Text(text.to_string()))?;
                                         current_content.push_str(text);
                                     }
-                                    ContentBlock::Text {
-                                        text: current_content.clone(),
+                                } else if content_delta.delta.get("SDK_UNKNOWN_MEMBER").is_some() {
+                                    // This is the reasoningContent delta
+                                    if let Some(reasoning) =
+                                        content_delta.delta["SDK_UNKNOWN_MEMBER"].get("name")
+                                    {
+                                        if reasoning.as_str() == Some("reasoningContent") {
+                                            // Treat this as thinking content for now
+                                            // In a real implementation, we'd extract the text, but it's not available in the payload
+                                            callback(&StreamingChunk::Thinking(
+                                                "Thinking...".to_string(),
+                                            ))?;
+                                        }
                                     }
-                                }
-                                "tool_use" => {
-                                    if let Some(input) = &content_start.start.input {
-                                        current_content.push_str(input);
-                                    }
-                                    ContentBlock::ToolUse {
-                                        id: content_start.start.id.clone().unwrap_or_default(),
-                                        name: content_start.start.name.clone().unwrap_or_default(),
-                                        input: serde_json::Value::Null,
-                                    }
-                                }
-                                _ => ContentBlock::Text {
-                                    text: String::new(),
-                                },
-                            };
-                            blocks.push(block);
-                        } else if let Some(content_delta) = &event.content_block_delta {
-                            let index = content_delta.index;
-
-                            // Check if we have any blocks at all
-                            if blocks.is_empty() {
-                                return Err(anyhow::anyhow!("Received Delta but no blocks exist"));
-                            }
-
-                            if index != blocks.len() - 1 {
-                                return Err(anyhow::anyhow!(
-                                    "Delta index {} does not match current block {}",
-                                    index,
-                                    blocks.len() - 1
-                                ));
-                            }
-
-                            // Try to extract the text from the delta
-                            if let Some(text_obj) = content_delta.delta.get("text") {
-                                if let Some(text) = text_obj.as_str() {
-                                    callback(&StreamingChunk::Text(text.to_string()))?;
-                                    current_content.push_str(text);
-                                }
-                            } else if content_delta.delta.get("SDK_UNKNOWN_MEMBER").is_some() {
-                                // This is the reasoningContent delta
-                                if let Some(reasoning) =
-                                    content_delta.delta["SDK_UNKNOWN_MEMBER"].get("name")
+                                } else if let Some(partial_json) =
+                                    content_delta.delta.get("partialJson")
                                 {
-                                    if reasoning.as_str() == Some("reasoningContent") {
-                                        // Treat this as thinking content for now
-                                        // In a real implementation, we'd extract the text, but it's not available in the payload
-                                        callback(&StreamingChunk::Thinking(
-                                            "Thinking...".to_string(),
-                                        ))?;
+                                    if let Some(partial_json_str) = partial_json.as_str() {
+                                        current_content.push_str(partial_json_str);
                                     }
                                 }
-                            } else if let Some(partial_json) =
-                                content_delta.delta.get("partialJson")
-                            {
-                                if let Some(partial_json_str) = partial_json.as_str() {
-                                    current_content.push_str(partial_json_str);
+                            } else if let Some(content_stop) = &event.content_block_stop {
+                                let index = content_stop.index;
+
+                                // Check if we have any blocks at all
+                                if blocks.is_empty() {
+                                    return Err(anyhow::anyhow!(
+                                        "Received Stop but no blocks exist"
+                                    ));
                                 }
-                            }
-                        } else if let Some(content_stop) = &event.content_block_stop {
-                            let index = content_stop.index;
 
-                            // Check if we have any blocks at all
-                            if blocks.is_empty() {
-                                return Err(anyhow::anyhow!("Received Stop but no blocks exist"));
-                            }
-
-                            if index != blocks.len() - 1 {
-                                return Err(anyhow::anyhow!(
-                                    "Stop index {} does not match current block {}",
-                                    index,
-                                    blocks.len() - 1
-                                ));
-                            }
-
-                            match blocks.last_mut().unwrap() {
-                                ContentBlock::Text { text } => {
-                                    *text = current_content.clone();
+                                if index != blocks.len() - 1 {
+                                    return Err(anyhow::anyhow!(
+                                        "Stop index {} does not match current block {}",
+                                        index,
+                                        blocks.len() - 1
+                                    ));
                                 }
-                                ContentBlock::ToolUse { input, .. } => {
-                                    if let Ok(json) = serde_json::from_str(&current_content) {
-                                        *input = json;
+
+                                match blocks.last_mut().unwrap() {
+                                    ContentBlock::Text { text } => {
+                                        *text = current_content.clone();
                                     }
+                                    ContentBlock::ToolUse { input, .. } => {
+                                        if let Ok(json) = serde_json::from_str(&current_content) {
+                                            *input = json;
+                                        }
+                                    }
+                                    _ => {}
                                 }
-                                _ => {}
-                            }
-                        } else if let Some(metadata) = &event.metadata {
-                            if let Some(meta_usage) = &metadata.usage {
-                                usage.input_tokens = meta_usage.input_tokens;
-                                usage.output_tokens = meta_usage.output_tokens;
-                                usage.cache_creation_input_tokens =
-                                    meta_usage.cache_creation_input_tokens;
-                                usage.cache_read_input_tokens = meta_usage.cache_read_input_tokens;
+                            } else if let Some(metadata) = &event.metadata {
+                                if let Some(meta_usage) = &metadata.usage {
+                                    usage.input_tokens = meta_usage.input_tokens;
+                                    usage.output_tokens = meta_usage.output_tokens;
+                                    usage.cache_creation_input_tokens =
+                                        meta_usage.cache_creation_input_tokens;
+                                    usage.cache_read_input_tokens =
+                                        meta_usage.cache_read_input_tokens;
+                                }
                             }
                         }
-                    } else {
-                        println!("[ERROR] Failed to parse event");
+                        Err(e) => {
+                            println!("[ERROR] Failed to parse event: {}", e);
+                        }
                     }
                 }
                 Ok(())
