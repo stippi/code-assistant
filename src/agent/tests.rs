@@ -5,7 +5,6 @@ use crate::persistence::MockStatePersistence;
 use crate::types::*;
 use crate::ui::{ToolStatus, UIError, UIMessage, UserInterface};
 use crate::utils::{CommandExecutor, CommandOutput};
-use agent::ToolMode;
 use anyhow::Result;
 use async_trait::async_trait;
 use regex::RegexBuilder;
