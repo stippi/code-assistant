@@ -541,6 +541,7 @@ impl IntoElement for MessageElement {
                                                 .flex_row()
                                                 .items_center()
                                                 .flex_none()
+                                                .pt(px(3.))
                                                 .children(vec![
                                                     // Tool icon
                                                     file_icons::render_icon_container(
