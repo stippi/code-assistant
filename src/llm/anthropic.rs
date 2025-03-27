@@ -507,8 +507,8 @@ impl AnthropicClient {
                                             current_content.push_str(&thinking);
                                         }
                                         ContentBlock::Thinking {
-                                            thinking: content_block.signature.unwrap_or_default(),
-                                            signature: String::new(),
+                                            thinking: current_content.clone(),
+                                            signature: content_block.signature.unwrap_or_default(),
                                         }
                                     }
                                     "text" => {
@@ -589,6 +589,9 @@ impl AnthropicClient {
                             }
                             StreamEvent::ContentBlockStop { .. } => {
                                 match blocks.last_mut().unwrap() {
+                                    ContentBlock::Thinking { thinking, .. } => {
+                                        *thinking = current_content.clone();
+                                    }
                                     ContentBlock::Text { text } => {
                                         *text = current_content.clone();
                                     }
@@ -741,7 +744,7 @@ impl LLMProvider for AnthropicClient {
                     thinking_type: "enabled".to_string(),
                     budget_tokens: 4000,
                 }),
-                128000,
+                64000,
             )
         } else {
             (None, 8192)
