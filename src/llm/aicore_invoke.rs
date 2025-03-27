@@ -709,7 +709,7 @@ impl LLMProvider for AiCoreClient {
 
         // Create tools array with cache control on the last tool if present
         let tools = request.tools.map(|tools| {
-            let mut tools_json = tools
+            let tools_json = tools
                 .into_iter()
                 .map(|tool| {
                     serde_json::json!({

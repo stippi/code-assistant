@@ -178,6 +178,17 @@ Usage:
 <param:url>https://example.com/docs</param:url>
 </tool:web_fetch>
 
+## complete_task
+Description: After you can confirm that the task is complete, use this tool to present the result of your work to the user. The user may respond with feedback if they are not satisfied with the result, which you can use to make improvements and try again.
+Parameters:
+- message: (required) The result of the task. Formulate this result in a way that is final and does not require further input from the user. Don't end your result with questions or offers for further assistance.
+Usage:
+<tool:complete_task>
+<param:message>
+Your final result description here
+</param:message>
+</tool:complete_task>
+
 # Tool Use Examples
 
 ## Example 1: Requesting to execute a command
@@ -337,6 +348,7 @@ You have access to two tools for working with files: **write_file** and **replac
 2. For targeted edits, apply replace_in_file with carefully crafted SEARCH/REPLACE blocks. If you need multiple changes, you can stack multiple SEARCH/REPLACE blocks within a single replace_in_file call.
 3. For major overhauls or initial file creation, rely on write_file.
 4. Once the file has been edited with either write_file or replace_in_file, the system will provide you with the final state of the modified file. Use this updated content as the reference point for any subsequent SEARCH/REPLACE operations, since it reflects any auto-formatting or user-applied changes.
+5. After making edits to code, consider what consequences this may have to other parts of the code, especially in files you have not yet seen. If appropriate, use the search tool to find files that might be affected by your changes.
 
 By thoughtfully selecting between write_file and replace_in_file, you can make your file editing process smoother, safer, and more efficient.
 
