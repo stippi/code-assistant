@@ -8,11 +8,13 @@ mod message;
 pub mod parameter_renderers;
 mod path_util;
 mod scrollbar;
+pub mod simple_renderers;
 
 use crate::types::WorkingMemory;
 use crate::ui::gpui::{
     diff_renderer::DiffParameterRenderer,
     parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
+    simple_renderers::SimpleParameterRenderer,
 };
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use gpui::{actions, AppContext, Focusable};
@@ -55,6 +57,17 @@ impl GPUI {
 
         // Register specialized renderers
         registry.register_renderer(Box::new(DiffParameterRenderer));
+
+        // Register simple renderers for parameters that don't need labels
+        registry.register_renderer(Box::new(SimpleParameterRenderer::new(
+            vec![
+                ("execute_command".to_string(), "command_line".to_string()),
+                ("read_files".to_string(), "paths".to_string()),
+                ("replace_in_file".to_string(), "path".to_string()),
+                ("search_files".to_string(), "regex".to_string()),
+            ],
+            false, // These are not full-width
+        )));
 
         // Wrap the registry in Arc for sharing
         let parameter_renderers = Arc::new(registry);
@@ -234,12 +247,20 @@ impl GPUI {
 
     // Helper method to get or create a message container
     fn get_or_create_message(&self) -> MessageContainer {
+        // Streaming fragments always go to an Assistant message
+        self.get_or_create_message_with_role(elements::MessageRole::Assistant)
+    }
+
+    // Helper method to get or create a message container with specific role
+    fn get_or_create_message_with_role(&self, role: elements::MessageRole) -> MessageContainer {
         let mut queue = self.message_queue.lock().unwrap();
-        if queue.is_empty() {
-            let new_message = MessageContainer::new();
+        if queue.is_empty() || queue.last().unwrap().role() != role {
+            // If queue is empty or last message has different role, create new message
+            let new_message = MessageContainer::with_role(role);
             queue.push(new_message.clone());
             new_message
         } else {
+            // Return the existing message with matching role
             queue.last().unwrap().clone()
         }
     }
@@ -267,12 +288,44 @@ impl UserInterface for GPUI {
         let mut queue = self.message_queue.lock().unwrap();
         match message {
             UIMessage::Action(msg) | UIMessage::Question(msg) => {
-                // Create a new message container with initial text content
-                let new_message = MessageContainer::new();
+                // For agent actions/questions: Extend current message or create new one
+                if let Some(last) = queue.last() {
+                    if !last.is_user_message() {
+                        // Extend existing assistant message
+                        let last = last.clone();
+                        last.add_text_block(msg);
+                        // Update the message
+                        *queue.last_mut().unwrap() = last;
+
+                        // Request UI refresh
+                        if let Ok(mut flag) = self.ui_update_needed.lock() {
+                            *flag = true;
+                        }
+
+                        return Ok(());
+                    }
+                }
+
+                // Create a new assistant message container
+                let new_message =
+                    elements::MessageContainer::with_role(elements::MessageRole::Assistant);
+                new_message.add_text_block(msg);
+                queue.push(new_message);
+            }
+            UIMessage::UserInput(msg) => {
+                // Always create a new container for user input
+                let new_message =
+                    elements::MessageContainer::with_role(elements::MessageRole::User);
                 new_message.add_text_block(msg);
                 queue.push(new_message);
             }
         }
+
+        // Request UI refresh
+        if let Ok(mut flag) = self.ui_update_needed.lock() {
+            *flag = true;
+        }
+
         Ok(())
     }
 

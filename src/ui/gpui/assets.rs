@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use gpui::{AssetSource, Result, SharedString};
 use std::{borrow::Cow, collections::HashSet, fs, path::Path, sync::Mutex};
+use tracing::{debug, warn};
 
 /// A simple asset source implementation that loads assets from the filesystem.
 ///
@@ -32,7 +33,7 @@ impl Assets {
     fn log_missing_asset(&self, message: &str, path: &str) {
         let mut logged = self.logged_missing_assets.lock().unwrap();
         if !logged.contains(path) {
-            eprintln!("{}", message);
+            warn!("{}", message);
             logged.insert(path.to_string());
         }
     }
@@ -62,8 +63,8 @@ impl AssetSource for Assets {
             });
 
         if let Ok(Some(ref data)) = result {
-            eprintln!(
-                "DEBUG [Assets]: Successfully loaded asset: {} ({} bytes)",
+            debug!(
+                "Successfully loaded asset: {} ({} bytes)",
                 full_path,
                 data.len()
             );

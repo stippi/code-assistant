@@ -9,17 +9,36 @@ use gpui::{prelude::*, FontWeight};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Role of a message in the conversation
+#[derive(Debug, Clone, PartialEq)]
+pub enum MessageRole {
+    User,
+    Assistant,
+}
+
 /// Container for all elements within a message
 #[derive(Clone)]
 pub struct MessageContainer {
     elements: Arc<Mutex<Vec<MessageElement>>>,
+    role: MessageRole,
 }
 
 impl MessageContainer {
-    pub fn new() -> Self {
+    pub fn with_role(role: MessageRole) -> Self {
         Self {
             elements: Arc::new(Mutex::new(Vec::new())),
+            role,
         }
+    }
+
+    /// Get the role of this message container
+    pub fn role(&self) -> MessageRole {
+        self.role.clone()
+    }
+
+    /// Check if this is a user message
+    pub fn is_user_message(&self) -> bool {
+        self.role == MessageRole::User
     }
 
     pub fn elements(&self) -> Vec<MessageElement> {
@@ -324,13 +343,17 @@ impl IntoElement for MessageElement {
                 };
 
                 // Create the thinking block container
+                // Use the specific blue color 5BC1FE and its variants with rgba
+                let blue_base = rgba(0x5BC1FEFF); // 5BC1FE base color
+                let blue_light_bg = rgba(0x00142060); // Very light blue background
+
                 div()
                     .rounded_md()
                     .p_2()
                     .mb_2()
-                    .bg(hsla(280., 0.1, 0.2, 0.2)) // Very light purple background for thinking
-                    .border_1()
-                    .border_color(hsla(280., 0.3, 0.5, 0.3))
+                    .bg(blue_light_bg)
+                    //.border_1()
+                    //.border_color(blue_border)
                     .flex()
                     .flex_col()
                     .children(vec![
@@ -354,17 +377,14 @@ impl IntoElement for MessageElement {
                                         if block.is_completed {
                                             // Just render the brain icon normally
                                             file_icons::render_icon_container(
-                                                &icon,
-                                                18.0,
-                                                hsla(280., 0.6, 0.6, 1.0), // Purple
-                                                icon_text,
+                                                &icon, 18.0, blue_base, icon_text,
                                             )
                                             .into_any()
                                         } else {
                                             svg()
                                                 .size(px(18.))
                                                 .path(SharedString::from("icons/arrow_circle.svg"))
-                                                .text_color(hsla(280., 0.6, 0.6, 1.0))
+                                                .text_color(blue_base)
                                                 .with_animation(
                                                     "image_circle",
                                                     Animation::new(Duration::from_secs(2))
@@ -383,7 +403,7 @@ impl IntoElement for MessageElement {
                                         // Header text
                                         div()
                                             .font_weight(FontWeight(500.0))
-                                            .text_color(hsla(280., 0.5, 0.7, 1.0)) // Purple text
+                                            .text_color(blue_base)
                                             .child(header_text)
                                             .into_any(),
                                     ])
@@ -396,11 +416,11 @@ impl IntoElement for MessageElement {
                                     .cursor_pointer()
                                     .size(px(24.))
                                     .rounded_full()
-                                    .hover(|s| s.bg(hsla(280., 0.2, 0.3, 0.2)))
+                                    .hover(|s| s.bg(rgba(0x5BC1FE20)))
                                     .child(file_icons::render_icon(
                                         &chevron_icon,
                                         16.0,
-                                        hsla(280., 0.5, 0.7, 1.0), // Purple
+                                        rgba(0x0099EEFF),
                                         chevron_text,
                                     ))
                                     // GPUI has limited custom attribute support
@@ -414,10 +434,9 @@ impl IntoElement for MessageElement {
                                 .pt_2()
                                 .italic()
                                 .text_size(px(16.))
-                                .text_color(hsla(0., 0., 0.8, 0.9)) // Light gray color
-                                // Can't easily set whitespace style, just use normal text
+                                .text_color(rgba(0x93B8CEFF))
                                 .border_t_1()
-                                .border_color(hsla(280., 0.3, 0.5, 0.2))
+                                .border_color(rgba(0x5BC1FEA0))
                                 .child(block.content.clone())
                                 .into_any()
                         } else {
@@ -478,6 +497,19 @@ impl IntoElement for MessageElement {
                         }
                     };
 
+                // Separate parameters into regular and full-width
+                let registry = ParameterRendererRegistry::global();
+
+                let (regular_params, fullwidth_params): (
+                    Vec<&ParameterBlock>,
+                    Vec<&ParameterBlock>,
+                ) = block.parameters.iter().partition(|param| {
+                    !registry.as_ref().map_or(false, |reg| {
+                        reg.get_renderer(&block.name, &param.name)
+                            .is_full_width(&block.name, &param.name)
+                    })
+                });
+
                 div()
                     .rounded(px(3.))
                     .mb_2()
@@ -486,61 +518,102 @@ impl IntoElement for MessageElement {
                     .flex_row()
                     .overflow_hidden()
                     .children(vec![
-                        div().w(px(3.)).h_full().bg(border_color).rounded_l(px(3.)),
+                        div()
+                            .w(px(3.))
+                            .flex_none()
+                            .h_full()
+                            .bg(border_color)
+                            .rounded_l(px(3.)),
                         div().flex_grow().h_full().child(
-                            div().size_full().flex().flex_col().p_1().children(vec![
-                                // Tool header: icon and name in a row
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .children(vec![
-                                        // Tool icon
-                                        file_icons::render_icon_container(
-                                            &icon, 16.0, icon_color, "🔧",
-                                        )
-                                        .mx_2()
+                            div().size_full().flex().flex_col().p_1().children({
+                                let mut elements = Vec::new();
+
+                                // First row: Tool header with icon, name, and regular parameters
+                                elements.push(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_start() // Align to top if multiple parameters
+                                        .children(vec![
+                                            // Left side: Tool icon and name
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .flex_none()
+                                                .pt(px(3.))
+                                                .children(vec![
+                                                    // Tool icon
+                                                    file_icons::render_icon_container(
+                                                        &icon, 16.0, icon_color, "🔧",
+                                                    )
+                                                    .mx_2()
+                                                    .into_any(),
+                                                    // Tool name
+                                                    div()
+                                                        .font_weight(FontWeight(700.0))
+                                                        .text_color(icon_color)
+                                                        .mr_2()
+                                                        .flex_none() // Prevent shrinking
+                                                        .child(block.name.clone())
+                                                        .into_any(),
+                                                ])
+                                                .into_any(),
+                                            // Right side: Regular parameters
+                                            div()
+                                                .flex()
+                                                .flex_wrap()
+                                                .flex_grow() // Take remaining space
+                                                .children(
+                                                    regular_params
+                                                        .iter()
+                                                        .map(|param| render_parameter(param)),
+                                                )
+                                                .into_any(),
+                                        ])
                                         .into_any(),
-                                        // Tool name
-                                        div()
-                                            .font_weight(FontWeight(700.0))
-                                            .text_color(icon_color)
-                                            .mr_2()
-                                            .flex_none() // Prevent shrinking
-                                            .child(block.name.clone())
-                                            .into_any(),
-                                        // Parameters in a flex wrap container
+                                );
+
+                                // Second row: Full-width parameters (if any)
+                                if !fullwidth_params.is_empty() {
+                                    elements.push(
                                         div()
                                             .flex()
-                                            .flex_wrap()
-                                            .flex_grow() // Take remaining space
-                                            .children(block.parameters.iter().map(render_parameter))
+                                            .flex_col()
+                                            .w_full()
+                                            .mt_1() // Add margin between rows
+                                            .children(
+                                                fullwidth_params
+                                                    .iter()
+                                                    .map(|param| render_parameter(param)),
+                                            )
                                             .into_any(),
-                                    ])
-                                    .into_any(),
+                                    );
+                                }
+
                                 // Error message (only shown for error status)
                                 if block.status == crate::ui::ToolStatus::Error {
                                     if let Some(msg) = &block.status_message {
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .p_2()
-                                            .rounded_md()
-                                            .bg(hsla(0., 0.15, 0.2, 0.2)) // Light red background for errors
-                                            .border_l_2()
-                                            .border_color(hsla(0., 0.5, 0.5, 0.5))
-                                            .text_color(hsla(0., 0.3, 0.9, 1.0))
-                                            .text_size(px(14.))
-                                            .child(msg.clone())
-                                            .into_any()
-                                    } else {
-                                        div().into_any() // Empty element if no message
+                                        elements.push(
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .p_2()
+                                                .rounded_md()
+                                                .bg(hsla(0., 0.15, 0.2, 0.2)) // Light red background for errors
+                                                .border_l_2()
+                                                .border_color(hsla(0., 0.5, 0.5, 0.5))
+                                                .text_color(hsla(0., 0.3, 0.9, 1.0))
+                                                .text_size(px(14.))
+                                                .child(msg.clone())
+                                                .into_any(),
+                                        );
                                     }
-                                } else {
-                                    div().into_any() // Empty element for non-error status
-                                },
-                            ]),
+                                }
+
+                                elements
+                            }),
                         ),
                     ])
                     .shadow_md()

@@ -105,6 +105,11 @@ impl Agent {
                     // Get input from UI
                     let user_input = self.get_input_from_ui("").await?;
 
+                    // Display the user input as a user message in the UI
+                    self.ui
+                        .display(UIMessage::UserInput(user_input.clone()))
+                        .await?;
+
                     // Add user input as an action result to working memory
                     let action_result = ActionResult {
                         tool: Tool::UserInput {},
@@ -176,11 +181,7 @@ impl Agent {
         debug!("Starting agent with task: {}", task);
         self.working_memory.current_task = task.clone();
 
-        self.ui
-            .display(UIMessage::Action(
-                "Creating initial repository structure...".to_string(),
-            ))
-            .await?;
+        self.ui.display(UIMessage::UserInput(task.clone())).await?;
 
         self.working_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
 
