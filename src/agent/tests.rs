@@ -251,6 +251,44 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))
     }
 
+    fn read_file_range(
+        &self,
+        path: &PathBuf,
+        start_line: Option<usize>,
+        end_line: Option<usize>,
+    ) -> Result<String, anyhow::Error> {
+        let content = self.read_file(path)?;
+
+        // If no line range is specified, return the whole file
+        if start_line.is_none() && end_line.is_none() {
+            return Ok(content);
+        }
+
+        let lines: Vec<&str> = content.lines().collect();
+        let total_lines = lines.len();
+
+        // Convert to 0-based indexing
+        let start = start_line.map(|s| s.max(1) - 1).unwrap_or(0);
+        let end = end_line
+            .map(|e| (e.max(1) - 1).min(total_lines - 1))
+            .unwrap_or(total_lines - 1);
+
+        // Validate line range
+        if start > end || start >= total_lines {
+            return Err(anyhow::anyhow!(
+                "Invalid line range: start={}, end={}, total_lines={}",
+                start + 1, // Convert back to 1-based for the error message
+                end + 1,   // Convert back to 1-based for the error message
+                total_lines
+            ));
+        }
+
+        // Extract the lines within the specified range
+        let selected_content = lines[start..=end].join("\n");
+
+        Ok(selected_content)
+    }
+
     fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()> {
         // Check parent directories
         for component in path.parent().unwrap_or(path).components() {
@@ -468,9 +506,21 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
             }
             serde_json::Value::Object(map)
         }
-        Tool::ReadFiles { paths } => serde_json::json!({
-            "paths": paths
-        }),
+        Tool::ReadFiles {
+            paths,
+            start_line,
+            end_line,
+        } => {
+            let mut map = serde_json::Map::new();
+            map.insert("paths".to_string(), serde_json::json!(paths));
+            if let Some(sl) = start_line {
+                map.insert("start_line".to_string(), serde_json::json!(sl));
+            }
+            if let Some(el) = end_line {
+                map.insert("end_line".to_string(), serde_json::json!(el));
+            }
+            serde_json::Value::Object(map)
+        }
         Tool::WriteFile {
             path,
             content,
@@ -706,12 +756,14 @@ fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
 
 #[tokio::test]
 async fn test_agent_read_files() -> Result<(), anyhow::Error> {
-    // Test success case
+    // Test success case (full file)
     let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
         Tool::ReadFiles {
             paths: vec![PathBuf::from("test.txt")],
+            start_line: None,
+            end_line: None,
         },
-        "Reading test file",
+        "Reading test file (full content)",
     ))]);
     // Obtain a reference to the mock_llm before handing ownership to the agent
     let mock_llm_ref = mock_llm.clone();
@@ -737,6 +789,57 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
             content
                 .contains(">>>>> RESOURCE: test.txt\nline 1\nline 2\nline 3\n\n<<<<< END RESOURCE"),
             "File content not found in working memory message:\n{}",
+            content
+        );
+    } else {
+        panic!("Expected text content in message");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_agent_read_files_with_line_range() -> Result<(), anyhow::Error> {
+    // Test with line range (only lines 1-2)
+    let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
+        Tool::ReadFiles {
+            paths: vec![PathBuf::from("test.txt")],
+            start_line: Some(1),
+            end_line: Some(2),
+        },
+        "Reading test file (limited range)",
+    ))]);
+    // Obtain a reference to the mock_llm
+    let mock_llm_ref = mock_llm.clone();
+
+    let mut agent = Agent::new(
+        Box::new(mock_llm),
+        ToolMode::Native,
+        Box::new(create_explorer_mock()),
+        Box::new(create_command_executor_mock()),
+        Box::new(MockUI::default()),
+        Box::new(MockStatePersistence::new()),
+    );
+
+    // Run the agent
+    agent
+        .start_with_task("Test task with line range".to_string())
+        .await?;
+
+    // Verify only the specified lines are displayed
+    let locked_requests = mock_llm_ref.requests.lock().unwrap();
+    let second_request = &locked_requests[1];
+
+    if let MessageContent::Text(content) = &second_request.messages[0].content {
+        assert!(
+            content.contains(">>>>> RESOURCE: test.txt\nline 1\nline 2\n<<<<< END RESOURCE"),
+            "File content not found or incorrect in working memory message:\n{}",
+            content
+        );
+        // Verify line 3 is NOT included
+        assert!(
+            !content.contains("line 3"),
+            "Line 3 should not be present in the output:\n{}",
             content
         );
     } else {
@@ -940,6 +1043,8 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
         Ok(create_test_response(
             Tool::ReadFiles {
                 paths: vec![PathBuf::from("test.rs")],
+                start_line: None,
+                end_line: None,
             },
             "Reading test file",
         )),
@@ -1056,12 +1161,16 @@ async fn test_read_files_error_handling() -> Result<()> {
         Ok(create_test_response(
             Tool::ReadFiles {
                 paths: vec![PathBuf::from("test.txt")],
+                start_line: None,
+                end_line: None,
             },
             "Reading existing file",
         )),
         Ok(create_test_response(
             Tool::ReadFiles {
                 paths: vec![PathBuf::from("nonexistent.txt")],
+                start_line: None,
+                end_line: None,
             },
             "Attempting to read non-existent file",
         )),
@@ -1156,11 +1265,69 @@ async fn test_write_file_error_handling() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_read_files_line_range_error_handling() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response(
+            Tool::ReadFiles {
+                paths: vec![PathBuf::from("test.txt")],
+                start_line: Some(1),
+                end_line: Some(3),
+            },
+            "Reading existing file with valid line range",
+        )),
+        Ok(create_test_response(
+            Tool::ReadFiles {
+                paths: vec![PathBuf::from("test.txt")],
+                start_line: Some(10), // Beyond file length
+                end_line: Some(20),
+            },
+            "Attempting to read with invalid line range",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let mut agent = Agent::new(
+        Box::new(mock_llm),
+        ToolMode::Native,
+        Box::new(create_explorer_mock()),
+        Box::new(create_command_executor_mock()),
+        Box::new(MockUI::default()),
+        Box::new(MockStatePersistence::new()),
+    );
+
+    agent
+        .start_with_task("Read file with line range".to_string())
+        .await?;
+
+    let requests = mock_llm_ref.requests.lock().unwrap();
+
+    // Should see three requests:
+    // 1. Failed ReadFiles with invalid line range
+    // 2. Corrected ReadFiles with valid line range
+    // 3. CompleteTask
+    assert_eq!(requests.len(), 3);
+
+    // The error message should be a user message in the second request
+    let error_request = &requests[1];
+    assert_eq!(error_request.messages.len(), 3); // Working Memory + Tool Response + Error
+    if let MessageContent::Text(content) = &error_request.messages[2].content {
+        assert!(content.contains("Error executing action"));
+        assert!(content.contains("Invalid line range")); // Check for specific line range error
+    } else {
+        panic!("Expected error message to be text content");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_unknown_tool_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(
             Tool::ReadFiles {
                 paths: vec![PathBuf::from("test.txt")],
+                start_line: None,
+                end_line: None,
             },
             "Reading file after getting unknown tool error",
         )),
@@ -1214,6 +1381,8 @@ async fn test_parse_error_handling() -> Result<()> {
         Ok(create_test_response(
             Tool::ReadFiles {
                 paths: vec![PathBuf::from("test.txt")],
+                start_line: None,
+                end_line: None,
             },
             "Reading with correct parameters",
         )),
