@@ -4,7 +4,7 @@ use crate::llm::{
 };
 use crate::persistence::StatePersistence;
 use crate::tools::{
-    parse_tool_json, parse_tool_xml, MCPToolHandler, ToolExecutor, TOOL_TAG_PREFIX
+    parse_tool_json, parse_tool_xml, MCPToolHandler, ToolExecutor, TOOL_TAG_PREFIX,
 };
 use crate::types::*;
 use crate::ui::{streaming::StreamProcessor, UIMessage, UserInterface};
@@ -132,7 +132,7 @@ impl AgentChat {
 
                     messages.push(Message {
                         role: MessageRole::User,
-                        content: MessageContent::Text(output)
+                        content: MessageContent::Text(output),
                     });
 
                     // Notify UI of working memory change
@@ -154,11 +154,7 @@ impl AgentChat {
         debug!("Starting agent with task: {}", task);
         self.working_memory.current_task = task.clone();
 
-        self.ui
-            .display(UIMessage::Action(
-                "Creating initial repository structure...".to_string(),
-            ))
-            .await?;
+        self.ui.display(UIMessage::UserInput(task.clone())).await?;
 
         self.working_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
 
@@ -426,11 +422,14 @@ impl AgentChat {
             .update_tool_status(&action.tool_id, status, Some(output.clone()))
             .await?;
 
-        Ok((output.to_string(), ActionResult {
-            tool: action.tool.clone(),
-            result: tool_result,
-            reasoning: action.reasoning.clone(),
-        }))
+        Ok((
+            output.to_string(),
+            ActionResult {
+                tool: action.tool.clone(),
+                result: tool_result,
+                reasoning: action.reasoning.clone(),
+            },
+        ))
     }
 }
 
