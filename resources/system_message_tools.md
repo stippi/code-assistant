@@ -378,7 +378,7 @@ Remember that refactoring is not complete until all dependent code has been upda
 
 # Code Review and Improvement
 
-After implementing working functionality, take time to review and improve your code:
+After implementing working functionality, take time to review and improve the code that relates to your change, not unrelated imperfections.
 
 1. **Functionality Review**: Verify your implementation fully meets requirements:
    - Double-check all acceptance criteria have been met
