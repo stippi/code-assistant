@@ -1,4 +1,5 @@
 use super::elements::MessageContainer;
+use super::file_icons;
 use super::input::TextInput;
 use super::memory_view::MemoryView;
 use super::scrollbar::{Scrollbar, ScrollbarState};
@@ -174,15 +175,47 @@ impl Render for MessageView {
 
                                         self.thinking_block_count = thinking_blocks;
 
-                                        // Create message container
+                                        // Create message container with appropriate styling based on role
                                         let message_container = div()
-                                            .bg(rgb(0x303030))
+                                            .bg(if msg.is_user_message() {
+                                                rgb(0x283835) // Darker green for user messages
+                                            } else {
+                                                rgb(0x303030) // Original color for assistant
+                                            })
                                             .p_3()
                                             .rounded_md()
                                             .shadow_sm()
                                             .flex()
                                             .flex_col()
                                             .gap_2();
+
+                                        // Create message container with user badge if needed
+                                        let message_container = if msg.is_user_message() {
+                                            message_container.child(
+                                                div()
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .mb_2()
+                                                    .children(vec![
+                                                        file_icons::render_icon_container(
+                                                            &file_icons::get().get_type_icon(file_icons::TOOL_USER_INPUT),
+                                                            16.0,
+                                                            rgb(0x6BD9A8), // Greenish color for user icon
+                                                            "👤",
+                                                        )
+                                                        .into_any_element(),
+                                                        div()
+                                                            .font_weight(gpui::FontWeight(600.0))
+                                                            .text_color(rgb(0x6BD9A8))
+                                                            .child("You")
+                                                            .into_any_element(),
+                                                    ])
+                                            )
+                                        } else {
+                                            message_container
+                                        };
 
                                         // Process elements and add click handlers for thinking blocks
                                         let mut thinking_index = 0;
