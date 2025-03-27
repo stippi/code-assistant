@@ -179,11 +179,7 @@ impl Agent {
         debug!("Starting agent with task: {}", task);
         self.working_memory.current_task = task.clone();
 
-        self.ui
-            .display(UIMessage::Action(
-                "Creating initial repository structure...".to_string(),
-            ))
-            .await?;
+        self.ui.display(UIMessage::Action(task.clone())).await?;
 
         self.working_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
 
