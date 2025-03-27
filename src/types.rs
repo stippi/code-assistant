@@ -45,6 +45,34 @@ impl Default for FileEncoding {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum LineEnding {
+    LF,   // Unix: \n
+    CRLF, // Windows: \r\n
+    CR,   // Legacy Mac: \r
+}
+
+impl Default for LineEnding {
+    fn default() -> Self {
+        Self::LF
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileFormat {
+    pub encoding: FileEncoding,
+    pub line_ending: LineEnding,
+}
+
+impl Default for FileFormat {
+    fn default() -> Self {
+        Self {
+            encoding: FileEncoding::UTF8,
+            line_ending: LineEnding::LF,
+        }
+    }
+}
+
 /// Represents the agent's working memory during execution
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct WorkingMemory {
@@ -215,9 +243,7 @@ pub enum Tool {
     },
     /// Read content of one or multiple files into working memory
     /// Supports line range syntax in paths like 'file.txt:10-20' to read lines 10-20
-    ReadFiles { 
-        paths: Vec<PathBuf> 
-    },
+    ReadFiles { paths: Vec<PathBuf> },
     /// Write content to a file
     WriteFile {
         path: PathBuf,
@@ -424,7 +450,12 @@ pub trait CodeExplorer: Send + Sync {
     /// Reads the content of a file
     fn read_file(&self, path: &PathBuf) -> Result<String>;
     /// Reads the content of a file between specific line numbers
-    fn read_file_range(&self, path: &PathBuf, start_line: Option<usize>, end_line: Option<usize>) -> Result<String>;
+    fn read_file_range(
+        &self,
+        path: &PathBuf,
+        start_line: Option<usize>,
+        end_line: Option<usize>,
+    ) -> Result<String>;
     /// Write the content of a file
     fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()>;
     fn delete_file(&self, path: &PathBuf) -> Result<()>;
