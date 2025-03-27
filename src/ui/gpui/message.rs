@@ -177,11 +177,7 @@ impl Render for MessageView {
 
                                         // Create message container with appropriate styling based on role
                                         let message_container = div()
-                                            .bg(if msg.is_user_message() {
-                                                rgb(0x283835) // Darker green for user messages
-                                            } else {
-                                                rgb(0x303030) // Original color for assistant
-                                            })
+                                            .bg(rgb(0x303030))
                                             .p_3()
                                             .rounded_md()
                                             .shadow_sm()
@@ -197,7 +193,6 @@ impl Render for MessageView {
                                                     .flex_row()
                                                     .items_center()
                                                     .gap_2()
-                                                    .mb_2()
                                                     .children(vec![
                                                         file_icons::render_icon_container(
                                                             &file_icons::get().get_type_icon(file_icons::TOOL_USER_INPUT),
