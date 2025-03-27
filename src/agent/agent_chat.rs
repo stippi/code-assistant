@@ -4,7 +4,7 @@ use crate::llm::{
 };
 use crate::persistence::StatePersistence;
 use crate::tools::{
-    parse_tool_json, parse_tool_xml, AgentToolHandler, ToolExecutor, TOOL_TAG_PREFIX,
+    parse_tool_json, parse_tool_xml, MCPToolHandler, ToolExecutor, TOOL_TAG_PREFIX
 };
 use crate::types::*;
 use crate::ui::{streaming::StreamProcessor, UIMessage, UserInterface};
@@ -15,15 +15,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tracing::debug;
 
+use super::ToolMode;
+
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
 const SYSTEM_MESSAGE_TOOLS: &str = include_str!("../../resources/system_message_tools.md");
 
-pub enum ToolMode {
-    Native,
-    Xml,
-}
-
-pub struct Agent {
+pub struct AgentChat {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
     tool_mode: ToolMode,
@@ -33,7 +30,7 @@ pub struct Agent {
     state_persistence: Box<dyn StatePersistence>,
 }
 
-impl Agent {
+impl AgentChat {
     pub fn new(
         llm_provider: Box<dyn LLMProvider>,
         tool_mode: ToolMode,
@@ -58,11 +55,10 @@ impl Agent {
     }
 
     async fn run_agent_loop(&mut self) -> Result<()> {
+        // Start with just the working memory message
+        let mut messages = self.prepare_messages();
         // Main agent loop
         loop {
-            // Start with just the working memory message
-            let mut messages = [];
-
             // Keep trying until all actions succeed
             let mut all_actions_succeeded = false;
             while !all_actions_succeeded {
@@ -102,31 +98,15 @@ impl Agent {
                     },
                 };
                 messages.push(assistant_msg);
-
                 // If no actions were returned, get user input
                 if actions.is_empty() {
                     // Get input from UI
                     let user_input = self.get_input_from_ui("").await?;
 
-                    // Add user input as an action result to working memory
-                    let action_result = ActionResult {
-                        tool: Tool::UserInput {},
-                        result: ToolResult::UserInput {
-                            message: user_input,
-                        },
-                        reasoning: "User provided input".to_string(),
-                    };
-
-                    self.working_memory.action_history.push(action_result);
-
-                    // Save state after user input
-                    self.state_persistence.save_state(
-                        self.working_memory.current_task.clone(),
-                        self.working_memory.action_history.clone(),
-                    )?;
-
-                    // Notify UI of working memory change
-                    let _ = self.ui.update_memory(&self.working_memory).await;
+                    messages.push(Message {
+                        role: MessageRole::User,
+                        content: MessageContent::Text(user_input),
+                    });
 
                     // Break the inner loop to start a new iteration with updated working memory
                     break;
@@ -135,7 +115,7 @@ impl Agent {
                 all_actions_succeeded = true; // Will be set to false if any action fails
 
                 for action in actions {
-                    let result = self.execute_action(&action).await?;
+                    let (output, result) = self.execute_action(&action).await?;
 
                     if !result.result.is_success() {
                         all_actions_succeeded = false;
@@ -143,21 +123,17 @@ impl Agent {
                         messages.push(Message {
                             role: MessageRole::User,
                             content: MessageContent::Text(format!(
-                                "Error executing action: {}\n{}",
-                                result.reasoning,
+                                "Error executing action: {}",
                                 result.result.format_message()
                             )),
                         });
                         break; // Stop processing remaining actions
                     }
 
-                    self.working_memory.action_history.push(result);
-
-                    // Save state after each successful action
-                    self.state_persistence.save_state(
-                        self.working_memory.current_task.clone(),
-                        self.working_memory.action_history.clone(),
-                    )?;
+                    messages.push(Message {
+                        role: MessageRole::User,
+                        content: MessageContent::Text(output)
+                    });
 
                     // Notify UI of working memory change
                     let _ = self.ui.update_memory(&self.working_memory).await;
@@ -165,7 +141,6 @@ impl Agent {
                     // Check if this was a CompleteTask action
                     if let Tool::CompleteTask { .. } = action.tool {
                         // Clean up state file on successful completion
-                        self.state_persistence.cleanup()?;
                         debug!("Task completed");
                         return Ok(());
                     }
@@ -419,7 +394,7 @@ impl Agent {
     }
 
     /// Executes an action and returns the result
-    async fn execute_action(&mut self, action: &AgentAction) -> Result<ActionResult> {
+    async fn execute_action(&mut self, action: &AgentAction) -> Result<(String, ActionResult)> {
         debug!("Executing action: {:?}", action.tool);
 
         // Update status to Running before execution
@@ -427,7 +402,7 @@ impl Agent {
             .update_tool_status(&action.tool_id, crate::ui::ToolStatus::Running, None)
             .await?;
 
-        let mut handler = AgentToolHandler::new(&mut self.working_memory);
+        let mut handler = MCPToolHandler::new();
 
         // Execute the tool and get both the output and result
         let (output, tool_result) = ToolExecutor::execute(
@@ -448,14 +423,14 @@ impl Agent {
 
         // Update tool status with result
         self.ui
-            .update_tool_status(&action.tool_id, status, Some(output))
+            .update_tool_status(&action.tool_id, status, Some(output.clone()))
             .await?;
 
-        Ok(ActionResult {
+        Ok((output.to_string(), ActionResult {
             tool: action.tool.clone(),
             result: tool_result,
             reasoning: action.reasoning.clone(),
-        })
+        }))
     }
 }
 

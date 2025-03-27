@@ -15,13 +15,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tracing::debug;
 
+use super::ToolMode;
+
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
 const SYSTEM_MESSAGE_TOOLS: &str = include_str!("../../resources/system_message_tools.md");
-
-pub enum ToolMode {
-    Native,
-    Xml,
-}
 
 pub struct Agent {
     working_memory: WorkingMemory,
