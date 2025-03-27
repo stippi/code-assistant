@@ -25,6 +25,12 @@ pub trait ParameterRenderer: Send + Sync {
 
     /// Render the parameter as a UI element
     fn render(&self, tool_name: &str, param_name: &str, param_value: &str) -> gpui::AnyElement;
+
+    /// Indicates if this parameter should be rendered with full width
+    /// Default is false (normal inline parameter)
+    fn is_full_width(&self, tool_name: &str, param_name: &str) -> bool {
+        false
+    }
 }
 
 /// Registry for parameter renderers
@@ -84,6 +90,12 @@ impl ParameterRendererRegistry {
             .get(&key)
             .unwrap_or(&self.default_renderer)
             .clone()
+    }
+
+    /// Check if a parameter should be rendered with full width
+    pub fn is_full_width(&self, tool_name: &str, param_name: &str) -> bool {
+        let renderer = self.get_renderer(tool_name, param_name);
+        renderer.is_full_width(tool_name, param_name)
     }
 
     /// Render a parameter using the appropriate renderer

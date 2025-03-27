@@ -11,7 +11,7 @@ impl ParameterRenderer for DiffParameterRenderer {
     }
 
     fn render(&self, _tool_name: &str, _param_name: &str, param_value: &str) -> gpui::AnyElement {
-        // Container for the diff content
+        // Container for the diff content - no parameter name shown
         div()
             .rounded_md()
             .bg(rgba(0x0A0A0AFF))
@@ -20,6 +20,10 @@ impl ParameterRenderer for DiffParameterRenderer {
             .font_weight(FontWeight(500.0))
             .child(parse_and_render_diff(param_value))
             .into_any()
+    }
+
+    fn is_full_width(&self, _tool_name: &str, _param_name: &str) -> bool {
+        true // Diff parameter is always full-width
     }
 }
 

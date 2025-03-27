@@ -8,11 +8,13 @@ mod message;
 pub mod parameter_renderers;
 mod path_util;
 mod scrollbar;
+pub mod simple_renderers;
 
 use crate::types::WorkingMemory;
 use crate::ui::gpui::{
     diff_renderer::DiffParameterRenderer,
     parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
+    simple_renderers::SimpleParameterRenderer,
 };
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use gpui::{actions, AppContext, Focusable};
@@ -55,6 +57,17 @@ impl GPUI {
 
         // Register specialized renderers
         registry.register_renderer(Box::new(DiffParameterRenderer));
+
+        // Register simple renderers for parameters that don't need labels
+        registry.register_renderer(Box::new(SimpleParameterRenderer::new(
+            vec![
+                ("execute_command".to_string(), "command_line".to_string()),
+                ("read_files".to_string(), "paths".to_string()),
+                ("replace_in_file".to_string(), "path".to_string()),
+                ("search_files".to_string(), "regex".to_string()),
+            ],
+            false, // These are not full-width
+        )));
 
         // Wrap the registry in Arc for sharing
         let parameter_renderers = Arc::new(registry);
@@ -237,7 +250,7 @@ impl GPUI {
         // Streaming fragments always go to an Assistant message
         self.get_or_create_message_with_role(elements::MessageRole::Assistant)
     }
-    
+
     // Helper method to get or create a message container with specific role
     fn get_or_create_message_with_role(&self, role: elements::MessageRole) -> MessageContainer {
         let mut queue = self.message_queue.lock().unwrap();
@@ -294,13 +307,15 @@ impl UserInterface for GPUI {
                 }
 
                 // Create a new assistant message container
-                let new_message = elements::MessageContainer::with_role(elements::MessageRole::Assistant);
+                let new_message =
+                    elements::MessageContainer::with_role(elements::MessageRole::Assistant);
                 new_message.add_text_block(msg);
                 queue.push(new_message);
             }
             UIMessage::UserInput(msg) => {
                 // Always create a new container for user input
-                let new_message = elements::MessageContainer::with_role(elements::MessageRole::User);
+                let new_message =
+                    elements::MessageContainer::with_role(elements::MessageRole::User);
                 new_message.add_text_block(msg);
                 queue.push(new_message);
             }

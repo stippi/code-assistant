@@ -497,6 +497,19 @@ impl IntoElement for MessageElement {
                         }
                     };
 
+                // Separate parameters into regular and full-width
+                let registry = ParameterRendererRegistry::global();
+
+                let (regular_params, fullwidth_params): (
+                    Vec<&ParameterBlock>,
+                    Vec<&ParameterBlock>,
+                ) = block.parameters.iter().partition(|param| {
+                    !registry.as_ref().map_or(false, |reg| {
+                        reg.get_renderer(&block.name, &param.name)
+                            .is_full_width(&block.name, &param.name)
+                    })
+                });
+
                 div()
                     .rounded(px(3.))
                     .mb_2()
@@ -507,59 +520,94 @@ impl IntoElement for MessageElement {
                     .children(vec![
                         div().w(px(3.)).h_full().bg(border_color).rounded_l(px(3.)),
                         div().flex_grow().h_full().child(
-                            div().size_full().flex().flex_col().p_1().children(vec![
-                                // Tool header: icon and name in a row
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .children(vec![
-                                        // Tool icon
-                                        file_icons::render_icon_container(
-                                            &icon, 16.0, icon_color, "🔧",
-                                        )
-                                        .mx_2()
+                            div().size_full().flex().flex_col().p_1().children({
+                                let mut elements = Vec::new();
+
+                                // First row: Tool header with icon, name, and regular parameters
+                                elements.push(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_start() // Align to top if multiple parameters
+                                        .children(vec![
+                                            // Left side: Tool icon and name
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .flex_none()
+                                                .children(vec![
+                                                    // Tool icon
+                                                    file_icons::render_icon_container(
+                                                        &icon, 16.0, icon_color, "🔧",
+                                                    )
+                                                    .mx_2()
+                                                    .into_any(),
+                                                    // Tool name
+                                                    div()
+                                                        .font_weight(FontWeight(700.0))
+                                                        .text_color(icon_color)
+                                                        .mr_2()
+                                                        .flex_none() // Prevent shrinking
+                                                        .child(block.name.clone())
+                                                        .into_any(),
+                                                ])
+                                                .into_any(),
+                                            // Right side: Regular parameters
+                                            div()
+                                                .flex()
+                                                .flex_wrap()
+                                                .flex_grow() // Take remaining space
+                                                .children(
+                                                    regular_params
+                                                        .iter()
+                                                        .map(|param| render_parameter(param)),
+                                                )
+                                                .into_any(),
+                                        ])
                                         .into_any(),
-                                        // Tool name
-                                        div()
-                                            .font_weight(FontWeight(700.0))
-                                            .text_color(icon_color)
-                                            .mr_2()
-                                            .flex_none() // Prevent shrinking
-                                            .child(block.name.clone())
-                                            .into_any(),
-                                        // Parameters in a flex wrap container
+                                );
+
+                                // Second row: Full-width parameters (if any)
+                                if !fullwidth_params.is_empty() {
+                                    elements.push(
                                         div()
                                             .flex()
-                                            .flex_wrap()
-                                            .flex_grow() // Take remaining space
-                                            .children(block.parameters.iter().map(render_parameter))
+                                            .flex_col()
+                                            .w_full()
+                                            .mt_1() // Add margin between rows
+                                            .children(
+                                                fullwidth_params
+                                                    .iter()
+                                                    .map(|param| render_parameter(param)),
+                                            )
                                             .into_any(),
-                                    ])
-                                    .into_any(),
+                                    );
+                                }
+
                                 // Error message (only shown for error status)
                                 if block.status == crate::ui::ToolStatus::Error {
                                     if let Some(msg) = &block.status_message {
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .p_2()
-                                            .rounded_md()
-                                            .bg(hsla(0., 0.15, 0.2, 0.2)) // Light red background for errors
-                                            .border_l_2()
-                                            .border_color(hsla(0., 0.5, 0.5, 0.5))
-                                            .text_color(hsla(0., 0.3, 0.9, 1.0))
-                                            .text_size(px(14.))
-                                            .child(msg.clone())
-                                            .into_any()
-                                    } else {
-                                        div().into_any() // Empty element if no message
+                                        elements.push(
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .p_2()
+                                                .rounded_md()
+                                                .bg(hsla(0., 0.15, 0.2, 0.2)) // Light red background for errors
+                                                .border_l_2()
+                                                .border_color(hsla(0., 0.5, 0.5, 0.5))
+                                                .text_color(hsla(0., 0.3, 0.9, 1.0))
+                                                .text_size(px(14.))
+                                                .child(msg.clone())
+                                                .into_any(),
+                                        );
                                     }
-                                } else {
-                                    div().into_any() // Empty element for non-error status
-                                },
-                            ]),
+                                }
+
+                                elements
+                            }),
                         ),
                     ])
                     .shadow_md()
