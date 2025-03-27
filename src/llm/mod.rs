@@ -13,7 +13,8 @@ mod tests;
 
 mod utils;
 
-pub mod aicore;
+//pub mod aicore_converse;
+pub mod aicore_invoke;
 pub mod anthropic;
 pub mod auth;
 pub mod config;
@@ -24,7 +25,7 @@ pub mod recording;
 pub mod types;
 pub mod vertex;
 
-pub use aicore::AiCoreClient;
+pub use aicore_invoke::AiCoreClient;
 pub use anthropic::AnthropicClient;
 pub use ollama::OllamaClient;
 pub use openai::OpenAIClient;
