@@ -824,7 +824,7 @@ async fn test_agent_read_files_with_line_range() -> Result<(), anyhow::Error> {
 
     if let MessageContent::Text(content) = &second_request.messages[0].content {
         assert!(
-            content.contains(">>>>> RESOURCE: test.txt\nline 1\nline 2\n<<<<< END RESOURCE"),
+            content.contains(">>>>> RESOURCE: test.txt:1-2\nline 1\nline 2\n<<<<< END RESOURCE"),
             "File content not found or incorrect in working memory message:\n{}",
             content
         );
@@ -1280,8 +1280,6 @@ async fn test_read_files_line_range_error_handling() -> Result<()> {
     agent
         .start_with_task("Read file with line range".to_string())
         .await?;
-
-    mock_llm_ref.print_requests();
 
     let requests = mock_llm_ref.requests.lock().unwrap();
 
