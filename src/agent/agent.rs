@@ -371,11 +371,11 @@ impl Agent {
             .send_message(request, Some(&streaming_callback))
             .await?;
 
-        debug!("Raw LLM response:");
+        println!("Raw LLM response:");
         for block in &response.content {
             match block {
                 ContentBlock::Text { text } => {
-                    debug!("---\n{}\n---", text);
+                    println!("---\n{}\n---", text);
                 }
                 ContentBlock::ToolUse { name, input, .. } => {
                     debug!("---\ntool: {}, input: {}\n---", name, input);

@@ -1,13 +1,19 @@
 pub mod assets;
+pub mod diff_renderer;
 mod elements;
 pub mod file_icons;
 mod input;
 mod memory_view;
 mod message;
+pub mod parameter_renderers;
 mod path_util;
 mod scrollbar;
 
 use crate::types::WorkingMemory;
+use crate::ui::gpui::{
+    diff_renderer::DiffParameterRenderer,
+    parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
+};
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use gpui::{actions, AppContext, Focusable};
 use input::TextInput;
@@ -30,6 +36,7 @@ pub struct GPUI {
     current_request_id: Arc<Mutex<u64>>,
     current_tool_counter: Arc<Mutex<u64>>,
     last_xml_tool_id: Arc<Mutex<String>>,
+    parameter_renderers: Arc<ParameterRendererRegistry>,
 }
 
 impl GPUI {
@@ -43,6 +50,18 @@ impl GPUI {
         let current_tool_counter = Arc::new(Mutex::new(0));
         let last_xml_tool_id = Arc::new(Mutex::new(String::new()));
 
+        // Initialize parameter renderers registry with default renderer
+        let mut registry = ParameterRendererRegistry::new(Box::new(DefaultParameterRenderer));
+
+        // Register specialized renderers
+        registry.register_renderer(Box::new(DiffParameterRenderer));
+
+        // Wrap the registry in Arc for sharing
+        let parameter_renderers = Arc::new(registry);
+
+        // Set the global registry
+        ParameterRendererRegistry::set_global(parameter_renderers.clone());
+
         Self {
             message_queue,
             input_value,
@@ -52,6 +71,7 @@ impl GPUI {
             current_request_id,
             current_tool_counter,
             last_xml_tool_id,
+            parameter_renderers,
         }
     }
 
@@ -413,6 +433,7 @@ impl Clone for GPUI {
             current_request_id: self.current_request_id.clone(),
             current_tool_counter: self.current_tool_counter.clone(),
             last_xml_tool_id: self.last_xml_tool_id.clone(),
+            parameter_renderers: self.parameter_renderers.clone(),
         }
     }
 }
