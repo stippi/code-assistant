@@ -17,7 +17,6 @@ impl ParameterRenderer for DiffParameterRenderer {
             .bg(rgba(0x0A0A0AFF))
             .p_2()
             .text_size(px(15.))
-            // Verwende einen generischen Font statt monospace, da FontFamilyId::monospace() nicht verfügbar ist
             .font_weight(FontWeight(500.0))
             .child(parse_and_render_diff(param_value))
             .into_any()
