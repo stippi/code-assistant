@@ -20,6 +20,7 @@ use crate::mcp::MCPServer;
 use crate::ui::terminal::TerminalUI;
 use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
+use agent::AgentChat;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use persistence::FileStatePersistence;
@@ -317,7 +318,7 @@ async fn main() -> Result<()> {
                         .expect("Failed to initialize LLM client");
 
                         // Initialize agent
-                        let mut agent = Agent::new(
+                        let mut agent = AgentChat::new(
                             llm_client,
                             match &tools_type {
                                 ToolsType::Native => agent::ToolMode::Native,
