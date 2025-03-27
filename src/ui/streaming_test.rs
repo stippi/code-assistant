@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_complex_tool_call_with_brackets() -> Result<()> {
-        let input = "I'll replace condition.\n<tool:replace_in_file>\n<param:path>src/main.ts</param:path>\n<param:diff><<<<<<< SEARCH\nif a > b {\n=======\nif b <= a {\n>>>>>>> REPLACE</param:diff>\n</tool:replace_in_file>";
+        let input = "I'll replace condition.\n<tool:replace_in_file>\n<param:path>src/main.ts</param:path>\n<param:diff>\n<<<<<<< SEARCH\nif a > b {\n=======\nif b <= a {\n>>>>>>> REPLACE\n</param:diff>\n</tool:replace_in_file>";
 
         // Define expected fragments - order of parameters might vary
         let expected_fragments = vec![

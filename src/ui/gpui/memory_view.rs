@@ -430,7 +430,7 @@ impl Render for MemoryView {
             .id("memory-sidebar")
             .track_focus(&self.focus_handle(cx))
             .flex_none()
-            .w(if self.is_expanded { px(400.) } else { px(40.) })
+            .w(if self.is_expanded { px(260.) } else { px(40.) })
             .h_full()
             .bg(rgb(0x252525))
             .border_l_1()

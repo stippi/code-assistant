@@ -164,6 +164,7 @@ impl Render for MessageView {
                                     .flex()
                                     .flex_col()
                                     .gap_2()
+                                    .text_size(px(18.))
                                     .children(messages.into_iter().map(|msg| {
                                         // Count thinking blocks for click handlers
                                         let elements = msg.elements();
