@@ -38,6 +38,9 @@ struct ProcessorState {
     tool_id: String,
     // Current parameter name (if any)
     param_name: String,
+    // Track if we're at the beginning of a block (thinking/param/tool)
+    // Used to determine when to trim leading newlines
+    at_block_start: bool,
 }
 
 impl Default for ProcessorState {
@@ -50,6 +53,7 @@ impl Default for ProcessorState {
             tool_name: String::new(),
             tool_id: String::new(),
             param_name: String::new(),
+            at_block_start: false,
         }
     }
 }
@@ -179,21 +183,22 @@ impl StreamProcessor {
                     let is_only_whitespace = pre_tag_text.trim().is_empty();
 
                     if !is_only_whitespace {
-                        // Only trim newlines at tag boundaries, preserving newlines within text
-                        let trimmed_text = pre_tag_text.trim_end_matches('\n');
-                        // If we're at the start of processing (current_pos == 0), also trim leading newlines
-                        // or if the previous char was the end of a tag
-                        let is_at_start = current_pos == 0
-                            || (current_pos > 0
-                                && processing_text.chars().nth(current_pos - 1) == Some('>'));
+                        let mut processed_text = pre_tag_text.to_string();
 
-                        let trimmed_text = if is_at_start {
-                            trimmed_text.trim_start_matches('\n')
-                        } else {
-                            trimmed_text
-                        };
+                        // Only trim one newline at the end if needed
+                        if processed_text.ends_with('\n') {
+                            processed_text.pop();
+                        }
 
-                        if trimmed_text.is_empty() {
+                        // Only trim one newline at the start if we're at a block start
+                        if self.state.at_block_start && processed_text.starts_with('\n') {
+                            processed_text = processed_text[1..].to_string();
+                        }
+
+                        // We are no longer at the start of a block after processing content
+                        self.state.at_block_start = false;
+
+                        if processed_text.is_empty() {
                             // Skip empty text after trimming
                             current_pos = absolute_tag_pos;
                             continue;
@@ -202,20 +207,20 @@ impl StreamProcessor {
                         if self.state.in_thinking {
                             // In thinking mode, text is displayed as thinking text
                             self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                                trimmed_text.to_string(),
+                                processed_text.to_string(),
                             ))?;
                         } else if self.state.in_param {
                             // In parameter mode, text is collected as a parameter value
                             self.ui.display_fragment(&DisplayFragment::ToolParameter {
                                 name: self.state.param_name.clone(),
-                                value: trimmed_text.to_string(),
+                                value: processed_text.to_string(),
                                 tool_id: self.state.tool_id.clone(),
                             })?;
                         } else {
                             // All other text (including inside tool tags but not in params)
                             // is displayed as plain text
                             self.ui.display_fragment(&DisplayFragment::PlainText(
-                                trimmed_text.to_string(),
+                                processed_text.to_string(),
                             ))?;
                         }
                     }
@@ -241,6 +246,8 @@ impl StreamProcessor {
                     TagType::ThinkingStart => {
                         // Mark that we're in thinking mode
                         self.state.in_thinking = true;
+                        // Set that we're at the start of a thinking block
+                        self.state.at_block_start = true;
 
                         // Skip past this tag
                         current_pos = absolute_tag_pos + tag_len;
@@ -249,6 +256,8 @@ impl StreamProcessor {
                     TagType::ThinkingEnd => {
                         // Exit thinking mode
                         self.state.in_thinking = false;
+                        // Reset block start flag
+                        self.state.at_block_start = false;
 
                         // Skip past this tag
                         current_pos = absolute_tag_pos + tag_len;
@@ -303,6 +312,8 @@ impl StreamProcessor {
                         if let Some(param_name) = tag_info {
                             self.state.in_param = true;
                             self.state.param_name = param_name;
+                            // Set that we're at the start of a parameter block
+                            self.state.at_block_start = true;
                         }
 
                         // Skip past this tag
@@ -313,6 +324,8 @@ impl StreamProcessor {
                         // End parameter section
                         self.state.in_param = false;
                         self.state.param_name = String::new();
+                        // Reset block start flag
+                        self.state.at_block_start = false;
 
                         // Skip past this tag
                         current_pos = absolute_tag_pos + tag_len;
@@ -356,34 +369,35 @@ impl StreamProcessor {
 
                 // Only process if there's actual content (not just whitespace)
                 if !remaining.is_empty() && !remaining.trim().is_empty() {
-                    // Only trim trailing newlines at end of processing
-                    let trimmed_text = remaining.trim_end_matches('\n');
+                    let mut processed_text = remaining.to_string();
 
-                    // If we're at the start of processing (current_pos == 0), also trim leading newlines
-                    let is_at_start = current_pos == 0
-                        || (current_pos > 0
-                            && processing_text.chars().nth(current_pos - 1) == Some('>'));
+                    // Only trim one newline at the end if needed
+                    if processed_text.ends_with('\n') {
+                        processed_text.pop();
+                    }
 
-                    let trimmed_text = if is_at_start {
-                        trimmed_text.trim_start_matches('\n')
-                    } else {
-                        trimmed_text
-                    };
+                    // Only trim one newline at the start if we're at a block start
+                    if self.state.at_block_start && processed_text.starts_with('\n') {
+                        processed_text = processed_text[1..].to_string();
+                    }
 
-                    if !trimmed_text.is_empty() {
+                    // We are no longer at the start of a block after processing content
+                    self.state.at_block_start = false;
+
+                    if !processed_text.is_empty() {
                         if self.state.in_thinking {
                             self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                                trimmed_text.to_string(),
+                                processed_text.to_string(),
                             ))?;
                         } else if self.state.in_param {
                             self.ui.display_fragment(&DisplayFragment::ToolParameter {
                                 name: self.state.param_name.clone(),
-                                value: trimmed_text.to_string(),
+                                value: processed_text.to_string(),
                                 tool_id: self.state.tool_id.clone(),
                             })?;
                         } else {
                             self.ui.display_fragment(&DisplayFragment::PlainText(
-                                trimmed_text.to_string(),
+                                processed_text.to_string(),
                             ))?;
                         }
                     }
