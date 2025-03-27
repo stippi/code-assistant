@@ -320,6 +320,18 @@ impl AgentChat {
             if let MessageContent::Text(text) = &message.content {
                 debug!("Message {}: Role={:?}\n---\n{}\n---", i, message.role, text);
             }
+            match &message.content {
+                MessageContent::Text(text) => {
+                    debug!("Message {}: Role={:?}\n---\n{}\n---", i, message.role, text);
+                }
+                MessageContent::Structured(content_blocks) => {
+                    let mut blocks_str = String::new();
+                    for (j, block) in content_blocks.iter().enumerate() {
+                        blocks_str.push_str(&format!("  Block {}: {:?}\n---\n", j, block));
+                    }
+                    debug!("Message {}: Role={:?}\n---\n{}", i, message.role, blocks_str);
+                }
+            }
         }
 
         // Create a StreamProcessor and use it to process streaming chunks
