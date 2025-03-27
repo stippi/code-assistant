@@ -121,7 +121,7 @@ impl ToolExecutor {
                         use super::parse;
 
                         for path in paths {
-                            // Parse the path to extract any line range information
+                            // Get the path string and parse it for line range information
                             let path_str = path.to_string_lossy();
                             let parsed_path = match parse::PathWithLineRange::parse(&path_str) {
                                 Ok(parsed) => parsed,
@@ -131,8 +131,10 @@ impl ToolExecutor {
                                 }
                             };
 
+                            // Join with root_dir to get full path
                             let full_path = explorer.root_dir().join(&parsed_path.path);
 
+                            // Use either read_file_range or read_file based on whether we have line range info
                             let read_result = if parsed_path.start_line.is_some()
                                 || parsed_path.end_line.is_some()
                             {

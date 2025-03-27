@@ -240,8 +240,8 @@ pub fn parse_tool_from_params(
                 .ok_or_else(|| ToolError::ParseError("Missing required parameter: path".into()))?
                 .iter()
                 .map(|s| {
-                    let path_with_range = PathWithLineRange::parse(s.trim())?;
-                    Ok(path_with_range.path)
+                    // Keep the original path string including line ranges in the PathBuf
+                    Ok(PathBuf::from(s.trim()))
                 })
                 .collect::<Result<Vec<PathBuf>, ToolError>>()?,
         }),
@@ -412,8 +412,9 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
                         ToolError::ParseError("Invalid path in paths array".into())
                     })?;
 
-                    let path_with_range = PathWithLineRange::parse(path_str)?;
-                    Ok(path_with_range.path)
+                    // Just use the original path string in the PathBuf
+                    // The line range parsing will happen in the executor
+                    Ok(PathBuf::from(path_str))
                 })
                 .collect::<Result<Vec<PathBuf>, ToolError>>()?,
         }),

@@ -243,7 +243,6 @@ impl CodeExplorer for MockExplorer {
     }
 
     fn read_file(&self, path: &PathBuf) -> Result<String, anyhow::Error> {
-        println!("read_file({})", path.display());
         self.files
             .lock()
             .unwrap()
@@ -258,12 +257,6 @@ impl CodeExplorer for MockExplorer {
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String, anyhow::Error> {
-        println!(
-            "read_file_range({}, {:?}, {:?})",
-            path.display(),
-            start_line,
-            end_line
-        );
         let content = self.read_file(path)?;
 
         // If no line range is specified, return the whole file
