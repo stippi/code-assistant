@@ -256,8 +256,8 @@ impl StreamProcessor {
                     TagType::ThinkingEnd => {
                         // Exit thinking mode
                         self.state.in_thinking = false;
-                        // Reset block start flag
-                        self.state.at_block_start = false;
+                        // Set to true for next block to ensure newline trimming
+                        self.state.at_block_start = true;
 
                         // Skip past this tag
                         current_pos = absolute_tag_pos + tag_len;
@@ -298,6 +298,9 @@ impl StreamProcessor {
                         self.state.in_tool = false;
                         self.state.tool_name = String::new();
                         self.state.tool_id = String::new();
+
+                        // Set at_block_start to true for next block
+                        self.state.at_block_start = true;
 
                         // Send fragment for tool end
                         self.ui
