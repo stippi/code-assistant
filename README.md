@@ -99,18 +99,21 @@ Available options:
 - `--ui`: Start with GUI interface
 - `--continue-task`: Continue from previous state
 - `-v, --verbose`: Enable verbose logging
-- `-p, --provider <PROVIDER>`: LLM provider to use [anthropic, open-ai, ollama, vertex] (default: anthropic)
-- `-m, --model <MODEL>`: Model name to use (defaults: anthropic="claude-3-7-sonnet-20250219", openai="gpt-4o", vertex="gemini-1.5-pro-latest")
+- `-p, --provider <PROVIDER>`: LLM provider to use [ai-core, anthropic, open-ai, ollama, vertex] (default: anthropic)
+- `-m, --model <MODEL>`: Model name to use (defaults: anthropic="claude-3-7-sonnet-20250219", open-ai="gpt-4o", vertex="gemini-1.5-pro-latest", ollama=required)
 - `--base-url <URL>`: API base URL for the LLM provider
 - `--tools-type <TOOLS_TYPE>`: Type of tool declaration [native, xml] (default: xml) `native` = tools via LLM provider API, `xml` = custom system message
 - `--num-ctx <NUM>`: Context window size in tokens (default: 8192, only relevant for Ollama)
-- `--record <PATH>`: Record API responses to a file for testing (currently Anthropic only)
+- `--agent-mode <MODE>`: Agent mode to use [working_memory, message_history] (default: message_history)
+- `--record <PATH>`: Record API responses to a file for testing (currently supported for Anthropic and AI Core providers)
 - `--playback <PATH>`: Play back a recorded session from a file
+- `--fast-playback`: Fast playback mode - ignore chunk timing when playing recordings
 
 Environment variables:
 - `ANTHROPIC_API_KEY`: Required when using the Anthropic provider
 - `OPENAI_API_KEY`: Required when using the OpenAI provider
 - `GOOGLE_API_KEY`: Required when using the Vertex provider
+- Note: AI Core authentication is configured via deployment config file
 
 Examples:
 ```bash
@@ -123,11 +126,26 @@ code-assistant -p open-ai --path ./my-project -t "List all API endpoints" -v
 # Use Google's Vertex AI with a specific model
 code-assistant -p vertex --model gemini-1.5-flash -t "Analyze code complexity"
 
+# Use Ollama with a specific model (model is required for Ollama)
+code-assistant -p ollama -m codellama --task "Find all TODO comments in the codebase"
+
+# Use AI Core provider
+code-assistant -p ai-core --task "Document the public API"
+
+# Use with working memory agent mode instead of message history mode
+code-assistant --task "Find performance bottlenecks" --agent-mode working_memory
+
 # Continue a previously interrupted task
 code-assistant --continue-task
 
 # Start with GUI interface
 code-assistant --ui
+
+# Record a session for later playback
+code-assistant --task "Optimize database queries" --record ./recordings/db-optimization.json
+
+# Play back a recorded session with fast-forward (no timing delays)
+code-assistant --playback ./recordings/db-optimization.json --fast-playback
 ```
 
 ### Server Mode
