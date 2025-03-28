@@ -327,9 +327,6 @@
     "scala": {
       "icon": "icons/file_icons/scala.svg"
     },
-    "settings": {
-      "icon": "icons/file_icons/settings.svg"
-    },
     "storage": {
       "icon": "icons/file_icons/database.svg"
     },
@@ -371,6 +368,9 @@
     },
     "terminal": {
       "icon": "icons/terminal.svg"
+    },
+    "settings": {
+      "icon": "icons/settings.svg"
     }
   }
 }

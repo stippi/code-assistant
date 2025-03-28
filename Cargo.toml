@@ -14,8 +14,10 @@ tempfile = "3.18"
 rustyline = "12.0.0"
 crossterm = "0.27.0"
 
+# GPUI related
 gpui = { git = "https://github.com/zed-industries/zed.git", package = "gpui", rev = "f3f97895a93681ca0e27195ecb1b0fdd21e01042" } # GUI - specify rev to avoid dependency conflicts
 smallvec = "1.14"
+rust-embed = { version = "8.4", features = ["include-exclude"] }
 
 # HTTP Requests
 chromiumoxide = { version = "0.5", features = ["tokio-runtime"] }

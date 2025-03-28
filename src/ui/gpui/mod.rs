@@ -96,23 +96,8 @@ impl GPUI {
         let ui_update_needed = self.ui_update_needed.clone();
         let working_memory = self.working_memory.clone();
 
-        // Get the current directory and assets path
-        let current_dir = std::env::current_dir().unwrap_or_default();
-
-        // Check if assets directory exists
-        let assets_dir = current_dir.join("assets");
-        let assets_exist = assets_dir.exists() && assets_dir.is_dir();
-
-        // Use absolute path for assets to be sure
-        let assets_path = if assets_exist {
-            assets_dir.clone()
-        } else {
-            current_dir.join("assets")
-        };
-
         // Create asset source
-        let asset_source =
-            crate::ui::gpui::assets::Assets::new(assets_path.to_string_lossy().to_string());
+        let asset_source = crate::ui::gpui::assets::Assets {};
         // Initialize app with assets
         let app = gpui::Application::new().with_assets(asset_source);
 
