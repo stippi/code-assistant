@@ -13,14 +13,16 @@ mod web;
 
 use crate::agent::Agent;
 use crate::explorer::Explorer;
-use crate::llm::{AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient};
 use crate::llm::auth::TokenManager;
 use crate::llm::config::DeploymentConfig;
+use crate::llm::{
+    AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient,
+};
 use crate::mcp::MCPServer;
+use crate::types::{AgentMode, ToolMode};
 use crate::ui::terminal::TerminalUI;
 use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
-use agent::AgentChat;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use persistence::FileStatePersistence;
@@ -35,12 +37,6 @@ enum LLMProviderType {
     OpenAI,
     Ollama,
     Vertex,
-}
-
-#[derive(ValueEnum, Debug, Clone)]
-enum ToolsType {
-    Native,
-    Xml,
 }
 
 // Define the application arguments
@@ -88,7 +84,11 @@ struct Args {
 
     /// Type of tool declaration ('native' = tools via API, 'xml' = custom system message)
     #[arg(long, default_value = "xml")]
-    tools_type: Option<ToolsType>,
+    tools_type: Option<ToolMode>,
+
+    /// Agent mode to use (working_memory = traditional mode, message_history = chat-like mode)
+    #[arg(long, default_value = "message_history")]
+    agent_mode: Option<AgentMode>,
 
     /// Record API responses to a file (only supported for Anthropic provider currently)
     #[arg(long)]
@@ -146,7 +146,9 @@ async fn create_llm_client(
         match provider {
             LLMProviderType::Anthropic | LLMProviderType::AiCore => {}
             _ => {
-                eprintln!("Warning: Recording is only supported for the Anthropic and AiCore providers");
+                eprintln!(
+                    "Warning: Recording is only supported for the Anthropic and AI Core providers"
+                );
             }
         }
     }
@@ -162,12 +164,12 @@ async fn create_llm_client(
 
             if let Some(path) = record_path {
                 Ok(Box::new(AiCoreClient::new_with_recorder(
-                    token_manager, base_url, path,
+                    token_manager,
+                    base_url,
+                    path,
                 )))
             } else {
-                Ok(Box::new(AiCoreClient::new(
-                    token_manager, base_url,
-                )))
+                Ok(Box::new(AiCoreClient::new(token_manager, base_url)))
             }
         }
 
@@ -272,7 +274,8 @@ async fn main() -> Result<()> {
             let model = args.model;
             let base_url = args.base_url;
             let num_ctx = args.num_ctx.unwrap_or(8192);
-            let tools_type = args.tools_type.unwrap_or(ToolsType::Xml);
+            let tools_type = args.tools_type.unwrap_or(ToolMode::Xml);
+            let agent_mode = args.agent_mode.unwrap_or(AgentMode::MessageHistory);
             let use_gui = args.ui;
 
             // Setup logging based on verbose flag
@@ -330,12 +333,10 @@ async fn main() -> Result<()> {
                         .expect("Failed to initialize LLM client");
 
                         // Initialize agent
-                        let mut agent = AgentChat::new(
+                        let mut agent = Agent::new(
                             llm_client,
-                            match &tools_type {
-                                ToolsType::Native => agent::ToolMode::Native,
-                                ToolsType::Xml => agent::ToolMode::Xml,
-                            },
+                            tools_type,
+                            agent_mode,
                             explorer,
                             command_executor,
                             user_interface,
@@ -386,10 +387,8 @@ async fn main() -> Result<()> {
                 // Initialize agent
                 let mut agent = Agent::new(
                     llm_client,
-                    match &tools_type {
-                        ToolsType::Native => agent::ToolMode::Native,
-                        ToolsType::Xml => agent::ToolMode::Xml,
-                    },
+                    tools_type,
+                    agent_mode,
                     explorer,
                     command_executor,
                     user_interface,

@@ -70,11 +70,13 @@ impl RecordingProvider {
     }
 
     /// Get the current session index
+    #[allow(dead_code)]
     pub fn current_index(&self) -> usize {
         *self.current_session.lock().unwrap()
     }
 
     /// Get the total number of sessions
+    #[allow(dead_code)]
     pub fn session_count(&self) -> usize {
         self.sessions.len()
     }

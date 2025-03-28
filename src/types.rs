@@ -2,6 +2,7 @@ use crate::llm::Message;
 
 use crate::web::{WebPage, WebSearchResult};
 use anyhow::Result;
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -443,6 +444,52 @@ pub struct SearchResult {
     pub line_content: Vec<String>, // All lines in the section
     pub match_lines: Vec<usize>, // Line numbers with matches (relative to start_line)
     pub match_ranges: Vec<Vec<(usize, usize)>>, // Match positions for each line, aligned with match_lines
+}
+
+/// Specifies the tool integration mode
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ToolMode {
+    /// Native tools via API
+    Native,
+    /// Tools through custom system message with XML tags 
+    Xml,
+}
+
+/// Implements ValueEnum for ToolMode to use with clap
+impl ValueEnum for ToolMode {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Native, Self::Xml]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        match self {
+            Self::Native => Some(clap::builder::PossibleValue::new("native")),
+            Self::Xml => Some(clap::builder::PossibleValue::new("xml")),
+        }
+    }
+}
+
+/// Specifies the agent operation mode
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AgentMode {
+    /// Traditional mode with working memory
+    WorkingMemory,
+    /// Chat-like mode with persistent message history
+    MessageHistory,
+}
+
+/// Implements ValueEnum for AgentMode to use with clap
+impl ValueEnum for AgentMode {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::WorkingMemory, Self::MessageHistory]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        match self {
+            Self::WorkingMemory => Some(clap::builder::PossibleValue::new("working_memory")),
+            Self::MessageHistory => Some(clap::builder::PossibleValue::new("message_history")),
+        }
+    }
 }
 
 pub trait CodeExplorer: Send + Sync {

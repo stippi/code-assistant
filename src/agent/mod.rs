@@ -2,12 +2,6 @@
 mod tests;
 
 mod agent;
-mod agent_chat;
 
+pub use crate::types::{AgentMode, ToolMode};
 pub use agent::Agent;
-pub use agent_chat::AgentChat;
-
-pub enum ToolMode {
-    Native,
-    Xml,
-}

@@ -65,21 +65,18 @@ fn format_output_for_result(result: &ToolResult) -> Result<String> {
             ..
         } => {
             // Handle special case for Search Block Not Found error
-            // if let Some(error_value) = error {
-            //     if let crate::utils::FileUpdaterError::SearchBlockNotFound(_, _) = error_value {
-            //         // Use the content from the ToolResult
-            //         let mut output = format!(
-            //             "Failed to replace in file {}: {}\n\n",
-            //             path.display(),
-            //             error_value
-            //         );
-            //         output.push_str(&format!(
-            //             "Please retry and adjust your SEARCH block to the current contents of the file:\n>>>>> CURRENT CONTENT:\n{}\n<<<<< END CURRENT CONTENT",
-            //             content
-            //         ));
-            //         return Ok(output);
-            //     }
-            // }
+            if let Some(error_value) = error {
+                if let crate::utils::FileUpdaterError::SearchBlockNotFound(_, _) = error_value {
+                    // Use the content from the ToolResult
+                    let mut output = format!("Failed to replace in file: {}\n\n", error_value);
+                    output.push_str(&format!(
+                        "Please retry 'replace_in_file' and adjust your SEARCH block to the current contents of the file shown below. DO NOT use 'read_files' to re-read the file! The file contents are already shown below:\n>>>>> RESOURCE {}:\n{}\n<<<<< END RESOURCE",
+                        path.display(),
+                        content
+                    ));
+                    return Ok(output);
+                }
+            }
             // Default to standard message for other errors
             Ok(result.format_message())
         }

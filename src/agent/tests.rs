@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::agent::parse_llm_response;
+use crate::agent::AgentMode;
 use crate::llm::{types::*, LLMProvider, LLMRequest, StreamingCallback};
 use crate::persistence::MockStatePersistence;
 use crate::types::*;
@@ -764,6 +765,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
+        AgentMode::WorkingMemory,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
@@ -806,6 +808,7 @@ async fn test_agent_read_files_with_line_range() -> Result<(), anyhow::Error> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
+        AgentMode::WorkingMemory,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
@@ -861,6 +864,7 @@ async fn test_execute_command() -> Result<()> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
+        AgentMode::WorkingMemory,
         Box::new(create_explorer_mock()),
         Box::new(mock_command_executor),
         Box::new(MockUI::default()),
@@ -1054,6 +1058,7 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
+        AgentMode::WorkingMemory,
         Box::new(mock_explorer),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
@@ -1114,6 +1119,7 @@ async fn test_list_files_error_handling() -> Result<()> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
+        AgentMode::WorkingMemory,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
@@ -1165,6 +1171,7 @@ async fn test_read_files_error_handling() -> Result<()> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
+        AgentMode::WorkingMemory,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
@@ -1219,6 +1226,7 @@ async fn test_write_file_error_handling() -> Result<()> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
+        AgentMode::WorkingMemory,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
@@ -1270,6 +1278,7 @@ async fn test_read_files_line_range_error_handling() -> Result<()> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
+        AgentMode::WorkingMemory,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
@@ -1325,6 +1334,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
+        AgentMode::WorkingMemory,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
@@ -1381,6 +1391,7 @@ async fn test_parse_error_handling() -> Result<()> {
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
+        AgentMode::WorkingMemory,
         Box::new(create_explorer_mock()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
