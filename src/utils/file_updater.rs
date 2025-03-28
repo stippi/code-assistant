@@ -53,9 +53,12 @@ pub fn apply_replacements_normalized(
             );
         }
 
+        // Normalize the replace string as well
+        let normalized_replace = encoding::normalize_content(&replacement.replace);
+
         if replacement.replace_all {
             // Replace all occurrences
-            result = result.replace(&normalized_search, &replacement.replace);
+            result = result.replace(&normalized_search, &normalized_replace);
         } else {
             // Exact-match mode: must have exactly one occurrence
             if matches.len() > 1 {
@@ -69,7 +72,7 @@ pub fn apply_replacements_normalized(
 
             // Replace the single occurrence
             let (pos, _) = matches[0];
-            result.replace_range(pos..pos + normalized_search.len(), &replacement.replace);
+            result.replace_range(pos..pos + normalized_search.len(), &normalized_replace);
         }
     }
 
@@ -133,10 +136,15 @@ fn test_apply_replacements_normalized() -> Result<(), anyhow::Error> {
 
     for (input, replacements, expected) in test_cases {
         let result = apply_replacements_normalized(input, &replacements);
-        match (result, expected) {
-            (Ok(result), Ok(expected)) => assert_eq!(result, expected),
-            (Err(e), Err(expected)) => assert!(e.to_string().contains(expected)),
-            _ => panic!("Test case result did not match expected outcome"),
+        match (&result, &expected) {
+            (Ok(res), Ok(exp)) => assert_eq!(res, exp),
+            (Err(e), Err(exp)) => assert!(e.to_string().contains(exp)),
+            _ => {
+                panic!(
+                    "Test case result did not match expected outcome:\nResult: {:?}\nExpected: {:?}",
+                    result, expected
+                );
+            }
         }
     }
 

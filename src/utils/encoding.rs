@@ -153,11 +153,13 @@ pub fn detect_line_ending(content: &str) -> LineEnding {
 /// Normalizes text content by:
 /// 1. Converting all line endings to LF (\n)
 /// 2. Removing trailing whitespace from each line
+/// 3. Preserving empty lines
+/// 4. NOT adding a trailing newline (this happens at file write time)
 pub fn normalize_content(content: &str) -> String {
     // First normalize all line endings to LF
     let content = content.replace("\r\n", "\n").replace('\r', "\n");
 
-    // Remove trailing whitespace
+    // Process each line - preserve empty lines but trim trailing whitespace
     content
         .lines()
         .map(|line| line.trim_end())
@@ -184,9 +186,26 @@ pub fn restore_format(content: &str, format: &FileFormat) -> String {
 }
 
 /// Writes content to a file using the specified file format
+/// Ensures the file ends with a newline
 pub fn write_file_with_format(path: &Path, content: &str, format: &FileFormat) -> Result<()> {
     // First restore the original format
-    let formatted_content = restore_format(content, format);
+    let mut formatted_content = restore_format(content, format);
+
+    // Ensure content ends with exactly one newline
+    let line_ending = match format.line_ending {
+        LineEnding::CRLF => "\r\n",
+        LineEnding::CR => "\r",
+        LineEnding::LF => "\n",
+    };
+
+    // Remove any trailing newlines
+    while formatted_content.ends_with(line_ending) {
+        formatted_content =
+            formatted_content[..formatted_content.len() - line_ending.len()].to_string();
+    }
+
+    // Add exactly one newline
+    formatted_content.push_str(line_ending);
 
     // Then write with the correct encoding
     write_file_with_encoding(path, &formatted_content, &format.encoding)
@@ -208,6 +227,7 @@ mod tests {
             "Line1  \r\nLine2 \rLine3 \n",
         ];
 
+        // After normalization, there should be no trailing newline and no trailing whitespace
         let expected_outputs = [
             "Line1\nLine2\nLine3",
             "Line1\nLine2\nLine3",
@@ -257,5 +277,40 @@ mod tests {
             restore_format(lf_content, &cr_format),
             "Line1\rLine2\rLine3"
         );
+    }
+
+    #[test]
+    fn test_file_format_with_newlines() {
+        // Test cases with different combinations of trailing newlines
+        let test_cases = [
+            // No trailing newline
+            "Line1\nLine2\nLine3",
+            // With trailing newline
+            "Line1\nLine2\nLine3\n",
+            // With multiple trailing newlines
+            "Line1\nLine2\nLine3\n\n",
+        ];
+
+        let format = FileFormat {
+            encoding: FileEncoding::UTF8,
+            line_ending: LineEnding::LF,
+        };
+
+        // All cases should result in content with exactly one trailing newline
+        let expected = "Line1\nLine2\nLine3\n";
+
+        for input in test_cases {
+            // We can't directly test write_file_with_format without file I/O,
+            // but we can test the transformation logic
+            let mut content = restore_format(input, &format);
+
+            // Apply the same logic as in write_file_with_format
+            while content.ends_with('\n') {
+                content = content[..content.len() - 1].to_string();
+            }
+            content.push('\n');
+
+            assert_eq!(content, expected);
+        }
     }
 }
