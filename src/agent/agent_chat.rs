@@ -4,7 +4,7 @@ use crate::llm::{
 };
 use crate::persistence::StatePersistence;
 use crate::tools::{
-    parse_tool_json, parse_tool_xml, MCPToolHandler, ToolExecutor, TOOL_TAG_PREFIX,
+    parse_tool_json, parse_tool_xml, AgentChatToolHandler, ToolExecutor, TOOL_TAG_PREFIX,
 };
 use crate::types::*;
 use crate::ui::{streaming::StreamProcessor, UIMessage, UserInterface};
@@ -329,7 +329,10 @@ impl AgentChat {
                     for (j, block) in content_blocks.iter().enumerate() {
                         blocks_str.push_str(&format!("  Block {}: {:?}\n---\n", j, block));
                     }
-                    debug!("Message {}: Role={:?}\n---\n{}", i, message.role, blocks_str);
+                    debug!(
+                        "Message {}: Role={:?}\n---\n{}",
+                        i, message.role, blocks_str
+                    );
                 }
             }
         }
@@ -406,7 +409,7 @@ impl AgentChat {
             .update_tool_status(&action.tool_id, crate::ui::ToolStatus::Running, None)
             .await?;
 
-        let mut handler = MCPToolHandler::new();
+        let mut handler = AgentChatToolHandler::new(&mut self.working_memory);
 
         // Execute the tool and get both the output and result
         let (output, tool_result) = ToolExecutor::execute(
