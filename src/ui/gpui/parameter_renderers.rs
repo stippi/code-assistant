@@ -1,6 +1,6 @@
 use gpui::{px, Element, IntoElement, ParentElement, Styled};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 // Define a simple logging macro if log isn't available
 #[macro_export]
@@ -41,20 +41,31 @@ pub struct ParameterRendererRegistry {
     default_renderer: Arc<Box<dyn ParameterRenderer>>,
 }
 
-// Global registry instance
-static mut GLOBAL_REGISTRY: Option<Arc<ParameterRendererRegistry>> = None;
+// Global registry singleton using OnceLock (thread-safe)
+static GLOBAL_REGISTRY: OnceLock<Mutex<Option<Arc<ParameterRendererRegistry>>>> = OnceLock::new();
 
 impl ParameterRendererRegistry {
     // Set the global registry
     pub fn set_global(registry: Arc<ParameterRendererRegistry>) {
-        unsafe {
-            GLOBAL_REGISTRY = Some(registry);
+        // Initialize the global mutex if not already initialized
+        let global_mutex = GLOBAL_REGISTRY.get_or_init(|| Mutex::new(None));
+
+        // Set the registry instance
+        if let Ok(mut guard) = global_mutex.lock() {
+            *guard = Some(registry);
+        } else {
+            crate::log_warn!("Failed to acquire lock for setting global registry");
         }
     }
 
     // Get a reference to the global registry
     pub fn global() -> Option<Arc<ParameterRendererRegistry>> {
-        unsafe { GLOBAL_REGISTRY.clone() }
+        if let Some(global_mutex) = GLOBAL_REGISTRY.get() {
+            if let Ok(guard) = global_mutex.lock() {
+                return guard.clone();
+            }
+        }
+        None
     }
 
     /// Create a new registry with the given default renderer
