@@ -97,6 +97,10 @@ struct Args {
     /// Play back a recorded session from a file
     #[arg(long)]
     playback: Option<PathBuf>,
+
+    /// Fast playback mode - ignore chunk timing when playing recordings
+    #[arg(long)]
+    fast_playback: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -116,6 +120,7 @@ async fn create_llm_client(
     num_ctx: usize,
     record_path: Option<PathBuf>,
     playback_path: Option<PathBuf>,
+    fast_playback: bool,
 ) -> Result<Box<dyn LLMProvider>> {
     // If playback is specified, use the recording player regardless of provider
     if let Some(path) = playback_path {
@@ -126,7 +131,13 @@ async fn create_llm_client(
             return Err(anyhow::anyhow!("Recording file contains no sessions"));
         }
 
-        let provider = player.create_provider()?;
+        let mut provider = player.create_provider()?;
+
+        // Configure timing simulation based on command line flag
+        if fast_playback {
+            provider.set_simulate_timing(false);
+        }
+
         return Ok(Box::new(provider));
     }
 
@@ -146,9 +157,9 @@ async fn create_llm_client(
             let token_manager = TokenManager::new(&config)
                 .await
                 .context("Failed to initialize token manager")?;
-            
+
             let base_url = base_url.unwrap_or_else(|| config.api_base_url.clone());
-            
+
             if let Some(path) = record_path {
                 Ok(Box::new(AiCoreClient::new_with_recorder(
                     token_manager, base_url, path,
@@ -159,7 +170,7 @@ async fn create_llm_client(
                 )))
             }
         }
-        
+
         LLMProviderType::Anthropic => {
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .context("ANTHROPIC_API_KEY environment variable not set")?;
@@ -313,6 +324,7 @@ async fn main() -> Result<()> {
                             num_ctx,
                             args.record.clone(),
                             args.playback.clone(),
+                            args.fast_playback,
                         )
                         .await
                         .expect("Failed to initialize LLM client");
@@ -366,6 +378,7 @@ async fn main() -> Result<()> {
                     num_ctx,
                     args.record,
                     args.playback,
+                    args.fast_playback,
                 )
                 .await
                 .context("Failed to initialize LLM client")?;
