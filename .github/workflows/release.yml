@@ -71,7 +71,7 @@ jobs:
           # Update version in Cargo.toml
           sed -i "s/^version = \"${{ steps.cargo_version.outputs.current_version }}\"/version = \"${{ steps.release_version.outputs.new_version }}\"/" Cargo.toml
           cat Cargo.toml | grep "^version = "
-          
+
           # Update Cargo.lock
           cargo update --package code-assistant
 
@@ -131,6 +131,12 @@ jobs:
           toolchain: stable
           target: ${{ matrix.target }}
           override: true
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev
 
       - name: Build
         uses: actions-rs/cargo@v1
