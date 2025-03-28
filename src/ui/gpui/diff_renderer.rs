@@ -49,7 +49,13 @@ fn parse_diff_sections(diff_text: &str) -> Vec<DiffSection> {
         in_replace: false,
     };
 
-    for line in diff_text.lines() {
+    // Normalize diff text to ensure markers are on their own lines
+    let normalized_diff = diff_text.replace(
+        ">>>>>>> REPLACE<<<<<<< SEARCH",
+        ">>>>>>> REPLACE\n<<<<<<< SEARCH",
+    );
+
+    for line in normalized_diff.lines() {
         if line == "<<<<<<< SEARCH" {
             // Start a new section if we already have content in the current one
             if !current_section.search_content.is_empty()
@@ -231,7 +237,7 @@ fn create_diff_lines(old_text: &str, new_text: &str) -> Vec<DiffLine> {
 
     // Process all changes directly
     for change in diff.iter_all_changes() {
-        let line_content = change.value().trim().to_string();
+        let line_content = change.value().trim_end().to_string();
 
         match change.tag() {
             ChangeTag::Equal => {
