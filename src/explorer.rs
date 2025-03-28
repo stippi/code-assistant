@@ -438,12 +438,8 @@ impl CodeExplorer for Explorer {
         // Apply replacements with normalized content
         let updated_normalized = crate::utils::apply_replacements_normalized(&original_content, replacements)?;
 
-        // Restore the original format before writing
-        let updated_content =
-            crate::utils::encoding::restore_format(&updated_normalized, &file_format);
-
-        // Write the content back
-        std::fs::write(path, &updated_content)?;
+        // Write the content back using the file format helper to ensure consistent newline handling
+        crate::utils::encoding::write_file_with_format(path, &updated_normalized, &file_format)?;
 
         // Return the normalized content for LLM
         Ok(updated_normalized)
