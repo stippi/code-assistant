@@ -122,7 +122,11 @@ impl ToolResult {
                 if !success {
                     format!("Command failed:\n{}", output)
                 } else {
-                    output.to_string()
+                    if output.is_empty() {
+                        "Success".to_string()
+                    } else {
+                        output.to_string()
+                    }
                 }
             }
             ToolResult::WriteFile { path, error, .. } => {

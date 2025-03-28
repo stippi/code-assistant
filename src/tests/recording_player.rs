@@ -63,6 +63,25 @@ pub struct RecordingProvider {
     simulate_timing: bool,
 }
 
+impl RecordingProvider {
+    /// Set whether to simulate the original timing between chunks
+    pub fn set_simulate_timing(&mut self, simulate: bool) {
+        self.simulate_timing = simulate;
+    }
+
+    /// Get the current session index
+    #[allow(dead_code)]
+    pub fn current_index(&self) -> usize {
+        *self.current_session.lock().unwrap()
+    }
+
+    /// Get the total number of sessions
+    #[allow(dead_code)]
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
+}
+
 #[async_trait]
 impl LLMProvider for RecordingProvider {
     async fn send_message(
@@ -118,8 +137,14 @@ impl LLMProvider for RecordingProvider {
             // Stream each chunk with appropriate timing
             for chunk in &session.chunks {
                 // Simulate the timing between chunks
-                if self.simulate_timing && chunk.timestamp_ms > last_chunk_time {
-                    let delay = chunk.timestamp_ms - last_chunk_time;
+                if chunk.timestamp_ms > last_chunk_time {
+                    let delay = if self.simulate_timing {
+                        // Use original timing in normal mode
+                        chunk.timestamp_ms - last_chunk_time
+                    } else {
+                        // Use minimal delay in fast mode
+                        17 // 17ms minimal delay for fast playback
+                    };
                     tokio::time::sleep(Duration::from_millis(delay)).await;
                 }
                 last_chunk_time = chunk.timestamp_ms;
@@ -470,23 +495,6 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use tempfile::tempdir;
-
-    impl RecordingProvider {
-        /// Set whether to simulate the original timing between chunks
-        pub fn set_simulate_timing(&mut self, simulate: bool) {
-            self.simulate_timing = simulate;
-        }
-
-        /// Get the current session index
-        pub fn current_index(&self) -> usize {
-            *self.current_session.lock().unwrap()
-        }
-
-        /// Get the total number of sessions
-        pub fn session_count(&self) -> usize {
-            self.sessions.len()
-        }
-    }
 
     // Create a test recording file with multiple sessions
     fn create_test_recording() -> Result<(tempfile::TempDir, String)> {

@@ -13,10 +13,13 @@ mod web;
 
 use crate::agent::Agent;
 use crate::explorer::Explorer;
-use crate::llm::{AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient};
 use crate::llm::auth::TokenManager;
 use crate::llm::config::DeploymentConfig;
+use crate::llm::{
+    AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient,
+};
 use crate::mcp::MCPServer;
+use crate::types::{AgentMode, ToolMode};
 use crate::ui::terminal::TerminalUI;
 use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
@@ -34,12 +37,6 @@ enum LLMProviderType {
     OpenAI,
     Ollama,
     Vertex,
-}
-
-#[derive(ValueEnum, Debug, Clone)]
-enum ToolsType {
-    Native,
-    Xml,
 }
 
 // Define the application arguments
@@ -87,7 +84,11 @@ struct Args {
 
     /// Type of tool declaration ('native' = tools via API, 'xml' = custom system message)
     #[arg(long, default_value = "xml")]
-    tools_type: Option<ToolsType>,
+    tools_type: Option<ToolMode>,
+
+    /// Agent mode to use (working_memory = traditional mode, message_history = chat-like mode)
+    #[arg(long, default_value = "message_history")]
+    agent_mode: Option<AgentMode>,
 
     /// Record API responses to a file (only supported for Anthropic provider currently)
     #[arg(long)]
@@ -96,6 +97,10 @@ struct Args {
     /// Play back a recorded session from a file
     #[arg(long)]
     playback: Option<PathBuf>,
+
+    /// Fast playback mode - ignore chunk timing when playing recordings
+    #[arg(long)]
+    fast_playback: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -115,6 +120,7 @@ async fn create_llm_client(
     num_ctx: usize,
     record_path: Option<PathBuf>,
     playback_path: Option<PathBuf>,
+    fast_playback: bool,
 ) -> Result<Box<dyn LLMProvider>> {
     // If playback is specified, use the recording player regardless of provider
     if let Some(path) = playback_path {
@@ -125,7 +131,13 @@ async fn create_llm_client(
             return Err(anyhow::anyhow!("Recording file contains no sessions"));
         }
 
-        let provider = player.create_provider()?;
+        let mut provider = player.create_provider()?;
+
+        // Configure timing simulation based on command line flag
+        if fast_playback {
+            provider.set_simulate_timing(false);
+        }
+
         return Ok(Box::new(provider));
     }
 
@@ -134,7 +146,9 @@ async fn create_llm_client(
         match provider {
             LLMProviderType::Anthropic | LLMProviderType::AiCore => {}
             _ => {
-                eprintln!("Warning: Recording is only supported for the Anthropic and AiCore providers");
+                eprintln!(
+                    "Warning: Recording is only supported for the Anthropic and AI Core providers"
+                );
             }
         }
     }
@@ -145,20 +159,20 @@ async fn create_llm_client(
             let token_manager = TokenManager::new(&config)
                 .await
                 .context("Failed to initialize token manager")?;
-            
+
             let base_url = base_url.unwrap_or_else(|| config.api_base_url.clone());
-            
+
             if let Some(path) = record_path {
                 Ok(Box::new(AiCoreClient::new_with_recorder(
-                    token_manager, base_url, path,
+                    token_manager,
+                    base_url,
+                    path,
                 )))
             } else {
-                Ok(Box::new(AiCoreClient::new(
-                    token_manager, base_url,
-                )))
+                Ok(Box::new(AiCoreClient::new(token_manager, base_url)))
             }
         }
-        
+
         LLMProviderType::Anthropic => {
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .context("ANTHROPIC_API_KEY environment variable not set")?;
@@ -260,7 +274,8 @@ async fn main() -> Result<()> {
             let model = args.model;
             let base_url = args.base_url;
             let num_ctx = args.num_ctx.unwrap_or(8192);
-            let tools_type = args.tools_type.unwrap_or(ToolsType::Xml);
+            let tools_type = args.tools_type.unwrap_or(ToolMode::Xml);
+            let agent_mode = args.agent_mode.unwrap_or(AgentMode::MessageHistory);
             let use_gui = args.ui;
 
             // Setup logging based on verbose flag
@@ -312,6 +327,7 @@ async fn main() -> Result<()> {
                             num_ctx,
                             args.record.clone(),
                             args.playback.clone(),
+                            args.fast_playback,
                         )
                         .await
                         .expect("Failed to initialize LLM client");
@@ -319,10 +335,8 @@ async fn main() -> Result<()> {
                         // Initialize agent
                         let mut agent = Agent::new(
                             llm_client,
-                            match &tools_type {
-                                ToolsType::Native => agent::ToolMode::Native,
-                                ToolsType::Xml => agent::ToolMode::Xml,
-                            },
+                            tools_type,
+                            agent_mode,
                             explorer,
                             command_executor,
                             user_interface,
@@ -365,6 +379,7 @@ async fn main() -> Result<()> {
                     num_ctx,
                     args.record,
                     args.playback,
+                    args.fast_playback,
                 )
                 .await
                 .context("Failed to initialize LLM client")?;
@@ -372,10 +387,8 @@ async fn main() -> Result<()> {
                 // Initialize agent
                 let mut agent = Agent::new(
                     llm_client,
-                    match &tools_type {
-                        ToolsType::Native => agent::ToolMode::Native,
-                        ToolsType::Xml => agent::ToolMode::Xml,
-                    },
+                    tools_type,
+                    agent_mode,
                     explorer,
                     command_executor,
                     user_interface,
