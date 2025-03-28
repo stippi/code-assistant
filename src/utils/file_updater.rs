@@ -44,29 +44,32 @@ pub fn apply_replacements_normalized(
         // Normalize the search string as well
         let normalized_search = encoding::normalize_content(&replacement.search);
 
-        // Count occurrences to ensure uniqueness
+        // Count occurrences
         let matches: Vec<_> = result.match_indices(&normalized_search).collect();
 
-        match matches.len() {
-            0 => {
-                return Err(FileUpdaterError::SearchBlockNotFound(
-                    index,
-                    replacement.search.clone(),
-                )
-                .into())
-            }
-            1 => {
-                let (pos, _) = matches[0];
-                result.replace_range(pos..pos + normalized_search.len(), &replacement.replace);
-            }
-            _ => {
+        if matches.is_empty() {
+            return Err(
+                FileUpdaterError::SearchBlockNotFound(index, replacement.search.clone()).into(),
+            );
+        }
+
+        if replacement.replace_all {
+            // Replace all occurrences
+            result = result.replace(&normalized_search, &replacement.replace);
+        } else {
+            // Exact-match mode: must have exactly one occurrence
+            if matches.len() > 1 {
                 return Err(FileUpdaterError::MultipleMatches(
                     matches.len(),
                     index,
                     replacement.search.clone(),
                 )
-                .into())
+                .into());
             }
+
+            // Replace the single occurrence
+            let (pos, _) = matches[0];
+            result.replace_range(pos..pos + normalized_search.len(), &replacement.replace);
         }
     }
 
@@ -82,6 +85,7 @@ fn test_apply_replacements_normalized() -> Result<(), anyhow::Error> {
             vec![FileReplacement {
                 search: "Hello World\nThis".to_string(), // No trailing space in search
                 replace: "Hi there\nNew".to_string(),
+                replace_all: false,
             }],
             Ok("Hi there\nNew is a test\nGoodbye"),
         ),
@@ -91,6 +95,7 @@ fn test_apply_replacements_normalized() -> Result<(), anyhow::Error> {
             vec![FileReplacement {
                 search: "function test() {\n  console.log('test');\n}".to_string(), // LF endings
                 replace: "function answer() {\n  return 42;\n}".to_string(),
+                replace_all: false,
             }],
             Ok("function answer() {\n  return 42;\n}"),
         ),
@@ -100,8 +105,29 @@ fn test_apply_replacements_normalized() -> Result<(), anyhow::Error> {
             vec![FileReplacement {
                 search: "test line\nwith trailing space\nand CRLF endings".to_string(),
                 replace: "replaced content".to_string(),
+                replace_all: false,
             }],
             Ok("replaced content"),
+        ),
+        // Test replacing all occurrences
+        (
+            "log('test');\nlog('test2');\nlog('test3');",
+            vec![FileReplacement {
+                search: "log(".to_string(),
+                replace: "console.log(".to_string(),
+                replace_all: true,
+            }],
+            Ok("console.log('test');\nconsole.log('test2');\nconsole.log('test3');"),
+        ),
+        // Test error when multiple matches but replace_all is false
+        (
+            "log('test');\nlog('test2');\nlog('test3');",
+            vec![FileReplacement {
+                search: "log(".to_string(),
+                replace: "console.log(".to_string(),
+                replace_all: false,
+            }],
+            Err("Found 3 occurrences"),
         ),
     ];
 

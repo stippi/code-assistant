@@ -207,7 +207,7 @@ impl Tools {
     pub fn replace_in_file() -> ToolDefinition {
         ToolDefinition {
             name: "replace_in_file".to_string(),
-            description: "Replace sections in a file using search/replace blocks. Each search text must appear exactly once in the file - otherwise the operation will fail.".to_string(),
+            description: "Replace sections in a file using search/replace blocks. By default, each search text must match exactly once in the file, but you can use SEARCH_ALL/REPLACE_ALL blocks to replace all occurrences of a pattern.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -217,7 +217,7 @@ impl Tools {
                     },
                     "diff": {
                         "type": "string",
-                        "description": "One or more SEARCH/REPLACE blocks following this exact format:\n<<<<<<< SEARCH\n[exact content to find]\n=======\n[new content to replace with]\n>>>>>>> REPLACE\nSEARCH content must match the associated file section to find EXACTLY. The operation will fail if a SEARCH content has multiple matches, so make sure it is long enough to be unique."
+                        "description": "One or more SEARCH/REPLACE or SEARCH_ALL/REPLACE_ALL blocks following either of these formats:\n<<<<<<< SEARCH\n[exact content to find]\n=======\n[new content to replace with]\n>>>>>>> REPLACE\n\nOR\n\n<<<<<<< SEARCH_ALL\n[content pattern to find]\n=======\n[new content to replace with]\n>>>>>>> REPLACE_ALL\n\nWith SEARCH/REPLACE blocks, the search content must match exactly one location. With SEARCH_ALL/REPLACE_ALL blocks, all occurrences of the pattern will be replaced."
                     }
                 },
                 "required": ["path", "diff"]

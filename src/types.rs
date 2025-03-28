@@ -216,10 +216,14 @@ impl WorkingMemory {
 /// Details for a text replacement operation
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileReplacement {
-    /// The text to search for. Must match exactly one location in the file.
+    /// The text to search for. Must match exactly one location in the file
+    /// unless replace_all is set to true.
     pub search: String,
     /// The text to replace it with
     pub replace: String,
+    /// If true, replaces all occurrences of the search text instead of requiring exactly one match
+    #[serde(default)]
+    pub replace_all: bool,
 }
 
 /// Available tools the agent can use
@@ -451,7 +455,7 @@ pub struct SearchResult {
 pub enum ToolMode {
     /// Native tools via API
     Native,
-    /// Tools through custom system message with XML tags 
+    /// Tools through custom system message with XML tags
     Xml,
 }
 

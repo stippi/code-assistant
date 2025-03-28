@@ -994,10 +994,12 @@ fn test_apply_replacements() -> Result<(), anyhow::Error> {
         FileReplacement {
             search: "Hello World".to_string(),
             replace: "Hi there".to_string(),
+            replace_all: false,
         },
         FileReplacement {
             search: "Goodbye".to_string(),
             replace: "See you".to_string(),
+            replace_all: false,
         },
     ];
 
@@ -1021,6 +1023,7 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
                 replacements: vec![FileReplacement {
                     search: "function test()".to_string(), // correct
                     replace: "fn test()".to_string(),
+                    replace_all: false,
                 }],
             },
             "Trying with correct search string",
@@ -1031,6 +1034,7 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
                 replacements: vec![FileReplacement {
                     search: "wrong search".to_string(), // will fail
                     replace: "fn test()".to_string(),
+                    replace_all: false,
                 }],
             },
             "Initial attempt to replace",

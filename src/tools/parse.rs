@@ -166,7 +166,10 @@ pub(crate) fn parse_search_replace_blocks(
 
     while let Some(line) = lines.next() {
         // Match the exact marker without trimming leading whitespace
-        if line.trim_end() == "<<<<<<< SEARCH" {
+        let is_search_all = line.trim_end() == "<<<<<<< SEARCH_ALL";
+        let is_search = line.trim_end() == "<<<<<<< SEARCH";
+
+        if is_search || is_search_all {
             let mut search = String::new();
             let mut replace = String::new();
 
@@ -182,9 +185,10 @@ pub(crate) fn parse_search_replace_blocks(
             }
 
             // Collect replace content
+            let end_marker = if is_search_all { ">>>>>>> REPLACE_ALL" } else { ">>>>>>> REPLACE" };
             while let Some(current_line) = lines.next() {
                 // Check for end marker
-                if current_line.trim_end() == ">>>>>>> REPLACE" {
+                if current_line.trim_end() == end_marker {
                     break;
                 }
 
@@ -192,7 +196,7 @@ pub(crate) fn parse_search_replace_blocks(
                 // This handles the case when LLM accidentally adds a separator right before the end marker
                 if current_line.trim_end() == "=======" {
                     if let Some(next_line) = lines.peek() {
-                        if next_line.trim_end() == ">>>>>>> REPLACE" {
+                        if next_line.trim_end() == end_marker {
                             // Skip this separator - it's a mistake before the end marker
                             continue;
                         }
@@ -206,7 +210,11 @@ pub(crate) fn parse_search_replace_blocks(
                 replace.push_str(current_line);
             }
 
-            replacements.push(FileReplacement { search, replace });
+            replacements.push(FileReplacement {
+                search,
+                replace,
+                replace_all: is_search_all
+            });
         }
     }
 
@@ -537,6 +545,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].search, "if a > b {\n    return a;\n}");
         assert_eq!(result[0].replace, "if a >= b {\n    return a;\n}");
+        assert_eq!(result[0].replace_all, false);
     }
 
     #[test]
@@ -595,5 +604,47 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].search, "// This comment will be removed");
         assert_eq!(result[0].replace, "");
+    }
+    
+    #[test]
+    fn test_parse_search_replace_all_blocks() {
+        let content = concat!(
+            "<<<<<<< SEARCH_ALL\n",
+            "console.log(\n",
+            "=======\n",
+            "logger.debug(\n",
+            ">>>>>>> REPLACE_ALL"
+        );
+
+        let result = parse_search_replace_blocks(content).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].search, "console.log(");
+        assert_eq!(result[0].replace, "logger.debug(");
+        assert_eq!(result[0].replace_all, true);
+    }
+    
+    #[test]
+    fn test_parse_mixed_search_replace_blocks() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "function test() {\n",
+            "=======\n",
+            "function renamed() {\n",
+            ">>>>>>> REPLACE\n",
+            "<<<<<<< SEARCH_ALL\n",
+            "console.log(\n",
+            "=======\n",
+            "logger.debug(\n",
+            ">>>>>>> REPLACE_ALL"
+        );
+
+        let result = parse_search_replace_blocks(content).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].search, "function test() {");
+        assert_eq!(result[0].replace, "function renamed() {");
+        assert_eq!(result[0].replace_all, false);
+        assert_eq!(result[1].search, "console.log(");
+        assert_eq!(result[1].replace, "logger.debug(");
+        assert_eq!(result[1].replace_all, true);
     }
 }

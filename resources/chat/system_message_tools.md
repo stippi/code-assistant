@@ -83,7 +83,7 @@ Your file content here
 Description: Request to replace sections of content in an existing file using SEARCH/REPLACE blocks that define exact changes to specific parts of the file. This tool should be used when you need to make targeted changes to specific parts of a file.
 Parameters:
 - path: (required) The path of the file to modify (relative to the project root directory)
-- diff: (required) One or more SEARCH/REPLACE blocks following this exact format:
+- diff: (required) One or more SEARCH/REPLACE or SEARCH_ALL/REPLACE_ALL blocks following these formats:
   ```
   <<<<<<< SEARCH
   [exact content to find]
@@ -91,6 +91,15 @@ Parameters:
   [new content to replace with]
   >>>>>>> REPLACE
   ```
+
+  ```
+  <<<<<<< SEARCH_ALL
+  [content pattern to find]
+  =======
+  [new content to replace with]
+  >>>>>>> REPLACE_ALL
+  ```
+
   Critical rules:
   1. SEARCH content must match the associated file section to find EXACTLY:
      * Match character-for-character including whitespace, indentation, line endings
@@ -99,12 +108,16 @@ Parameters:
      * Include multiple unique SEARCH/REPLACE blocks if you need to make multiple changes.
      * Include *just* enough lines in each SEARCH section to uniquely match a set of lines that needs to change.
      * When using multiple SEARCH/REPLACE blocks, list them in the order they appear in the file.
-  3. Keep SEARCH/REPLACE blocks concise:
-     * Break large SEARCH/REPLACE blocks into a series of smaller blocks that each change a small portion of the file.
+  3. SEARCH_ALL/REPLACE_ALL blocks will replace ALL occurrences of the matched text:
+     * Use when you need to consistently replace the same pattern throughout a file.
+     * Particularly useful for renaming variables, updating function calls, etc.
+     * Be careful with short or common patterns, as they might match unintended sections.
+  4. Keep SEARCH/REPLACE blocks concise:
+     * Break large blocks into a series of smaller blocks that each change a small portion of the file.
      * Include just the changing lines, and a few surrounding lines if needed for uniqueness.
-     * Do not include long runs of unchanging lines in SEARCH/REPLACE blocks.
+     * Do not include long runs of unchanging lines in blocks.
      * Each line must be complete. Never truncate lines mid-way through as this can cause matching failures.
-  4. Special operations:
+  5. Special operations:
      * To move code: Use two SEARCH/REPLACE blocks (one to delete from original + one to insert at new location)
      * To delete code: Use empty REPLACE section
 Usage:
@@ -263,12 +276,15 @@ return (
 # Workflow Tips
 
 1. Before editing, assess the scope of your changes and decide which tool to use.
-2. For targeted edits, apply replace_in_file with carefully crafted SEARCH/REPLACE blocks. If you need multiple changes, you can stack multiple SEARCH/REPLACE blocks within a single replace_in_file call.
+2. For targeted edits, apply replace_in_file with carefully crafted SEARCH/REPLACE blocks or SEARCH_ALL/REPLACE_ALL blocks:
+   - Use SEARCH/REPLACE for changes that should occur exactly once
+   - Use SEARCH_ALL/REPLACE_ALL for patterns that should be replaced throughout the file
+   - You can mix both types of blocks in a single replace_in_file call
 3. For major overhauls or initial file creation, rely on write_file.
-4. Once the file has been edited with either write_file or replace_in_file, the system will provide you with the final state of the modified file. Use this updated content as the reference point for any subsequent SEARCH/REPLACE operations, since it reflects any auto-formatting or user-applied changes.
+4. Once the file has been edited with either write_file or replace_in_file, the system will provide you with the final state of the modified file. Use this updated content as the reference point for any subsequent replacement operations, since it reflects any auto-formatting or user-applied changes.
 5. After making edits to code, consider what consequences this may have to other parts of the code, especially in files you have not yet seen. If appropriate, use the search tool to find files that might be affected by your changes.
 
-By thoughtfully selecting between write_file and replace_in_file, you can make your file editing process smoother, safer, and more efficient.
+By thoughtfully selecting between write_file and replace_in_file, and using the appropriate replacement blocks, you can make your file editing process smoother, safer, and more efficient.
 
 # Interface Change Considerations
 

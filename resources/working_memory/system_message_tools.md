@@ -83,7 +83,7 @@ Your file content here
 Description: Request to replace sections of content in an existing file using SEARCH/REPLACE blocks that define exact changes to specific parts of the file. This tool should be used when you need to make targeted changes to specific parts of a file.
 Parameters:
 - path: (required) The path of the file to modify (relative to the project root directory)
-- diff: (required) One or more SEARCH/REPLACE blocks following this exact format:
+- diff: (required) One or more SEARCH/REPLACE or SEARCH_ALL/REPLACE_ALL blocks following these formats:
   ```
   <<<<<<< SEARCH
   [exact content to find]
@@ -91,20 +91,33 @@ Parameters:
   [new content to replace with]
   >>>>>>> REPLACE
   ```
+
+  ```
+  <<<<<<< SEARCH_ALL
+  [content pattern to find]
+  =======
+  [new content to replace with]
+  >>>>>>> REPLACE_ALL
+  ```
+
   Critical rules:
   1. SEARCH content must match the associated file section to find EXACTLY:
      * Match character-for-character including whitespace, indentation, line endings
      * Include all comments, docstrings, etc.
-  2. SEARCH/REPLACE blocks will ONLY replace the first match occurrence.
-     * Including multiple unique SEARCH/REPLACE blocks if you need to make multiple changes.
-     * Include *just* enough lines in each SEARCH section to uniquely match each set of lines that need to change.
+  2. SEARCH/REPLACE blocks must produce exactly one match in the file contents.
+     * Include multiple unique SEARCH/REPLACE blocks if you need to make multiple changes.
+     * Include *just* enough lines in each SEARCH section to uniquely match a set of lines that needs to change.
      * When using multiple SEARCH/REPLACE blocks, list them in the order they appear in the file.
-  3. Keep SEARCH/REPLACE blocks concise:
+  3. SEARCH_ALL/REPLACE_ALL blocks will replace ALL occurrences of the matched text:
+     * Use when you need to consistently replace the same pattern throughout a file.
+     * Particularly useful for renaming variables, updating function calls, etc.
+     * Be careful with short or common patterns, as they might match unintended sections.
+  4. Keep SEARCH/REPLACE blocks concise:
      * Break large SEARCH/REPLACE blocks into a series of smaller blocks that each change a small portion of the file.
      * Include just the changing lines, and a few surrounding lines if needed for uniqueness.
      * Do not include long runs of unchanging lines in SEARCH/REPLACE blocks.
      * Each line must be complete. Never truncate lines mid-way through as this can cause matching failures.
-  4. Special operations:
+  5. Special operations:
      * To move code: Use two SEARCH/REPLACE blocks (one to delete from original + one to insert at new location)
      * To delete code: Use empty REPLACE section
 Usage:
@@ -314,11 +327,13 @@ You have access to two tools for working with files: **write_file** and **replac
 - Small, localized changes like updating a few lines, function implementations, changing variable names, modifying a section of text, etc.
 - Targeted improvements where only specific portions of the file's content needs to be altered.
 - Especially useful for long files where much of the file will remain unchanged.
+- When you need to replace all occurrences of a specific text pattern throughout a file.
 
 ## Advantages
 
 - More efficient for minor edits, since you don't need to supply the entire file content.
 - Reduces the chance of errors that can occur when overwriting large files.
+- Offers both single-occurrence replacement (SEARCH/REPLACE) and multi-occurrence replacement (SEARCH_ALL/REPLACE_ALL) options.
 
 # Choosing the Appropriate Tool
 

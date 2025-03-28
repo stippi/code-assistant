@@ -736,16 +736,18 @@ mod tests {
             FileReplacement {
                 search: "line 1\n".to_string(),
                 replace: "new line 1\n".to_string(),
+                replace_all: false,
             },
             FileReplacement {
                 search: "line 3".to_string(),
                 replace: "new line 3".to_string(),
+                replace_all: false,
             },
         ];
 
         // Apply replacements and verify content is functionally equivalent
         let result = explorer.apply_replacements(&test_file, &replacements)?;
-        
+
         // Anstatt exakte Stringvergleiche zu machen, überprüfen wir nur, ob beide Strings
         // die erwarteten Inhalte haben, unabhängig von der genauen Anzahl der Zeilenumbrüche
         assert!(result.contains("new line 1"));
@@ -764,6 +766,7 @@ mod tests {
             &[FileReplacement {
                 search: "line".to_string(),
                 replace: "test".to_string(),
+                replace_all: false,
             }],
         );
         assert!(result.is_err());

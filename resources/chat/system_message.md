@@ -40,11 +40,14 @@ By waiting for and carefully considering the user's response after each tool use
 # Workflow Tips
 
 1. Before editing, assess the scope of your changes and decide which tool to use.
-2. For targeted edits, apply replace_in_file with carefully crafted SEARCH/REPLACE blocks. If you need multiple changes, you can stack multiple SEARCH/REPLACE blocks within a single replace_in_file call.
+2. For targeted edits, apply replace_in_file with carefully crafted SEARCH/REPLACE blocks or SEARCH_ALL/REPLACE_ALL blocks:
+   - Use SEARCH/REPLACE for changes that should occur exactly once
+   - Use SEARCH_ALL/REPLACE_ALL for patterns that should be replaced throughout the file
+   - You can mix both types of blocks in a single replace_in_file call
 3. For major overhauls or initial file creation, rely on write_file.
 4. Once the file has been edited with either write_file or replace_in_file, the system will provide you with the final state of the modified file. Use this updated content as the reference point for any subsequent SEARCH/REPLACE operations, since it reflects any auto-formatting or user-applied changes.
 
-By thoughtfully selecting between write_file and replace_in_file, you can make your file editing process smoother, safer, and more efficient.
+By thoughtfully selecting between write_file and replace_in_file, and using the appropriate replacement blocks, you can make your file editing process smoother, safer, and more efficient.
 
 # Interface Change Considerations
 

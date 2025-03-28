@@ -50,13 +50,14 @@ fn parse_diff_sections(diff_text: &str) -> Vec<DiffSection> {
     };
 
     // Normalize diff text to ensure markers are on their own lines
-    let normalized_diff = diff_text.replace(
-        ">>>>>>> REPLACE<<<<<<< SEARCH",
-        ">>>>>>> REPLACE\n<<<<<<< SEARCH",
-    );
+    let normalized_diff = diff_text
+        .replace(">>>>>>> REPLACE<<<<<<< SEARCH", ">>>>>>> REPLACE\n<<<<<<< SEARCH")
+        .replace(">>>>>>> REPLACE_ALL<<<<<<< SEARCH", ">>>>>>> REPLACE_ALL\n<<<<<<< SEARCH")
+        .replace(">>>>>>> REPLACE<<<<<<< SEARCH_ALL", ">>>>>>> REPLACE\n<<<<<<< SEARCH_ALL")
+        .replace(">>>>>>> REPLACE_ALL<<<<<<< SEARCH_ALL", ">>>>>>> REPLACE_ALL\n<<<<<<< SEARCH_ALL");
 
     for line in normalized_diff.lines() {
-        if line == "<<<<<<< SEARCH" {
+        if line == "<<<<<<< SEARCH" || line == "<<<<<<< SEARCH_ALL" {
             // Start a new section if we already have content in the current one
             if !current_section.search_content.is_empty()
                 || !current_section.replace_content.is_empty()
@@ -75,7 +76,7 @@ fn parse_diff_sections(diff_text: &str) -> Vec<DiffSection> {
         } else if line == "=======" {
             current_section.in_search = false;
             current_section.in_replace = true;
-        } else if line == ">>>>>>> REPLACE" {
+        } else if line == ">>>>>>> REPLACE" || line == ">>>>>>> REPLACE_ALL" {
             current_section.in_search = false;
             current_section.in_replace = false;
 
