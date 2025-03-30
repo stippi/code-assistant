@@ -84,19 +84,21 @@ jobs:
 
       - name: Create Release
         id: create_release
-        uses: actions/create-release@v1
+        uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
         with:
           tag_name: v${{ steps.release_version.outputs.new_version }}
-          release_name: Release v${{ steps.release_version.outputs.new_version }}
+          name: Release v${{ steps.release_version.outputs.new_version }}
           draft: true
           prerelease: false
 
       - name: Output Release URL
-        run: echo "Release URL ${{ steps.create_release.outputs.upload_url }}"
+        run: echo "Created release at ${{ steps.create_release.outputs.url }}"
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      release_id: ${{ steps.create_release.outputs.id }}
+      release_url: ${{ steps.create_release.outputs.url }}
+      new_version: ${{ steps.release_version.outputs.new_version }}
 
   build:
     needs: prepare-version
@@ -161,11 +163,9 @@ jobs:
           fi
 
       - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
+        uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
         with:
-          upload_url: ${{ needs.prepare-version.outputs.upload_url }}
-          asset_path: release/code-assistant-${{ matrix.name }}.zip
-          asset_name: code-assistant-${{ matrix.name }}.zip
-          asset_content_type: application/zip
+          tag_name: v${{ needs.prepare-version.outputs.new_version }}
+          files: release/code-assistant-${{ matrix.name }}.zip
