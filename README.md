@@ -100,7 +100,7 @@ Available options:
 - `--continue-task`: Continue from previous state
 - `-v, --verbose`: Enable verbose logging
 - `-p, --provider <PROVIDER>`: LLM provider to use [ai-core, anthropic, open-ai, ollama, vertex] (default: anthropic)
-- `-m, --model <MODEL>`: Model name to use (defaults: anthropic="claude-3-7-sonnet-20250219", open-ai="gpt-4o", vertex="gemini-1.5-pro-latest", ollama=required)
+- `-m, --model <MODEL>`: Model name to use (defaults: anthropic="claude-3-7-sonnet-20250219", open-ai="gpt-4o", vertex="gemini-2.5-pro-exp-03-25", ollama=required)
 - `--base-url <URL>`: API base URL for the LLM provider
 - `--tools-type <TOOLS_TYPE>`: Type of tool declaration [native, xml] (default: xml) `native` = tools via LLM provider API, `xml` = custom system message
 - `--num-ctx <NUM>`: Context window size in tokens (default: 8192, only relevant for Ollama)
