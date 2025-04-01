@@ -384,6 +384,11 @@ impl CodeExplorer for Explorer {
     }
 
     fn list_files(&mut self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry> {
+        // Check if the path exists before proceeding
+        if !path.exists() {
+            return Err(anyhow::anyhow!("Path not found"));
+        }
+
         // Remember that this path was explicitly listed
         self.expanded_paths.insert(path.clone());
 
@@ -436,7 +441,8 @@ impl CodeExplorer for Explorer {
         };
 
         // Apply replacements with normalized content
-        let updated_normalized = crate::utils::apply_replacements_normalized(&original_content, replacements)?;
+        let updated_normalized =
+            crate::utils::apply_replacements_normalized(&original_content, replacements)?;
 
         // Write the content back using the file format helper to ensure consistent newline handling
         crate::utils::encoding::write_file_with_format(path, &updated_normalized, &file_format)?;
@@ -879,6 +885,19 @@ mod tests {
         assert_eq!(dir1.entry_type, FileSystemEntryType::Directory);
         assert!(dir1.is_expanded);
         assert!(dir1.children.contains_key("file2.txt"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_files_nonexistent_path() -> Result<()> {
+        let (temp_dir, mut explorer) = setup_test_directory()?;
+        let nonexistent_path = temp_dir.path().join("nonexistent");
+
+        // Test with a non-existent path
+        let result = explorer.list_files(&nonexistent_path, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Path not found"));
 
         Ok(())
     }
