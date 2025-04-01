@@ -52,6 +52,7 @@ struct VertexPart {
 struct GenerationConfig {
     temperature: f32,
     max_output_tokens: usize,
+    response_mime_type: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -459,8 +460,9 @@ impl LLMProvider for VertexClient {
             }),
             contents,
             generation_config: Some(GenerationConfig {
-                temperature: 0.7,
-                max_output_tokens: 8192,
+                temperature: 1.,
+                max_output_tokens: 65536,
+                response_mime_type: "text/plain".to_string(),
             }),
             tools: request.tools.map(|tools| {
                 vec![json!({
@@ -473,11 +475,7 @@ impl LLMProvider for VertexClient {
                     }).collect::<Vec<_>>()
                 })]
             }),
-            tool_config: Some(json!({
-                "function_calling_config": {
-                    "mode": "ANY",
-                }
-            })),
+            tool_config: None,
         };
 
         self.send_with_retry(&vertex_request, streaming_callback, 3)
