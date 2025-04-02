@@ -53,26 +53,24 @@ fn format_output_for_result(result: &ToolResult) -> Result<String> {
             if !loaded_files.is_empty() {
                 output.push_str(&format!("Successfully loaded the following file(s):\n"));
                 for (path, content) in loaded_files {
-                    output.push_str(&format!("-----[ {} ]-----\n{}\n", path.display(), content));
+                    //output.push_str(&format!("-----[ {} ]-----\n{}\n", path.display(), content));
+                    output.push_str(&format!(
+                        ">>>>> FILE: {}\n{}\n<<<<< END FILE\n",
+                        path.display(),
+                        content
+                    ));
                 }
             }
             Ok(output)
         }
-        ToolResult::ReplaceInFile {
-            path,
-            error,
-            content,
-            ..
-        } => {
+        ToolResult::ReplaceInFile { error, .. } => {
             // Handle special case for Search Block Not Found error
             if let Some(error_value) = error {
                 if let crate::utils::FileUpdaterError::SearchBlockNotFound(_, _) = error_value {
                     // Use the content from the ToolResult
                     let mut output = format!("Failed to replace in file: {}\n\n", error_value);
                     output.push_str(&format!(
-                        "Please retry 'replace_in_file' and adjust your SEARCH block to the current contents of the file shown below. DO NOT use 'read_files' to re-read the file! The file contents are already shown below:\n>>>>> RESOURCE {}:\n{}\n<<<<< END RESOURCE",
-                        path.display(),
-                        content
+                        "Please adjust your SEARCH block to the current contents of the file."
                     ));
                     return Ok(output);
                 }
