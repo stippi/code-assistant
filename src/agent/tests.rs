@@ -890,15 +890,16 @@ async fn test_execute_command() -> Result<()> {
 
 #[test]
 fn test_flexible_xml_parsing() -> Result<()> {
+    let text = concat!(
+        "I will search for TODO comments in the code.\n",
+        "\n",
+        "<tool:search_files>\n",
+        "<param:regex>TODO & FIXME <html></param:regex>\n",
+        "</tool:search_files>"
+    )
+    .to_string();
     let response = LLMResponse {
-        content: vec![ContentBlock::Text {
-            text: r#"I will search for TODO comments in the code.
-
-<tool:search_files>
-<param:regex>TODO & FIXME <html></param:regex>
-</tool:search_files>"#
-                .to_string(),
-        }],
+        content: vec![ContentBlock::Text { text }],
         usage: Usage {
             input_tokens: 0,
             output_tokens: 0,
@@ -925,32 +926,33 @@ fn test_flexible_xml_parsing() -> Result<()> {
 
 #[test]
 fn test_replacement_xml_parsing() -> Result<()> {
+    let text = concat!(
+        "I will fix the code formatting.\n",
+        "\n",
+        "<tool:replace_in_file>\n",
+        "<param:path>src/main.rs</param:path>\n",
+        "<param:diff>\n",
+        "<<<<<<< SEARCH\n",
+        "function test(){\n",
+        "  console.log(\"messy\");\n",
+        "}\n",
+        "=======\n",
+        "function test() {\n",
+        "    console.log(\"clean\");\n",
+        "}\n",
+        ">>>>>>> REPLACE\n",
+        "\n",
+        "<<<<<<< SEARCH\n",
+        "const x=42\n",
+        "=======\n",
+        "const x = 42;\n",
+        ">>>>>>> REPLACE\n",
+        "</param:diff>\n",
+        "</tool:replace_in_file>\n",
+    )
+    .to_string();
     let response = LLMResponse {
-        content: vec![ContentBlock::Text {
-            text: r#"I will fix the code formatting.
-
-<tool:replace_in_file>
-<param:path>src/main.rs</param:path>
-<param:diff>
-<<<<<<< SEARCH
-function test(){
-  console.log("messy");
-}
-=======
-function test() {
-    console.log("clean");
-}
->>>>>>> REPLACE
-
-<<<<<<< SEARCH
-const x=42
-=======
-const x = 42;
->>>>>>> REPLACE
-</param:diff>
-</tool:replace_in_file>"#
-                .to_string(),
-        }],
+        content: vec![ContentBlock::Text { text }],
         usage: Usage::zero(),
     };
 
