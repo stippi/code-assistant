@@ -103,7 +103,24 @@ fn update_working_memory(working_memory: &mut WorkingMemory, result: &ToolResult
                 working_memory.plan = plan.clone();
             }
 
-            ToolResult::ListFiles { expanded_paths, .. } => {
+            ToolResult::ListFiles {
+                project,
+                expanded_paths,
+                ..
+            } => {
+                // Store expanded directories for this project
+                let project_paths = working_memory
+                    .expanded_directories
+                    .entry(project.clone())
+                    .or_insert_with(Vec::new);
+
+                // Add all paths that were listed for this project
+                for (path, _) in expanded_paths {
+                    if !project_paths.contains(path) {
+                        project_paths.push(path.clone());
+                    }
+                }
+
                 // Update working memory file tree with each entry
                 if let Some(file_tree) = &mut working_memory.file_tree {
                     for (path, entry) in expanded_paths {

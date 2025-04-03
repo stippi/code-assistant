@@ -165,7 +165,11 @@ impl ToolExecutor {
                         }
                     }
 
-                    Tool::ListFiles { paths, max_depth } => {
+                    Tool::ListFiles {
+                        paths,
+                        max_depth,
+                        project,
+                    } => {
                         // Check for absolute paths
                         for path in paths {
                             if let Some(error) = check_absolute_path(path) {
@@ -189,6 +193,7 @@ impl ToolExecutor {
                         }
 
                         ToolResult::ListFiles {
+                            project: project.clone(),
                             expanded_paths,
                             failed_paths,
                         }

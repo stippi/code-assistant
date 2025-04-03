@@ -89,6 +89,8 @@ pub struct WorkingMemory {
     pub summaries: HashMap<PathBuf, String>,
     /// Complete file tree of the repository
     pub file_tree: Option<FileTreeEntry>,
+    /// Expanded directories per project
+    pub expanded_directories: HashMap<String, Vec<PathBuf>>,
 }
 
 impl std::fmt::Display for LoadedResource {
@@ -325,6 +327,7 @@ pub enum ToolResult {
         failed_files: Vec<(PathBuf, String)>,
     },
     ListFiles {
+        project: String,
         expanded_paths: Vec<(PathBuf, FileTreeEntry)>,
         failed_paths: Vec<(String, String)>,
     },
