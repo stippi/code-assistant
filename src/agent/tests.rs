@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::agent::parse_llm_response;
 use crate::agent::AgentMode;
+use crate::config::ProjectManager;
 use crate::llm::{types::*, LLMProvider, LLMRequest, StreamingCallback};
 use crate::persistence::MockStatePersistence;
 use crate::types::*;
@@ -21,6 +22,74 @@ impl Usage {
             output_tokens: 0,
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 0,
+        }
+    }
+}
+
+// Mock ProjectManager for tests
+#[derive(Default)]
+struct MockProjectManager {
+    explorers: HashMap<String, Box<dyn CodeExplorer>>,
+    projects: HashMap<String, Project>,
+}
+
+impl MockProjectManager {
+    fn new() -> Self {
+        let mut explorers = HashMap::new();
+        let mut projects = HashMap::new();
+
+        // Add a default project
+        let test_project = Project {
+            path: PathBuf::from("./root")
+        };
+
+        explorers.insert("test".to_string(), Box::new(create_explorer_mock()));
+        projects.insert("test".to_string(), test_project);
+
+        Self {
+            explorers,
+            projects,
+        }
+    }
+
+    // Helper to add a custom project and explorer
+    fn with_project(mut self, name: &str, path: PathBuf, explorer: Box<dyn CodeExplorer>) -> Self {
+        self.projects.insert(name.to_string(), Project { path });
+        self.explorers.insert(name.to_string(), explorer);
+        self
+    }
+}
+
+impl ProjectManager for MockProjectManager {
+    fn get_projects(&self) -> Result<HashMap<String, Project>> {
+        Ok(self.projects.clone())
+    }
+
+    fn get_project(&self, name: &str) -> Result<Option<Project>> {
+        Ok(self.projects.get(name).cloned())
+    }
+
+    fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn CodeExplorer>> {
+        match self.explorers.get(name) {
+            Some(explorer) => {
+                // Clone the boxed explorer
+                let explorer_clone: Box<dyn CodeExplorer> = match &**explorer {
+                    mock_explorer if std::any::TypeId::of::<MockExplorer>() == std::any::Any::type_id(mock_explorer) => {
+                        // Erstelle eine neue Instanz mit denselben Daten
+                        // Wir müssen hier vorsichtig sein, da wir nur Zugriff auf die Trait-Schnittstelle haben
+                        // In echtem Code würde man besser Clone implementieren
+                        let mock_explorer = unsafe { &*(mock_explorer as *const dyn CodeExplorer as *const MockExplorer) };
+                        Box::new(MockExplorer::new(
+                            mock_explorer.files.lock().unwrap().clone(),
+                            mock_explorer.file_tree.lock().unwrap().clone()
+                        ))
+                    },
+                    _ => return Err(anyhow::anyhow!("Cannot clone non-mock explorer")),
+                };
+
+                Ok(explorer_clone)
+            },
+            None => Err(anyhow::anyhow!("Explorer for project {} not found", name))
         }
     }
 }
@@ -498,8 +567,9 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
             "command_line": command_line,
             "working_dir": working_dir
         }),
-        Tool::ListFiles { paths, max_depth } => {
+        Tool::ListFiles { project, paths, max_depth } => {
             let mut map = serde_json::Map::new();
+            map.insert("project".to_string(), serde_json::json!(project));
             map.insert("paths".to_string(), serde_json::json!(paths));
             if let Some(depth) = max_depth {
                 map.insert("max_depth".to_string(), serde_json::json!(depth));
@@ -1107,6 +1177,7 @@ async fn test_list_files_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(
             Tool::ListFiles {
+                project: "test".to_string(),
                 paths: vec![PathBuf::from("src")],
                 max_depth: None,
             },
@@ -1114,6 +1185,7 @@ async fn test_list_files_error_handling() -> Result<()> {
         )),
         Ok(create_test_response(
             Tool::ListFiles {
+                project: "test".to_string(),
                 paths: vec![PathBuf::from("nonexistent")],
                 max_depth: None,
             },
