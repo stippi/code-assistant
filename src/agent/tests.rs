@@ -35,7 +35,7 @@ struct MockProjectManager {
 
 impl MockProjectManager {
     fn new() -> Self {
-        let mut explorers = HashMap::new();
+        let mut explorers: HashMap<String, Box<dyn CodeExplorer>> = HashMap::new();
         let mut projects = HashMap::new();
 
         // Add a default project
@@ -43,7 +43,9 @@ impl MockProjectManager {
             path: PathBuf::from("./root"),
         };
 
-        explorers.insert("test".to_string(), Box::new(create_explorer_mock()));
+        // Create mock explorer and explicitly coerce it to Box<dyn CodeExplorer>
+        let explorer: Box<dyn CodeExplorer> = Box::new(create_explorer_mock());
+        explorers.insert("test".to_string(), explorer);
         projects.insert("test".to_string(), test_project);
 
         Self {

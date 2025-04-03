@@ -1,9 +1,8 @@
 use super::resources::ResourceManager;
 use super::types::*;
 use crate::config::{DefaultProjectManager, ProjectManager};
-use crate::explorer::Explorer;
 use crate::tools::{parse_tool_json, MCPToolHandler, ToolExecutor};
-use crate::types::{CodeExplorer, ToolResult, Tools};
+use crate::types::Tools;
 use crate::utils::{CommandExecutor, DefaultCommandExecutor};
 use anyhow::Result;
 use tokio::io::{AsyncWriteExt, Stdout};
@@ -125,6 +124,7 @@ impl MessageHandler {
     }
 
     /// Notify clients that a specific resource has been updated
+    #[allow(dead_code)]
     async fn send_resource_updated_notification(&mut self, uri: &str) -> Result<()> {
         if !self.resources.is_subscribed(uri) {
             debug!("Resource changed, but is not subscribed: {}", uri);
@@ -212,6 +212,7 @@ impl MessageHandler {
     }
 
     /// Notify clients that the tools list has changed
+    #[allow(dead_code)]
     async fn send_tools_changed_notification(&mut self) -> Result<()> {
         self.send_notification("notifications/tools/list_changed", None)
             .await

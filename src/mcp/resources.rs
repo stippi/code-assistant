@@ -58,6 +58,7 @@ impl ResourceManager {
     }
 
     /// Updates the file tree
+    #[allow(dead_code)]
     pub fn update_file_tree(&mut self, tree: FileTreeEntry) {
         self.file_tree = Some(tree);
     }

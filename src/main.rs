@@ -12,7 +12,6 @@ mod utils;
 mod web;
 
 use crate::agent::Agent;
-use crate::explorer::Explorer;
 use crate::llm::auth::TokenManager;
 use crate::llm::config::DeploymentConfig;
 use crate::llm::{
@@ -25,6 +24,7 @@ use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use config::DefaultProjectManager;
 use persistence::FileStatePersistence;
 use std::io;
 use std::path::PathBuf;
@@ -306,7 +306,7 @@ async fn main() -> Result<()> {
 
                 // Setup dynamic types
                 let root_path = path.canonicalize()?;
-                let explorer = Box::new(Explorer::new(root_path.clone()));
+                let project_manager = Box::new(DefaultProjectManager);
                 let user_interface: Box<dyn UserInterface> = Box::new(gui.clone());
                 let command_executor = Box::new(DefaultCommandExecutor);
                 let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
@@ -337,7 +337,7 @@ async fn main() -> Result<()> {
                             llm_client,
                             tools_type,
                             agent_mode,
-                            explorer,
+                            project_manager,
                             command_executor,
                             user_interface,
                             state_persistence,
@@ -366,7 +366,7 @@ async fn main() -> Result<()> {
                 // Non-GUI mode - run the agent directly in the main thread
                 // Setup dynamic types
                 let root_path = path.canonicalize()?;
-                let explorer = Box::new(Explorer::new(root_path.clone()));
+                let project_manager = Box::new(DefaultProjectManager);
                 let user_interface = Box::new(TerminalUI::new());
                 let command_executor = Box::new(DefaultCommandExecutor);
                 let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
@@ -389,7 +389,7 @@ async fn main() -> Result<()> {
                     llm_client,
                     tools_type,
                     agent_mode,
-                    explorer,
+                    project_manager,
                     command_executor,
                     user_interface,
                     state_persistence,

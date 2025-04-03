@@ -37,7 +37,8 @@ impl ProjectManager for DefaultProjectManager {
     }
 
     fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn CodeExplorer>> {
-        let project = self.get_project(name)?
+        let project = self
+            .get_project(name)?
             .ok_or_else(|| anyhow::anyhow!("Project not found: {}", name))?;
 
         Ok(Box::new(Explorer::new(project.path)))
@@ -49,7 +50,8 @@ pub fn load_projects() -> Result<HashMap<String, Project>> {
     let config: ProjectsConfig = confy::load(APP_NAME, CONFIG_NAME).unwrap_or_default();
 
     // Convert PathBuf to Project objects
-    let projects = config.projects
+    let projects = config
+        .projects
         .into_iter()
         .map(|(name, path)| (name, Project { path }))
         .collect();
@@ -58,6 +60,7 @@ pub fn load_projects() -> Result<HashMap<String, Project>> {
 }
 
 /// Save projects configuration to disk
+#[allow(dead_code)]
 pub fn save_projects(projects: &HashMap<String, Project>) -> Result<()> {
     let config = ProjectsConfig {
         projects: projects
