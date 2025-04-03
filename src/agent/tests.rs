@@ -852,14 +852,11 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     // Obtain a reference to the mock_llm before handing ownership to the agent
     let mock_llm_ref = mock_llm.clone();
 
-    // Create a ProjectManager with our mock explorer
-    let project_manager = MockProjectManager::new();
-
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
         AgentMode::WorkingMemory,
-        Box::new(project_manager),
+        Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
