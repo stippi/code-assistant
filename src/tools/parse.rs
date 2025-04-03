@@ -185,7 +185,11 @@ pub(crate) fn parse_search_replace_blocks(
             }
 
             // Collect replace content
-            let end_marker = if is_search_all { ">>>>>>> REPLACE_ALL" } else { ">>>>>>> REPLACE" };
+            let end_marker = if is_search_all {
+                ">>>>>>> REPLACE_ALL"
+            } else {
+                ">>>>>>> REPLACE"
+            };
             while let Some(current_line) = lines.next() {
                 // Check for end marker
                 if current_line.trim_end() == end_marker {
@@ -213,12 +217,32 @@ pub(crate) fn parse_search_replace_blocks(
             replacements.push(FileReplacement {
                 search,
                 replace,
-                replace_all: is_search_all
+                replace_all: is_search_all,
             });
         }
     }
 
     Ok(replacements)
+}
+
+// Function to get the first required parameter or error
+fn get_required_param<'a>(
+    params: &'a HashMap<String, Vec<String>>,
+    key: &str,
+) -> Result<&'a String, ToolError> {
+    params
+        .get(key)
+        .ok_or_else(|| ToolError::ParseError(format!("Missing required parameter: {}", key)))?
+        .first()
+        .ok_or_else(|| ToolError::ParseError(format!("Parameter {} is empty", key)))
+}
+
+// Function to get an optional parameter
+fn get_optional_param<'a>(
+    params: &'a HashMap<String, Vec<String>>,
+    key: &str,
+) -> Option<&'a String> {
+    params.get(key).and_then(|v| v.first())
 }
 
 pub fn parse_tool_from_params(
@@ -227,39 +251,30 @@ pub fn parse_tool_from_params(
 ) -> Result<Tool, ToolError> {
     match tool_name {
         "update_plan" => Ok(Tool::UpdatePlan {
-            plan: params
-                .get("plan")
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: plan".into()))?
-                .first()
-                .ok_or_else(|| ToolError::ParseError("Plan parameter is empty".into()))?
-                .to_string(),
+            plan: get_required_param(params, "plan")?.clone(),
         }),
 
         "search_files" => Ok(Tool::SearchFiles {
-            regex: params
-                .get("regex")
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: regex".into()))?
-                .first()
-                .ok_or_else(|| ToolError::ParseError("Regex parameter is empty".into()))?
-                .to_string(),
+            project: get_required_param(params, "project")?.clone(),
+            regex: get_required_param(params, "regex")?.clone(),
         }),
 
         "list_files" => Ok(Tool::ListFiles {
+            project: get_required_param(params, "project")?.clone(),
             paths: params
                 .get("path")
                 .ok_or_else(|| ToolError::ParseError("Missing required parameter: path".into()))?
                 .iter()
                 .map(|s| PathBuf::from(s.trim()))
                 .collect(),
-            max_depth: params
-                .get("max_depth")
-                .and_then(|v| v.first())
+            max_depth: get_optional_param(params, "max_depth")
                 .map(|v| v.trim().parse::<usize>())
                 .transpose()
                 .map_err(|_| ToolError::ParseError("Invalid max_depth parameter".into()))?,
         }),
 
         "read_files" => Ok(Tool::ReadFiles {
+            project: get_required_param(params, "project")?.clone(),
             paths: params
                 .get("path")
                 .ok_or_else(|| ToolError::ParseError("Missing required parameter: path".into()))?
@@ -273,7 +288,7 @@ pub fn parse_tool_from_params(
 
         "summarize" => Ok(Tool::Summarize {
             resources: params
-                .get("resource")
+                .get("resource") // Assuming resource param holds path:summary pairs? This seems fragile.
                 .ok_or_else(|| {
                     ToolError::ParseError("Missing required parameter: resource".into())
                 })?
@@ -288,40 +303,21 @@ pub fn parse_tool_from_params(
                 .collect(),
         }),
 
-        "replace_in_file" => {
-            Ok(Tool::ReplaceInFile {
-                path: PathBuf::from(params.get("path").and_then(|v| v.first()).ok_or_else(
-                    || ToolError::ParseError("Missing required parameter: path".into()),
-                )?),
-                replacements: parse_search_replace_blocks(
-                    params.get("diff").and_then(|v| v.first()).ok_or_else(|| {
-                        ToolError::ParseError("Missing required parameter: diff".into())
-                    })?,
-                )?,
-            })
-        }
+        "replace_in_file" => Ok(Tool::ReplaceInFile {
+            project: get_required_param(params, "project")?.clone(),
+            path: PathBuf::from(get_required_param(params, "path")?),
+            replacements: parse_search_replace_blocks(get_required_param(params, "diff")?)?,
+        }),
 
-        "write_file" => {
-            let append = params
-                .get("append")
-                .map_or(false, |v| v.first().map_or(false, |s| s == "true"));
-
-            Ok(Tool::WriteFile {
-                path: PathBuf::from(params.get("path").and_then(|v| v.first()).ok_or_else(
-                    || ToolError::ParseError("Missing required parameter: path".into()),
-                )?),
-                content: params
-                    .get("content")
-                    .and_then(|v| v.first())
-                    .ok_or_else(|| {
-                        ToolError::ParseError("Missing required parameter: content".into())
-                    })?
-                    .to_string(),
-                append,
-            })
-        }
+        "write_file" => Ok(Tool::WriteFile {
+            project: get_required_param(params, "project")?.clone(),
+            path: PathBuf::from(get_required_param(params, "path")?),
+            content: get_required_param(params, "content")?.clone(),
+            append: get_optional_param(params, "append").map_or(false, |s| s == "true"),
+        }),
 
         "delete_files" => Ok(Tool::DeleteFiles {
+            project: get_required_param(params, "project")?.clone(),
             paths: params
                 .get("path")
                 .ok_or_else(|| ToolError::ParseError("Missing required parameter: path".into()))?
@@ -331,72 +327,47 @@ pub fn parse_tool_from_params(
         }),
 
         "complete_task" => Ok(Tool::CompleteTask {
-            message: params
-                .get("message")
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: message".into()))?
-                .first()
-                .ok_or_else(|| ToolError::ParseError("Message parameter is empty".into()))?
-                .to_string(),
+            message: get_required_param(params, "message")?.clone(),
         }),
 
         "execute_command" => Ok(Tool::ExecuteCommand {
-            command_line: params
-                .get("command_line")
-                .ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: command_line".into())
-                })?
-                .first()
-                .ok_or_else(|| ToolError::ParseError("Command line parameter is empty".into()))?
-                .to_string(),
-            working_dir: params
-                .get("working_dir")
-                .and_then(|v| v.first())
-                .map(|v| PathBuf::from(v)),
+            command_line: get_required_param(params, "command_line")?.clone(),
+            working_dir: get_optional_param(params, "working_dir").map(PathBuf::from),
+            project: get_required_param(params, "project")?.clone(),
         }),
 
         "web_search" => Ok(Tool::WebSearch {
-            query: params
-                .get("query")
-                .and_then(|v| v.first())
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: query".into()))?
-                .to_string(),
-            hits_page_number: params
-                .get("hits_page_number")
-                .and_then(|v| v.first())
-                .map(|v| v.trim().parse::<u32>())
-                .transpose()
-                .map_err(|e| ToolError::ParseError(format!("Invalid parameter value: {}", e)))?
-                .ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: hits_page_number".into())
-                })?,
+            query: get_required_param(params, "query")?.clone(),
+            hits_page_number: get_required_param(params, "hits_page_number")?
+                .trim()
+                .parse::<u32>()
+                .map_err(|e| ToolError::ParseError(format!("Invalid hits_page_number: {}", e)))?,
         }),
 
         "web_fetch" => Ok(Tool::WebFetch {
-            url: params
-                .get("url")
-                .and_then(|v| v.first())
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: url".into()))?
-                .to_string(),
+            url: get_required_param(params, "url")?.clone(),
             selectors: params
                 .get("selector")
                 .map(|selectors| selectors.iter().map(|s| s.to_string()).collect()),
         }),
+
+        "list_projects" => Ok(Tool::ListProjects),
 
         _ => Err(ToolError::UnknownTool(tool_name.to_string())),
     }
 }
 
 pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, ToolError> {
+    // Helper to extract required project field
+    let get_project = |p: &serde_json::Value| -> Result<String, ToolError> {
+        Ok(p["project"] // Wrap the whole expression in Ok()
+            .as_str()
+            .ok_or_else(|| ToolError::ParseError("Missing required parameter: project".into()))?
+            .to_string())
+    };
+
     match name {
         "list_projects" => Ok(Tool::ListProjects),
-        "open_project" => Ok(Tool::OpenProject {
-            name: params["name"]
-                .as_str()
-                .ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: project name".into())
-                })?
-                .to_string(),
-        }),
         "update_plan" => Ok(Tool::UpdatePlan {
             plan: params["plan"]
                 .as_str()
@@ -404,6 +375,7 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
                 .to_string(),
         }),
         "execute_command" => Ok(Tool::ExecuteCommand {
+            project: get_project(params)?,
             command_line: params["command_line"]
                 .as_str()
                 .ok_or_else(|| {
@@ -416,16 +388,19 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
                 .map(PathBuf::from),
         }),
         "search_files" => Ok(Tool::SearchFiles {
+            project: get_project(params)?,
             regex: params["regex"]
                 .as_str()
                 .ok_or_else(|| ToolError::ParseError("Missing required parameter: regex".into()))?
                 .to_string(),
         }),
         "list_files" => Ok(Tool::ListFiles {
+            project: get_project(params)?,
             paths: parse_path_array(&params["paths"], "paths")?,
             max_depth: params["max_depth"].as_u64().map(|d| d as usize),
         }),
         "read_files" => Ok(Tool::ReadFiles {
+            project: get_project(params)?,
             paths: params["paths"]
                 .as_array()
                 .ok_or_else(|| {
@@ -467,6 +442,7 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
         }),
         "replace_in_file" => {
             Ok(Tool::ReplaceInFile {
+                project: get_project(params)?,
                 path: PathBuf::from(params["path"].as_str().ok_or_else(|| {
                     ToolError::ParseError("Missing required parameter: path".into())
                 })?),
@@ -476,6 +452,7 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
             })
         }
         "write_file" => Ok(Tool::WriteFile {
+            project: get_project(params)?,
             path: PathBuf::from(
                 params["path"].as_str().ok_or_else(|| {
                     ToolError::ParseError("Missing required parameter: path".into())
@@ -491,6 +468,7 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
                 .unwrap_or(false),
         }),
         "delete_files" => Ok(Tool::DeleteFiles {
+            project: get_project(params)?,
             paths: parse_path_array(&params["paths"], "paths")?,
         }),
         "complete_task" => Ok(Tool::CompleteTask {
@@ -605,7 +583,7 @@ mod tests {
         assert_eq!(result[0].search, "// This comment will be removed");
         assert_eq!(result[0].replace, "");
     }
-    
+
     #[test]
     fn test_parse_search_replace_all_blocks() {
         let content = concat!(
@@ -622,7 +600,7 @@ mod tests {
         assert_eq!(result[0].replace, "logger.debug(");
         assert_eq!(result[0].replace_all, true);
     }
-    
+
     #[test]
     fn test_parse_mixed_search_replace_blocks() {
         let content = concat!(
