@@ -22,7 +22,6 @@ impl Tools {
     pub fn mcp() -> Vec<ToolDefinition> {
         vec![
             Self::list_projects(),
-            Self::open_project(),
             Self::execute_command(),
             Self::search_files(),
             Self::list_files(),
@@ -43,23 +42,6 @@ impl Tools {
                 "type": "object",
                 "properties": {},
                 "required": []
-            }),
-        }
-    }
-
-    pub fn open_project() -> ToolDefinition {
-        ToolDefinition {
-            name: "open_project".to_string(),
-            description: "Open a specific project".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the project to open"
-                    }
-                },
-                "required": ["name"]
             }),
         }
     }

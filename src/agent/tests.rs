@@ -540,7 +540,6 @@ impl CodeExplorer for MockExplorer {
 fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
     let tool_name = match &tool {
         Tool::ListProjects { .. } => "list_projects",
-        Tool::OpenProject { .. } => "open_project",
         Tool::UpdatePlan { .. } => "update_plan",
         Tool::SearchFiles { .. } => "search_files",
         Tool::ExecuteCommand { .. } => "execute_command",
@@ -557,9 +556,6 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
     };
     let tool_input = match &tool {
         Tool::ListProjects {} => serde_json::json!({}),
-        Tool::OpenProject { name } => serde_json::json!({
-            "name": name
-        }),
         Tool::UpdatePlan { plan } => serde_json::json!({
             "plan": plan
         }),
@@ -993,6 +989,7 @@ fn test_flexible_xml_parsing() -> Result<()> {
         "I will search for TODO comments in the code.\n",
         "\n",
         "<tool:search_files>\n",
+        "<param:project>test</param:project>\n",
         "<param:regex>TODO & FIXME <html></param:regex>\n",
         "</tool:search_files>"
     )

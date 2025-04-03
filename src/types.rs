@@ -236,8 +236,6 @@ pub enum Tool {
     UserInput,
     /// List available projects
     ListProjects,
-    /// Open a project by name
-    OpenProject { name: String },
     /// Update the plan
     UpdatePlan { plan: String },
     /// Delete one or more files
@@ -310,11 +308,6 @@ pub enum ToolResult {
     },
     ListProjects {
         projects: HashMap<String, Project>,
-    },
-    OpenProject {
-        name: String,
-        path: Option<PathBuf>,
-        error: Option<String>,
     },
     UpdatePlan {
         plan: String,
@@ -524,6 +517,7 @@ pub trait CodeExplorer: Send + Sync {
     /// Write the content of a file
     fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()>;
     fn delete_file(&self, path: &PathBuf) -> Result<()>;
+    #[allow(dead_code)]
     fn create_initial_tree(&mut self, max_depth: usize) -> Result<FileTreeEntry>;
     fn list_files(&mut self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry>;
     /// Applies FileReplacements to a file

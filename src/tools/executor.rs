@@ -34,22 +34,6 @@ impl ToolExecutor {
                 ToolResult::ListProjects { projects }
             }
 
-            Tool::OpenProject { name } => {
-                let projects = config::load_projects()?;
-                match projects.get(name) {
-                    Some(project) => ToolResult::OpenProject {
-                        name: name.clone(),
-                        path: Some(project.path.to_path_buf()),
-                        error: None,
-                    },
-                    None => ToolResult::OpenProject {
-                        name: name.clone(),
-                        path: None,
-                        error: Some("Project not found".to_string()),
-                    },
-                }
-            }
-
             Tool::UpdatePlan { plan } => ToolResult::UpdatePlan { plan: plan.clone() },
 
             Tool::Summarize { resources } => ToolResult::Summarize {
