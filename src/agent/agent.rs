@@ -1,3 +1,4 @@
+use crate::config::ProjectManager;
 use crate::llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
     StreamingChunk,
@@ -12,6 +13,7 @@ use crate::ui::{streaming::StreamProcessor, UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
 use percent_encoding;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tracing::debug;
@@ -32,7 +34,7 @@ pub struct Agent {
     llm_provider: Box<dyn LLMProvider>,
     tool_mode: ToolMode,
     agent_mode: AgentMode,
-    explorer: Box<dyn CodeExplorer>,
+    project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
     state_persistence: Box<dyn StatePersistence>,
@@ -65,7 +67,7 @@ impl Agent {
         llm_provider: Box<dyn LLMProvider>,
         tool_mode: ToolMode,
         agent_mode: AgentMode,
-        explorer: Box<dyn CodeExplorer>,
+        project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         ui: Box<dyn UserInterface>,
         state_persistence: Box<dyn StatePersistence>,
@@ -75,7 +77,7 @@ impl Agent {
             llm_provider,
             tool_mode,
             agent_mode,
-            explorer,
+            project_manager,
             ui: Arc::new(ui),
             command_executor,
             state_persistence,
@@ -273,7 +275,9 @@ impl Agent {
 
         self.ui.display(UIMessage::UserInput(task.clone())).await?;
 
-        self.working_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
+        // We no longer create a file tree at start since we don't have a default project
+        // The file tree will be created on demand when a project is opened
+        self.working_memory.file_tree = None;
 
         // For message history mode, create the initial user message
         if self.agent_mode == AgentMode::MessageHistory {
@@ -300,7 +304,7 @@ impl Agent {
 
             // Initialize working memory
             self.working_memory.current_task = state.task.clone();
-            self.working_memory.file_tree = Some(self.explorer.create_initial_tree(2)?);
+            self.working_memory.file_tree = None;
 
             // Restore action history from saved state
             self.working_memory.action_history = state.actions.clone();
@@ -340,54 +344,103 @@ impl Agent {
 
     /// Load all currently existing files and web resources into working memory based on action history
     async fn load_current_files_to_memory(&mut self) -> Result<()> {
-        // Collect all file paths that should currently exist
-        let mut existing_files = std::collections::HashSet::new();
-        let root_dir = self.explorer.root_dir();
+        // Group files by project and organize paths that should exist
+        let mut project_files: HashMap<String, (HashSet<PathBuf>, Vec<String>)> = HashMap::new();
 
         // First pass: Handle files
         for action in &self.working_memory.action_history {
-            match &action.tool {
-                Tool::WriteFile { path, .. } | Tool::ReplaceInFile { path, .. } => {
-                    // Convert relative to absolute path
-                    let abs_path = if path.is_absolute() {
-                        path.clone()
-                    } else {
-                        root_dir.join(path)
-                    };
-                    existing_files.insert(abs_path);
+            let project = match &action.tool {
+                Tool::WriteFile { project, path, .. } => {
+                    let project_entry = project_files
+                        .entry(project.clone())
+                        .or_insert_with(|| (HashSet::new(), Vec::new()));
+                    project_entry.0.insert(path.clone());
+                    Some(project)
                 }
-                Tool::ReadFiles { paths, .. } => {
+                Tool::ReplaceInFile { project, path, .. } => {
+                    let project_entry = project_files
+                        .entry(project.clone())
+                        .or_insert_with(|| (HashSet::new(), Vec::new()));
+                    project_entry.0.insert(path.clone());
+                    Some(project)
+                }
+                Tool::ReadFiles { project, paths, .. } => {
+                    let project_entry = project_files
+                        .entry(project.clone())
+                        .or_insert_with(|| (HashSet::new(), Vec::new()));
                     for path in paths {
-                        // Convert relative to absolute path
-                        let abs_path = if path.is_absolute() {
-                            path.clone()
-                        } else {
-                            root_dir.join(path)
-                        };
-                        existing_files.insert(abs_path);
+                        project_entry.0.insert(path.clone());
+                    }
+                    Some(project)
+                }
+                Tool::DeleteFiles { project, paths, .. } => {
+                    let project_entry = project_files
+                        .entry(project.clone())
+                        .or_insert_with(|| (HashSet::new(), Vec::new()));
+                    for path in paths {
+                        project_entry.0.remove(path);
+                    }
+                    Some(project)
+                }
+                _ => None,
+            };
+
+            // If this action might have errors for a specific project, record it
+            if let Some(proj) = project {
+                if let ToolResult::ReadFiles { failed_files, .. } = &action.result {
+                    if !failed_files.is_empty() {
+                        project_files.get_mut(proj).unwrap().1.push(format!(
+                            "Skipping failed files: {}",
+                            failed_files
+                                .iter()
+                                .map(|(path, _)| path.display().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
                     }
                 }
-                Tool::DeleteFiles { paths, .. } => {
-                    for path in paths {
-                        // Convert relative to absolute path
-                        let abs_path = if path.is_absolute() {
-                            path.clone()
-                        } else {
-                            root_dir.join(path)
-                        };
-                        existing_files.remove(&abs_path);
-                    }
-                }
-                _ => {}
             }
         }
 
-        // Load all existing files into working memory
-        for path in existing_files {
-            if let Ok(content) = self.explorer.read_file(&path) {
-                debug!("Loading existing file: {}", path.display());
-                self.working_memory
-                    .add_resource(path, LoadedResource::File(content));
+        // Load files for each project
+        for (project_name, (files, errors)) in project_files {
+            // Get explorer for this project
+            match self.project_manager.get_explorer_for_project(&project_name) {
+                Ok(explorer) => {
+                    let root_dir = explorer.root_dir();
+
+                    // Load files into memory
+                    for path in files {
+                        let full_path = if path.is_absolute() {
+                            path.clone()
+                        } else {
+                            root_dir.join(&path)
+                        };
+
+                        match explorer.read_file(&full_path) {
+                            Ok(content) => {
+                                debug!(
+                                    "Loading existing file from project {}: {}",
+                                    project_name,
+                                    full_path.display()
+                                );
+                                self.working_memory
+                                    .add_resource(path, LoadedResource::File(content));
+                            }
+                            Err(e) => {
+                                debug!("Error loading file {}: {}", full_path.display(), e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("Error getting explorer for project {}: {}", project_name, e);
+                }
+            }
+
+            // Add any errors to working memory
+            for error in errors {
+                debug!("Errors for project {}: {}", project_name, error);
             }
         }
 
@@ -569,7 +622,7 @@ impl Agent {
                 let mut handler = AgentToolHandler::new(&mut self.working_memory);
                 ToolExecutor::execute(
                     &mut handler,
-                    Some(&mut self.explorer),
+                    &self.project_manager,
                     &self.command_executor,
                     Some(&self.ui),
                     &action.tool,
@@ -580,7 +633,7 @@ impl Agent {
                 let mut handler = AgentChatToolHandler::new(&mut self.working_memory);
                 ToolExecutor::execute(
                     &mut handler,
-                    Some(&mut self.explorer),
+                    &self.project_manager,
                     &self.command_executor,
                     Some(&self.ui),
                     &action.tool,

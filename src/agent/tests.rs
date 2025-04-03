@@ -40,7 +40,7 @@ impl MockProjectManager {
 
         // Add a default project
         let test_project = Project {
-            path: PathBuf::from("./root")
+            path: PathBuf::from("./root"),
         };
 
         explorers.insert("test".to_string(), Box::new(create_explorer_mock()));
@@ -74,22 +74,27 @@ impl ProjectManager for MockProjectManager {
             Some(explorer) => {
                 // Clone the boxed explorer
                 let explorer_clone: Box<dyn CodeExplorer> = match &**explorer {
-                    mock_explorer if std::any::TypeId::of::<MockExplorer>() == std::any::Any::type_id(mock_explorer) => {
+                    mock_explorer
+                        if std::any::TypeId::of::<MockExplorer>()
+                            == std::any::Any::type_id(mock_explorer) =>
+                    {
                         // Erstelle eine neue Instanz mit denselben Daten
                         // Wir müssen hier vorsichtig sein, da wir nur Zugriff auf die Trait-Schnittstelle haben
                         // In echtem Code würde man besser Clone implementieren
-                        let mock_explorer = unsafe { &*(mock_explorer as *const dyn CodeExplorer as *const MockExplorer) };
+                        let mock_explorer = unsafe {
+                            &*(mock_explorer as *const dyn CodeExplorer as *const MockExplorer)
+                        };
                         Box::new(MockExplorer::new(
                             mock_explorer.files.lock().unwrap().clone(),
-                            mock_explorer.file_tree.lock().unwrap().clone()
+                            mock_explorer.file_tree.lock().unwrap().clone(),
                         ))
-                    },
+                    }
                     _ => return Err(anyhow::anyhow!("Cannot clone non-mock explorer")),
                 };
 
                 Ok(explorer_clone)
-            },
-            None => Err(anyhow::anyhow!("Explorer for project {} not found", name))
+            }
+            None => Err(anyhow::anyhow!("Explorer for project {} not found", name)),
         }
     }
 }
@@ -557,17 +562,24 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
             "plan": plan
         }),
         Tool::UserInput {} => serde_json::json!({}),
-        Tool::SearchFiles { regex } => serde_json::json!({
+        Tool::SearchFiles { project, regex } => serde_json::json!({
+            "project": project,
             "regex": regex,
         }),
         Tool::ExecuteCommand {
+            project,
             command_line,
             working_dir,
         } => serde_json::json!({
+            "project": project,
             "command_line": command_line,
             "working_dir": working_dir
         }),
-        Tool::ListFiles { project, paths, max_depth } => {
+        Tool::ListFiles {
+            project,
+            paths,
+            max_depth,
+        } => {
             let mut map = serde_json::Map::new();
             map.insert("project".to_string(), serde_json::json!(project));
             map.insert("paths".to_string(), serde_json::json!(paths));
@@ -576,7 +588,7 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
             }
             serde_json::Value::Object(map)
         }
-        Tool::ReadFiles { paths } => {
+        Tool::ReadFiles { project, paths } => {
             // For testing convenience, we convert paths with special format
             // For example, "filename.txt:10-20" should read only lines 10-20
             let paths_with_ranges: Vec<String> = paths
@@ -584,19 +596,26 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
                 .map(|p| p.to_string_lossy().to_string())
                 .collect();
             serde_json::json!({
+                "project": project,
                 "paths": paths_with_ranges
             })
         }
         Tool::WriteFile {
+            project,
             path,
             content,
             append,
         } => serde_json::json!({
+            "project": project,
             "path": path,
             "content": content,
             "append": append
         }),
-        Tool::ReplaceInFile { path, replacements } => {
+        Tool::ReplaceInFile {
+            project,
+            path,
+            replacements,
+        } => {
             // Convert replacements to the diff format
             let mut diff = String::new();
             for replacement in replacements {
@@ -607,11 +626,13 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
                 diff.push_str("\n>>>>>>> REPLACE\n\n");
             }
             serde_json::json!({
+                "project": project,
                 "path": path,
                 "diff": diff
             })
         }
-        Tool::DeleteFiles { paths } => serde_json::json!({
+        Tool::DeleteFiles { project, paths } => serde_json::json!({
+            "project": project,
             "paths": paths
         }),
         Tool::Summarize { resources } => serde_json::json!({
@@ -825,6 +846,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     // Test success case (full file)
     let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
         Tool::ReadFiles {
+            project: "test".to_string(),
             paths: vec![PathBuf::from("test.txt")],
         },
         "Reading test file (full content)",
@@ -832,11 +854,14 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
     // Obtain a reference to the mock_llm before handing ownership to the agent
     let mock_llm_ref = mock_llm.clone();
 
+    // Create a ProjectManager with our mock explorer
+    let project_manager = MockProjectManager::new();
+
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
         AgentMode::WorkingMemory,
-        Box::new(create_explorer_mock()),
+        Box::new(project_manager),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
@@ -868,6 +893,7 @@ async fn test_agent_read_files_with_line_range() -> Result<(), anyhow::Error> {
     // Test with line range (only lines 1-2)
     let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
         Tool::ReadFiles {
+            project: "test".to_string(),
             paths: vec![PathBuf::from("test.txt:1-2")],
         },
         "Reading test file (limited range)",
@@ -879,7 +905,7 @@ async fn test_agent_read_files_with_line_range() -> Result<(), anyhow::Error> {
         Box::new(mock_llm),
         ToolMode::Native,
         AgentMode::WorkingMemory,
-        Box::new(create_explorer_mock()),
+        Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
@@ -925,6 +951,7 @@ async fn test_execute_command() -> Result<()> {
 
     let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response(
         Tool::ExecuteCommand {
+            project: "test".to_string(),
             command_line: "test command".to_string(),
             working_dir: None,
         },
@@ -935,7 +962,7 @@ async fn test_execute_command() -> Result<()> {
         Box::new(mock_llm),
         ToolMode::Native,
         AgentMode::WorkingMemory,
-        Box::new(create_explorer_mock()),
+        Box::new(MockProjectManager::new()),
         Box::new(mock_command_executor),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
@@ -1000,6 +1027,7 @@ fn test_replacement_xml_parsing() -> Result<()> {
         "I will fix the code formatting.\n",
         "\n",
         "<tool:replace_in_file>\n",
+        "<param:project>test</param:project>\n",
         "<param:path>src/main.rs</param:path>\n",
         "<param:diff>\n",
         "<<<<<<< SEARCH\n",
@@ -1032,7 +1060,13 @@ fn test_replacement_xml_parsing() -> Result<()> {
     assert_eq!(actions.len(), 1);
     assert!(actions[0].reasoning.contains("fix the code formatting"));
 
-    if let Tool::ReplaceInFile { path, replacements } = &actions[0].tool {
+    if let Tool::ReplaceInFile {
+        project,
+        path,
+        replacements,
+    } = &actions[0].tool
+    {
+        assert_eq!(project, "test");
         assert_eq!(path, &PathBuf::from("src/main.rs"));
         assert_eq!(replacements.len(), 2);
         assert_eq!(
@@ -1091,6 +1125,7 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(
             Tool::ReplaceInFile {
+                project: "test".to_string(),
                 path: PathBuf::from("test.rs"),
                 replacements: vec![FileReplacement {
                     search: "function test()".to_string(), // correct
@@ -1102,6 +1137,7 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
         )),
         Ok(create_test_response(
             Tool::ReplaceInFile {
+                project: "test".to_string(),
                 path: PathBuf::from("test.rs"),
                 replacements: vec![FileReplacement {
                     search: "wrong search".to_string(), // will fail
@@ -1113,6 +1149,7 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
         )),
         Ok(create_test_response(
             Tool::ReadFiles {
+                project: "test".to_string(),
                 paths: vec![PathBuf::from("test.rs")],
             },
             "Reading test file",
@@ -1131,11 +1168,18 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
         }),
     );
 
+    // Create a ProjectManager with our mock explorer
+    let project_manager = MockProjectManager::new().with_project(
+        "test",
+        PathBuf::from("./root"),
+        Box::new(mock_explorer),
+    );
+
     let mut agent = Agent::new(
         Box::new(mock_llm),
         ToolMode::Native,
         AgentMode::WorkingMemory,
-        Box::new(mock_explorer),
+        Box::new(project_manager),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
@@ -1198,7 +1242,7 @@ async fn test_list_files_error_handling() -> Result<()> {
         Box::new(mock_llm),
         ToolMode::Native,
         AgentMode::WorkingMemory,
-        Box::new(create_explorer_mock()),
+        Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
@@ -1233,12 +1277,14 @@ async fn test_read_files_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(
             Tool::ReadFiles {
+                project: "test".to_string(),
                 paths: vec![PathBuf::from("test.txt")],
             },
             "Reading existing file",
         )),
         Ok(create_test_response(
             Tool::ReadFiles {
+                project: "test".to_string(),
                 paths: vec![PathBuf::from("nonexistent.txt")],
             },
             "Attempting to read non-existent file",
@@ -1250,7 +1296,7 @@ async fn test_read_files_error_handling() -> Result<()> {
         Box::new(mock_llm),
         ToolMode::Native,
         AgentMode::WorkingMemory,
-        Box::new(create_explorer_mock()),
+        Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
@@ -1284,6 +1330,7 @@ async fn test_write_file_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(
             Tool::WriteFile {
+                project: "test".to_string(),
                 path: PathBuf::from("test.txt"),
                 content: "valid content".to_string(),
                 append: false,
@@ -1292,6 +1339,7 @@ async fn test_write_file_error_handling() -> Result<()> {
         )),
         Ok(create_test_response(
             Tool::WriteFile {
+                project: "test".to_string(),
                 path: PathBuf::from("/invalid/path/test.txt"),
                 content: "test content".to_string(),
                 append: false,
@@ -1305,7 +1353,7 @@ async fn test_write_file_error_handling() -> Result<()> {
         Box::new(mock_llm),
         ToolMode::Native,
         AgentMode::WorkingMemory,
-        Box::new(create_explorer_mock()),
+        Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
@@ -1340,12 +1388,14 @@ async fn test_read_files_line_range_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(
             Tool::ReadFiles {
+                project: "test".to_string(),
                 paths: vec![PathBuf::from("test.txt")],
             },
             "Reading existing file with valid line range",
         )),
         Ok(create_test_response(
             Tool::ReadFiles {
+                project: "test".to_string(),
                 paths: vec![PathBuf::from("test.txt:10-20")],
             },
             "Attempting to read with invalid line range",
@@ -1357,7 +1407,7 @@ async fn test_read_files_line_range_error_handling() -> Result<()> {
         Box::new(mock_llm),
         ToolMode::Native,
         AgentMode::WorkingMemory,
-        Box::new(create_explorer_mock()),
+        Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
@@ -1393,6 +1443,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(
             Tool::ReadFiles {
+                project: "test".to_string(),
                 paths: vec![PathBuf::from("test.txt")],
             },
             "Reading file after getting unknown tool error",
@@ -1413,7 +1464,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         Box::new(mock_llm),
         ToolMode::Native,
         AgentMode::WorkingMemory,
-        Box::new(create_explorer_mock()),
+        Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
@@ -1447,6 +1498,7 @@ async fn test_parse_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(
             Tool::ReadFiles {
+                project: "test".to_string(),
                 paths: vec![PathBuf::from("test.txt")],
             },
             "Reading with correct parameters",
@@ -1470,7 +1522,7 @@ async fn test_parse_error_handling() -> Result<()> {
         Box::new(mock_llm),
         ToolMode::Native,
         AgentMode::WorkingMemory,
-        Box::new(create_explorer_mock()),
+        Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),

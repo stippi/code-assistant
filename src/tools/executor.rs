@@ -1,12 +1,12 @@
 use super::ToolResultHandler;
-use crate::config;
-use crate::types::{CodeExplorer, SearchMode, SearchOptions, Tool, ToolResult};
+use crate::config::{self, ProjectManager};
+use crate::types::{SearchMode, SearchOptions, Tool, ToolResult};
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use crate::web::{WebClient, WebPage};
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct ToolExecutor {}
 
@@ -23,7 +23,7 @@ fn check_absolute_path(path: &Path) -> Option<ToolResult> {
 impl ToolExecutor {
     pub async fn execute<H: ToolResultHandler>(
         handler: &mut H,
-        explorer: Option<&mut Box<dyn CodeExplorer>>,
+        project_manager: &Box<dyn ProjectManager>,
         command_executor: &Box<dyn CommandExecutor>,
         ui: Option<&Box<dyn UserInterface>>,
         tool: &Tool,
@@ -102,256 +102,383 @@ impl ToolExecutor {
                 }
             }
 
-            _ => {
-                let explorer = explorer.ok_or_else(|| {
-                    anyhow::anyhow!("This tool requires an active project. Use open_project first.")
-                })?;
-                match tool {
-                    Tool::ReadFiles { paths } => {
-                        // Check for absolute paths
-                        for path in paths {
-                            if let Some(error) = check_absolute_path(path) {
-                                return Ok((String::new(), error));
-                            }
-                        }
-                        let mut loaded_files = HashMap::new();
-                        let mut failed_files = Vec::new();
-
-                        // Parse the path string to extract line range information
-                        use super::parse;
-
-                        for path in paths {
-                            // Get the path string and parse it for line range information
-                            let path_str = path.to_string_lossy();
-                            let parsed_path = match parse::PathWithLineRange::parse(&path_str) {
-                                Ok(parsed) => parsed,
-                                Err(e) => {
-                                    failed_files.push((path.clone(), e.to_string()));
-                                    continue;
-                                }
-                            };
-
-                            // Join with root_dir to get full path
-                            let full_path = explorer.root_dir().join(&parsed_path.path);
-
-                            // Use either read_file_range or read_file based on whether we have line range info
-                            let read_result = if parsed_path.start_line.is_some()
-                                || parsed_path.end_line.is_some()
-                            {
-                                // We have line range information, use read_file_range
-                                explorer.read_file_range(
-                                    &full_path,
-                                    parsed_path.start_line,
-                                    parsed_path.end_line,
-                                )
-                            } else {
-                                // No line range specified, read the whole file
-                                explorer.read_file(&full_path)
-                            };
-
-                            match read_result {
-                                Ok(content) => {
-                                    loaded_files.insert(path.clone(), content);
-                                }
-                                Err(e) => {
-                                    failed_files.push((path.clone(), e.to_string()));
-                                }
-                            }
-                        }
-
-                        ToolResult::ReadFiles {
-                            loaded_files,
-                            failed_files,
-                        }
+            Tool::ReadFiles { project, paths } => {
+                // Get explorer for the specified project
+                let explorer = match project_manager.get_explorer_for_project(project) {
+                    Ok(explorer) => explorer,
+                    Err(e) => {
+                        return Ok((
+                            String::new(),
+                            ToolResult::ReadFiles {
+                                loaded_files: HashMap::new(),
+                                failed_files: vec![(
+                                    PathBuf::from("."),
+                                    format!(
+                                        "Failed to get explorer for project {}: {}",
+                                        project, e
+                                    ),
+                                )],
+                            },
+                        ));
                     }
+                };
 
-                    Tool::ListFiles {
-                        paths,
-                        max_depth,
-                        project,
-                    } => {
-                        // Check for absolute paths
-                        for path in paths {
-                            if let Some(error) = check_absolute_path(path) {
-                                return Ok((String::new(), error));
-                            }
-                        }
-                        let explorer = explorer; // Shadow with non-ref binding
-                        let mut expanded_paths = Vec::new();
-                        let mut failed_paths = Vec::new();
-
-                        for path in paths {
-                            let full_path = explorer.root_dir().join(path);
-                            match explorer.list_files(&full_path, *max_depth) {
-                                Ok(tree_entry) => {
-                                    expanded_paths.push((path.clone(), tree_entry));
-                                }
-                                Err(e) => {
-                                    failed_paths.push((path.display().to_string(), e.to_string()));
-                                }
-                            }
-                        }
-
-                        ToolResult::ListFiles {
-                            project: project.clone(),
-                            expanded_paths,
-                            failed_paths,
-                        }
+                // Check for absolute paths
+                for path in paths {
+                    if let Some(error) = check_absolute_path(path) {
+                        return Ok((String::new(), error));
                     }
+                }
+                let mut loaded_files = HashMap::new();
+                let mut failed_files = Vec::new();
 
-                    Tool::SearchFiles { regex } => {
-                        let options = SearchOptions {
-                            query: regex.clone(),
-                            case_sensitive: false,
-                            whole_words: false,
-                            mode: SearchMode::Regex,
-                            max_results: None,
+                // Parse the path string to extract line range information
+                use super::parse;
+
+                for path in paths {
+                    // Get the path string and parse it for line range information
+                    let path_str = path.to_string_lossy();
+                    let parsed_path = match parse::PathWithLineRange::parse(&path_str) {
+                        Ok(parsed) => parsed,
+                        Err(e) => {
+                            failed_files.push((path.clone(), e.to_string()));
+                            continue;
+                        }
+                    };
+
+                    // Join with root_dir to get full path
+                    let full_path = explorer.root_dir().join(&parsed_path.path);
+
+                    // Use either read_file_range or read_file based on whether we have line range info
+                    let read_result =
+                        if parsed_path.start_line.is_some() || parsed_path.end_line.is_some() {
+                            // We have line range information, use read_file_range
+                            explorer.read_file_range(
+                                &full_path,
+                                parsed_path.start_line,
+                                parsed_path.end_line,
+                            )
+                        } else {
+                            // No line range specified, read the whole file
+                            explorer.read_file(&full_path)
                         };
 
-                        let search_path = explorer.root_dir();
-
-                        match explorer.search(&search_path, options) {
-                            Ok(mut results) => {
-                                // Convert absolute paths to relative paths
-                                let root_dir = explorer.root_dir();
-                                for result in &mut results {
-                                    if let Ok(rel_path) = result.file.strip_prefix(&root_dir) {
-                                        result.file = rel_path.to_path_buf();
-                                    }
-                                }
-
-                                ToolResult::SearchFiles {
-                                    results,
-                                    regex: regex.clone(),
-                                }
-                            }
-                            Err(e) => ToolResult::SearchFiles {
-                                results: Vec::new(),
-                                regex: format!("Search failed: {}", e),
-                            },
+                    match read_result {
+                        Ok(content) => {
+                            loaded_files.insert(path.clone(), content);
+                        }
+                        Err(e) => {
+                            failed_files.push((path.clone(), e.to_string()));
                         }
                     }
+                }
 
-                    Tool::ExecuteCommand {
-                        command_line,
-                        working_dir,
-                    } => {
-                        let effective_working_dir = match working_dir {
-                            Some(dir) if dir.is_absolute() => {
-                                return Ok((
-                                    String::new(),
-                                    ToolResult::ExecuteCommand {
-                                        output:
-                                            "Working directory must be relative to project root"
-                                                .to_string(),
-                                        success: false,
-                                    },
-                                ));
-                            }
-                            Some(dir) => explorer.root_dir().join(dir),
-                            None => explorer.root_dir(),
-                        };
-
-                        match command_executor
-                            .execute(command_line, Some(&effective_working_dir))
-                            .await
-                        {
-                            Ok(output) => ToolResult::ExecuteCommand {
-                                output: output.output,
-                                success: output.success,
-                            },
-                            Err(e) => ToolResult::ExecuteCommand {
-                                output: e.to_string(),
-                                success: false,
-                            },
-                        }
-                    }
-
-                    Tool::WriteFile {
-                        path,
-                        content,
-                        append,
-                    } => {
-                        if let Some(error) = check_absolute_path(path) {
-                            return Ok((String::new(), error));
-                        }
-                        let full_path = explorer.root_dir().join(path);
-
-                        match explorer.write_file(&full_path, content, *append) {
-                            Ok(_) => ToolResult::WriteFile {
-                                path: path.clone(),
-                                content: content.clone(),
-                                error: None,
-                            },
-                            Err(e) => ToolResult::WriteFile {
-                                path: path.clone(),
-                                content: String::new(), // Empty content on error
-                                error: Some(e.to_string()),
-                            },
-                        }
-                    }
-
-                    Tool::ReplaceInFile { path, replacements } => {
-                        if let Some(error) = check_absolute_path(path) {
-                            return Ok((String::new(), error));
-                        }
-                        let full_path = explorer.root_dir().join(path);
-
-                        // Read the current content in order to return it in error case
-                        let current_content = match std::fs::read_to_string(&full_path) {
-                            Ok(content) => content,
-                            Err(_) => String::new(),
-                        };
-
-                        match explorer.apply_replacements(&full_path, replacements) {
-                            Ok(new_content) => ToolResult::ReplaceInFile {
-                                path: path.clone(),
-                                content: new_content,
-                                error: None,
-                            },
-                            Err(e) => {
-                                // Extract FileUpdaterError if present or create Other variant
-                                use crate::utils::FileUpdaterError;
-                                let error =
-                                    if let Some(file_err) = e.downcast_ref::<FileUpdaterError>() {
-                                        file_err.clone()
-                                    } else {
-                                        FileUpdaterError::Other(e.to_string())
-                                    };
-
-                                ToolResult::ReplaceInFile {
-                                    path: path.clone(),
-                                    content: current_content,
-                                    error: Some(error),
-                                }
-                            }
-                        }
-                    }
-
-                    Tool::DeleteFiles { paths } => {
-                        // Check for absolute paths
-                        for path in paths {
-                            if let Some(error) = check_absolute_path(path) {
-                                return Ok((String::new(), error));
-                            }
-                        }
-                        let mut deleted = Vec::new();
-                        let mut failed = Vec::new();
-
-                        for path in paths {
-                            let full_path = explorer.root_dir().join(path);
-                            match explorer.delete_file(&full_path) {
-                                Ok(_) => deleted.push(path.clone()),
-                                Err(e) => failed.push((path.clone(), e.to_string())),
-                            }
-                        }
-
-                        ToolResult::DeleteFiles { deleted, failed }
-                    }
-
-                    _ => unreachable!(),
+                ToolResult::ReadFiles {
+                    loaded_files,
+                    failed_files,
                 }
             }
+
+            Tool::ListFiles {
+                project,
+                paths,
+                max_depth,
+            } => {
+                // Get explorer for the specified project
+                let mut explorer = match project_manager.get_explorer_for_project(project) {
+                    Ok(explorer) => explorer,
+                    Err(e) => {
+                        return Ok((
+                            String::new(),
+                            ToolResult::ListFiles {
+                                project: project.clone(),
+                                expanded_paths: Vec::new(),
+                                failed_paths: vec![(
+                                    format!("."),
+                                    format!(
+                                        "Failed to get explorer for project {}: {}",
+                                        project, e
+                                    ),
+                                )],
+                            },
+                        ));
+                    }
+                };
+
+                // Check for absolute paths
+                for path in paths {
+                    if let Some(error) = check_absolute_path(path) {
+                        return Ok((String::new(), error));
+                    }
+                }
+
+                let mut expanded_paths = Vec::new();
+                let mut failed_paths = Vec::new();
+
+                for path in paths {
+                    let full_path = explorer.root_dir().join(path);
+                    match explorer.list_files(&full_path, *max_depth) {
+                        Ok(tree_entry) => {
+                            expanded_paths.push((path.clone(), tree_entry));
+                        }
+                        Err(e) => {
+                            failed_paths.push((path.display().to_string(), e.to_string()));
+                        }
+                    }
+                }
+
+                ToolResult::ListFiles {
+                    project: project.clone(),
+                    expanded_paths,
+                    failed_paths,
+                }
+            }
+
+            Tool::SearchFiles { project, regex } => {
+                // Get explorer for the specified project
+                let explorer = match project_manager.get_explorer_for_project(project) {
+                    Ok(explorer) => explorer,
+                    Err(e) => {
+                        return Ok((
+                            String::new(),
+                            ToolResult::SearchFiles {
+                                results: Vec::new(),
+                                regex: format!(
+                                    "Failed to get explorer for project {}: {}",
+                                    project, e
+                                ),
+                            },
+                        ));
+                    }
+                };
+
+                let options = SearchOptions {
+                    query: regex.clone(),
+                    case_sensitive: false,
+                    whole_words: false,
+                    mode: SearchMode::Regex,
+                    max_results: None,
+                };
+
+                let search_path = explorer.root_dir();
+
+                match explorer.search(&search_path, options) {
+                    Ok(mut results) => {
+                        // Convert absolute paths to relative paths
+                        let root_dir = explorer.root_dir();
+                        for result in &mut results {
+                            if let Ok(rel_path) = result.file.strip_prefix(&root_dir) {
+                                result.file = rel_path.to_path_buf();
+                            }
+                        }
+
+                        ToolResult::SearchFiles {
+                            results,
+                            regex: regex.clone(),
+                        }
+                    }
+                    Err(e) => ToolResult::SearchFiles {
+                        results: Vec::new(),
+                        regex: format!("Search failed: {}", e),
+                    },
+                }
+            }
+
+            Tool::ExecuteCommand {
+                project,
+                command_line,
+                working_dir,
+            } => {
+                // Get explorer for the specified project
+                let explorer = match project_manager.get_explorer_for_project(project) {
+                    Ok(explorer) => explorer,
+                    Err(e) => {
+                        return Ok((
+                            String::new(),
+                            ToolResult::ExecuteCommand {
+                                output: format!(
+                                    "Failed to get explorer for project {}: {}",
+                                    project, e
+                                ),
+                                success: false,
+                            },
+                        ));
+                    }
+                };
+
+                let effective_working_dir = match working_dir {
+                    Some(dir) if dir.is_absolute() => {
+                        return Ok((
+                            String::new(),
+                            ToolResult::ExecuteCommand {
+                                output: "Working directory must be relative to project root"
+                                    .to_string(),
+                                success: false,
+                            },
+                        ));
+                    }
+                    Some(dir) => explorer.root_dir().join(dir),
+                    None => explorer.root_dir(),
+                };
+
+                match command_executor
+                    .execute(command_line, Some(&effective_working_dir))
+                    .await
+                {
+                    Ok(output) => ToolResult::ExecuteCommand {
+                        output: output.output,
+                        success: output.success,
+                    },
+                    Err(e) => ToolResult::ExecuteCommand {
+                        output: e.to_string(),
+                        success: false,
+                    },
+                }
+            }
+
+            Tool::WriteFile {
+                project,
+                path,
+                content,
+                append,
+            } => {
+                // Get explorer for the specified project
+                let explorer = match project_manager.get_explorer_for_project(project) {
+                    Ok(explorer) => explorer,
+                    Err(e) => {
+                        return Ok((
+                            String::new(),
+                            ToolResult::WriteFile {
+                                path: path.clone(),
+                                content: String::new(),
+                                error: Some(format!(
+                                    "Failed to get explorer for project {}: {}",
+                                    project, e
+                                )),
+                            },
+                        ));
+                    }
+                };
+
+                if let Some(error) = check_absolute_path(path) {
+                    return Ok((String::new(), error));
+                }
+                let full_path = explorer.root_dir().join(path);
+
+                match explorer.write_file(&full_path, content, *append) {
+                    Ok(_) => ToolResult::WriteFile {
+                        path: path.clone(),
+                        content: content.clone(),
+                        error: None,
+                    },
+                    Err(e) => ToolResult::WriteFile {
+                        path: path.clone(),
+                        content: String::new(), // Empty content on error
+                        error: Some(e.to_string()),
+                    },
+                }
+            }
+
+            Tool::ReplaceInFile {
+                project,
+                path,
+                replacements,
+            } => {
+                // Get explorer for the specified project
+                let explorer = match project_manager.get_explorer_for_project(project) {
+                    Ok(explorer) => explorer,
+                    Err(e) => {
+                        return Ok((
+                            String::new(),
+                            ToolResult::ReplaceInFile {
+                                path: path.clone(),
+                                content: String::new(),
+                                error: Some(crate::utils::FileUpdaterError::Other(format!(
+                                    "Failed to get explorer for project {}: {}",
+                                    project, e
+                                ))),
+                            },
+                        ));
+                    }
+                };
+
+                if let Some(error) = check_absolute_path(path) {
+                    return Ok((String::new(), error));
+                }
+                let full_path = explorer.root_dir().join(path);
+
+                // Read the current content in order to return it in error case
+                let current_content = match std::fs::read_to_string(&full_path) {
+                    Ok(content) => content,
+                    Err(_) => String::new(),
+                };
+
+                match explorer.apply_replacements(&full_path, replacements) {
+                    Ok(new_content) => ToolResult::ReplaceInFile {
+                        path: path.clone(),
+                        content: new_content,
+                        error: None,
+                    },
+                    Err(e) => {
+                        // Extract FileUpdaterError if present or create Other variant
+                        use crate::utils::FileUpdaterError;
+                        let error = if let Some(file_err) = e.downcast_ref::<FileUpdaterError>() {
+                            file_err.clone()
+                        } else {
+                            FileUpdaterError::Other(e.to_string())
+                        };
+
+                        ToolResult::ReplaceInFile {
+                            path: path.clone(),
+                            content: current_content,
+                            error: Some(error),
+                        }
+                    }
+                }
+            }
+
+            Tool::DeleteFiles { project, paths } => {
+                // Get explorer for the specified project
+                let explorer = match project_manager.get_explorer_for_project(project) {
+                    Ok(explorer) => explorer,
+                    Err(e) => {
+                        return Ok((
+                            String::new(),
+                            ToolResult::DeleteFiles {
+                                deleted: Vec::new(),
+                                failed: vec![(
+                                    PathBuf::from("."),
+                                    format!(
+                                        "Failed to get explorer for project {}: {}",
+                                        project, e
+                                    ),
+                                )],
+                            },
+                        ));
+                    }
+                };
+
+                // Check for absolute paths
+                for path in paths {
+                    if let Some(error) = check_absolute_path(path) {
+                        return Ok((String::new(), error));
+                    }
+                }
+                let mut deleted = Vec::new();
+                let mut failed = Vec::new();
+
+                for path in paths {
+                    let full_path = explorer.root_dir().join(path);
+                    match explorer.delete_file(&full_path) {
+                        Ok(_) => deleted.push(path.clone()),
+                        Err(e) => failed.push((path.clone(), e.to_string())),
+                    }
+                }
+
+                ToolResult::DeleteFiles { deleted, failed }
+            }
+
+            _ => unreachable!(),
         };
 
         // Let the handler process the result and get formatted output
