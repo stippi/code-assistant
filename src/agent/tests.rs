@@ -29,13 +29,13 @@ impl Usage {
 // Mock ProjectManager for tests
 #[derive(Default)]
 struct MockProjectManager {
-    explorers: HashMap<String, Box<dyn CodeExplorer>>,
+    explorers: HashMap<String, MockExplorer>,
     projects: HashMap<String, Project>,
 }
 
 impl MockProjectManager {
     fn new() -> Self {
-        let mut explorers: HashMap<String, Box<dyn CodeExplorer>> = HashMap::new();
+        let mut explorers: HashMap<String, MockExplorer> = HashMap::new();
         let mut projects = HashMap::new();
 
         // Add a default project
@@ -43,8 +43,8 @@ impl MockProjectManager {
             path: PathBuf::from("./root"),
         };
 
-        // Create mock explorer and explicitly coerce it to Box<dyn CodeExplorer>
-        let explorer: Box<dyn CodeExplorer> = Box::new(create_explorer_mock());
+        // Create mock explorer
+        let explorer = create_explorer_mock();
         explorers.insert("test".to_string(), explorer);
         projects.insert("test".to_string(), test_project);
 
@@ -55,7 +55,7 @@ impl MockProjectManager {
     }
 
     // Helper to add a custom project and explorer
-    fn with_project(mut self, name: &str, path: PathBuf, explorer: Box<dyn CodeExplorer>) -> Self {
+    fn with_project(mut self, name: &str, path: PathBuf, explorer: MockExplorer) -> Self {
         self.projects.insert(name.to_string(), Project { path });
         self.explorers.insert(name.to_string(), explorer);
         self
@@ -73,29 +73,7 @@ impl ProjectManager for MockProjectManager {
 
     fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn CodeExplorer>> {
         match self.explorers.get(name) {
-            Some(explorer) => {
-                // Clone the boxed explorer
-                let explorer_clone: Box<dyn CodeExplorer> = match &**explorer {
-                    mock_explorer
-                        if std::any::TypeId::of::<MockExplorer>()
-                            == std::any::Any::type_id(mock_explorer) =>
-                    {
-                        // Erstelle eine neue Instanz mit denselben Daten
-                        // Wir müssen hier vorsichtig sein, da wir nur Zugriff auf die Trait-Schnittstelle haben
-                        // In echtem Code würde man besser Clone implementieren
-                        let mock_explorer = unsafe {
-                            &*(mock_explorer as *const dyn CodeExplorer as *const MockExplorer)
-                        };
-                        Box::new(MockExplorer::new(
-                            mock_explorer.files.lock().unwrap().clone(),
-                            mock_explorer.file_tree.lock().unwrap().clone(),
-                        ))
-                    }
-                    _ => return Err(anyhow::anyhow!("Cannot clone non-mock explorer")),
-                };
-
-                Ok(explorer_clone)
-            }
+            Some(explorer) => Ok(Box::new(explorer.clone())),
             None => Err(anyhow::anyhow!("Explorer for project {} not found", name)),
         }
     }
@@ -298,7 +276,7 @@ impl UserInterface for MockUI {
 }
 
 // Mock Explorer
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct MockExplorer {
     files: Arc<Mutex<HashMap<PathBuf, String>>>,
     file_tree: Arc<Mutex<Option<FileTreeEntry>>>,
@@ -1165,11 +1143,8 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
     );
 
     // Create a ProjectManager with our mock explorer
-    let project_manager = MockProjectManager::new().with_project(
-        "test",
-        PathBuf::from("./root"),
-        Box::new(mock_explorer),
-    );
+    let project_manager =
+        MockProjectManager::new().with_project("test", PathBuf::from("./root"), mock_explorer);
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
