@@ -35,23 +35,12 @@ struct MockProjectManager {
 
 impl MockProjectManager {
     fn new() -> Self {
-        let mut explorers: HashMap<String, MockExplorer> = HashMap::new();
-        let mut projects = HashMap::new();
-
-        // Add a default project
-        let test_project = Project {
-            path: PathBuf::from("./root"),
+        let empty = Self {
+            explorers: HashMap::new(),
+            projects: HashMap::new(),
         };
-
-        // Create mock explorer
-        let explorer = create_explorer_mock();
-        explorers.insert("test".to_string(), explorer);
-        projects.insert("test".to_string(), test_project);
-
-        Self {
-            explorers,
-            projects,
-        }
+        // Add default project
+        empty.with_project("test", PathBuf::from("./root"), create_explorer_mock())
     }
 
     // Helper to add a custom project and explorer
