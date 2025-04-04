@@ -1,6 +1,5 @@
-use crate::explorer::Explorer;
 use crate::tools::ToolResultHandler;
-use crate::types::{CodeExplorer, FileTreeEntry, LoadedResource, ToolResult, WorkingMemory};
+use crate::types::{FileTreeEntry, LoadedResource, ToolResult, WorkingMemory};
 use crate::PathBuf;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -8,26 +7,6 @@ use async_trait::async_trait;
 // Helper functions to avoid duplicated code
 fn format_output_for_result(result: &ToolResult) -> Result<String> {
     match result {
-        ToolResult::OpenProject { path, name, .. } => {
-            if let Some(project_path) = path {
-                // Create a temporary Explorer to list the root folder
-                let mut explorer = Explorer::new(project_path.clone());
-                match explorer.create_initial_tree(1) {
-                    Ok(tree) => {
-                        // Use the listing as part of the result
-                        let mut output = format!("Successfully opened project '{}'\n\n", name);
-                        output.push_str(&tree.to_string());
-                        Ok(output)
-                    }
-                    Err(_) => {
-                        // Return the standard message when listing fails
-                        Ok(result.format_message())
-                    }
-                }
-            } else {
-                Ok(result.format_message())
-            }
-        }
         ToolResult::ListFiles { expanded_paths, .. } => {
             let mut output = String::new();
             for (path, entry) in expanded_paths {
@@ -103,7 +82,24 @@ fn update_working_memory(working_memory: &mut WorkingMemory, result: &ToolResult
                 working_memory.plan = plan.clone();
             }
 
-            ToolResult::ListFiles { expanded_paths, .. } => {
+            ToolResult::ListFiles {
+                project,
+                expanded_paths,
+                ..
+            } => {
+                // Store expanded directories for this project
+                let project_paths = working_memory
+                    .expanded_directories
+                    .entry(project.clone())
+                    .or_insert_with(Vec::new);
+
+                // Add all paths that were listed for this project
+                for (path, _) in expanded_paths {
+                    if !project_paths.contains(path) {
+                        project_paths.push(path.clone());
+                    }
+                }
+
                 // Update working memory file tree with each entry
                 if let Some(file_tree) = &mut working_memory.file_tree {
                     for (path, entry) in expanded_paths {

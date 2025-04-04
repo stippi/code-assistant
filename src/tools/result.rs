@@ -15,17 +15,6 @@ impl ToolResult {
                     msg
                 }
             }
-            ToolResult::OpenProject { name, error, .. } => {
-                if error.is_none() {
-                    format!("Successfully opened project '{}'", name)
-                } else {
-                    format!(
-                        "Failed to open project '{}': {}",
-                        name,
-                        error.as_ref().unwrap_or(&"unknown error".to_string())
-                    )
-                }
-            }
             ToolResult::UpdatePlan { .. } => {
                 format!("Plan successfully updated")
             }
@@ -207,7 +196,6 @@ impl ToolResult {
 
     pub fn is_success(&self) -> bool {
         match self {
-            ToolResult::OpenProject { error, .. } => error.is_none(),
             ToolResult::AbsolutePathError { .. } => false,
             ToolResult::ReadFiles {
                 loaded_files,

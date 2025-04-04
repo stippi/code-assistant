@@ -89,6 +89,8 @@ pub struct WorkingMemory {
     pub summaries: HashMap<PathBuf, String>,
     /// Complete file tree of the repository
     pub file_tree: Option<FileTreeEntry>,
+    /// Expanded directories per project
+    pub expanded_directories: HashMap<String, Vec<PathBuf>>,
 }
 
 impl std::fmt::Display for LoadedResource {
@@ -234,23 +236,29 @@ pub enum Tool {
     UserInput,
     /// List available projects
     ListProjects,
-    /// Open a project by name
-    OpenProject { name: String },
     /// Update the plan
     UpdatePlan { plan: String },
     /// Delete one or more files
-    DeleteFiles { paths: Vec<PathBuf> },
+    DeleteFiles {
+        project: String,
+        paths: Vec<PathBuf>,
+    },
     /// List contents of directories
     ListFiles {
+        project: String,
         paths: Vec<PathBuf>,
         // Optional depth limit, None means unlimited
         max_depth: Option<usize>,
     },
     /// Read content of one or multiple files into working memory
     /// Supports line range syntax in paths like 'file.txt:10-20' to read lines 10-20
-    ReadFiles { paths: Vec<PathBuf> },
+    ReadFiles {
+        project: String,
+        paths: Vec<PathBuf>,
+    },
     /// Write content to a file
     WriteFile {
+        project: String,
         path: PathBuf,
         content: String,
         append: bool,
@@ -258,6 +266,7 @@ pub enum Tool {
     /// Replace parts within a file. Each search text must match exactly once.
     /// Returns an error if any search text matches zero or multiple times.
     ReplaceInFile {
+        project: String,
         path: PathBuf,
         replacements: Vec<FileReplacement>,
     },
@@ -267,6 +276,7 @@ pub enum Tool {
     CompleteTask { message: String },
     /// Execute a CLI command
     ExecuteCommand {
+        project: String,
         /// The complete command line to execute
         command_line: String,
         /// Optional working directory for the command
@@ -274,6 +284,7 @@ pub enum Tool {
     },
     /// Search for text in files
     SearchFiles {
+        project: String,
         /// The text to search for in regex syntax
         regex: String,
     },
@@ -298,11 +309,6 @@ pub enum ToolResult {
     ListProjects {
         projects: HashMap<String, Project>,
     },
-    OpenProject {
-        name: String,
-        path: Option<PathBuf>,
-        error: Option<String>,
-    },
     UpdatePlan {
         plan: String,
     },
@@ -314,6 +320,7 @@ pub enum ToolResult {
         failed_files: Vec<(PathBuf, String)>,
     },
     ListFiles {
+        project: String,
         expanded_paths: Vec<(PathBuf, FileTreeEntry)>,
         failed_paths: Vec<(String, String)>,
     },
@@ -510,6 +517,7 @@ pub trait CodeExplorer: Send + Sync {
     /// Write the content of a file
     fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()>;
     fn delete_file(&self, path: &PathBuf) -> Result<()>;
+    #[allow(dead_code)]
     fn create_initial_tree(&mut self, max_depth: usize) -> Result<FileTreeEntry>;
     fn list_files(&mut self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry>;
     /// Applies FileReplacements to a file
