@@ -74,7 +74,7 @@ impl ProjectManager for MockProjectManager {
     fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn CodeExplorer>> {
         match self.explorers.get(name) {
             Some(explorer) => Ok(Box::new(explorer.clone())),
-            None => Err(anyhow::anyhow!("Explorer for project {} not found", name)),
+            None => Err(anyhow::anyhow!("Project {} not found", name)),
         }
     }
 }
