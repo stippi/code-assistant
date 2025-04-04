@@ -475,10 +475,12 @@ impl StreamProcessor {
 
         // Check if the text could be the start of any tag
         for prefix in &TAG_PREFIXES {
-            // Loop through all possible partial matches
-            for i in 1..=prefix.len().min(text.len()) {
-                // Check if the end of text matches the beginning of a tag prefix
-                if &text[text.len() - i..] == &prefix[..i] {
+            let text_chars: Vec<char> = text.chars().collect(); // Convert text to Vec<char>
+            let prefix_chars: Vec<char> = prefix.chars().collect(); // Convert prefix to Vec<char>
+                                                                    // Loop through all possible partial matches
+            for i in 1..=prefix_chars.len().min(text_chars.len()) {
+                // Check if the last `i` characters of text match the first `i` characters of prefix
+                if text_chars[text_chars.len() - i..] == prefix_chars[..i] {
                     return true;
                 }
             }
