@@ -1,24 +1,19 @@
 use crate::explorer::Explorer;
 use crate::types::{CodeExplorer, Project};
 use anyhow::Result;
-use confy;
 use dirs;
-use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
-use std::env;
 use std::path::PathBuf;
 
-// Set XDG_CONFIG_HOME if you want configs in ~/.config
-// This is optional but recommended if you want more accessible config location
-
-// Default config file name
-const APP_NAME: &str = "code-assistant";
-const CONFIG_NAME: &str = "projects";
-
-/// Project configuration stored on disk
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct ProjectsConfig {
-    projects: HashMap<String, Project>,
+/// Get the path to the configuration file
+pub fn get_config_path() -> Result<PathBuf> {
+    // Use ~/.config instead of ~/.code-assistant
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    let config_dir = home.join(".config").join("code-assistant");
+    std::fs::create_dir_all(&config_dir)?; // Ensure directory exists
+    Ok(config_dir.join("projects.json"))
 }
 
 // The main trait for project management
@@ -52,21 +47,12 @@ impl ProjectManager for DefaultProjectManager {
 
 /// Load projects configuration from disk
 pub fn load_projects() -> Result<HashMap<String, Project>> {
-    // Set XDG_CONFIG_HOME to ~/.config if not already set
-    if env::var("XDG_CONFIG_HOME").is_err() {
-        if let Some(home) = dirs::home_dir() {
-            let config_dir = home.join(".config");
-            env::set_var("XDG_CONFIG_HOME", config_dir);
-        }
+    let config_path = get_config_path()?;
+
+    if !config_path.exists() {
+        return Ok(HashMap::new());
     }
 
-    // Configure to use JSON instead of the default TOML
-    let cfg = confy::Config::builder()
-        .with_format(confy::Format::Json)
-        .build();
-
-    let config: ProjectsConfig =
-        confy::load_with_config(APP_NAME, CONFIG_NAME, cfg).unwrap_or_default();
-
-    Ok(config.projects)
+    let content = std::fs::read_to_string(config_path)?;
+    Ok(serde_json::from_str(&content)?)
 }

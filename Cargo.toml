@@ -9,7 +9,6 @@ ignore = "0.4"
 walkdir = "2.5"
 tokio = { version = "1.44", features = ["full"] }
 tempfile = "3.18"
-confy = "0.6.1"
 
 # Terminal UI
 rustyline = "12.0.0"
