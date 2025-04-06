@@ -2,9 +2,14 @@ use crate::explorer::Explorer;
 use crate::types::{CodeExplorer, Project};
 use anyhow::Result;
 use confy;
+use dirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
+
+// Set XDG_CONFIG_HOME if you want configs in ~/.config
+// This is optional but recommended if you want more accessible config location
 
 // Default config file name
 const APP_NAME: &str = "code-assistant";
@@ -47,6 +52,16 @@ impl ProjectManager for DefaultProjectManager {
 
 /// Load projects configuration from disk
 pub fn load_projects() -> Result<HashMap<String, Project>> {
+    // Set XDG_CONFIG_HOME to ~/.config if not already set
+    if env::var("XDG_CONFIG_HOME").is_err() {
+        if let Some(home) = dirs::home_dir() {
+            let config_dir = home.join(".config");
+            env::set_var("XDG_CONFIG_HOME", config_dir);
+        }
+    }
+
+    // With confy 0.6.1, we can't specify JSON format directly
+    // Try to load from confy's default location first
     let config: ProjectsConfig = confy::load(APP_NAME, CONFIG_NAME).unwrap_or_default();
 
     // Convert PathBuf to Project objects
@@ -57,18 +72,4 @@ pub fn load_projects() -> Result<HashMap<String, Project>> {
         .collect();
 
     Ok(projects)
-}
-
-/// Save projects configuration to disk
-#[allow(dead_code)]
-pub fn save_projects(projects: &HashMap<String, Project>) -> Result<()> {
-    let config = ProjectsConfig {
-        projects: projects
-            .iter()
-            .map(|(name, project)| (name.clone(), project.path.clone()))
-            .collect(),
-    };
-
-    confy::store(APP_NAME, CONFIG_NAME, &config)?;
-    Ok(())
 }
