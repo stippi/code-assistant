@@ -8,7 +8,6 @@ use std::path::PathBuf;
 
 /// Get the path to the configuration file
 pub fn get_config_path() -> Result<PathBuf> {
-    // Use ~/.config instead of ~/.code-assistant
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
     let config_dir = home.join(".config").join("code-assistant");
