@@ -18,7 +18,7 @@ const CONFIG_NAME: &str = "projects";
 /// Project configuration stored on disk
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct ProjectsConfig {
-    projects: HashMap<String, PathBuf>,
+    projects: HashMap<String, Project>,
 }
 
 // The main trait for project management
@@ -60,16 +60,13 @@ pub fn load_projects() -> Result<HashMap<String, Project>> {
         }
     }
 
-    // With confy 0.6.1, we can't specify JSON format directly
-    // Try to load from confy's default location first
-    let config: ProjectsConfig = confy::load(APP_NAME, CONFIG_NAME).unwrap_or_default();
+    // Configure to use JSON instead of the default TOML
+    let cfg = confy::Config::builder()
+        .with_format(confy::Format::Json)
+        .build();
 
-    // Convert PathBuf to Project objects
-    let projects = config
-        .projects
-        .into_iter()
-        .map(|(name, path)| (name, Project { path }))
-        .collect();
+    let config: ProjectsConfig =
+        confy::load_with_config(APP_NAME, CONFIG_NAME, cfg).unwrap_or_default();
 
-    Ok(projects)
+    Ok(config.projects)
 }
