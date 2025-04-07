@@ -44,22 +44,26 @@ Always adhere to this format for the tool use to ensure proper parsing and execu
 # Tools
 
 ## execute_command
-Description: Request to execute a CLI command on the system. Use this when you need to perform system operations or run specific commands to accomplish any step in the user's task. You must tailor your command to the user's system and provide a clear explanation of what the command does. Prefer to execute complex CLI commands over creating executable scripts, as they are more flexible and easier to run. Commands will be executed in the project root directory.
+Description: Execute a command line within a specified project.
 Parameters:
-- command_line: (required) The CLI command to execute. This should be valid for the current operating system. Ensure the command is properly formatted and does not contain any harmful instructions.
-- working_dir: (optional) The working directory where to execute the command. Must be relative to the project root.
+- project: (required) Name of the project context for the command
+- command_line: (required) The complete command line to execute. This should be valid for the current operating system.
+- working_dir: (optional) Working directory for the command (relative to project root)
 Usage:
 <tool:execute_command>
+<param:project>project-name</param:project>
 <param:command_line>Your command here</param:command_line>
 <param:working_dir>Working directory here (optional)</param:working_dir>
 </tool:execute_command>
 
 ## read_files
-Description: Request to read the contents of one or more files at the specified paths. Use this when you need to examine the contents of existing files you do not know the contents of, for example to analyze code, review text files, or extract information from configuration files. Automatically extracts raw text from PDF and DOCX files. May not be suitable for other types of binary files, as it returns the raw content as a string.
+Description: Load files into working memory. You can specify line ranges by appending them to the file path using a colon.
 Parameters:
-- path: (required) The path of the file to read (relative to the project root directory)
+- project: (required) Name of the project containing the files
+- paths: (required) Paths to the files relative to the project root directory. Can include line ranges using 'file.txt:10-20' syntax.
 Usage:
 <tool:read_files>
+<param:project>project-name</param:project>
 <param:path>File path here</param:path>
 <param:path>Another file path here</param:path>
 </tool:read_files>
@@ -67,11 +71,13 @@ Usage:
 ## write_file
 Description: Creates or overwrites a file. Use for new files or when updating most content of a file. For smaller updates, prefer to use replace_in_file. ALWAYS provide the contents of the COMPLETE file, especially when overwriting existing files!! If the file to write is large, write it in chunks making use of the 'append' parameter. Always end your turn after using this tool! This avoids hitting an output token limit when replying.
 Parameters:
-- path: (required) The path of the file to write to (relative to the project root directory)
-- content: (required) The content to write to the file. ALWAYS provide the COMPLETE intended content of the file, without any truncation or omissions. You MUST include ALL parts of the file, even if they haven't been modified.
-- append: (optional) Whether to append to the file in case it already exists. Useful when writing a file in multiple turns. Default is false.
+- project: (required) Name of the project context
+- path: (required) Path to create or overwrite (relative to project root)
+- content: (required) Content to write (make sure it's the complete file)
+- append: (optional) Whether to append to the file. Default is false.
 Usage:
 <tool:write_file>
+<param:project>project-name</param:project>
 <param:path>File path here</param:path>
 <param:content>
 Your file content here
@@ -80,9 +86,10 @@ Your file content here
 </tool:write_file>
 
 ## replace_in_file
-Description: Request to replace sections of content in an existing file using SEARCH/REPLACE blocks that define exact changes to specific parts of the file. This tool should be used when you need to make targeted changes to specific parts of a file.
+Description: Replace sections in a file within a specified project using search/replace blocks. By default, each search text must match exactly once in the file, but you can use SEARCH_ALL/REPLACE_ALL blocks to replace all occurrences of a pattern.
 Parameters:
-- path: (required) The path of the file to modify (relative to the project root directory)
+- project: (required) Name of the project containing the file
+- path: (required) Path to the file to modify (relative to project root)
 - diff: (required) One or more SEARCH/REPLACE or SEARCH_ALL/REPLACE_ALL blocks following these formats:
   ```
   <<<<<<< SEARCH
@@ -122,6 +129,7 @@ Parameters:
      * To delete code: Use empty REPLACE section
 Usage:
 <tool:replace_in_file>
+<param:project>project-name</param:project>
 <param:path>File path here</param:path>
 <param:diff>
 Search and replace blocks here
@@ -129,43 +137,52 @@ Search and replace blocks here
 </tool:replace_in_file>
 
 ## summarize
-Description: Summarize loaded resource contents to free up working memory.
+Description: Summarize a loaded resource to free up working memory.
 Parameters:
-- resource: (required, multiple) Each resource parameter contains a path and summary separated by ':'. Use the path as seen in the loaded resources section.
+- project: (required) Name of the project containing the resource
+- path: (required) Path to the resource to summarize (relative to project root)
+- summary: (required) Your concise summary of the resource contents
 Usage:
 <tool:summarize>
-<param:resource>path/to/file1.rs:A summary of file1</param:resource>
-<param:resource>web/page/url:Relevant content only of a web page</param:resource>
+<param:project>my-project</param:project>
+<param:path>path/to/file1.rs</param:path>
+<param:summary>A summary of file1 that captures its key purpose and structure</param:summary>
 </tool:summarize>
 
 ## search_files
-Description: Search for text in files using regex in Rust syntax. This tool searches for specific content across multiple files, displaying each match with context.
+Description: Search for text in files within a specified project using regex in Rust syntax. This tool searches for specific content across multiple files, displaying each match with context.
 Parameters:
+- project: (required) Name of the project to search within
 - regex: (required) The regex pattern to search for. Supports Rust regex syntax including character classes, quantifiers, etc.
 
 Usage:
 <tool:search_files>
+<param:project>project-name</param:project>
 <param:regex>Your regex pattern here</param:regex>
 </tool:search_files>
 
 ## list_files
-Description: Request to list files and directories within the specified directory. If recursive is true, it will list all files and directories recursively. If recursive is false or not provided, it will only list the top-level contents. Do not use this tool to confirm the existence of files you may have created, as the user will let you know if the files were created successfully or not.
+Description: List files in directories within a specified project.
 Parameters:
-- path: (required) The path of the directory to list contents for (relative to the project root directory)
-- max_depth: (optional) How many sub-levels should be opened automatically.
+- project: (required) Name of the project context
+- paths: (required) Directory paths relative to project root
+- max_depth: (optional) Maximum directory depth
 Usage:
 <tool:list_files>
+<param:project>project-name</param:project>
 <param:path>Directory path here</param:path>
 <param:path>Another directory path here</param:path>
 <param:max_depth>level (optional)</param:max_depth>
 </tool:list_files>
 
 ## delete_files
-Description: Request to delete one or more files at the specified paths. Use this when you need to delete files you no longer need. Will also remove the contents of the files from the working memory. Use only after you really do not need the files anymore.
+Description: Delete files from a specified project. This operation cannot be undone! Will also remove the contents of the files from the working memory.
 Parameters:
-- path: (required) The path of the file to delete (relative to the project root directory)
+- project: (required) Name of the project containing the files
+- paths: (required) Paths to the files relative to the project root directory
 Usage:
 <tool:delete_files>
+<param:project>project-name</param:project>
 <param:path>File path here</param:path>
 <param:path>Another file path here</param:path>
 </tool:delete_files>
@@ -210,12 +227,14 @@ Your final result description here
 ## Example 1: Requesting to execute a command
 
 <tool:execute_command>
+<param:project>my-project</param:project>
 <param:command_line>npm run dev</param:command_line>
 </tool:execute_command>
 
 ## Example 2: Requesting to create a new file
 
 <tool:write_file>
+<param:project>my-project</param:project>
 <param:path>src/frontend-config.json</param:path>
 <param:content>
 {
@@ -238,6 +257,7 @@ Your final result description here
 ## Example 3: Requesting to make targeted edits to a file
 
 <tool:replace_in_file>
+<param:project>my-project</param:project>
 <param:path>src/components/App.tsx</param:path>
 <param:diff>
 <<<<<<< SEARCH

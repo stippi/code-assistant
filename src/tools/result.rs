@@ -15,17 +15,6 @@ impl ToolResult {
                     msg
                 }
             }
-            ToolResult::OpenProject { name, error, .. } => {
-                if error.is_none() {
-                    format!("Successfully opened project '{}'", name)
-                } else {
-                    format!(
-                        "Failed to open project '{}': {}",
-                        name,
-                        error.as_ref().unwrap_or(&"unknown error".to_string())
-                    )
-                }
-            }
             ToolResult::UpdatePlan { .. } => {
                 format!("Plan successfully updated")
             }
@@ -35,6 +24,7 @@ impl ToolResult {
             ToolResult::ReadFiles {
                 loaded_files,
                 failed_files,
+                ..
             } => {
                 let mut msg = String::new();
                 if !loaded_files.is_empty() {
@@ -93,7 +83,7 @@ impl ToolResult {
                 }
                 msg
             }
-            ToolResult::SearchFiles { results, regex } => {
+            ToolResult::SearchFiles { results, regex, .. } => {
                 if results.is_empty() {
                     format!("No matches found for '{}'", regex)
                 } else {
@@ -118,7 +108,9 @@ impl ToolResult {
                     msg
                 }
             }
-            ToolResult::ExecuteCommand { output, success } => {
+            ToolResult::ExecuteCommand {
+                output, success, ..
+            } => {
                 if !success {
                     format!("Command failed:\n{}", output)
                 } else {
@@ -147,7 +139,9 @@ impl ToolResult {
                     format!("Successfully replaced in file: {}", path.display())
                 }
             }
-            ToolResult::DeleteFiles { deleted, failed } => {
+            ToolResult::DeleteFiles {
+                deleted, failed, ..
+            } => {
                 let mut msg = String::new();
                 if !deleted.is_empty() {
                     msg.push_str(&format!(
@@ -174,8 +168,8 @@ impl ToolResult {
                 }
                 msg
             }
-            ToolResult::Summarize { resources } => {
-                format!("Created summaries for {} resources", resources.len())
+            ToolResult::Summarize { project, path, .. } => {
+                format!("Created summary for [{}] {}", project, path.display())
             }
             ToolResult::UserInput { message } => message.clone(),
             ToolResult::CompleteTask { result } => result.clone(),
@@ -207,11 +201,11 @@ impl ToolResult {
 
     pub fn is_success(&self) -> bool {
         match self {
-            ToolResult::OpenProject { error, .. } => error.is_none(),
             ToolResult::AbsolutePathError { .. } => false,
             ToolResult::ReadFiles {
                 loaded_files,
                 failed_files,
+                ..
             } => !loaded_files.is_empty() && failed_files.is_empty(),
             ToolResult::ListFiles {
                 expanded_paths,

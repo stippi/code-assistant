@@ -37,8 +37,8 @@ This means it can be added as a plugin to MCP client applications such as **Clau
 
 ### Configure Your Projects
 
-Create a file `.code-assistant/projects.json` in your home directory.
-This file adds available projects in MCP server mode (`list_projects` and `open_project` tools).
+Create a file `~/.config/code-assistant/projects.json`.
+This file adds available projects in MCP server mode (`list_projects` and file operation tools).
 It has the following structure:
 
 ```json

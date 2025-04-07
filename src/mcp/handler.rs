@@ -1,15 +1,15 @@
 use super::resources::ResourceManager;
 use super::types::*;
-use crate::explorer::Explorer;
+use crate::config::{DefaultProjectManager, ProjectManager};
 use crate::tools::{parse_tool_json, MCPToolHandler, ToolExecutor};
-use crate::types::{CodeExplorer, ToolResult, Tools};
+use crate::types::Tools;
 use crate::utils::{CommandExecutor, DefaultCommandExecutor};
 use anyhow::Result;
 use tokio::io::{AsyncWriteExt, Stdout};
 use tracing::{debug, error, trace};
 
 pub struct MessageHandler {
-    explorer: Option<Box<dyn CodeExplorer>>,
+    project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     resources: ResourceManager,
     stdout: Stdout,
@@ -18,7 +18,7 @@ pub struct MessageHandler {
 impl MessageHandler {
     pub fn new(stdout: Stdout) -> Result<Self> {
         Ok(Self {
-            explorer: None,
+            project_manager: Box::new(DefaultProjectManager::new()),
             command_executor: Box::new(DefaultCommandExecutor),
             resources: ResourceManager::new(),
             stdout,
@@ -124,6 +124,7 @@ impl MessageHandler {
     }
 
     /// Notify clients that a specific resource has been updated
+    #[allow(dead_code)]
     async fn send_resource_updated_notification(&mut self, uri: &str) -> Result<()> {
         if !self.resources.is_subscribed(uri) {
             debug!("Resource changed, but is not subscribed: {}", uri);
@@ -211,6 +212,7 @@ impl MessageHandler {
     }
 
     /// Notify clients that the tools list has changed
+    #[allow(dead_code)]
     async fn send_tools_changed_notification(&mut self) -> Result<()> {
         self.send_notification("notifications/tools/list_changed", None)
             .await
@@ -231,25 +233,12 @@ impl MessageHandler {
 
             let (output, result) = ToolExecutor::execute(
                 &mut handler,
-                self.explorer.as_mut(),
+                &self.project_manager,
                 &self.command_executor,
                 None,
                 &tool,
             )
             .await?;
-
-            // Handle special tool results
-            if let ToolResult::OpenProject { path, .. } = &result {
-                if let Some(path) = path {
-                    self.explorer = Some(Box::new(Explorer::new(path.clone())));
-                    self.send_tools_changed_notification().await?;
-                    self.update_file_tree().await?;
-                }
-            }
-
-            if let ToolResult::ListFiles { .. } = &result {
-                self.update_file_tree().await?;
-            }
 
             Ok::<_, anyhow::Error>((output, result.is_success()))
         }
@@ -269,16 +258,6 @@ impl MessageHandler {
             }
             Err(e) => self.send_error(id, -32602, e.to_string(), None).await,
         }
-    }
-
-    async fn update_file_tree(&mut self) -> Result<()> {
-        if let Some(ref mut explorer) = self.explorer {
-            if let Ok(tree) = explorer.create_initial_tree(2) {
-                self.resources.update_file_tree(tree);
-                self.send_resource_updated_notification("tree:///").await?;
-            }
-        }
-        Ok(())
     }
 
     /// Handle prompts/list request

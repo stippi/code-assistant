@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Project {
     pub path: PathBuf,
 }
@@ -84,11 +84,17 @@ pub struct WorkingMemory {
     /// Memory of previous actions and their results
     pub action_history: Vec<ActionResult>,
     /// Currently loaded resources (files, web search results, web pages)
-    pub loaded_resources: HashMap<PathBuf, LoadedResource>,
+    /// Key is (project_name, path)
+    pub loaded_resources: HashMap<(String, PathBuf), LoadedResource>,
     /// Summaries of previously seen resources
-    pub summaries: HashMap<PathBuf, String>,
-    /// Complete file tree of the repository
-    pub file_tree: Option<FileTreeEntry>,
+    /// Key is (project_name, path)
+    pub summaries: HashMap<(String, PathBuf), String>,
+    /// File trees for each project
+    pub file_trees: HashMap<String, FileTreeEntry>,
+    /// Expanded directories per project
+    pub expanded_directories: HashMap<String, Vec<PathBuf>>,
+    /// Available project names
+    pub available_projects: Vec<String>,
 }
 
 impl std::fmt::Display for LoadedResource {
@@ -130,6 +136,17 @@ impl WorkingMemory {
         result.push_str(&self.plan);
         result.push_str("\n\n====\n\n");
 
+        // Available Projects
+        result.push_str("## Available Projects\n\n");
+        if self.available_projects.is_empty() {
+            result.push_str("No projects available\n\n");
+        } else {
+            for project in &self.available_projects {
+                result.push_str(&format!("- {}\n", project));
+            }
+            result.push_str("\n");
+        }
+
         // Action history
         result.push_str("## Previous Tools\n\n");
         if self.action_history.is_empty() {
@@ -166,23 +183,25 @@ impl WorkingMemory {
             result.push_str("No resources loaded\n\n");
         } else {
             result.push_str("All resources are shown in their latest version. They already reflect the tools you may have used.\n\n");
-            for (path, resource) in &self.loaded_resources {
-                result.push_str(&format!(">>>>> RESOURCE: {}\n", path.display()));
+            for ((project, path), resource) in &self.loaded_resources {
+                result.push_str(&format!(">>>>> RESOURCE: [{}] {}\n", project, path.display()));
                 result.push_str(&resource.to_string());
                 result.push_str("\n<<<<< END RESOURCE\n\n");
             }
         }
 
-        // File tree
-        result.push_str("## File Tree\n\n");
-        if let Some(tree) = &self.file_tree {
-            result
-                .push_str("This is the file tree showing directories expanded via list_files:\n\n");
-            result.push_str(&tree.to_string());
+        // File trees
+        result.push_str("## File Trees\n\n");
+        if self.file_trees.is_empty() {
+            result.push_str("No file trees available\n");
         } else {
-            result.push_str("No file tree available\n");
+            for (project, tree) in &self.file_trees {
+                result.push_str(&format!("### Project: {}\n\n", project));
+                result.push_str("This is the file tree showing directories expanded via list_files:\n\n");
+                result.push_str(&tree.to_string());
+                result.push_str("\n\n");
+            }
         }
-        result.push_str("\n\n");
 
         // Summaries
         result.push_str("## Summaries\n\n");
@@ -190,22 +209,23 @@ impl WorkingMemory {
             result.push_str("No summaries created\n");
         } else {
             result.push_str("The following resources were previously loaded, but you have decided to keep a summary only:\n\n");
-            for (path, summary) in &self.summaries {
-                result.push_str(&format!("- `{}`: {}\n", path.display(), summary));
+            for ((project, path), summary) in &self.summaries {
+                result.push_str(&format!("- `[{}] {}`: {}\n", project, path.display(), summary));
             }
         }
 
         result
     }
     /// Add a new resource to working memory
-    pub fn add_resource(&mut self, path: PathBuf, resource: LoadedResource) {
-        self.loaded_resources.insert(path, resource);
+    pub fn add_resource(&mut self, project: String, path: PathBuf, resource: LoadedResource) {
+        self.loaded_resources.insert((project, path), resource);
     }
 
     /// Update an existing resource if it exists
-    pub fn update_resource(&mut self, path: &PathBuf, resource: LoadedResource) -> bool {
-        if self.loaded_resources.contains_key(path) {
-            self.loaded_resources.insert(path.clone(), resource);
+    pub fn update_resource(&mut self, project: &str, path: &PathBuf, resource: LoadedResource) -> bool {
+        let key = (project.to_string(), path.clone());
+        if self.loaded_resources.contains_key(&key) {
+            self.loaded_resources.insert(key, resource);
             true
         } else {
             false
@@ -234,23 +254,29 @@ pub enum Tool {
     UserInput,
     /// List available projects
     ListProjects,
-    /// Open a project by name
-    OpenProject { name: String },
     /// Update the plan
     UpdatePlan { plan: String },
     /// Delete one or more files
-    DeleteFiles { paths: Vec<PathBuf> },
+    DeleteFiles {
+        project: String,
+        paths: Vec<PathBuf>,
+    },
     /// List contents of directories
     ListFiles {
+        project: String,
         paths: Vec<PathBuf>,
         // Optional depth limit, None means unlimited
         max_depth: Option<usize>,
     },
     /// Read content of one or multiple files into working memory
     /// Supports line range syntax in paths like 'file.txt:10-20' to read lines 10-20
-    ReadFiles { paths: Vec<PathBuf> },
+    ReadFiles {
+        project: String,
+        paths: Vec<PathBuf>,
+    },
     /// Write content to a file
     WriteFile {
+        project: String,
         path: PathBuf,
         content: String,
         append: bool,
@@ -258,15 +284,17 @@ pub enum Tool {
     /// Replace parts within a file. Each search text must match exactly once.
     /// Returns an error if any search text matches zero or multiple times.
     ReplaceInFile {
+        project: String,
         path: PathBuf,
         replacements: Vec<FileReplacement>,
     },
     /// Replace contents of resources with summaries in working memory
-    Summarize { resources: Vec<(PathBuf, String)> },
+    Summarize { project: String, path: PathBuf, summary: String },
     /// Complete the current task
     CompleteTask { message: String },
     /// Execute a CLI command
     ExecuteCommand {
+        project: String,
         /// The complete command line to execute
         command_line: String,
         /// Optional working directory for the command
@@ -274,6 +302,7 @@ pub enum Tool {
     },
     /// Search for text in files
     SearchFiles {
+        project: String,
         /// The text to search for in regex syntax
         regex: String,
     },
@@ -298,11 +327,6 @@ pub enum ToolResult {
     ListProjects {
         projects: HashMap<String, Project>,
     },
-    OpenProject {
-        name: String,
-        path: Option<PathBuf>,
-        error: Option<String>,
-    },
     UpdatePlan {
         plan: String,
     },
@@ -310,37 +334,46 @@ pub enum ToolResult {
         path: PathBuf,
     },
     ReadFiles {
+        project: String,
         loaded_files: HashMap<PathBuf, String>,
         failed_files: Vec<(PathBuf, String)>,
     },
     ListFiles {
+        project: String,
         expanded_paths: Vec<(PathBuf, FileTreeEntry)>,
         failed_paths: Vec<(String, String)>,
     },
     SearchFiles {
+        project: String,
         results: Vec<SearchResult>,
         regex: String,
     },
     ExecuteCommand {
+        project: String,
         output: String,
         success: bool,
     },
     WriteFile {
+        project: String,
         path: PathBuf,
         content: String,
         error: Option<String>,
     },
     ReplaceInFile {
+        project: String,
         path: PathBuf,
         content: String,
         error: Option<crate::utils::FileUpdaterError>,
     },
     DeleteFiles {
+        project: String,
         deleted: Vec<PathBuf>,
         failed: Vec<(PathBuf, String)>,
     },
     Summarize {
-        resources: Vec<(PathBuf, String)>,
+        project: String,
+        path: PathBuf,
+        summary: String,
     },
     CompleteTask {
         result: String,
@@ -510,6 +543,7 @@ pub trait CodeExplorer: Send + Sync {
     /// Write the content of a file
     fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()>;
     fn delete_file(&self, path: &PathBuf) -> Result<()>;
+    #[allow(dead_code)]
     fn create_initial_tree(&mut self, max_depth: usize) -> Result<FileTreeEntry>;
     fn list_files(&mut self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry>;
     /// Applies FileReplacements to a file
