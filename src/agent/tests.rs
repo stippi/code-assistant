@@ -615,15 +615,10 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
             "project": project,
             "paths": paths
         }),
-        Tool::Summarize { resources } => serde_json::json!({
-            "resources": resources.iter().map(|(path, summary)| {
-                // Format path with project:path format for testing
-                let path_str = format!("test:{}", path.display());
-                serde_json::json!({
-                    "path": path_str,
-                    "summary": summary
-                })
-            }).collect::<Vec<_>>()
+        Tool::Summarize { project, path, summary } => serde_json::json!({
+            "project": project,
+            "path": path,
+            "summary": summary
         }),
         Tool::CompleteTask { message } => serde_json::json!({
             "message": message

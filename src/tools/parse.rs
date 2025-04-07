@@ -287,20 +287,9 @@ pub fn parse_tool_from_params(
         }),
 
         "summarize" => Ok(Tool::Summarize {
-            resources: params
-                .get("resource") // Assuming resource param holds path:summary pairs? This seems fragile.
-                .ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: resource".into())
-                })?
-                .iter()
-                .filter_map(|line| {
-                    let mut parts = line.splitn(2, ':');
-                    Some((
-                        PathBuf::from(parts.next()?.trim()),
-                        parts.next()?.trim().to_string(),
-                    ))
-                })
-                .collect(),
+            project: get_required_param(params, "project")?.clone(),
+            path: PathBuf::from(get_required_param(params, "path")?),
+            summary: get_required_param(params, "summary")?.clone(),
         }),
 
         "replace_in_file" => Ok(Tool::ReplaceInFile {
@@ -419,26 +408,13 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
                 .collect::<Result<Vec<PathBuf>, ToolError>>()?,
         }),
         "summarize" => Ok(Tool::Summarize {
-            resources: params["resources"]
-                .as_array()
-                .ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: resources array".into())
-                })?
-                .iter()
-                .map(|f| -> Result<_, ToolError> {
-                    Ok((
-                        PathBuf::from(f["path"].as_str().ok_or_else(|| {
-                            ToolError::ParseError("Missing path in resource entry".into())
-                        })?),
-                        f["summary"]
-                            .as_str()
-                            .ok_or_else(|| {
-                                ToolError::ParseError("Missing summary in resource entry".into())
-                            })?
-                            .to_string(),
-                    ))
-                })
-                .collect::<Result<Vec<_>, ToolError>>()?,
+            project: get_project(params)?,
+            path: PathBuf::from(params["path"].as_str().ok_or_else(|| {
+                ToolError::ParseError("Missing required parameter: path".into())
+            })?),
+            summary: params["summary"].as_str().ok_or_else(|| {
+                ToolError::ParseError("Missing required parameter: summary".into())
+            })?.to_string(),
         }),
         "replace_in_file" => {
             Ok(Tool::ReplaceInFile {

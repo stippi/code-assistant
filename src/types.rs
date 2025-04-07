@@ -289,7 +289,7 @@ pub enum Tool {
         replacements: Vec<FileReplacement>,
     },
     /// Replace contents of resources with summaries in working memory
-    Summarize { resources: Vec<(PathBuf, String)> },
+    Summarize { project: String, path: PathBuf, summary: String },
     /// Complete the current task
     CompleteTask { message: String },
     /// Execute a CLI command
@@ -371,7 +371,9 @@ pub enum ToolResult {
         failed: Vec<(PathBuf, String)>,
     },
     Summarize {
-        resources: Vec<((String, PathBuf), String)>,
+        project: String,
+        path: PathBuf,
+        summary: String,
     },
     CompleteTask {
         result: String,

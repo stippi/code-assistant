@@ -168,8 +168,8 @@ impl ToolResult {
                 }
                 msg
             }
-            ToolResult::Summarize { resources } => {
-                format!("Created summaries for {} resources", resources.len())
+            ToolResult::Summarize { project, path, .. } => {
+                format!("Created summary for [{}] {}", project, path.display())
             }
             ToolResult::UserInput { message } => message.clone(),
             ToolResult::CompleteTask { result } => result.clone(),

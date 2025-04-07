@@ -179,25 +179,20 @@ impl Tools {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "resources": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "path": {
-                                    "type": "string",
-                                    "description": "Path to the resource to summarize"
-                                },
-                                "summary": {
-                                    "type": "string",
-                                    "description": "Your summary of the resource contents"
-                                }
-                            },
-                            "required": ["path", "summary"]
-                        }
+                    "project": {
+                        "type": "string",
+                        "description": "Name of the project containing the resource"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the resource to summarize (relative to project root)"
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Your summary of the resource contents"
                     }
                 },
-                "required": ["files"]
+                "required": ["project", "path", "summary"]
             }),
         }
     }

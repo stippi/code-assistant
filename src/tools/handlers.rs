@@ -174,18 +174,16 @@ fn update_working_memory(working_memory: &mut WorkingMemory, result: &ToolResult
                     .loaded_resources
                     .insert((project, path), LoadedResource::WebPage(page.clone()));
             }
-            ToolResult::Summarize { resources } => {
-                for ((project, path), summary) in resources {
-                    // Remove from loaded resources
-                    working_memory
-                        .loaded_resources
-                        .remove(&(project.clone(), path.clone()));
+            ToolResult::Summarize { project, path, summary } => {
+                // Remove from loaded resources
+                working_memory
+                    .loaded_resources
+                    .remove(&(project.clone(), path.clone()));
 
-                    // Add to summaries
-                    working_memory
-                        .summaries
-                        .insert((project.to_string(), path.clone()), summary.clone());
-                }
+                // Add to summaries
+                working_memory
+                    .summaries
+                    .insert((project.to_string(), path.clone()), summary.clone());
             }
             ToolResult::ReplaceInFile {
                 project,

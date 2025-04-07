@@ -36,23 +36,11 @@ impl ToolExecutor {
 
             Tool::UpdatePlan { plan } => ToolResult::UpdatePlan { plan: plan.clone() },
 
-            Tool::Summarize { resources } => {
-                // Convert resources to include project information
-                let updated_resources = resources.iter().map(|(path, summary)| {
-                    // Extract project and path from the combined path
-                    let parts: Vec<&str> = path.to_str().unwrap_or("").splitn(2, ':').collect();
-                    if parts.len() == 2 {
-                        let project = parts[0].to_string();
-                        let path = PathBuf::from(parts[1]);
-                        ((project, path), summary.clone())
-                    } else {
-                        // Default to "unknown" project if format is wrong
-                        (("unknown".to_string(), path.clone()), summary.clone())
-                    }
-                }).collect();
-                
+            Tool::Summarize { project, path, summary } => {
                 ToolResult::Summarize {
-                    resources: updated_resources,
+                    project: project.clone(),
+                    path: path.clone(),
+                    summary: summary.clone(),
                 }
             },
 
