@@ -19,6 +19,7 @@ fn format_output_for_result(result: &ToolResult) -> Result<String> {
             Ok(output)
         }
         ToolResult::ReadFiles {
+            project,
             loaded_files,
             failed_files,
         } => {
@@ -26,7 +27,12 @@ fn format_output_for_result(result: &ToolResult) -> Result<String> {
             let mut output = String::new();
             if !failed_files.is_empty() {
                 for (path, error) in failed_files {
-                    output.push_str(&format!("Failed to load '{}': {}\n", path.display(), error));
+                    output.push_str(&format!(
+                        "Failed to load '{}' in project '{}': {}\n",
+                        path.display(),
+                        project,
+                        error
+                    ));
                 }
             }
             if !loaded_files.is_empty() {
@@ -100,17 +106,38 @@ fn update_working_memory(working_memory: &mut WorkingMemory, result: &ToolResult
                     }
                 }
 
-                // Update working memory file tree with each entry
-                if let Some(file_tree) = &mut working_memory.file_tree {
-                    for (path, entry) in expanded_paths {
-                        update_tree_entry(file_tree, path, entry.clone())?;
-                    }
+                // Create file tree for this project if it doesn't exist yet
+                let file_tree = working_memory
+                    .file_trees
+                    .entry(project.clone())
+                    .or_insert_with(|| FileTreeEntry {
+                        name: project.clone(),
+                        entry_type: crate::types::FileSystemEntryType::Directory,
+                        children: std::collections::HashMap::new(),
+                        is_expanded: true,
+                    });
+
+                // Update file tree with each entry
+                for (path, entry) in expanded_paths {
+                    update_tree_entry(file_tree, path, entry.clone())?;
+                }
+
+                // Make sure project is in available_projects list
+                if !working_memory.available_projects.contains(project) {
+                    working_memory.available_projects.push(project.clone());
                 }
             }
-            ToolResult::ReadFiles { loaded_files, .. } => {
+            ToolResult::ReadFiles {
+                project,
+                loaded_files,
+                ..
+            } => {
                 for (path, content) in loaded_files {
-                    working_memory
-                        .add_resource(path.clone(), LoadedResource::File(content.clone()));
+                    working_memory.add_resource(
+                        project.clone(),
+                        path.clone(),
+                        LoadedResource::File(content.clone()),
+                    );
                 }
             }
             ToolResult::WebSearch {
@@ -126,8 +153,11 @@ fn update_working_memory(working_memory: &mut WorkingMemory, result: &ToolResult
                         percent_encoding::NON_ALPHANUMERIC
                     )
                 ));
+
+                // Use "web" as the project name for web resources
+                let project = "web".to_string();
                 working_memory.loaded_resources.insert(
-                    path,
+                    (project, path),
                     LoadedResource::WebSearch {
                         query: query.clone(),
                         results: results.clone(),
@@ -137,37 +167,68 @@ fn update_working_memory(working_memory: &mut WorkingMemory, result: &ToolResult
             ToolResult::WebFetch { page, error: None } => {
                 // Use the URL as path (normalized)
                 let path = PathBuf::from(page.url.replace([':', '/', '?', '#'], "_"));
+
+                // Use "web" as the project name for web resources
+                let project = "web".to_string();
                 working_memory
                     .loaded_resources
-                    .insert(path, LoadedResource::WebPage(page.clone()));
+                    .insert((project, path), LoadedResource::WebPage(page.clone()));
             }
             ToolResult::Summarize { resources } => {
-                for (path, summary) in resources {
-                    working_memory.loaded_resources.remove(path);
+                for ((project, path), summary) in resources {
+                    // Remove from loaded resources
+                    working_memory
+                        .loaded_resources
+                        .remove(&(project.clone(), path.clone()));
+
+                    // Add to summaries
                     working_memory
                         .summaries
-                        .insert(path.clone(), summary.clone());
+                        .insert((project.to_string(), path.clone()), summary.clone());
                 }
             }
-            ToolResult::ReplaceInFile { path, content, .. } => {
+            ToolResult::ReplaceInFile {
+                project,
+                path,
+                content,
+                ..
+            } => {
                 // Update working memory if file was loaded
-                working_memory.update_resource(path, LoadedResource::File(content.clone()));
+                working_memory.update_resource(
+                    &project,
+                    path,
+                    LoadedResource::File(content.clone()),
+                );
             }
             ToolResult::WriteFile {
+                project,
                 path,
                 content,
                 error: None,
                 ..
             } => {
                 // Remove any existing summary since file is new/overwritten
-                working_memory.summaries.remove(path);
+                working_memory
+                    .summaries
+                    .remove(&(project.clone(), path.clone()));
+
                 // Make this file part of the loaded files
-                working_memory.add_resource(path.clone(), LoadedResource::File(content.clone()));
+                working_memory.add_resource(
+                    project.clone(),
+                    path.clone(),
+                    LoadedResource::File(content.clone()),
+                );
             }
-            ToolResult::DeleteFiles { deleted, .. } => {
+            ToolResult::DeleteFiles {
+                project, deleted, ..
+            } => {
                 for path in deleted {
-                    working_memory.loaded_resources.remove(path);
-                    working_memory.summaries.remove(path);
+                    working_memory
+                        .loaded_resources
+                        .remove(&(project.clone(), path.clone()));
+                    working_memory
+                        .summaries
+                        .remove(&(project.clone(), path.clone()));
                 }
             }
             _ => {}

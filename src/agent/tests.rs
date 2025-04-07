@@ -52,6 +52,10 @@ impl MockProjectManager {
 }
 
 impl ProjectManager for MockProjectManager {
+    fn add_temporary_project(&mut self, _path: PathBuf) -> Result<String> {
+        Err(anyhow::anyhow!("Temporary projects not supported"))
+    }
+
     fn get_projects(&self) -> Result<HashMap<String, Project>> {
         Ok(self.projects.clone())
     }

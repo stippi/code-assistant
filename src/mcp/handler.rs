@@ -18,7 +18,7 @@ pub struct MessageHandler {
 impl MessageHandler {
     pub fn new(stdout: Stdout) -> Result<Self> {
         Ok(Self {
-            project_manager: Box::new(DefaultProjectManager),
+            project_manager: Box::new(DefaultProjectManager::new()),
             command_executor: Box::new(DefaultCommandExecutor),
             resources: ResourceManager::new(),
             stdout,

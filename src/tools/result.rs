@@ -24,6 +24,7 @@ impl ToolResult {
             ToolResult::ReadFiles {
                 loaded_files,
                 failed_files,
+                ..
             } => {
                 let mut msg = String::new();
                 if !loaded_files.is_empty() {
@@ -82,7 +83,7 @@ impl ToolResult {
                 }
                 msg
             }
-            ToolResult::SearchFiles { results, regex } => {
+            ToolResult::SearchFiles { results, regex, .. } => {
                 if results.is_empty() {
                     format!("No matches found for '{}'", regex)
                 } else {
@@ -107,7 +108,9 @@ impl ToolResult {
                     msg
                 }
             }
-            ToolResult::ExecuteCommand { output, success } => {
+            ToolResult::ExecuteCommand {
+                output, success, ..
+            } => {
                 if !success {
                     format!("Command failed:\n{}", output)
                 } else {
@@ -136,7 +139,9 @@ impl ToolResult {
                     format!("Successfully replaced in file: {}", path.display())
                 }
             }
-            ToolResult::DeleteFiles { deleted, failed } => {
+            ToolResult::DeleteFiles {
+                deleted, failed, ..
+            } => {
                 let mut msg = String::new();
                 if !deleted.is_empty() {
                     msg.push_str(&format!(
@@ -200,6 +205,7 @@ impl ToolResult {
             ToolResult::ReadFiles {
                 loaded_files,
                 failed_files,
+                ..
             } => !loaded_files.is_empty() && failed_files.is_empty(),
             ToolResult::ListFiles {
                 expanded_paths,

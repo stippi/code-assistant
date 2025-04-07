@@ -306,7 +306,7 @@ async fn main() -> Result<()> {
 
                 // Setup dynamic types
                 let root_path = path.canonicalize()?;
-                let project_manager = Box::new(DefaultProjectManager);
+                let project_manager = Box::new(DefaultProjectManager::new());
                 let user_interface: Box<dyn UserInterface> = Box::new(gui.clone());
                 let command_executor = Box::new(DefaultCommandExecutor);
                 let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
@@ -341,6 +341,7 @@ async fn main() -> Result<()> {
                             command_executor,
                             user_interface,
                             state_persistence,
+                            Some(root_path.clone()),
                         );
 
                         // Get task either from state file, argument, or GUI
@@ -366,7 +367,7 @@ async fn main() -> Result<()> {
                 // Non-GUI mode - run the agent directly in the main thread
                 // Setup dynamic types
                 let root_path = path.canonicalize()?;
-                let project_manager = Box::new(DefaultProjectManager);
+                let project_manager = Box::new(DefaultProjectManager::new());
                 let user_interface = Box::new(TerminalUI::new());
                 let command_executor = Box::new(DefaultCommandExecutor);
                 let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
@@ -393,6 +394,7 @@ async fn main() -> Result<()> {
                     command_executor,
                     user_interface,
                     state_persistence,
+                    Some(root_path.clone()),
                 );
 
                 // Get task either from state file or argument

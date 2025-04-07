@@ -40,9 +40,35 @@ pub struct Agent {
     state_persistence: Box<dyn StatePersistence>,
     // For MessageHistory mode: store all messages exchanged
     message_history: Vec<Message>,
+    // Path provided during agent initialization
+    init_path: Option<PathBuf>,
 }
 
 impl Agent {
+    pub fn new(
+        llm_provider: Box<dyn LLMProvider>,
+        tool_mode: ToolMode,
+        agent_mode: AgentMode,
+        project_manager: Box<dyn ProjectManager>,
+        command_executor: Box<dyn CommandExecutor>,
+        ui: Box<dyn UserInterface>,
+        state_persistence: Box<dyn StatePersistence>,
+        init_path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            working_memory: WorkingMemory::default(),
+            llm_provider,
+            tool_mode,
+            agent_mode,
+            project_manager,
+            ui: Arc::new(ui),
+            command_executor,
+            state_persistence,
+            message_history: Vec::new(),
+            init_path,
+        }
+    }
+
     /// Helper method to save the state based on the current agent mode
     fn save_state_based_on_mode(&mut self) -> Result<()> {
         match self.agent_mode {
@@ -61,28 +87,6 @@ impl Agent {
             }
         }
         Ok(())
-    }
-
-    pub fn new(
-        llm_provider: Box<dyn LLMProvider>,
-        tool_mode: ToolMode,
-        agent_mode: AgentMode,
-        project_manager: Box<dyn ProjectManager>,
-        command_executor: Box<dyn CommandExecutor>,
-        ui: Box<dyn UserInterface>,
-        state_persistence: Box<dyn StatePersistence>,
-    ) -> Self {
-        Self {
-            working_memory: WorkingMemory::default(),
-            llm_provider,
-            tool_mode,
-            agent_mode,
-            project_manager,
-            ui: Arc::new(ui),
-            command_executor,
-            state_persistence,
-            message_history: Vec::new(),
-        }
     }
 
     pub async fn get_input_from_ui(&self, prompt: &str) -> Result<String> {
@@ -267,17 +271,55 @@ impl Agent {
         }
     }
 
+    fn init_working_memory(&mut self, task: String) -> Result<()> {
+        self.working_memory.current_task = task.clone();
+
+        // Initialize empty structures for multi-project support
+        self.working_memory.file_trees = HashMap::new();
+        self.working_memory.available_projects = Vec::new();
+
+        // If a path was provided in args, add it as a temporary project
+        if let Some(path) = &self.init_path {
+            // Add as temporary project and get its name
+            let project_name = self.project_manager.add_temporary_project(path.clone())?;
+
+            // Create initial file tree for this project
+            let mut explorer = self
+                .project_manager
+                .get_explorer_for_project(&project_name)?;
+            let tree = explorer.create_initial_tree(2)?; // Limited depth for initial tree
+
+            // Store in working memory
+            self.working_memory
+                .file_trees
+                .insert(project_name.clone(), tree);
+        }
+
+        // Load all available projects
+        let all_projects = self.project_manager.get_projects()?;
+        for project_name in all_projects.keys() {
+            if !self
+                .working_memory
+                .available_projects
+                .contains(project_name)
+            {
+                self.working_memory
+                    .available_projects
+                    .push(project_name.clone());
+            }
+        }
+
+        Ok(())
+    }
+
     /// Start a new agent task
     pub async fn start_with_task(&mut self, task: String) -> Result<()> {
         debug!("Starting agent with task: {}", task);
-        self.working_memory.current_task = task.clone();
+
+        self.init_working_memory(task.clone())?;
+
         self.message_history.clear(); // Clear any previous messages
-
         self.ui.display(UIMessage::UserInput(task.clone())).await?;
-
-        // We no longer create a file tree at start since we don't have a default project
-        // The file tree will be created on demand when a project is opened
-        self.working_memory.file_tree = None;
 
         // For message history mode, create the initial user message
         if self.agent_mode == AgentMode::MessageHistory {
@@ -303,8 +345,7 @@ impl Agent {
             debug!("Continuing task: {}", state.task);
 
             // Initialize working memory
-            self.working_memory.current_task = state.task.clone();
-            self.working_memory.file_tree = None;
+            self.init_working_memory(state.task.clone())?;
 
             // Restore action history from saved state
             self.working_memory.action_history = state.actions.clone();
@@ -322,7 +363,7 @@ impl Agent {
                 }];
             }
 
-            // Load current state of files into memory
+            // Load current state of files into memory - will create file trees as needed
             self.load_current_files_to_memory().await?;
 
             self.ui
@@ -409,6 +450,36 @@ impl Agent {
                 Ok(explorer) => {
                     let root_dir = explorer.root_dir();
 
+                    // Create file tree for this project if it doesn't exist yet
+                    if !self.working_memory.file_trees.contains_key(&project_name) {
+                        let mut explorer_for_tree = self
+                            .project_manager
+                            .get_explorer_for_project(&project_name)?;
+                        match explorer_for_tree.create_initial_tree(2) {
+                            Ok(tree) => {
+                                self.working_memory
+                                    .file_trees
+                                    .insert(project_name.clone(), tree);
+                                // Add to available projects if not already there
+                                if !self
+                                    .working_memory
+                                    .available_projects
+                                    .contains(&project_name)
+                                {
+                                    self.working_memory
+                                        .available_projects
+                                        .push(project_name.clone());
+                                }
+                            }
+                            Err(e) => {
+                                debug!(
+                                    "Error creating file tree for project {}: {}",
+                                    project_name, e
+                                );
+                            }
+                        }
+                    }
+
                     // Load files into memory
                     for path in files {
                         let full_path = if path.is_absolute() {
@@ -424,8 +495,11 @@ impl Agent {
                                     project_name,
                                     full_path.display()
                                 );
-                                self.working_memory
-                                    .add_resource(path, LoadedResource::File(content));
+                                self.working_memory.add_resource(
+                                    project_name.clone(),
+                                    path,
+                                    LoadedResource::File(content),
+                                );
                             }
                             Err(e) => {
                                 debug!("Error loading file {}: {}", full_path.display(), e);
@@ -463,8 +537,10 @@ impl Agent {
                         )
                     ));
                     debug!("Loading web search results for: {}", query);
+                    // Use "web" as the project name for web resources
+                    let project = "web".to_string();
                     self.working_memory.loaded_resources.insert(
-                        path,
+                        (project, path),
                         LoadedResource::WebSearch {
                             query: query.clone(),
                             results: results.clone(),
@@ -475,9 +551,11 @@ impl Agent {
                     // Use the URL as path (normalized, same as in AgentToolHandler)
                     let path = PathBuf::from(page.url.replace([':', '/', '?', '#'], "_"));
                     debug!("Loading web page content: {}", page.url);
+                    // Use "web" as the project name for web resources
+                    let project = "web".to_string();
                     self.working_memory
                         .loaded_resources
-                        .insert(path, LoadedResource::WebPage(page.clone()));
+                        .insert((project, path), LoadedResource::WebPage(page.clone()));
                 }
                 _ => {}
             }

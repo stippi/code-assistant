@@ -36,8 +36,24 @@ impl ToolExecutor {
 
             Tool::UpdatePlan { plan } => ToolResult::UpdatePlan { plan: plan.clone() },
 
-            Tool::Summarize { resources } => ToolResult::Summarize {
-                resources: resources.clone(),
+            Tool::Summarize { resources } => {
+                // Convert resources to include project information
+                let updated_resources = resources.iter().map(|(path, summary)| {
+                    // Extract project and path from the combined path
+                    let parts: Vec<&str> = path.to_str().unwrap_or("").splitn(2, ':').collect();
+                    if parts.len() == 2 {
+                        let project = parts[0].to_string();
+                        let path = PathBuf::from(parts[1]);
+                        ((project, path), summary.clone())
+                    } else {
+                        // Default to "unknown" project if format is wrong
+                        (("unknown".to_string(), path.clone()), summary.clone())
+                    }
+                }).collect();
+                
+                ToolResult::Summarize {
+                    resources: updated_resources,
+                }
             },
 
             Tool::CompleteTask { message } => match &ui {
@@ -94,6 +110,7 @@ impl ToolExecutor {
                         return Ok((
                             String::new(),
                             ToolResult::ReadFiles {
+                                project: project.clone(),
                                 loaded_files: HashMap::new(),
                                 failed_files: vec![(
                                     PathBuf::from("."),
@@ -158,6 +175,7 @@ impl ToolExecutor {
                 }
 
                 ToolResult::ReadFiles {
+                    project: project.clone(),
                     loaded_files,
                     failed_files,
                 }
@@ -226,6 +244,7 @@ impl ToolExecutor {
                         return Ok((
                             String::new(),
                             ToolResult::SearchFiles {
+                                project: project.clone(),
                                 results: Vec::new(),
                                 regex: format!(
                                     "Failed to get explorer for project {}: {}",
@@ -257,11 +276,13 @@ impl ToolExecutor {
                         }
 
                         ToolResult::SearchFiles {
+                            project: project.clone(),
                             results,
                             regex: regex.clone(),
                         }
                     }
                     Err(e) => ToolResult::SearchFiles {
+                        project: project.clone(),
                         results: Vec::new(),
                         regex: format!("Search failed: {}", e),
                     },
@@ -280,6 +301,7 @@ impl ToolExecutor {
                         return Ok((
                             String::new(),
                             ToolResult::ExecuteCommand {
+                                project: project.clone(),
                                 output: format!(
                                     "Failed to get explorer for project {}: {}",
                                     project, e
@@ -295,6 +317,7 @@ impl ToolExecutor {
                         return Ok((
                             String::new(),
                             ToolResult::ExecuteCommand {
+                                project: project.clone(),
                                 output: "Working directory must be relative to project root"
                                     .to_string(),
                                 success: false,
@@ -310,10 +333,12 @@ impl ToolExecutor {
                     .await
                 {
                     Ok(output) => ToolResult::ExecuteCommand {
+                        project: project.clone(),
                         output: output.output,
                         success: output.success,
                     },
                     Err(e) => ToolResult::ExecuteCommand {
+                        project: project.clone(),
                         output: e.to_string(),
                         success: false,
                     },
@@ -333,6 +358,7 @@ impl ToolExecutor {
                         return Ok((
                             String::new(),
                             ToolResult::WriteFile {
+                                project: project.clone(),
                                 path: path.clone(),
                                 content: String::new(),
                                 error: Some(format!(
@@ -351,11 +377,13 @@ impl ToolExecutor {
 
                 match explorer.write_file(&full_path, content, *append) {
                     Ok(_) => ToolResult::WriteFile {
+                        project: project.clone(),
                         path: path.clone(),
                         content: content.clone(),
                         error: None,
                     },
                     Err(e) => ToolResult::WriteFile {
+                        project: project.clone(),
                         path: path.clone(),
                         content: String::new(), // Empty content on error
                         error: Some(e.to_string()),
@@ -375,6 +403,7 @@ impl ToolExecutor {
                         return Ok((
                             String::new(),
                             ToolResult::ReplaceInFile {
+                                project: project.clone(),
                                 path: path.clone(),
                                 content: String::new(),
                                 error: Some(crate::utils::FileUpdaterError::Other(format!(
@@ -399,6 +428,7 @@ impl ToolExecutor {
 
                 match explorer.apply_replacements(&full_path, replacements) {
                     Ok(new_content) => ToolResult::ReplaceInFile {
+                        project: project.clone(),
                         path: path.clone(),
                         content: new_content,
                         error: None,
@@ -413,6 +443,7 @@ impl ToolExecutor {
                         };
 
                         ToolResult::ReplaceInFile {
+                            project: project.clone(),
                             path: path.clone(),
                             content: current_content,
                             error: Some(error),
@@ -429,6 +460,7 @@ impl ToolExecutor {
                         return Ok((
                             String::new(),
                             ToolResult::DeleteFiles {
+                                project: project.clone(),
                                 deleted: Vec::new(),
                                 failed: vec![(
                                     PathBuf::from("."),
@@ -459,7 +491,7 @@ impl ToolExecutor {
                     }
                 }
 
-                ToolResult::DeleteFiles { deleted, failed }
+                ToolResult::DeleteFiles { project: project.clone(), deleted, failed }
             }
 
             _ => unreachable!(),

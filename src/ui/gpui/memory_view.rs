@@ -174,7 +174,7 @@ impl MemoryView {
             .flex_col()
             .p_1()
             .gap_1()
-            .children(memory.loaded_resources.iter().map(|(path, resource)| {
+            .children(memory.loaded_resources.iter().map(|((project, path), resource)| {
                 // Get appropriate icon for resource type
                 let icon = match resource {
                     LoadedResource::File(_) => file_icons::get().get_icon(path),
@@ -207,7 +207,7 @@ impl MemoryView {
                             .text_sm()
                             .truncate()
                             .flex_grow()
-                            .child(path.to_string_lossy().to_string()),
+                            .child(format!("[{}] {}", project, path.to_string_lossy())),
                     )
                     .child(
                         div()
@@ -294,16 +294,33 @@ impl MemoryView {
             );
 
         // File tree content - generate a flat list of items
-        let file_tree_content = if let Some(root_entry) = memory.file_tree.as_ref() {
-            // Generate flat list of all entries
-            let entries = self.generate_file_tree(root_entry, 0, cx);
-            div().flex().flex_col().w_full().children(entries)
+        let file_tree_content = if !memory.file_trees.is_empty() {
+            let mut all_entries = Vec::new();
+            for (project_name, root_entry) in &memory.file_trees {
+                // Add project header
+                all_entries.push(
+                    div()
+                        .flex_none()
+                        .text_sm()
+                        .w_full()
+                        .px_2()
+                        .py_1()
+                        .bg(rgb(0x353535))
+                        .text_color(hsla(0., 0., 0.9, 1.0))
+                        .child(format!("Project: {}", project_name))
+                );
+                
+                // Generate flat list of all entries for this project
+                let entries = self.generate_file_tree(root_entry, 0, cx);
+                all_entries.extend(entries);
+            }
+            div().flex().flex_col().w_full().children(all_entries)
         } else {
             div()
                 .p_2()
                 .text_color(hsla(0., 0., 0.5, 1.0))
                 .text_center()
-                .child("No file tree available")
+                .child("No file trees available")
         };
 
         // Create scrollbar state for file tree
