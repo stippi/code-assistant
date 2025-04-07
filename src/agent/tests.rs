@@ -52,8 +52,19 @@ impl MockProjectManager {
 }
 
 impl ProjectManager for MockProjectManager {
-    fn add_temporary_project(&mut self, _path: PathBuf) -> Result<String> {
-        Err(anyhow::anyhow!("Temporary projects not supported"))
+    fn add_temporary_project(&mut self, path: PathBuf) -> Result<String> {
+        // Use a fixed name for testing
+        let project_name = "temp_project".to_string();
+
+        // Add the project
+        self.projects
+            .insert(project_name.clone(), Project { path: path.clone() });
+
+        // Add a default explorer for it
+        self.explorers
+            .insert(project_name.clone(), create_explorer_mock());
+
+        Ok(project_name)
     }
 
     fn get_projects(&self) -> Result<HashMap<String, Project>> {
@@ -606,8 +617,10 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         }),
         Tool::Summarize { resources } => serde_json::json!({
             "resources": resources.iter().map(|(path, summary)| {
+                // Format path with project:path format for testing
+                let path_str = format!("test:{}", path.display());
                 serde_json::json!({
-                    "path": path,
+                    "path": path_str,
                     "summary": summary
                 })
             }).collect::<Vec<_>>()
@@ -831,6 +844,7 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
+        Some(PathBuf::from("./test_path")),
     );
 
     // Run the agent
@@ -842,8 +856,9 @@ async fn test_agent_read_files() -> Result<(), anyhow::Error> {
 
     if let MessageContent::Text(content) = &second_request.messages[0].content {
         assert!(
-            content
-                .contains(">>>>> RESOURCE: test.txt\nline 1\nline 2\nline 3\n\n<<<<< END RESOURCE"),
+            content.contains(
+                ">>>>> RESOURCE: [test] test.txt\nline 1\nline 2\nline 3\n\n<<<<< END RESOURCE"
+            ),
             "File content not found in working memory message:\n{}",
             content
         );
@@ -875,6 +890,7 @@ async fn test_agent_read_files_with_line_range() -> Result<(), anyhow::Error> {
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
+        Some(PathBuf::from("./test_path")),
     );
 
     // Run the agent
@@ -888,7 +904,9 @@ async fn test_agent_read_files_with_line_range() -> Result<(), anyhow::Error> {
 
     if let MessageContent::Text(content) = &second_request.messages[0].content {
         assert!(
-            content.contains(">>>>> RESOURCE: test.txt:1-2\nline 1\nline 2\n<<<<< END RESOURCE"),
+            content.contains(
+                ">>>>> RESOURCE: [test] test.txt:1-2\nline 1\nline 2\n<<<<< END RESOURCE"
+            ),
             "File content not found or incorrect in working memory message:\n{}",
             content
         );
@@ -932,6 +950,7 @@ async fn test_execute_command() -> Result<()> {
         Box::new(mock_command_executor),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
+        Some(PathBuf::from("./test_path")),
     );
 
     // Run the agent
@@ -1147,6 +1166,7 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
+        Some(PathBuf::from("./test_path")),
     );
 
     // Run the agent
@@ -1210,6 +1230,7 @@ async fn test_list_files_error_handling() -> Result<()> {
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
+        Some(PathBuf::from("./test_path")),
     );
 
     agent
@@ -1264,6 +1285,7 @@ async fn test_read_files_error_handling() -> Result<()> {
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
+        Some(PathBuf::from("./test_path")),
     );
 
     agent
@@ -1321,6 +1343,7 @@ async fn test_write_file_error_handling() -> Result<()> {
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
+        Some(PathBuf::from("./test_path")),
     );
 
     agent
@@ -1375,6 +1398,7 @@ async fn test_read_files_line_range_error_handling() -> Result<()> {
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
+        Some(PathBuf::from("./test_path")),
     );
 
     agent
@@ -1432,6 +1456,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
+        Some(PathBuf::from("./test_path")),
     );
 
     agent.start_with_task("Test task".to_string()).await?;
@@ -1490,6 +1515,7 @@ async fn test_parse_error_handling() -> Result<()> {
         Box::new(create_command_executor_mock()),
         Box::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
+        Some(PathBuf::from("./test_path")),
     );
 
     agent.start_with_task("Test task".to_string()).await?;
