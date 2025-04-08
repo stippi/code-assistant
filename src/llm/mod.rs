@@ -21,6 +21,7 @@ pub mod config;
 mod error;
 pub mod ollama;
 pub mod openai;
+pub mod openrouter;
 pub mod recording;
 pub mod types;
 pub mod vertex;
@@ -29,6 +30,7 @@ pub use aicore_invoke::AiCoreClient;
 pub use anthropic::AnthropicClient;
 pub use ollama::OllamaClient;
 pub use openai::OpenAIClient;
+pub use openrouter::OpenRouterClient;
 pub use types::*;
 pub use vertex::VertexClient;
 

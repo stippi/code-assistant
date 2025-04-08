@@ -15,7 +15,7 @@ use crate::agent::Agent;
 use crate::llm::auth::TokenManager;
 use crate::llm::config::DeploymentConfig;
 use crate::llm::{
-    AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, VertexClient,
+    AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, OpenRouterClient, VertexClient,
 };
 use crate::mcp::MCPServer;
 use crate::types::{AgentMode, ToolMode};
@@ -37,6 +37,7 @@ enum LLMProviderType {
     OpenAI,
     Ollama,
     Vertex,
+    OpenRouter,
 }
 
 // Define the application arguments
@@ -215,6 +216,19 @@ async fn create_llm_client(
                 model.context("Model name is required for Ollama provider")?,
                 base_url,
                 num_ctx,
+            )))
+        }
+
+        LLMProviderType::OpenRouter => {
+            let api_key = std::env::var("OPENROUTER_API_KEY")
+                .context("OPENROUTER_API_KEY environment variable not set")?;
+            let model = model.unwrap_or_else(|| "anthropic/claude-3-7-sonnet".to_string());
+            let base_url = base_url.unwrap_or(OpenRouterClient::default_base_url());
+
+            Ok(Box::new(OpenRouterClient::new(
+                api_key,
+                model,
+                base_url,
             )))
         }
     }
