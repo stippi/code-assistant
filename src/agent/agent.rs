@@ -222,13 +222,25 @@ impl Agent {
                     if !result.result.is_success() {
                         all_actions_succeeded = false;
                         // Add error message to conversation
-                        let error_msg = Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Text(format!(
-                                "Error executing action: {}\n{}",
-                                result.reasoning,
-                                result.result.format_message()
-                            )),
+                        let error_msg = if self.tool_mode == ToolMode::Native {
+                            Message {
+                                role: MessageRole::User,
+                                content: MessageContent::Structured(vec![
+                                    ContentBlock::ToolResult {
+                                        tool_use_id: action.tool_id.clone(),
+                                        content: result.result.format_message(),
+                                        is_error: Some(true),
+                                    },
+                                ]),
+                            }
+                        } else {
+                            Message {
+                                role: MessageRole::User,
+                                content: MessageContent::Text(format!(
+                                    "Error executing tool: {}",
+                                    result.result.format_message()
+                                )),
+                            }
                         };
 
                         messages.push(error_msg.clone());
@@ -241,10 +253,21 @@ impl Agent {
                     // Add result to working memory
                     self.working_memory.action_history.push(result);
 
-                    // Add result to messages for both modes
-                    let output_msg = Message {
-                        role: MessageRole::User,
-                        content: MessageContent::Text(output),
+                    // Add result to messages for both modes - using structured ToolResult for Native mode
+                    let output_msg = if self.tool_mode == ToolMode::Native {
+                        Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                                tool_use_id: action.tool_id.clone(),
+                                content: output,
+                                is_error: None,
+                            }]),
+                        }
+                    } else {
+                        Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Text(output),
+                        }
                     };
 
                     messages.push(output_msg.clone());
@@ -814,6 +837,7 @@ pub(crate) fn parse_llm_response(
         {
             let tool = parse_tool_json(name, input)?;
             // Generate a tool ID - either use the provided one or create a new one
+            // Note: for API-native tools, this ID is important as it will be used to match with tool_result
             let tool_id = if id.is_empty() {
                 format!("tool-json-{}", actions.len())
             } else {
