@@ -153,7 +153,7 @@ impl JsonStreamProcessor {
                             self.state.collecting_special_value = true;
                             self.state.param_value_nesting += 1;
                             self.state.current_param_value.push(c);
-                            
+
                             // For objects and arrays, we'll collect and emit the entire value
                             if !self.collect_complex_value('{', '}', &mut chars)? {
                                 // If we couldn't complete the object collection, store the buffer
@@ -206,12 +206,12 @@ impl JsonStreamProcessor {
                                     self.state.param_value_nesting -= 1;
                                 }
                                 self.state.current_param_value.push(c);
-                                
+
                                 // If we've closed all nested structures, emit and possibly finalize
                                 if self.state.param_value_nesting == 0 {
                                     self.emit_parameter()?;
                                     self.state.collecting_special_value = false;
-                                    
+
                                     // If this was the end of a complex top-level param value
                                     if !chars.peek().is_some_and(|&next| next == ',') {
                                         self.finalize_parameter()?;
@@ -245,7 +245,7 @@ impl JsonStreamProcessor {
                             self.state.collecting_special_value = true;
                             self.state.param_value_nesting += 1;
                             self.state.current_param_value.push(c);
-                            
+
                             // For objects and arrays, we'll collect and emit the entire value
                             if !self.collect_complex_value('[', ']', &mut chars)? {
                                 // If we couldn't complete the array collection, store the buffer
@@ -281,12 +281,12 @@ impl JsonStreamProcessor {
                                 self.state.param_value_nesting -= 1;
                             }
                             self.state.current_param_value.push(c);
-                            
+
                             // If we've closed all nested structures, emit and possibly finalize
                             if self.state.param_value_nesting == 0 {
                                 self.emit_parameter()?;
                                 self.state.collecting_special_value = false;
-                                
+
                                 // Check if there's a comma after this array
                                 if chars.peek().is_some_and(|&next| next == ',') {
                                     // We'll continue to the next parameter
@@ -440,13 +440,13 @@ impl JsonStreamProcessor {
                         // Start of a non-string value (number/boolean/null)
                         self.state.json_state = JsonParseState::InParamValue;
                         self.state.current_param_value.push(c);
-                        
+
                         // For primitive values, we'll collect until we hit a delimiter
                         self.collect_primitive_value(&mut chars)?;
-                        
+
                         // After collecting, emit the parameter
                         self.emit_parameter()?;
-                        
+
                         // Check if the next character is a comma
                         if chars.peek().is_some_and(|&next| next == ',') {
                             // We'll continue to the next parameter, but we can finalize this one
@@ -492,7 +492,7 @@ impl JsonStreamProcessor {
                                 name.push(c);
                             }
                         }
-                    } else if self.state.json_state == JsonParseState::InParamValue 
+                    } else if self.state.json_state == JsonParseState::InParamValue
                         && self.state.param_value_nesting > 0 {
                         // Whitespace in nested structures (arrays/objects) is preserved
                         self.state.current_param_value.push(c);
@@ -548,18 +548,18 @@ impl JsonStreamProcessor {
 
         Ok(())
     }
-    
+
     /// Helper method to collect a complex value (object or array) as a single parameter value
     fn collect_complex_value(
-        &mut self, 
-        open_char: char, 
-        close_char: char, 
+        &mut self,
+        open_char: char,
+        close_char: char,
         chars: &mut std::iter::Peekable<std::str::Chars>
     ) -> Result<bool, UIError> {
         let mut nesting = 1; // Start at 1 because we've already seen the opening character
         let mut in_string = false;
         let mut escaped = false;
-        
+
         while let Some(&next) = chars.peek() {
             // Handle string quoting separately
             if next == '"' && !escaped {
@@ -575,12 +575,12 @@ impl JsonStreamProcessor {
                         self.state.current_param_value.push(next);
                         chars.next(); // Consume the character
                         self.emit_parameter()?;
-                        
+
                         // Reset collecting flag if we're back at the top level
                         if self.state.param_value_nesting == 1 {
                             self.state.collecting_special_value = false;
                             self.state.param_value_nesting = 0;
-                            
+
                             // Check if there's a comma after this array/object
                             if chars.peek().is_some_and(|&c| c == ',') {
                                 // More parameters follow, prepare to process them
@@ -596,23 +596,23 @@ impl JsonStreamProcessor {
                     }
                 }
             }
-            
+
             // Track escape character for strings
             escaped = next == '\\' && !escaped;
-            
+
             // Add character to parameter value
             self.state.current_param_value.push(next);
             chars.next(); // Consume the character
         }
-        
+
         // If we reach here, the complex value is incomplete
         self.emit_parameter()?;
         Ok(false)
     }
-    
+
     /// Helper method to collect a primitive value (number or boolean)
     fn collect_primitive_value(
-        &mut self, 
+        &mut self,
         chars: &mut std::iter::Peekable<std::str::Chars>
     ) -> Result<(), UIError> {
         while let Some(&next) = chars.peek() {
@@ -640,14 +640,14 @@ impl JsonStreamProcessor {
                     value: self.state.current_param_value.clone(),
                     tool_id: self.state.tool_id.clone(),
                 })?;
-                
+
                 // Clear the current value after emitting, but keep the parameter name
                 self.state.current_param_value.clear();
             }
         }
         Ok(())
     }
-    
+
     /// Finalize the current parameter, resetting state for the next parameter
     fn finalize_parameter(&mut self) -> Result<(), UIError> {
         // Reset state for next parameter
