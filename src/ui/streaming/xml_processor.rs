@@ -1,6 +1,6 @@
+use super::StreamProcessorTrait;
 use crate::llm::StreamingChunk;
 use crate::ui::{UIError, UserInterface};
-use super::StreamProcessorTrait;
 use anyhow::Result;
 use std::sync::Arc;
 

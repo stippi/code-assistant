@@ -12,6 +12,8 @@ mod xml_processor;
 #[cfg(test)]
 mod json_processor_tests;
 #[cfg(test)]
+mod test_utils;
+#[cfg(test)]
 mod xml_processor_tests;
 
 // Re-export the display fragments and other types needed by the UI

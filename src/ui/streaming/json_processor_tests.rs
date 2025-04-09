@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod json_processor_tests {
     use crate::llm::StreamingChunk;
-    use crate::ui::streaming::xml_processor_tests::TestUI;
+    use crate::ui::streaming::test_utils::{assert_fragments_match, TestUI};
     use crate::ui::streaming::{JsonStreamProcessor, StreamProcessorTrait};
     use crate::ui::DisplayFragment;
     use std::sync::Arc;
@@ -39,69 +39,6 @@ mod json_processor_tests {
         }
 
         test_ui.get_fragments()
-    }
-
-    // Helper function for comparing expected and actual fragments
-    fn assert_fragments_match(expected: &[DisplayFragment], actual: &[DisplayFragment]) {
-        assert_eq!(
-            expected.len(),
-            actual.len(),
-            "Different number of fragments. Expected {}, got {}",
-            expected.len(),
-            actual.len()
-        );
-
-        for (i, (expected, actual)) in expected.iter().zip(actual.iter()).enumerate() {
-            match (expected, actual) {
-                (
-                    DisplayFragment::PlainText(expected_text),
-                    DisplayFragment::PlainText(actual_text),
-                ) => assert_eq!(expected_text, actual_text),
-                (
-                    DisplayFragment::ThinkingText(expected_text),
-                    DisplayFragment::ThinkingText(actual_text),
-                ) => assert_eq!(expected_text, actual_text),
-                (
-                    DisplayFragment::ToolName {
-                        name: expected_name,
-                        id: expected_id,
-                    },
-                    DisplayFragment::ToolName {
-                        name: actual_name,
-                        id: actual_id,
-                    },
-                ) => {
-                    assert_eq!(expected_name, actual_name);
-                    assert_eq!(expected_id, actual_id);
-                }
-                (
-                    DisplayFragment::ToolParameter {
-                        name: expected_name,
-                        value: expected_value,
-                        tool_id: expected_tool_id,
-                    },
-                    DisplayFragment::ToolParameter {
-                        name: actual_name,
-                        value: actual_value,
-                        tool_id: actual_tool_id,
-                    },
-                ) => {
-                    assert_eq!(expected_name, actual_name);
-                    assert_eq!(expected_value, actual_value);
-                    assert_eq!(expected_tool_id, actual_tool_id);
-                }
-                (
-                    DisplayFragment::ToolEnd { id: expected_id },
-                    DisplayFragment::ToolEnd { id: actual_id },
-                ) => {
-                    assert_eq!(expected_id, actual_id);
-                }
-                _ => panic!(
-                    "Fragment type mismatch at position {}: \nExpected: {:?}\nActual: {:?}",
-                    i, expected, actual
-                ),
-            }
-        }
     }
 
     #[test]
