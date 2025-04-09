@@ -45,6 +45,8 @@ struct JsonProcessorState {
     param_value_nesting: i32,
     /// Track special characters in the parameter value for proper batching
     collecting_special_value: bool,
+    /// Track if we're inside a string within a nested object/array
+    in_nested_quotes: bool,
 }
 
 impl Default for JsonProcessorState {
@@ -61,6 +63,7 @@ impl Default for JsonProcessorState {
             buffer: String::new(),
             param_value_nesting: 0,
             collecting_special_value: false,
+            in_nested_quotes: false,
         }
     }
 }
@@ -109,6 +112,7 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                         self.state.escaped = false;
                         self.state.param_value_nesting = 0;
                         self.state.collecting_special_value = false;
+                        self.state.in_nested_quotes = false;
 
                         // Send the tool name to UI
                         self.ui.display_fragment(&DisplayFragment::ToolName {
@@ -136,6 +140,11 @@ impl JsonStreamProcessor {
         // Combine buffer with new content
         let text = format!("{}{}", self.state.buffer, content);
         self.state.buffer.clear();
+
+        // If we're continuing to process a complex value, restore the proper quote state
+        if self.state.collecting_special_value && self.state.param_value_nesting > 0 {
+            self.state.in_quotes = self.state.in_nested_quotes;
+        }
 
         // Process each character in the JSON
         let mut chars = text.chars().peekable();
@@ -317,6 +326,11 @@ impl JsonStreamProcessor {
                         // Toggle quote state
                         self.state.in_quotes = !self.state.in_quotes;
 
+                        // If we're in a nested object/array, also track quotes for complex values
+                        if self.state.collecting_special_value && self.state.param_value_nesting > 0 {
+                            self.state.in_nested_quotes = self.state.in_quotes;
+                        }
+
                         if self.state.json_state == JsonParseState::ExpectingParamName
                             && self.state.in_quotes
                         {
@@ -493,7 +507,8 @@ impl JsonStreamProcessor {
                             }
                         }
                     } else if self.state.json_state == JsonParseState::InParamValue
-                        && self.state.param_value_nesting > 0 {
+                        && self.state.param_value_nesting > 0
+                    {
                         // Whitespace in nested structures (arrays/objects) is preserved
                         self.state.current_param_value.push(c);
                         if !self.state.collecting_special_value {
@@ -554,16 +569,19 @@ impl JsonStreamProcessor {
         &mut self,
         open_char: char,
         close_char: char,
-        chars: &mut std::iter::Peekable<std::str::Chars>
+        chars: &mut std::iter::Peekable<std::str::Chars>,
     ) -> Result<bool, UIError> {
         let mut nesting = 1; // Start at 1 because we've already seen the opening character
-        let mut in_string = false;
+        // Use cached state if we're continuing from a previous chunk
+        let mut in_string = self.state.in_nested_quotes;
         let mut escaped = false;
 
         while let Some(&next) = chars.peek() {
             // Handle string quoting separately
             if next == '"' && !escaped {
                 in_string = !in_string;
+                // Update state for chunk boundaries
+                self.state.in_nested_quotes = in_string;
             } else if !in_string {
                 // Only count nesting when not inside a string
                 if next == open_char {
@@ -606,14 +624,16 @@ impl JsonStreamProcessor {
         }
 
         // If we reach here, the complex value is incomplete
-        self.emit_parameter()?;
+        // Make sure we keep the in_string state for the next chunk
+        self.state.in_nested_quotes = in_string;
+        // Don't emit the parameter yet since it's incomplete
         Ok(false)
     }
 
     /// Helper method to collect a primitive value (number or boolean)
     fn collect_primitive_value(
         &mut self,
-        chars: &mut std::iter::Peekable<std::str::Chars>
+        chars: &mut std::iter::Peekable<std::str::Chars>,
     ) -> Result<(), UIError> {
         while let Some(&next) = chars.peek() {
             match next {

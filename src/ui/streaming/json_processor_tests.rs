@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod json_processor_tests {
     use crate::llm::StreamingChunk;
-    use crate::ui::streaming::test_utils::{assert_fragments_match, chunk_str, TestUI};
+    use crate::ui::streaming::test_utils::{
+        assert_fragments_match, chunk_str, print_fragments, TestUI,
+    };
     use crate::ui::streaming::{JsonStreamProcessor, StreamProcessorTrait};
     use crate::ui::DisplayFragment;
     use std::sync::Arc;
@@ -190,6 +192,8 @@ mod json_processor_tests {
 
         // Due to streaming, nested objects might be split into multiple fragments
         let fragments = process_json_chunks(&chunks, "list_files", "list-123");
+        print_fragments(&fragments);
+
         assert_fragments_match(&expected_fragments, &fragments);
     }
 }
