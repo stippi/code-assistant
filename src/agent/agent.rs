@@ -9,7 +9,7 @@ use crate::tools::{
     TOOL_TAG_PREFIX,
 };
 use crate::types::*;
-use crate::ui::{streaming::StreamProcessor, UIMessage, UserInterface};
+use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
 use percent_encoding;
@@ -631,7 +631,7 @@ impl Agent {
 
         // Create a StreamProcessor and use it to process streaming chunks
         let ui = Arc::clone(&self.ui);
-        let processor = Arc::new(Mutex::new(StreamProcessor::new(ui)));
+        let processor = Arc::new(Mutex::new(create_stream_processor(self.tool_mode, ui)));
 
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
             let mut processor_guard = processor.lock().unwrap();

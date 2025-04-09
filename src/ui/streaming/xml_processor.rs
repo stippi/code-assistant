@@ -1,5 +1,6 @@
 use crate::llm::StreamingChunk;
 use crate::ui::{UIError, UserInterface};
+use super::StreamProcessorTrait;
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -58,8 +59,8 @@ impl Default for ProcessorState {
     }
 }
 
-/// Manages the conversion of LLM streaming chunks to display fragments
-pub struct StreamProcessor {
+/// Manages the conversion of LLM streaming chunks to display fragments using XML-style tags
+pub struct XmlStreamProcessor {
     state: ProcessorState,
     ui: Arc<Box<dyn UserInterface>>,
 }
@@ -75,8 +76,9 @@ enum TagType {
     ParamEnd,
 }
 
-impl StreamProcessor {
-    pub fn new(ui: Arc<Box<dyn UserInterface>>) -> Self {
+// Implement the common StreamProcessorTrait
+impl StreamProcessorTrait for XmlStreamProcessor {
+    fn new(ui: Arc<Box<dyn UserInterface>>) -> Self {
         Self {
             state: ProcessorState::default(),
             ui,
@@ -84,7 +86,7 @@ impl StreamProcessor {
     }
 
     /// Process a streaming chunk and send display fragments to the UI
-    pub fn process(&mut self, chunk: &StreamingChunk) -> Result<(), UIError> {
+    fn process(&mut self, chunk: &StreamingChunk) -> Result<(), UIError> {
         match chunk {
             // For native thinking chunks, send directly as ThinkingText
             StreamingChunk::Thinking(text) => self
@@ -118,7 +120,9 @@ impl StreamProcessor {
             StreamingChunk::Text(text) => self.process_text_with_tags(text),
         }
     }
+}
 
+impl XmlStreamProcessor {
     /// Process text that may contain <thinking>, <tool:>, and <param:> tags
     fn process_text_with_tags(&mut self, text: &str) -> Result<(), UIError> {
         // Combine buffer with new text

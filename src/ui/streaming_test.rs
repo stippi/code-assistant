@@ -1,4 +1,4 @@
-use super::streaming::{DisplayFragment, StreamProcessor};
+use super::streaming::{DisplayFragment, StreamProcessorTrait, XmlStreamProcessor};
 use crate::llm::StreamingChunk;
 use crate::ui::{ToolStatus, UIError, UserInterface};
 use anyhow::Result;
@@ -135,7 +135,7 @@ fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
 
-    let mut processor = StreamProcessor::new(ui_arc);
+    let mut processor = XmlStreamProcessor::new(ui_arc);
 
     // Split text into small chunks and process each one
     for chunk in chunk_str(text, chunk_size) {
@@ -150,6 +150,7 @@ mod tests {
     use super::*;
 
     // Helper function to print fragments for debugging
+    #[allow(dead_code)]
     fn print_fragments(fragments: &[DisplayFragment]) {
         println!("Collected {} fragments:", fragments.len());
         for (i, fragment) in fragments.iter().enumerate() {
@@ -163,7 +164,7 @@ mod tests {
                     name,
                     value,
                     tool_id,
-                } => println!("  [{i}] ToolParam: {name}={value} (tool_id: {tool_id})"),
+                } => println!("  [{i}] ToolParameter: {name}={value} (tool_id: {tool_id})"),
                 DisplayFragment::ToolEnd { id } => println!("  [{i}] ToolEnd: (id: {id})"),
             }
         }
@@ -231,7 +232,6 @@ mod tests {
     fn test_param_tag_hiding() {
         let input = "<thinking>The user has not provided a task.</thinking>\nI'll use the ask_user tool.\n<tool:ask_user>\n<param:question>What would you like to know?</param:question>\n</tool:ask_user>";
 
-        // Define expected fragments
         let expected_fragments = vec![
             DisplayFragment::ThinkingText("The user has not provided a task.".to_string()),
             DisplayFragment::PlainText("I'll use the ask_user tool.".to_string()),
@@ -252,19 +252,14 @@ mod tests {
         // Process with very small chunks (3 chars each) to test tag handling across chunks
         let test_ui = process_chunked_text(input, 3);
 
-        // Get fragments and print for debugging
         let fragments = test_ui.get_fragments();
-        print_fragments(&fragments);
-
-        // Check that fragments match expected sequence
         assert_fragments_match(&expected_fragments, &fragments);
     }
 
     #[test]
-    fn test_text_and_tool_in_one_line() -> Result<()> {
+    fn test_text_and_tool_in_one_line() {
         let input = "Let me read some files for you using <tool:read_files><param:path>src/main.rs</param:path></tool:read_files>";
 
-        // Define expected fragments
         let expected_fragments = vec![
             DisplayFragment::PlainText("Let me read some files for you using ".to_string()),
             DisplayFragment::ToolName {
@@ -284,21 +279,14 @@ mod tests {
         // Process with chunk size that splits the tool tag
         let test_ui = process_chunked_text(input, 10);
 
-        // Get fragments and print for debugging
         let fragments = test_ui.get_fragments();
-        print_fragments(&fragments);
-
-        // Check that fragments match expected sequence
         assert_fragments_match(&expected_fragments, &fragments);
-
-        Ok(())
     }
 
     #[test]
-    fn test_complex_tool_call_with_multiple_params_and_linebreaks() -> Result<()> {
+    fn test_complex_tool_call_with_multiple_params_and_linebreaks() {
         let input = "I understand.\n\nLet me search for specific files\n<tool:search_files>\n<param:regex>main function</param:regex>\n</tool:search_files>";
 
-        // Define expected fragments
         let expected_fragments = vec![
             DisplayFragment::PlainText(
                 "I understand.\n\nLet me search for specific files".to_string(),
@@ -307,7 +295,6 @@ mod tests {
                 name: "search_files".to_string(),
                 id: "ignored".to_string(),
             },
-            // One parameter - regex
             DisplayFragment::ToolParameter {
                 name: "regex".to_string(),
                 value: "main function".to_string(),
@@ -321,28 +308,20 @@ mod tests {
         // Process with chunk size that splits both tags and content
         let test_ui = process_chunked_text(input, 12);
 
-        // Get fragments and print for debugging
         let fragments = test_ui.get_fragments();
-        print_fragments(&fragments);
-
-        // Check that fragments match expected sequence
         assert_fragments_match(&expected_fragments, &fragments);
-
-        Ok(())
     }
 
     #[test]
-    fn test_complex_tool_call_with_brackets() -> Result<()> {
+    fn test_complex_tool_call_with_brackets() {
         let input = "I'll replace condition.\n<tool:replace_in_file>\n<param:path>src/main.ts</param:path>\n<param:diff>\n<<<<<<< SEARCH\nif a > b {\n=======\nif b <= a {\n>>>>>>> REPLACE\n</param:diff>\n</tool:replace_in_file>";
 
-        // Define expected fragments - order of parameters might vary
         let expected_fragments = vec![
             DisplayFragment::PlainText("I'll replace condition.".to_string()),
             DisplayFragment::ToolName {
                 name: "replace_in_file".to_string(),
                 id: "ignored".to_string(),
             },
-            // Parameters in expected order
             DisplayFragment::ToolParameter {
                 name: "path".to_string(),
                 value: "src/main.ts".to_string(),
@@ -362,22 +341,15 @@ mod tests {
         // Process with chunk size that splits both tags and content
         let test_ui = process_chunked_text(input, 12);
 
-        // Get fragments and print for debugging
         let fragments = test_ui.get_fragments();
-        print_fragments(&fragments);
-
-        // Check that fragments match expected sequence
         assert_fragments_match(&expected_fragments, &fragments);
-
-        Ok(())
     }
 
     #[test]
-    fn test_thinking_tag_handling() -> Result<()> {
+    fn test_thinking_tag_handling() {
         let input =
             "Let me think about this.\n<thinking>This is a complex problem.</thinking>\nI've decided.";
 
-        // Define expected fragments
         let expected_fragments = vec![
             DisplayFragment::PlainText("Let me think about this.".to_string()),
             DisplayFragment::ThinkingText("This is a complex problem.".to_string()),
@@ -387,18 +359,12 @@ mod tests {
         // Process with small chunks
         let test_ui = process_chunked_text(input, 5);
 
-        // Get fragments and print for debugging
         let fragments = test_ui.get_fragments();
-        print_fragments(&fragments);
-
-        // Check that fragments match expected sequence
         assert_fragments_match(&expected_fragments, &fragments);
-
-        Ok(())
     }
 
     #[test]
-    fn test_simple_text_processing() -> Result<()> {
+    fn test_simple_text_processing() {
         let input = "Hello, world!";
 
         // Define expected fragments
@@ -407,12 +373,7 @@ mod tests {
         // Process with small chunks
         let test_ui = process_chunked_text(input, 3);
 
-        // Get fragments
         let fragments = test_ui.get_fragments();
-
-        // Check that fragments match expected sequence
         assert_fragments_match(&expected_fragments, &fragments);
-
-        Ok(())
     }
 }
