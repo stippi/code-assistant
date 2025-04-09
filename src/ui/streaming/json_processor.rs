@@ -41,6 +41,8 @@ struct JsonProcessorState {
     escaped: bool,
     /// Buffer for incomplete chunks
     buffer: String,
+    /// Track nesting level within arrays and objects in parameter values
+    param_value_nesting: i32,
 }
 
 impl Default for JsonProcessorState {
@@ -55,6 +57,7 @@ impl Default for JsonProcessorState {
             in_quotes: false,
             escaped: false,
             buffer: String::new(),
+            param_value_nesting: 0,
         }
     }
 }
@@ -101,6 +104,7 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                         self.state.current_param_value.clear();
                         self.state.in_quotes = false;
                         self.state.escaped = false;
+                        self.state.param_value_nesting = 0;
 
                         // Send the tool name to UI
                         self.ui.display_fragment(&DisplayFragment::ToolName {
@@ -139,9 +143,17 @@ impl JsonStreamProcessor {
                         if self.state.json_depth == 1 {
                             // Start of the top-level object
                             self.state.json_state = JsonParseState::ExpectingParamName;
+                        } else if self.state.json_state == JsonParseState::ExpectingParamValue {
+                            // Start of object as parameter value
+                            self.state.json_state = JsonParseState::InParamValue;
+                            self.state.param_value_nesting += 1;
+                            self.state.current_param_value.push(c);
+                            self.emit_parameter()?;
                         } else if self.state.json_state == JsonParseState::InParamValue {
                             // Nested object in a parameter value
+                            self.state.param_value_nesting += 1;
                             self.state.current_param_value.push(c);
+                            self.emit_parameter()?;
                         }
                     } else if self.state.json_state == JsonParseState::InParamValue
                         || self.state.json_state == JsonParseState::InParamName
@@ -168,6 +180,7 @@ impl JsonStreamProcessor {
                             if self.state.json_depth == 0
                                 && self.state.json_state == JsonParseState::InParamValue
                             {
+                                self.state.current_param_value.push(c);
                                 self.emit_parameter()?;
                                 self.finalize_parameter()?;
                                 self.state.json_state = JsonParseState::None;
@@ -175,8 +188,18 @@ impl JsonStreamProcessor {
                                 && self.state.json_state == JsonParseState::InParamValue
                             {
                                 // Nested object close in a parameter value
+                                if self.state.param_value_nesting > 0 {
+                                    self.state.param_value_nesting -= 1;
+                                }
                                 self.state.current_param_value.push(c);
                                 self.emit_parameter()?;
+
+                                // If we're back at the top level of nesting in a value,
+                                // and we're at the end of the JSON, finalize the parameter
+                                if self.state.param_value_nesting == 0 && self.state.json_depth == 0 {
+                                    self.finalize_parameter()?;
+                                    self.state.json_state = JsonParseState::None;
+                                }
                             }
                         }
                     } else if self.state.json_state == JsonParseState::InParamValue
@@ -185,6 +208,7 @@ impl JsonStreamProcessor {
                         // Literal '}' inside quotes
                         if self.state.json_state == JsonParseState::InParamValue {
                             self.state.current_param_value.push(c);
+                            self.emit_parameter()?;
                         } else if self.state.json_state == JsonParseState::InParamName {
                             if let Some(name) = &mut self.state.current_param_name {
                                 name.push(c);
@@ -255,11 +279,18 @@ impl JsonStreamProcessor {
                 }
                 ',' => {
                     if !self.state.in_quotes {
-                        // End of a value followed by next parameter
+                        // Handle commas based on nesting level
                         if self.state.json_state == JsonParseState::InParamValue {
-                            self.emit_parameter()?;
-                            self.finalize_parameter()?;
-                            self.state.json_state = JsonParseState::ExpectingParamName;
+                            if self.state.param_value_nesting > 0 {
+                                // Comma inside a nested structure (array or object)
+                                self.state.current_param_value.push(c);
+                                self.emit_parameter()?;
+                            } else {
+                                // Comma between top-level parameters
+                                self.emit_parameter()?;
+                                self.finalize_parameter()?;
+                                self.state.json_state = JsonParseState::ExpectingParamName;
+                            }
                         }
                     } else {
                         // Literal ',' in quoted string
@@ -295,41 +326,100 @@ impl JsonStreamProcessor {
                         self.state.escaped = false;
                     }
                 }
-                // Handle numeric literals, booleans and arrays
-                '0'..='9' | '-' | 't' | 'f' | 'n' | '[' => {
+                // Handle arrays specifically (now separate from numbers/booleans)
+                '[' => {
+                    if !self.state.in_quotes {
+                        if self.state.json_state == JsonParseState::ExpectingParamValue {
+                            // Start of an array as a parameter value
+                            self.state.json_state = JsonParseState::InParamValue;
+                            self.state.param_value_nesting += 1;
+                            self.state.current_param_value.push(c);
+                            self.emit_parameter()?;
+                        } else if self.state.json_state == JsonParseState::InParamValue {
+                            // Nested array inside a parameter value
+                            self.state.param_value_nesting += 1;
+                            self.state.current_param_value.push(c);
+                            self.emit_parameter()?;
+                        }
+                    } else if self.state.in_quotes {
+                        // Literal '[' in a quoted string
+                        if self.state.json_state == JsonParseState::InParamValue {
+                            self.state.current_param_value.push(c);
+                            self.emit_parameter()?;
+                        } else if self.state.json_state == JsonParseState::InParamName {
+                            if let Some(name) = &mut self.state.current_param_name {
+                                name.push(c);
+                            }
+                        }
+                    }
+                    self.state.escaped = false;
+                }
+                ']' => {
+                    if !self.state.in_quotes {
+                        if self.state.json_state == JsonParseState::InParamValue {
+                            // End of an array in a parameter value
+                            if self.state.param_value_nesting > 0 {
+                                self.state.param_value_nesting -= 1;
+                            }
+                            self.state.current_param_value.push(c);
+                            self.emit_parameter()?;
+
+                            // If we're back at the top level, the parameter is complete
+                            if self.state.param_value_nesting == 0 {
+                                self.state.json_state = JsonParseState::ExpectingParamName;
+                            }
+                        }
+                    } else if self.state.in_quotes {
+                        // Literal ']' in a quoted string
+                        if self.state.json_state == JsonParseState::InParamValue {
+                            self.state.current_param_value.push(c);
+                            self.emit_parameter()?;
+                        } else if self.state.json_state == JsonParseState::InParamName {
+                            if let Some(name) = &mut self.state.current_param_name {
+                                name.push(c);
+                            }
+                        }
+                    }
+                    self.state.escaped = false;
+                }
+                // Handle numeric literals and booleans
+                '0'..='9' | '-' | 't' | 'f' | 'n' => {
                     if !self.state.in_quotes
                         && self.state.json_state == JsonParseState::ExpectingParamValue
                     {
                         // Start of a non-string value (number/boolean/null)
                         self.state.json_state = JsonParseState::InParamValue;
                         self.state.current_param_value.push(c);
-
-                        // Emit incremental value
                         self.emit_parameter()?;
 
-                        // Process each character one by one, emitting incrementally
-                        let mut peek_buffer = String::new();
+                        // Process characters one by one
+                        let mut value_complete = false;
 
                         while let Some(next) = chars.peek() {
-                            if ![',', '}'].contains(next) {
-                                peek_buffer.push(*next);
-                                chars.next(); // Consume the peeked character
-
-                                // When we have a reasonable chunk, emit it
-                                if peek_buffer.len() >= 1 {
-                                    self.state.current_param_value.push_str(&peek_buffer);
-                                    self.emit_parameter()?;
-                                    peek_buffer.clear();
+                            match next {
+                                // At a comma or brace, we're done with this value
+                                ',' | '}' => {
+                                    value_complete = true;
+                                    break;
                                 }
-                            } else {
-                                break;
+                                // Whitespace outside quotes delimits primitive values
+                                ' ' | '\n' | '\t' | '\r' if self.state.param_value_nesting == 0 => {
+                                    value_complete = true;
+                                    break;
+                                }
+                                // Otherwise keep consuming characters as part of the value
+                                _ => {
+                                    self.state.current_param_value.push(*next);
+                                    self.emit_parameter()?;
+                                    chars.next(); // Consume the character
+                                }
                             }
                         }
 
-                        // Emit any remaining buffer
-                        if !peek_buffer.is_empty() {
-                            self.state.current_param_value.push_str(&peek_buffer);
-                            self.emit_parameter()?;
+                        if value_complete && self.state.param_value_nesting == 0 {
+                            // At the end of a primitive value and not in a nested structure
+                            self.finalize_parameter()?;
+                            self.state.json_state = JsonParseState::ExpectingParamName;
                         }
                     } else if self.state.in_quotes {
                         // Number inside quotes is part of the string
