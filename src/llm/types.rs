@@ -69,6 +69,8 @@ pub enum ContentBlock {
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
     },
 }
 

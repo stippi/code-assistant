@@ -615,7 +615,11 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
             "project": project,
             "paths": paths
         }),
-        Tool::Summarize { project, path, summary } => serde_json::json!({
+        Tool::Summarize {
+            project,
+            path,
+            summary,
+        } => serde_json::json!({
             "project": project,
             "path": path,
             "summary": summary
@@ -1182,14 +1186,24 @@ async fn test_replace_in_file_error_handling() -> Result<()> {
     // The error message should be a user message in the third request
     let error_request = &requests[2];
     assert_eq!(error_request.messages.len(), 3); // Working Memory + Tool Response + Error
-    if let MessageContent::Text(content) = &error_request.messages[2].content {
+    if let MessageContent::Structured(content_blocks) = &error_request.messages[2].content {
         assert!(
-            content.contains("Could not find SEARCH block"),
-            "Expected error message about missing search content, got:\n{}",
-            content
+            content_blocks.len() == 1,
+            "Expected there to be one content block, got: {}",
+            content_blocks.len()
         );
+
+        if let ContentBlock::ToolResult { content, .. } = &content_blocks[0] {
+            assert!(
+                content.contains("Could not find SEARCH block"),
+                "Expected error message about missing search content, got:\n{}",
+                content
+            );
+        } else {
+            panic!("Expected ContentBlock::ToolResult but got a different variant");
+        }
     } else {
-        panic!("Expected error message to be text content");
+        panic!("Expected error message to be content blocks");
     }
 
     Ok(())
@@ -1411,11 +1425,28 @@ async fn test_read_files_line_range_error_handling() -> Result<()> {
     // The error message should be a user message in the second request
     let error_request = &requests[1];
     assert_eq!(error_request.messages.len(), 3); // Working Memory + Tool Response + Error
-    if let MessageContent::Text(content) = &error_request.messages[2].content {
-        assert!(content.contains("Error executing action"));
-        assert!(content.contains("Invalid line range")); // Check for specific line range error
+    if let MessageContent::Structured(content_blocks) = &error_request.messages[2].content {
+        assert!(
+            content_blocks.len() == 1,
+            "Expected there to be one content block, got: {}",
+            content_blocks.len()
+        );
+
+        if let ContentBlock::ToolResult {
+            content, is_error, ..
+        } = &content_blocks[0]
+        {
+            assert!(content.contains("Invalid line range")); // Check for specific line range error
+            if let Some(is_error) = is_error {
+                assert!(is_error)
+            } else {
+                panic!("Expected is_error to be present");
+            }
+        } else {
+            panic!("Expected ContentBlock::ToolResult but got a different variant");
+        }
     } else {
-        panic!("Expected error message to be text content");
+        panic!("Expected error message to be content blocks");
     }
 
     Ok(())

@@ -191,6 +191,7 @@ impl VertexClient {
                     ContentBlock::ToolResult {
                         tool_use_id,
                         content,
+                        ..
                     } => Some(VertexPart {
                         text: None,
                         function_call: None,
