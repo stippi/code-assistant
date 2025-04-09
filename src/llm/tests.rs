@@ -18,7 +18,8 @@ use tokio::net::TcpListener;
 struct TestCase {
     name: String,
     request: LLMRequest,
-    expected_chunks: Vec<String>,
+    expected_text_chunks: Vec<String>,
+    expected_tool_json: Option<String>,
     expected_response: LLMResponse,
 }
 
@@ -34,7 +35,8 @@ impl TestCase {
                 system_prompt: "You are a helpful assistant.".to_string(),
                 tools: None,
             },
-            expected_chunks: vec!["Hi!".to_string(), " How can I help you today?".to_string()],
+            expected_text_chunks: vec!["Hi!".to_string(), " How can I help you today?".to_string()],
+            expected_tool_json: None,
             expected_response: LLMResponse {
                 content: vec![ContentBlock::Text {
                     text: "Hi! How can I help you today?".to_string(),
@@ -73,7 +75,8 @@ impl TestCase {
                     }),
                 }]),
             },
-            expected_chunks: vec![],
+            expected_text_chunks: vec![],
+            expected_tool_json: Some(r#"{"location":"current"}"#.to_string()),
             expected_response: LLMResponse {
                 content: vec![ContentBlock::ToolUse {
                     id: "tool-0".to_string(),
@@ -95,30 +98,79 @@ impl TestCase {
 #[derive(Clone)]
 struct ChunkCollector {
     chunks: Arc<Mutex<Vec<String>>>,
+    tool_chunks: Arc<Mutex<Vec<(String, Option<String>, Option<String>)>>>, // (content, tool_name, tool_id)
 }
 
 impl ChunkCollector {
     fn new() -> Self {
         Self {
             chunks: Arc::new(Mutex::new(Vec::new())),
+            tool_chunks: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     fn callback(&self) -> StreamingCallback {
         let chunks = self.chunks.clone();
+        let tool_chunks = self.tool_chunks.clone();
+
         Box::new(move |chunk: &StreamingChunk| {
-            let text = match chunk {
-                StreamingChunk::Text(text) => text.clone(),
-                StreamingChunk::Thinking(text) => format!("<thinking>{}</thinking>", text),
-                StreamingChunk::InputJson { content, .. } => content.clone(),
+            match chunk {
+                StreamingChunk::Text(text) => {
+                    chunks.lock().unwrap().push(text.clone());
+                }
+                StreamingChunk::Thinking(text) => {
+                    chunks
+                        .lock()
+                        .unwrap()
+                        .push(format!("<thinking>{}</thinking>", text));
+                }
+                StreamingChunk::InputJson {
+                    content,
+                    tool_name,
+                    tool_id,
+                } => {
+                    // Store tool chunks separately with metadata
+                    tool_chunks.lock().unwrap().push((
+                        content.clone(),
+                        tool_name.clone(),
+                        tool_id.clone(),
+                    ));
+                }
             };
-            chunks.lock().unwrap().push(text);
             Ok(())
         })
     }
 
     fn get_chunks(&self) -> Vec<String> {
         self.chunks.lock().unwrap().clone()
+    }
+
+    // Get all tool JSON chunks with their metadata
+    fn get_tool_chunks(&self) -> Vec<(String, Option<String>, Option<String>)> {
+        self.tool_chunks.lock().unwrap().clone()
+    }
+
+    // Calculate a normalized JSON string from possibly fragmented chunks
+    fn get_normalized_json(&self) -> Option<String> {
+        let tool_chunks = self.get_tool_chunks();
+        if tool_chunks.is_empty() {
+            return None;
+        }
+
+        // Concatenate all JSON fragments
+        let combined_json = tool_chunks
+            .iter()
+            .map(|(content, _, _)| content.clone())
+            .collect::<Vec<_>>()
+            .join("");
+
+        // Try to parse and re-serialize to normalize
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&combined_json) {
+            serde_json::to_string(&parsed).ok()
+        } else {
+            // If it's not valid JSON yet (partial), return the raw concatenated string
+            Some(combined_json)
+        }
     }
 }
 
@@ -621,9 +673,50 @@ async fn run_provider_tests<T: MockResponseGenerator + Clone + 'static>(
         );
         assert_eq!(
             collector.get_chunks(),
-            case.expected_chunks,
-            "Streaming chunks mismatch"
+            case.expected_text_chunks,
+            "Streaming text chunks mismatch for provider: {}",
+            provider_name
         );
+
+        // If we expect tool JSON, validate it
+        if let Some(expected_json) = &case.expected_tool_json {
+            let normalized_json = collector.get_normalized_json();
+
+            assert!(
+                normalized_json.is_some(),
+                "Expected tool JSON for provider {}, but none was received",
+                provider_name
+            );
+
+            if let Some(actual_json) = normalized_json {
+                // Parse both as JSON to compare structure, not exact format
+                let expected = serde_json::from_str::<serde_json::Value>(expected_json)?;
+                let actual =
+                    serde_json::from_str::<serde_json::Value>(&actual_json).map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to parse JSON from provider {}: {} - JSON was: {}",
+                            provider_name,
+                            e,
+                            actual_json
+                        )
+                    })?;
+
+                assert_eq!(
+                    expected, actual,
+                    "Tool JSON structure mismatch for provider: {}",
+                    provider_name
+                );
+            }
+        } else {
+            // If we don't expect tool JSON, make sure we didn't get any
+            let tool_chunks = collector.get_tool_chunks();
+            assert!(
+                tool_chunks.is_empty(),
+                "Provider {} sent unexpected tool chunks: {:?}",
+                provider_name,
+                tool_chunks
+            );
+        }
     }
 
     Ok(())
