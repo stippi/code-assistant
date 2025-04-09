@@ -169,6 +169,8 @@ Below are some topics that are likely the next focus.
 - **Agent improvements**: The working memory mode is not what LLMs are trained for and thus it doesn't work so well. Too many tokens are generated before calling the next tool. In the chat message history mode on the other hand, the total input token count can quickly grow out of hand. Especially when the messages contain multiple redundant copies of the exact same resources. I would like to explore ways to automatically prune the messages to avoid that.
 - **Agent native tool mode**: The stream filtering that detects different types of content blocks (thinking, output, tool calls, parameters), is currently optimized for the XML mode and should be improved for the native tools.
 - **Better search tool**: The current web search tool is very basic and doesn't work so well. Maybe an alternative tool using the Perplexity API would work better.
+- **Fuzzy matching search blocks**: Investigate the benefit of fuzzy matching search blocks. Currently, files are normalized (always `\n` line endings, no trailing white space). This increases the success rate of matching search blocks quite a bit, but certain ways of fuzzy matching might increase the success even more. Failed matches introduce quite a bit of inefficiency, since they almost always trigger the LLM to re-read a file (even when the error output of the `replace_in_file` tool includes the complete file and tells the LLM *not* to re-read the file).
+- **Compare approaches**: Create or re-use a benchmark to compare the approaches in the agent mode: Working Memory mode versus Message History. Native tools versus custom XML tool parsing. Compare percentage of tasks completed and cost.
 
 ## Contributing
 
