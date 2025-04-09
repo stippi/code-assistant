@@ -7,6 +7,7 @@ use crate::llm::StreamingChunk;
 use crate::agent::ToolMode;
 
 mod xml_processor;
+mod json_processor;
 
 // Re-export the display fragments and other types needed by the UI
 pub use xml_processor::DisplayFragment;
@@ -20,8 +21,9 @@ pub trait StreamProcessorTrait: Send + Sync {
     fn process(&mut self, chunk: &StreamingChunk) -> Result<(), UIError>;
 }
 
-// Export the concrete implementation
+// Export the concrete implementations
 pub use xml_processor::XmlStreamProcessor;
+pub use json_processor::JsonStreamProcessor;
 
 /// Factory function to create the appropriate processor based on tool mode
 pub fn create_stream_processor(
@@ -30,7 +32,7 @@ pub fn create_stream_processor(
 ) -> Box<dyn StreamProcessorTrait> {
     match tool_mode {
         ToolMode::Xml => Box::new(XmlStreamProcessor::new(ui)),
-        ToolMode::Native => Box::new(XmlStreamProcessor::new(ui)), // Temporarily use XML for both
+        ToolMode::Native => Box::new(JsonStreamProcessor::new(ui)),
     }
 }
 
