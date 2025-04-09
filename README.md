@@ -114,7 +114,7 @@ Environment variables:
 - `OPENAI_API_KEY`: Required when using the OpenAI provider
 - `GOOGLE_API_KEY`: Required when using the Vertex provider
 - `OPENROUTER_API_KEY`: Required when using the OpenRouter provider
-- Note: AI Core authentication is configured via deployment config file
+- Note: AI Core authentication is configured on the command line (the tool will prompt for the parameters and store them in your default keychain)
 
 Examples:
 ```bash
@@ -159,6 +159,16 @@ code-assistant server [OPTIONS]
 
 Available options:
 - `-v, --verbose`: Enable verbose logging
+
+## Roadmap
+
+This section is not really a roadmap, as the items are in no particular order.
+Below are some topics that are likely the next focus.
+
+- **UI improvements**: The text input for the user message is horrible. There is currently no markdown support or syntax highlighting for code blocks. There is a project [longbridge/gpui-component](https://github.com/longbridge/gpui-component) with a component library building on top of Zed's GPUI crate. It contains a lot of useful components and the license is more permissive than Zed's own components.
+- **Agent improvements**: The working memory mode is not what LLMs are trained for and thus it doesn't work so well. Too many tokens are generated before calling the next tool. In the chat message history mode on the other hand, the total input token count can quickly grow out of hand. Especially when the messages contain multiple redundant copies of the exact same resources. I would like to explore ways to automatically prune the messages to avoid that.
+- **Agent native tool mode**: The stream filtering that detects different types of content blocks (thinking, output, tool calls, parameters), is currently optimized for the XML mode and should be improved for the native tools.
+- **Better search tool**: The current web search tool is very basic and doesn't work so well. Maybe an alternative tool using the Perplexity API would work better.
 
 ## Contributing
 
