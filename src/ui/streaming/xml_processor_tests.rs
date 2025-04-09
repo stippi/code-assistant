@@ -1,4 +1,4 @@
-use super::streaming::{DisplayFragment, StreamProcessorTrait, XmlStreamProcessor};
+use super::{DisplayFragment, StreamProcessorTrait, XmlStreamProcessor};
 use crate::llm::StreamingChunk;
 use crate::ui::{ToolStatus, UIError, UserInterface};
 use anyhow::Result;

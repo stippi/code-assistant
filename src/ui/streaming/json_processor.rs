@@ -149,6 +149,7 @@ impl JsonStreamProcessor {
                         // Literal '{' inside quotes
                         if self.state.json_state == JsonParseState::InParamValue {
                             self.state.current_param_value.push(c);
+                            self.emit_parameter()?;
                         } else if self.state.json_state == JsonParseState::InParamName {
                             if let Some(name) = &mut self.state.current_param_name {
                                 name.push(c);
@@ -168,12 +169,14 @@ impl JsonStreamProcessor {
                                 && self.state.json_state == JsonParseState::InParamValue
                             {
                                 self.emit_parameter()?;
+                                self.finalize_parameter()?;
                                 self.state.json_state = JsonParseState::None;
                             } else if self.state.json_depth >= 1
                                 && self.state.json_state == JsonParseState::InParamValue
                             {
                                 // Nested object close in a parameter value
                                 self.state.current_param_value.push(c);
+                                self.emit_parameter()?;
                             }
                         }
                     } else if self.state.json_state == JsonParseState::InParamValue
@@ -217,6 +220,7 @@ impl JsonStreamProcessor {
                         {
                             // End of string parameter value
                             self.emit_parameter()?;
+                            self.finalize_parameter()?;
                             self.state.json_state = JsonParseState::ExpectingParamName;
                         }
                     } else {
@@ -254,12 +258,14 @@ impl JsonStreamProcessor {
                         // End of a value followed by next parameter
                         if self.state.json_state == JsonParseState::InParamValue {
                             self.emit_parameter()?;
+                            self.finalize_parameter()?;
                             self.state.json_state = JsonParseState::ExpectingParamName;
                         }
                     } else {
                         // Literal ',' in quoted string
                         if self.state.json_state == JsonParseState::InParamValue {
                             self.state.current_param_value.push(c);
+                            self.emit_parameter()?;
                         } else if self.state.json_state == JsonParseState::InParamName {
                             if let Some(name) = &mut self.state.current_param_name {
                                 name.push(c);
@@ -289,30 +295,41 @@ impl JsonStreamProcessor {
                         self.state.escaped = false;
                     }
                 }
-                // Handle numeric literals and booleans
-                '0'..='9' | '-' | 't' | 'f' | 'n' => {
+                // Handle numeric literals, booleans and arrays
+                '0'..='9' | '-' | 't' | 'f' | 'n' | '[' => {
                     if !self.state.in_quotes
                         && self.state.json_state == JsonParseState::ExpectingParamValue
                     {
                         // Start of a non-string value (number/boolean/null)
                         self.state.json_state = JsonParseState::InParamValue;
-                        self.state.current_param_value = c.to_string();
+                        self.state.current_param_value.push(c);
 
-                        // Keep consuming until we hit comma or closing brace
-                        let mut value = String::new();
-                        let mut in_literal = true;
-                        while in_literal {
-                            match chars.peek() {
-                                Some(next) if ![',', '}'].contains(next) => {
-                                    value.push(*next);
-                                    chars.next(); // Consume the peeked character
+                        // Emit incremental value
+                        self.emit_parameter()?;
+
+                        // Process each character one by one, emitting incrementally
+                        let mut peek_buffer = String::new();
+
+                        while let Some(next) = chars.peek() {
+                            if ![',', '}'].contains(next) {
+                                peek_buffer.push(*next);
+                                chars.next(); // Consume the peeked character
+
+                                // When we have a reasonable chunk, emit it
+                                if peek_buffer.len() >= 1 {
+                                    self.state.current_param_value.push_str(&peek_buffer);
+                                    self.emit_parameter()?;
+                                    peek_buffer.clear();
                                 }
-                                _ => in_literal = false,
+                            } else {
+                                break;
                             }
                         }
 
-                        if !value.is_empty() {
-                            self.state.current_param_value.push_str(&value);
+                        // Emit any remaining buffer
+                        if !peek_buffer.is_empty() {
+                            self.state.current_param_value.push_str(&peek_buffer);
+                            self.emit_parameter()?;
                         }
                     } else if self.state.in_quotes {
                         // Number inside quotes is part of the string
@@ -384,16 +401,25 @@ impl JsonStreamProcessor {
     /// Emit a parameter to the UI
     fn emit_parameter(&mut self) -> Result<(), UIError> {
         if let Some(param_name) = &self.state.current_param_name {
-            self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                name: param_name.clone(),
-                value: self.state.current_param_value.clone(),
-                tool_id: self.state.tool_id.clone(),
-            })?;
+            if !self.state.current_param_value.is_empty() {
+                self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                    name: param_name.clone(),
+                    value: self.state.current_param_value.clone(),
+                    tool_id: self.state.tool_id.clone(),
+                })?;
 
-            // Reset state for next parameter
-            self.state.current_param_name = None;
-            self.state.current_param_value.clear();
+                // Clear the current value after emitting, but keep the parameter name
+                self.state.current_param_value.clear();
+            }
         }
+        Ok(())
+    }
+
+    /// Finalize the current parameter, resetting state for the next parameter
+    fn finalize_parameter(&mut self) -> Result<(), UIError> {
+        // Reset state for next parameter
+        self.state.current_param_name = None;
+        self.state.current_param_value.clear();
         Ok(())
     }
 }
