@@ -514,14 +514,22 @@ impl OpenAIClient {
                                         // Update existing tool
                                         if let Some(args) = &function.arguments {
                                             if let Some(ref mut curr_func) = curr_tool.function {
-                                                curr_func.arguments = Some(
-                                                    curr_func
-                                                        .arguments
-                                                        .as_ref()
-                                                        .unwrap_or(&String::new())
-                                                        .clone()
-                                                        + args,
-                                                );
+                                                // Store previous arguments for diffing
+                                                let prev_args = curr_func
+                                                    .arguments
+                                                    .as_ref()
+                                                    .unwrap_or(&String::new())
+                                                    .clone();
+
+                                                // Update arguments
+                                                curr_func.arguments = Some(prev_args.clone() + args);
+
+                                                // Stream the JSON input to the callback
+                                                callback(&StreamingChunk::InputJson {
+                                                    content: args.clone(),
+                                                    tool_name: curr_tool.function.as_ref().and_then(|f| f.name.clone()),
+                                                    tool_id: curr_tool.id.clone(),
+                                                })?;
                                             }
                                         }
                                     }

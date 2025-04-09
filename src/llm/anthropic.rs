@@ -559,29 +559,22 @@ impl AnthropicClient {
                                         current_content.push_str(delta_text);
                                     }
                                     ContentDelta::InputJsonDelta { partial_json } => {
-                                        // Accumulate JSON parts as string and send as specific type
-                                        /*
-                                        // TODO: Keep this here, but disable it. For now, the other providers don't send parameter chunks.
-                                        // The StreamingProcessor shall eventuall emit DisplayFragment::ToolParameter chunks,
-                                        // but the implementation is incomplete anyway. It does work already in XML-tools mode.
+                                        let (tool_name, tool_id) =
+                                            blocks.last().map_or((None, None), |block| {
+                                                if let ContentBlock::ToolUse { name, id, .. } =
+                                                    block
+                                                {
+                                                    (Some(name.clone()), Some(id.clone()))
+                                                } else {
+                                                    (None, None)
+                                                }
+                                            });
+
                                         callback(&StreamingChunk::InputJson {
                                             content: partial_json.clone(),
-                                            tool_name: blocks.last().and_then(|block| {
-                                                if let ContentBlock::ToolUse { name, .. } = block {
-                                                    Some(name.clone())
-                                                } else {
-                                                    None
-                                                }
-                                            }),
-                                            tool_id: blocks.last().and_then(|block| {
-                                                if let ContentBlock::ToolUse { id, .. } = block {
-                                                    Some(id.clone())
-                                                } else {
-                                                    None
-                                                }
-                                            }),
+                                            tool_name,
+                                            tool_id,
                                         })?;
-                                         */
 
                                         current_content.push_str(partial_json);
                                     }

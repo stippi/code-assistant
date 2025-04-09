@@ -231,6 +231,16 @@ impl OllamaClient {
 
                             // Handle tool calls - only collect complete tool calls from the response
                             if let Some(chunk_tool_calls) = chunk_response.message.tool_calls {
+                                for tool_call in &chunk_tool_calls {
+                                    // Stream the JSON input to the callback
+                                    if let Some(arguments_str) = serde_json::to_string(&tool_call.function.arguments).ok() {
+                                        streaming_callback(&StreamingChunk::InputJson {
+                                            content: arguments_str,
+                                            tool_name: Some(tool_call.function.name.clone()),
+                                            tool_id: Some(format!("tool-{}", tool_calls.len())),
+                                        })?;
+                                    }
+                                }
                                 tool_calls.extend(chunk_tool_calls);
                             }
 
