@@ -9,7 +9,7 @@ use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use std::str::{self};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Response structure for Anthropic error messages
 #[derive(Debug, Serialize, serde::Deserialize)]
@@ -536,9 +536,17 @@ impl AnthropicClient {
                                             serde_json::Value::Null
                                         };
 
+                                        let tool_id = content_block.id.unwrap_or_default();
+                                        let tool_name = content_block.name.unwrap_or_default();
+
+                                        debug!(
+                                            "Creating ToolUse block with id={:?}, name={:?}",
+                                            tool_id, tool_name
+                                        );
+
                                         ContentBlock::ToolUse {
-                                            id: content_block.id.unwrap_or_default(),
-                                            name: content_block.name.unwrap_or_default(),
+                                            id: tool_id,
+                                            name: tool_name,
                                             input: input_json,
                                         }
                                     }
@@ -579,6 +587,7 @@ impl AnthropicClient {
                                                 {
                                                     (Some(name.clone()), Some(id.clone()))
                                                 } else {
+                                                    warn!("Last block is not a ToolUse type!");
                                                     (None, None)
                                                 }
                                             });
