@@ -196,8 +196,11 @@ impl VertexClient {
                         text: None,
                         function_call: None,
                         function_response: Some(VertexFunctionResponse {
-                            name: tool_use_id.clone(), // TODO: Should be function name
-                            response: serde_json::Value::String(content.clone()),
+                            // Extract the function name from the tool_use_id
+                            // Format is typically "tool-{name}-{index}"
+                            name: tool_use_id.split('-').nth(1).unwrap_or(tool_use_id).to_string(),
+                            // Wrap content in a proper JSON object
+                            response: json!({ "result": content }),
                         }),
                     }),
                     _ => None,
@@ -299,7 +302,7 @@ impl VertexClient {
                         .map(|(index, part)| {
                             if let Some(function_call) = part.function_call {
                                 ContentBlock::ToolUse {
-                                    id: format!("tool-{}", index), // Generate a unique ID
+                                    id: format!("tool-{}-{}", function_call.name, index), // Generate a unique ID with name
                                     name: function_call.name,
                                     input: function_call.args,
                                 }
@@ -382,8 +385,8 @@ impl VertexClient {
                                                 current_text.clear();
                                             }
 
-                                            // Generate a tool ID
-                                            let tool_id = format!("tool-{}", content_blocks.len());
+                                            // Generate a tool ID that includes the function name for later extraction
+                                            let tool_id = format!("tool-{}-{}", function_call.name, content_blocks.len());
 
                                             // Stream the JSON input for tools
                                             if let Some(args_str) = serde_json::to_string(&function_call.args).ok() {

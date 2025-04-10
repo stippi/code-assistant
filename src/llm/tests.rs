@@ -79,7 +79,7 @@ impl TestCase {
             expected_tool_json: Some(r#"{"location":"current"}"#.to_string()),
             expected_response: LLMResponse {
                 content: vec![ContentBlock::ToolUse {
-                    id: "tool-0".to_string(),
+                    id: "tool-get_weather-0".to_string(),
                     name: "get_weather".to_string(),
                     input: json!({"location": "current"}),
                 }],
@@ -207,7 +207,7 @@ impl MockResponseGenerator for OpenAIMockGenerator {
                     "message": {
                         "role": "assistant",
                         "tool_calls": [{
-                            "id": "tool-0",
+                            "id": "tool-get_weather-0",
                             "type": "function",
                             "function": {
                                 "name": "get_weather",
@@ -240,7 +240,7 @@ impl MockResponseGenerator for OpenAIMockGenerator {
             Some(_) => vec![
                 // Initial delta with function declaration
                 format!(
-                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{{\"index\":0,\"id\":\"tool-0\",\"type\":\"function\",\"function\":{{\"name\":\"get_weather\",\"arguments\":\"\"}}}}]}}}}]}}\n\n"
+                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{{\"index\":0,\"id\":\"tool-get_weather-0\",\"type\":\"function\",\"function\":{{\"name\":\"get_weather\",\"arguments\":\"\"}}}}]}}}}]}}\n\n"
                 ).into_bytes(),
                 // Arguments streaming in chunks
                 format!(
@@ -288,7 +288,7 @@ impl MockResponseGenerator for AnthropicMockGenerator {
             Some(_) => json!({
                 "content": [{
                     "type": "tool_use",
-                    "id": "tool-0",
+                    "id": "tool-get_weather-0",
                     "name": "get_weather",
                     "input": {"location": "current"}
                 }],
@@ -314,7 +314,7 @@ impl MockResponseGenerator for AnthropicMockGenerator {
             ],
             Some(_) => vec![
                 b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":15,\"output_tokens\":2}}}\n\n".to_vec(),
-                b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool-0\",\"name\":\"get_weather\"}}\n\n".to_vec(),
+                b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool-get_weather-0\",\"name\":\"get_weather\"}}\n\n".to_vec(),
                 b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"location\\\":\"}}\n\n".to_vec(),
                 b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"current\\\"}\"}}\n\n".to_vec(),
                 b"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n".to_vec(),

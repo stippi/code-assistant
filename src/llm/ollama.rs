@@ -162,7 +162,7 @@ impl OllamaClient {
         if let Some(tool_calls) = ollama_response.message.tool_calls {
             for (index, tool_call) in tool_calls.into_iter().enumerate() {
                 content.push(ContentBlock::ToolUse {
-                    id: format!("tool-{}", index),
+                    id: format!("tool-{}-{}", tool_call.function.name, index),
                     name: tool_call.function.name,
                     input: tool_call.function.arguments,
                 });
@@ -233,11 +233,17 @@ impl OllamaClient {
                             if let Some(chunk_tool_calls) = chunk_response.message.tool_calls {
                                 for tool_call in &chunk_tool_calls {
                                     // Stream the JSON input to the callback
-                                    if let Some(arguments_str) = serde_json::to_string(&tool_call.function.arguments).ok() {
+                                    if let Some(arguments_str) =
+                                        serde_json::to_string(&tool_call.function.arguments).ok()
+                                    {
                                         streaming_callback(&StreamingChunk::InputJson {
                                             content: arguments_str,
                                             tool_name: Some(tool_call.function.name.clone()),
-                                            tool_id: Some(format!("tool-{}", tool_calls.len())),
+                                            tool_id: Some(format!(
+                                                "tool-{}-{}",
+                                                tool_call.function.name,
+                                                tool_calls.len()
+                                            )),
                                         })?;
                                     }
                                 }
@@ -271,7 +277,7 @@ impl OllamaClient {
         // Add tool calls if present
         for (index, tool_call) in tool_calls.into_iter().enumerate() {
             content.push(ContentBlock::ToolUse {
-                id: format!("tool-{}", index),
+                id: format!("tool-{}-{}", tool_call.function.name, index),
                 name: tool_call.function.name,
                 input: tool_call.function.arguments,
             });
