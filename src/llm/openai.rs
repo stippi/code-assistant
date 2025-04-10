@@ -522,12 +522,16 @@ impl OpenAIClient {
                                                     .clone();
 
                                                 // Update arguments
-                                                curr_func.arguments = Some(prev_args.clone() + args);
+                                                curr_func.arguments =
+                                                    Some(prev_args.clone() + args);
 
                                                 // Stream the JSON input to the callback
                                                 callback(&StreamingChunk::InputJson {
                                                     content: args.clone(),
-                                                    tool_name: curr_tool.function.as_ref().and_then(|f| f.name.clone()),
+                                                    tool_name: curr_tool
+                                                        .function
+                                                        .as_ref()
+                                                        .and_then(|f| f.name.clone()),
                                                     tool_id: curr_tool.id.clone(),
                                                 })?;
                                             }
@@ -648,10 +652,7 @@ impl LLMProvider for OpenAIClient {
             temperature: 1.0,
             stream: None,
             stream_options: None,
-            tool_choice: match &request.tools {
-                Some(_) => Some(serde_json::json!("required")),
-                _ => None,
-            },
+            tool_choice: None,
             tools: request.tools.map(|tools| {
                 tools
                     .into_iter()
