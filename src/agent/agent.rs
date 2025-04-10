@@ -42,6 +42,8 @@ pub struct Agent {
     message_history: Vec<Message>,
     // Path provided during agent initialization
     init_path: Option<PathBuf>,
+    // Name of the initial project (if any)
+    initial_project: Option<String>,
 }
 
 impl Agent {
@@ -66,6 +68,7 @@ impl Agent {
             state_persistence,
             message_history: Vec::new(),
             init_path,
+            initial_project: None,
         }
     }
 
@@ -301,10 +304,16 @@ impl Agent {
         self.working_memory.file_trees = HashMap::new();
         self.working_memory.available_projects = Vec::new();
 
+        // Reset the initial project
+        self.initial_project = None;
+
         // If a path was provided in args, add it as a temporary project
         if let Some(path) = &self.init_path {
             // Add as temporary project and get its name
             let project_name = self.project_manager.add_temporary_project(path.clone())?;
+
+            // Store the name of the initial project
+            self.initial_project = Some(project_name.clone());
 
             // Create initial file tree for this project
             let mut explorer = self
@@ -341,7 +350,7 @@ impl Agent {
 
         self.init_working_memory(task.clone())?;
 
-        self.message_history.clear(); // Clear any previous messages
+        self.message_history.clear();
         self.ui.display(UIMessage::UserInput(task.clone())).await?;
 
         // For message history mode, create the initial user message
@@ -589,7 +598,7 @@ impl Agent {
 
     /// Get the appropriate system prompt based on agent mode and tool mode
     fn get_system_prompt(&self) -> String {
-        match self.agent_mode {
+        let base_prompt = match self.agent_mode {
             AgentMode::WorkingMemory => match self.tool_mode {
                 ToolMode::Native => SYSTEM_MESSAGE_WM.to_string(),
                 ToolMode::Xml => SYSTEM_MESSAGE_TOOLS_WM.to_string(),
@@ -598,7 +607,39 @@ impl Agent {
                 ToolMode::Native => SYSTEM_MESSAGE_MH.to_string(),
                 ToolMode::Xml => SYSTEM_MESSAGE_TOOLS_MH.to_string(),
             },
+        };
+
+        // In MessageHistory mode, append project information to the system prompt
+        if self.agent_mode == AgentMode::MessageHistory {
+            let mut project_info = String::new();
+
+            // Add information about the initial project if available
+            if let Some(project) = &self.initial_project {
+                project_info.push_str("\n\n# Project Information\n\n");
+                project_info.push_str(&format!("## Initial Project: {}\n\n", project));
+
+                // Add file tree for the initial project if available
+                if let Some(tree) = self.working_memory.file_trees.get(project) {
+                    project_info.push_str("### File Structure:\n");
+                    project_info.push_str(&format!("```\n{}\n```\n\n", tree.to_string()));
+                }
+            }
+
+            // Add information about available projects
+            if !self.working_memory.available_projects.is_empty() {
+                project_info.push_str("## Available Projects:\n");
+                for project in &self.working_memory.available_projects {
+                    project_info.push_str(&format!("- {}\n", project));
+                }
+            }
+
+            // Append project information to base prompt if available
+            if !project_info.is_empty() {
+                return format!("{}\n{}", base_prompt, project_info);
+            }
         }
+
+        base_prompt
     }
 
     /// Get next actions from LLM
