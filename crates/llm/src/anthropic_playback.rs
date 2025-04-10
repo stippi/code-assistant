@@ -4,7 +4,7 @@
 //! and playing them back using a mocked LLM provider, which is useful for testing
 //! and for UI demonstrations.
 
-use crate::llm::{
+use crate::{
     recording::{RecordedChunk, RecordingSession},
     ContentBlock, LLMProvider, LLMRequest, LLMResponse, StreamingCallback, StreamingChunk, Usage,
 };
@@ -285,7 +285,7 @@ fn parse_streaming_chunk_from_data(data: &str) -> Result<Option<StreamingChunk>>
 
 /// Parse an initial LLM response for session tracking
 fn parse_initial_response(chunks: &[RecordedChunk]) -> Result<Usage> {
-    use crate::llm::Usage;
+    use crate::Usage;
 
     // Find the message_start event which has usage info
     for chunk in chunks {
@@ -331,7 +331,7 @@ fn parse_initial_response(chunks: &[RecordedChunk]) -> Result<Usage> {
 
 /// Parse final usage information from message_delta event
 fn parse_final_usage(chunks: &[RecordedChunk]) -> Result<Usage> {
-    use crate::llm::Usage;
+    use crate::Usage;
 
     // Go through chunks in reverse to find the message_delta event with usage info
     for chunk in chunks.iter().rev() {
@@ -357,7 +357,7 @@ fn parse_final_usage(chunks: &[RecordedChunk]) -> Result<Usage> {
 
 /// Parse content blocks from a session
 fn build_content_blocks(session: &RecordingSession) -> Result<Vec<ContentBlock>> {
-    use crate::llm::ContentBlock;
+    use crate::ContentBlock;
     use std::collections::HashMap;
 
     let mut blocks: Vec<ContentBlock> = Vec::new();

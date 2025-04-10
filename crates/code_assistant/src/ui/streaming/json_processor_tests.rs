@@ -1,11 +1,11 @@
 #[cfg(test)]
 mod json_processor_tests {
-    use crate::llm::StreamingChunk;
     use crate::ui::streaming::test_utils::{
         assert_fragments_match, chunk_str, print_fragments, TestUI,
     };
     use crate::ui::streaming::{JsonStreamProcessor, StreamProcessorTrait};
     use crate::ui::DisplayFragment;
+    use llm::StreamingChunk;
     use std::sync::Arc;
 
     // Test helper to process JSON chunks with the JSON processor

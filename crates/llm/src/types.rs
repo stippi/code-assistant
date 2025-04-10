@@ -1,4 +1,3 @@
-use crate::types::ToolDefinition;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -16,6 +15,24 @@ pub struct Usage {
     /// Number of tokens read from cache
     #[serde(default)]
     pub cache_read_input_tokens: u32,
+}
+
+impl Usage {
+    pub fn zero() -> Self {
+        Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
 }
 
 /// Generic request structure that can be mapped to different providers

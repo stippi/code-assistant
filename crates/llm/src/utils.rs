@@ -1,4 +1,4 @@
-use crate::llm::{ApiError, ApiErrorContext, RateLimitHandler};
+use crate::{ApiError, ApiErrorContext, RateLimitHandler};
 use anyhow::Result;
 use reqwest::{Response, StatusCode};
 use std::time::Duration;
@@ -7,7 +7,9 @@ use tracing::warn;
 
 /// Check response error and extract rate limit information.
 /// Returns Ok(Response) if successful, or an error with rate limit context if not.
-pub async fn check_response_error<T: RateLimitHandler + std::fmt::Debug + Send + Sync + 'static>(response: Response) -> Result<Response> {
+pub async fn check_response_error<T: RateLimitHandler + std::fmt::Debug + Send + Sync + 'static>(
+    response: Response,
+) -> Result<Response> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);

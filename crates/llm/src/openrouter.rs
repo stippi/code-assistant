@@ -1,8 +1,5 @@
-
-use crate::llm::{
-    types::*, LLMProvider, StreamingCallback,
-};
 use super::openai::OpenAIClient;
+use crate::{types::*, LLMProvider, StreamingCallback};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -17,7 +14,7 @@ impl OpenRouterClient {
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
-            inner: OpenAIClient::new(api_key, model, base_url)
+            inner: OpenAIClient::new(api_key, model, base_url),
         }
     }
 }

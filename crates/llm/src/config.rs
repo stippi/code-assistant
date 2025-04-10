@@ -1,4 +1,4 @@
-use crate::llm::error::{ProxyError, Result};
+use crate::error::{ProxyError, Result};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 

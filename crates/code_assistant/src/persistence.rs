@@ -1,6 +1,6 @@
-use crate::llm::Message;
 use crate::types::ActionResult;
 use anyhow::Result;
+use llm::Message;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::debug;
@@ -19,7 +19,12 @@ pub struct AgentState {
 
 pub trait StatePersistence: Send + Sync {
     fn save_state(&mut self, task: String, actions: Vec<ActionResult>) -> Result<()>;
-    fn save_state_with_messages(&mut self, task: String, actions: Vec<ActionResult>, messages: Vec<Message>) -> Result<()>;
+    fn save_state_with_messages(
+        &mut self,
+        task: String,
+        actions: Vec<ActionResult>,
+        messages: Vec<Message>,
+    ) -> Result<()>;
     fn load_state(&mut self) -> Result<Option<AgentState>>;
     fn cleanup(&mut self) -> Result<()>;
 }
@@ -41,7 +46,7 @@ impl StatePersistence for FileStatePersistence {
         let state = AgentState {
             task,
             actions,
-            messages: None
+            messages: None,
         };
         let state_path = self.root_dir.join(STATE_FILE);
         debug!("Saving state to {}", state_path.display());
@@ -50,11 +55,16 @@ impl StatePersistence for FileStatePersistence {
         Ok(())
     }
 
-    fn save_state_with_messages(&mut self, task: String, actions: Vec<ActionResult>, messages: Vec<Message>) -> Result<()> {
+    fn save_state_with_messages(
+        &mut self,
+        task: String,
+        actions: Vec<ActionResult>,
+        messages: Vec<Message>,
+    ) -> Result<()> {
         let state = AgentState {
             task,
             actions,
-            messages: Some(messages)
+            messages: Some(messages),
         };
         let state_path = self.root_dir.join(STATE_FILE);
         debug!("Saving state with messages to {}", state_path.display());
@@ -101,21 +111,26 @@ impl MockStatePersistence {
 impl StatePersistence for MockStatePersistence {
     fn save_state(&mut self, task: String, actions: Vec<ActionResult>) -> Result<()> {
         // In-Memory state
-        let state = AgentState { 
-            task, 
-            actions, 
-            messages: None 
+        let state = AgentState {
+            task,
+            actions,
+            messages: None,
         };
         self.state = Some(state);
         Ok(())
     }
 
-    fn save_state_with_messages(&mut self, task: String, actions: Vec<ActionResult>, messages: Vec<Message>) -> Result<()> {
+    fn save_state_with_messages(
+        &mut self,
+        task: String,
+        actions: Vec<ActionResult>,
+        messages: Vec<Message>,
+    ) -> Result<()> {
         // In-Memory state
-        let state = AgentState { 
-            task, 
-            actions, 
-            messages: Some(messages) 
+        let state = AgentState {
+            task,
+            actions,
+            messages: Some(messages),
         };
         self.state = Some(state);
         Ok(())

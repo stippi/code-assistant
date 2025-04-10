@@ -1,7 +1,7 @@
 use super::{DisplayFragment, StreamProcessorTrait};
-use crate::llm::StreamingChunk;
 use crate::ui::{UIError, UserInterface};
 use anyhow::Result;
+use llm::StreamingChunk;
 use std::sync::Arc;
 
 /// State for processing streaming text that may contain tags

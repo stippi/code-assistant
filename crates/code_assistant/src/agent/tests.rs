@@ -2,29 +2,18 @@ use super::*;
 use crate::agent::agent::parse_llm_response;
 use crate::agent::AgentMode;
 use crate::config::ProjectManager;
-use crate::llm::{types::*, LLMProvider, LLMRequest, StreamingCallback};
 use crate::persistence::MockStatePersistence;
 use crate::types::*;
 use crate::ui::{ToolStatus, UIError, UIMessage, UserInterface};
 use crate::utils::{CommandExecutor, CommandOutput};
 use anyhow::Result;
 use async_trait::async_trait;
+use llm::{types::*, LLMProvider, LLMRequest, StreamingCallback};
 use regex::RegexBuilder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-
-impl Usage {
-    pub fn zero() -> Self {
-        Usage {
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 0,
-        }
-    }
-}
 
 // Mock ProjectManager for tests
 #[derive(Default)]

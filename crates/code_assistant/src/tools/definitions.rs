@@ -1,4 +1,5 @@
-use crate::types::{ToolDefinition, Tools};
+use crate::types::Tools;
+use llm::ToolDefinition;
 use serde_json::json;
 
 impl Tools {

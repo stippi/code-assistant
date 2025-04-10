@@ -1,7 +1,7 @@
 use super::DisplayFragment;
 use super::StreamProcessorTrait;
-use crate::llm::StreamingChunk;
 use crate::ui::{UIError, UserInterface};
+use llm::StreamingChunk;
 use std::sync::Arc;
 use tracing::debug;
 

@@ -1,9 +1,9 @@
 //! Streaming processor for handling chunks from LLM providers
 
 use crate::agent::ToolMode;
-use crate::llm::StreamingChunk;
 use crate::ui::UIError;
 use crate::ui::UserInterface;
+use llm::StreamingChunk;
 use std::sync::Arc;
 
 mod json_processor;

@@ -1,4 +1,4 @@
-use crate::llm::{types::*, LLMProvider, StreamingCallback, StreamingChunk};
+use crate::{types::*, LLMProvider, StreamingCallback, StreamingChunk};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;

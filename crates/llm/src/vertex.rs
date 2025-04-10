@@ -1,4 +1,4 @@
-use crate::llm::{
+use crate::{
     types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
 };
 use anyhow::Result;
@@ -198,7 +198,11 @@ impl VertexClient {
                         function_response: Some(VertexFunctionResponse {
                             // Extract the function name from the tool_use_id
                             // Format is typically "tool-{name}-{index}"
-                            name: tool_use_id.split('-').nth(1).unwrap_or(tool_use_id).to_string(),
+                            name: tool_use_id
+                                .split('-')
+                                .nth(1)
+                                .unwrap_or(tool_use_id)
+                                .to_string(),
                             // Wrap content in a proper JSON object
                             response: json!({ "result": content }),
                         }),
@@ -386,10 +390,16 @@ impl VertexClient {
                                             }
 
                                             // Generate a tool ID that includes the function name for later extraction
-                                            let tool_id = format!("tool-{}-{}", function_call.name, content_blocks.len());
+                                            let tool_id = format!(
+                                                "tool-{}-{}",
+                                                function_call.name,
+                                                content_blocks.len()
+                                            );
 
                                             // Stream the JSON input for tools
-                                            if let Some(args_str) = serde_json::to_string(&function_call.args).ok() {
+                                            if let Some(args_str) =
+                                                serde_json::to_string(&function_call.args).ok()
+                                            {
                                                 streaming_callback(&StreamingChunk::InputJson {
                                                     content: args_str,
                                                     tool_name: Some(function_call.name.clone()),

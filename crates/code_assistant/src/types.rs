@@ -1,4 +1,4 @@
-use crate::llm::Message;
+use llm::Message;
 
 use crate::web::{WebPage, WebSearchResult};
 use anyhow::Result;
@@ -184,7 +184,11 @@ impl WorkingMemory {
         } else {
             result.push_str("All resources are shown in their latest version. They already reflect the tools you may have used.\n\n");
             for ((project, path), resource) in &self.loaded_resources {
-                result.push_str(&format!(">>>>> RESOURCE: [{}] {}\n", project, path.display()));
+                result.push_str(&format!(
+                    ">>>>> RESOURCE: [{}] {}\n",
+                    project,
+                    path.display()
+                ));
                 result.push_str(&resource.to_string());
                 result.push_str("\n<<<<< END RESOURCE\n\n");
             }
@@ -197,7 +201,9 @@ impl WorkingMemory {
         } else {
             for (project, tree) in &self.file_trees {
                 result.push_str(&format!("### Project: {}\n\n", project));
-                result.push_str("This is the file tree showing directories expanded via list_files:\n\n");
+                result.push_str(
+                    "This is the file tree showing directories expanded via list_files:\n\n",
+                );
                 result.push_str(&tree.to_string());
                 result.push_str("\n\n");
             }
@@ -210,7 +216,12 @@ impl WorkingMemory {
         } else {
             result.push_str("The following resources were previously loaded, but you have decided to keep a summary only:\n\n");
             for ((project, path), summary) in &self.summaries {
-                result.push_str(&format!("- `[{}] {}`: {}\n", project, path.display(), summary));
+                result.push_str(&format!(
+                    "- `[{}] {}`: {}\n",
+                    project,
+                    path.display(),
+                    summary
+                ));
             }
         }
 
@@ -222,7 +233,12 @@ impl WorkingMemory {
     }
 
     /// Update an existing resource if it exists
-    pub fn update_resource(&mut self, project: &str, path: &PathBuf, resource: LoadedResource) -> bool {
+    pub fn update_resource(
+        &mut self,
+        project: &str,
+        path: &PathBuf,
+        resource: LoadedResource,
+    ) -> bool {
         let key = (project.to_string(), path.clone());
         if self.loaded_resources.contains_key(&key) {
             self.loaded_resources.insert(key, resource);
@@ -289,7 +305,11 @@ pub enum Tool {
         replacements: Vec<FileReplacement>,
     },
     /// Replace contents of resources with summaries in working memory
-    Summarize { project: String, path: PathBuf, summary: String },
+    Summarize {
+        project: String,
+        path: PathBuf,
+        summary: String,
+    },
     /// Complete the current task
     CompleteTask { message: String },
     /// Execute a CLI command
@@ -401,13 +421,6 @@ pub enum ToolError {
 
     #[error("Failed to parse tool parameters: {0}")]
     ParseError(String),
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
 }
 
 /// Represents the parsed response from the LLM

@@ -1,7 +1,7 @@
 use super::test_utils::{assert_fragments_match, chunk_str, TestUI};
 use super::{DisplayFragment, StreamProcessorTrait, XmlStreamProcessor};
-use crate::llm::StreamingChunk;
 use crate::ui::UserInterface;
+use llm::StreamingChunk;
 use std::sync::Arc;
 
 // Process input text with a stream processor, breaking it into chunks

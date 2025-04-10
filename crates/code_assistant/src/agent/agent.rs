@@ -1,8 +1,4 @@
 use crate::config::ProjectManager;
-use crate::llm::{
-    ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
-    StreamingChunk,
-};
 use crate::persistence::StatePersistence;
 use crate::tools::{
     parse_tool_json, parse_tool_xml, AgentChatToolHandler, AgentToolHandler, ToolExecutor,
@@ -12,6 +8,10 @@ use crate::types::*;
 use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
+use llm::{
+    ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
+    StreamingChunk,
+};
 use percent_encoding;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -804,7 +804,7 @@ impl Agent {
 }
 
 pub(crate) fn parse_llm_response(
-    response: &crate::llm::LLMResponse,
+    response: &llm::LLMResponse,
     request_id: u64,
 ) -> Result<Vec<AgentAction>> {
     let mut actions = Vec::new();

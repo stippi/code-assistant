@@ -1,5 +1,5 @@
-use crate::llm::config::DeploymentConfig;
-use crate::llm::error::{ProxyError, Result};
+use crate::config::DeploymentConfig;
+use crate::error::{ProxyError, Result};
 use base64::engine::{general_purpose, Engine};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};

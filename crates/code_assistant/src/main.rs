@@ -1,7 +1,6 @@
 mod agent;
 mod config;
 mod explorer;
-mod llm;
 mod mcp;
 mod persistence;
 mod tools;
@@ -11,12 +10,6 @@ mod utils;
 mod web;
 
 use crate::agent::Agent;
-use crate::llm::auth::TokenManager;
-use crate::llm::config::DeploymentConfig;
-use crate::llm::{
-    AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, OpenRouterClient,
-    VertexClient,
-};
 use crate::mcp::MCPServer;
 use crate::types::{AgentMode, ToolMode};
 use crate::ui::terminal::TerminalUI;
@@ -25,6 +18,12 @@ use crate::utils::DefaultCommandExecutor;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use config::DefaultProjectManager;
+use llm::auth::TokenManager;
+use llm::config::DeploymentConfig;
+use llm::{
+    AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, OpenRouterClient,
+    VertexClient,
+};
 use persistence::FileStatePersistence;
 use std::io;
 use std::path::PathBuf;
@@ -125,7 +124,7 @@ async fn create_llm_client(
 ) -> Result<Box<dyn LLMProvider>> {
     // If playback is specified, use the recording player regardless of provider
     if let Some(path) = playback_path {
-        use crate::llm::anthropic_playback::RecordingPlayer;
+        use llm::anthropic_playback::RecordingPlayer;
         let player = RecordingPlayer::from_file(path)?;
 
         if player.session_count() == 0 {

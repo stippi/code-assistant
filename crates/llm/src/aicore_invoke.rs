@@ -1,4 +1,4 @@
-use crate::llm::{
+use crate::{
     recording::APIRecorder, types::*, utils, ApiError, LLMProvider, RateLimitHandler,
     StreamingCallback, StreamingChunk,
 };
@@ -7,9 +7,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::str::{self};
+use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::debug;
+
+use super::auth::TokenManager;
 
 /// Response structure for Anthropic error messages
 #[derive(Debug, Serialize, serde::Deserialize)]
@@ -154,7 +158,6 @@ struct ThinkingConfiguration {
 /// Anthropic-specific request structure
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
-    model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfiguration>,
     messages: Vec<Message>,
@@ -267,12 +270,10 @@ struct StreamContentBlock {
     // Fields for thinking blocks
     thinking: Option<String>,
     signature: Option<String>,
-    // Fields for redacted_thinking blocks
-    data: Option<String>,
     // Fields for tool use blocks
     id: Option<String>,
     name: Option<String>,
-    input: Option<serde_json::Value>,
+    input: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,47 +289,43 @@ enum ContentDelta {
     InputJsonDelta { partial_json: String },
 }
 
-pub struct AnthropicClient {
+pub struct AiCoreClient {
+    token_manager: Arc<TokenManager>,
     client: Client,
-    api_key: String,
     base_url: String,
-    model: String,
     recorder: Option<APIRecorder>,
 }
 
-impl AnthropicClient {
-    pub fn default_base_url() -> String {
-        "https://api.anthropic.com/v1".to_string()
-    }
-
-    pub fn new(api_key: String, model: String, base_url: String) -> Self {
+impl AiCoreClient {
+    pub fn new(token_manager: Arc<TokenManager>, base_url: String) -> Self {
         Self {
+            token_manager,
             client: Client::new(),
-            api_key,
             base_url,
-            model,
             recorder: None,
         }
     }
 
     /// Create a new client with recording capability
     pub fn new_with_recorder<P: AsRef<std::path::Path>>(
-        api_key: String,
-        model: String,
+        token_manager: Arc<TokenManager>,
         base_url: String,
         recording_path: P,
     ) -> Self {
         Self {
+            token_manager,
             client: Client::new(),
-            api_key,
             base_url,
-            model,
             recorder: Some(APIRecorder::new(recording_path)),
         }
     }
 
-    fn get_url(&self) -> String {
-        format!("{}/messages", self.base_url)
+    fn get_url(&self, streaming: bool) -> String {
+        if streaming {
+            format!("{}/invoke-with-response-stream", self.base_url)
+        } else {
+            format!("{}/invoke", self.base_url)
+        }
     }
 
     async fn send_with_retry(
@@ -368,25 +365,27 @@ impl AnthropicClient {
         request: &AnthropicRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
-        let accept_value = if let Some(_) = streaming_callback {
-            "text/event-stream"
-        } else {
-            "application/json"
-        };
+        let token = self.token_manager.get_valid_token().await?;
 
-        let mut request_builder = self
+        let request_builder = self
             .client
-            .post(&self.get_url())
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("accept", accept_value);
+            .post(&self.get_url(streaming_callback.is_some()))
+            .header("AI-Resource-Group", "default")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("anthropic-beta", "output-128k-2025-02-19");
 
-        if self.model.starts_with("claude-3-7-sonnet") {
-            request_builder = request_builder.header("anthropic-beta", "output-128k-2025-02-19");
+        let mut request = serde_json::to_value(request)?;
+        if let Value::Object(ref mut map) = request {
+            map.remove("stream"); // Remove stream after we redirect to /invoke-with-response-stream
+            map.insert(
+                "anthropic_version".to_string(),
+                Value::String("bedrock-2023-05-31".to_string()),
+            );
         }
 
         let response = request_builder
-            .json(request)
+            .json(&request)
             .send()
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
@@ -451,11 +450,12 @@ impl AnthropicClient {
                 recorder: &Option<APIRecorder>,
             ) -> Result<()> {
                 if let Some(data) = line.strip_prefix("data: ") {
-                    // Record the chunk if recorder is available
-                    if let Some(recorder) = &recorder {
-                        recorder.record_chunk(data)?;
-                    }
                     if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
+                        // Record the chunk if recorder is available
+                        if let Some(recorder) = &recorder {
+                            recorder.record_chunk(data)?;
+                        }
+
                         // Extract and check index for relevant events
                         match &event {
                             StreamEvent::ContentBlockStart { common, .. } => {
@@ -508,16 +508,8 @@ impl AnthropicClient {
                                             current_content.push_str(&thinking);
                                         }
                                         ContentBlock::Thinking {
-                                            thinking: current_content.clone(),
-                                            signature: content_block.signature.unwrap_or_default(),
-                                        }
-                                    }
-                                    "redacted_thinking" => {
-                                        if let Some(data) = content_block.data {
-                                            current_content.push_str(&data);
-                                        }
-                                        ContentBlock::RedactedThinking {
-                                            data: current_content.clone(),
+                                            thinking: content_block.signature.unwrap_or_default(),
+                                            signature: String::new(),
                                         }
                                     }
                                     "text" => {
@@ -529,25 +521,13 @@ impl AnthropicClient {
                                         }
                                     }
                                     "tool_use" => {
-                                        // Handle input as JSON value directly
-                                        let input_json = if let Some(input) = &content_block.input {
-                                            input.clone()
-                                        } else {
-                                            serde_json::Value::Null
-                                        };
-
-                                        let tool_id = content_block.id.unwrap_or_default();
-                                        let tool_name = content_block.name.unwrap_or_default();
-
-                                        debug!(
-                                            "Creating ToolUse block with id={:?}, name={:?}",
-                                            tool_id, tool_name
-                                        );
-
+                                        if let Some(input) = content_block.input {
+                                            current_content.push_str(&input);
+                                        }
                                         ContentBlock::ToolUse {
-                                            id: tool_id,
-                                            name: tool_name,
-                                            input: input_json,
+                                            id: content_block.id.unwrap_or_default(),
+                                            name: content_block.name.unwrap_or_default(),
+                                            input: serde_json::Value::Null,
                                         }
                                     }
                                     _ => ContentBlock::Text {
@@ -580,23 +560,29 @@ impl AnthropicClient {
                                         current_content.push_str(delta_text);
                                     }
                                     ContentDelta::InputJsonDelta { partial_json } => {
-                                        let (tool_name, tool_id) =
-                                            blocks.last().map_or((None, None), |block| {
-                                                if let ContentBlock::ToolUse { name, id, .. } =
-                                                    block
-                                                {
-                                                    (Some(name.clone()), Some(id.clone()))
-                                                } else {
-                                                    warn!("Last block is not a ToolUse type!");
-                                                    (None, None)
-                                                }
-                                            });
-
+                                        // Accumulate JSON parts as string and send as specific type
+                                        /*
+                                        // TODO: Keep this here, but disable it. For now, the other providers don't send parameter chunks.
+                                        // The StreamingProcessor shall eventuall emit DisplayFragment::ToolParameter chunks,
+                                        // but the implementation is incomplete anyway. It does work already in XML-tools mode.
                                         callback(&StreamingChunk::InputJson {
                                             content: partial_json.clone(),
-                                            tool_name,
-                                            tool_id,
+                                            tool_name: blocks.last().and_then(|block| {
+                                                if let ContentBlock::ToolUse { name, .. } = block {
+                                                    Some(name.clone())
+                                                } else {
+                                                    None
+                                                }
+                                            }),
+                                            tool_id: blocks.last().and_then(|block| {
+                                                if let ContentBlock::ToolUse { id, .. } = block {
+                                                    Some(id.clone())
+                                                } else {
+                                                    None
+                                                }
+                                            }),
                                         })?;
+                                         */
 
                                         current_content.push_str(partial_json);
                                     }
@@ -604,9 +590,6 @@ impl AnthropicClient {
                             }
                             StreamEvent::ContentBlockStop { .. } => {
                                 match blocks.last_mut().unwrap() {
-                                    ContentBlock::Thinking { thinking, .. } => {
-                                        *thinking = current_content.clone();
-                                    }
                                     ContentBlock::Text { text } => {
                                         *text = current_content.clone();
                                     }
@@ -620,8 +603,6 @@ impl AnthropicClient {
                             }
                             _ => {}
                         }
-                    } else {
-                        return Err(anyhow::anyhow!("Failed to parse stream event:\n{}", line));
                     }
                 }
                 Ok(())
@@ -703,7 +684,7 @@ impl AnthropicClient {
 }
 
 #[async_trait]
-impl LLMProvider for AnthropicClient {
+impl LLMProvider for AiCoreClient {
     async fn send_message(
         &self,
         request: LLMRequest,
@@ -713,17 +694,14 @@ impl LLMProvider for AnthropicClient {
         let system = Some(vec![SystemBlock {
             block_type: "text".to_string(),
             text: request.system_prompt,
-            // Add cache_control to the system prompt to utilize Anthropic's caching
-            cache_control: Some(CacheControl {
-                cache_type: "ephemeral".to_string(),
-            }),
+            cache_control: None,
         }]);
 
         // Determine if we have tools and create tool_choice
         let has_tools = request.tools.is_some();
         let tool_choice = if has_tools {
             Some(serde_json::json!({
-                "type": "auto",
+                "type": "any",
             }))
         } else {
             None
@@ -731,7 +709,7 @@ impl LLMProvider for AnthropicClient {
 
         // Create tools array with cache control on the last tool if present
         let tools = request.tools.map(|tools| {
-            let mut tools_json = tools
+            let tools_json = tools
                 .into_iter()
                 .map(|tool| {
                     serde_json::json!({
@@ -742,36 +720,13 @@ impl LLMProvider for AnthropicClient {
                 })
                 .collect::<Vec<serde_json::Value>>();
 
-            // Add cache_control to the last tool if any exist
-            if let Some(last_tool) = tools_json.last_mut() {
-                if let Some(obj) = last_tool.as_object_mut() {
-                    obj.insert(
-                        "cache_control".to_string(),
-                        serde_json::json!({"type": "ephemeral"}),
-                    );
-                }
-            }
-
             tools_json
         });
 
-        let (thinking, max_tokens) = if self.model.starts_with("claude-3-7-sonnet") {
-            (
-                Some(ThinkingConfiguration {
-                    thinking_type: "enabled".to_string(),
-                    budget_tokens: 4000,
-                }),
-                64000,
-            )
-        } else {
-            (None, 8192)
-        };
-
         let anthropic_request = AnthropicRequest {
-            model: self.model.clone(),
-            thinking,
+            thinking: None,
             messages: request.messages,
-            max_tokens,
+            max_tokens: 8192,
             temperature: 1.0,
             system,
             stream: streaming_callback.map(|_| true),
