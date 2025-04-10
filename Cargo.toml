@@ -1,4 +1,4 @@
 [workspace]
-members = ["crates/core"]
+members = ["crates/code_assistant"]
 
 resolver = "2"

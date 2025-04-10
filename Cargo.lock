@@ -1232,6 +1232,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "code_assistant"
+version = "0.1.5"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.21.7",
+ "bytes",
+ "chromiumoxide",
+ "chrono",
+ "clap",
+ "content_inspector",
+ "crossterm",
+ "dirs 5.0.1",
+ "dotenv",
+ "encoding_rs",
+ "futures",
+ "glob",
+ "gpui",
+ "htmd",
+ "ignore",
+ "keyring",
+ "oauth2",
+ "percent-encoding",
+ "rand 0.8.5",
+ "regex",
+ "reqwest",
+ "rust-embed",
+ "rustyline",
+ "scraper",
+ "serde",
+ "serde_json",
+ "similar",
+ "smallvec",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-segmentation",
+ "url",
+ "walkdir",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1315,52 +1361,6 @@ name = "convert_case"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
-
-[[package]]
-name = "core"
-version = "0.1.5"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64 0.21.7",
- "bytes",
- "chromiumoxide",
- "chrono",
- "clap",
- "content_inspector",
- "crossterm",
- "dirs 5.0.1",
- "dotenv",
- "encoding_rs",
- "futures",
- "glob",
- "gpui",
- "htmd",
- "ignore",
- "keyring",
- "oauth2",
- "percent-encoding",
- "rand 0.8.5",
- "regex",
- "reqwest",
- "rust-embed",
- "rustyline",
- "scraper",
- "serde",
- "serde_json",
- "similar",
- "smallvec",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "unicode-segmentation",
- "url",
- "walkdir",
-]
 
 [[package]]
 name = "core-foundation"
