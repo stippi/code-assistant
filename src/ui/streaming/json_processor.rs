@@ -3,6 +3,7 @@ use super::StreamProcessorTrait;
 use crate::llm::StreamingChunk;
 use crate::ui::{UIError, UserInterface};
 use std::sync::Arc;
+use tracing::debug;
 
 /// Simplified state machine for JSON parsing
 #[derive(Debug, Clone, PartialEq)]
@@ -88,26 +89,35 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                 tool_name,
                 tool_id,
             } => {
-                // If this is the first part with tool info, initialize tool context
+                debug!(
+                    "Received InputJson chunk, tool_name: '{:?}', tool_id: '{:?}'",
+                    tool_name, tool_id
+                );
+                // If this is the first part with tool info or a new tool, initialize tool context
                 if let (Some(name), Some(id)) = (tool_name, tool_id) {
                     if !name.is_empty() && !id.is_empty() {
+                        // Check if this is a new tool or the same one continuing
+                        let is_new_tool = self.state.tool_id != *id;
+
                         // Store tool info
                         self.state.tool_name = name.clone();
                         self.state.tool_id = id.clone();
 
-                        // Reset parser state
-                        self.state.state = JsonParseState::Outside;
-                        self.state.current_param.clear();
-                        self.state.current_value.clear();
-                        self.state.in_quotes = false;
-                        self.state.escaped = false;
-                        self.state.nesting_level = 0;
+                        // Only reset parser state if this is a new tool
+                        if is_new_tool {
+                            self.state.state = JsonParseState::Outside;
+                            self.state.current_param.clear();
+                            self.state.current_value.clear();
+                            self.state.in_quotes = false;
+                            self.state.escaped = false;
+                            self.state.nesting_level = 0;
 
-                        // Send the tool name to UI
-                        self.ui.display_fragment(&DisplayFragment::ToolName {
-                            name: name.clone(),
-                            id: id.clone(),
-                        })?;
+                            // Send the tool name to UI only for new tools
+                            self.ui.display_fragment(&DisplayFragment::ToolName {
+                                name: name.clone(),
+                                id: id.clone(),
+                            })?;
+                        }
                     }
                 }
 
