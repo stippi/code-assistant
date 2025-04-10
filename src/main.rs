@@ -4,7 +4,6 @@ mod explorer;
 mod llm;
 mod mcp;
 mod persistence;
-mod tests;
 mod tools;
 mod types;
 mod ui;
@@ -15,7 +14,8 @@ use crate::agent::Agent;
 use crate::llm::auth::TokenManager;
 use crate::llm::config::DeploymentConfig;
 use crate::llm::{
-    AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, OpenRouterClient, VertexClient,
+    AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, OpenRouterClient,
+    VertexClient,
 };
 use crate::mcp::MCPServer;
 use crate::types::{AgentMode, ToolMode};
@@ -125,7 +125,7 @@ async fn create_llm_client(
 ) -> Result<Box<dyn LLMProvider>> {
     // If playback is specified, use the recording player regardless of provider
     if let Some(path) = playback_path {
-        use crate::tests::recording_player::RecordingPlayer;
+        use crate::llm::anthropic_playback::RecordingPlayer;
         let player = RecordingPlayer::from_file(path)?;
 
         if player.session_count() == 0 {
@@ -225,11 +225,7 @@ async fn create_llm_client(
             let model = model.unwrap_or_else(|| "anthropic/claude-3-7-sonnet".to_string());
             let base_url = base_url.unwrap_or(OpenRouterClient::default_base_url());
 
-            Ok(Box::new(OpenRouterClient::new(
-                api_key,
-                model,
-                base_url,
-            )))
+            Ok(Box::new(OpenRouterClient::new(api_key, model, base_url)))
         }
     }
 }
