@@ -207,11 +207,7 @@ impl ToolResult {
                 failed_files,
                 ..
             } => !loaded_files.is_empty() && failed_files.is_empty(),
-            ToolResult::ListFiles {
-                expanded_paths,
-                failed_paths,
-                ..
-            } => !expanded_paths.is_empty() && failed_paths.is_empty(),
+            ToolResult::ListFiles { expanded_paths, .. } => !expanded_paths.is_empty(),
             ToolResult::ExecuteCommand { success, .. } => *success,
             ToolResult::WriteFile { error, .. } => error.is_none(),
             ToolResult::ReplaceInFile { error, .. } => error.is_none(),
