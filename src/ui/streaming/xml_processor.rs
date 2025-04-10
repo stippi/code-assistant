@@ -1,27 +1,8 @@
-use super::StreamProcessorTrait;
+use super::{DisplayFragment, StreamProcessorTrait};
 use crate::llm::StreamingChunk;
 use crate::ui::{UIError, UserInterface};
 use anyhow::Result;
 use std::sync::Arc;
-
-/// Fragments for display in UI components
-#[derive(Debug, Clone)]
-pub enum DisplayFragment {
-    /// Regular plain text
-    PlainText(String),
-    /// Thinking text (shown differently)
-    ThinkingText(String),
-    /// Tool invocation start
-    ToolName { name: String, id: String },
-    /// Parameter for a tool
-    ToolParameter {
-        name: String,
-        value: String,
-        tool_id: String,
-    },
-    /// End of a tool invocation
-    ToolEnd { id: String },
-}
 
 /// State for processing streaming text that may contain tags
 struct ProcessorState {

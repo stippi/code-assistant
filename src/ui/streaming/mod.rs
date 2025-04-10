@@ -16,8 +16,24 @@ mod test_utils;
 #[cfg(test)]
 mod xml_processor_tests;
 
-// Re-export the display fragments and other types needed by the UI
-pub use xml_processor::DisplayFragment;
+/// Fragments for display in UI components
+#[derive(Debug, Clone)]
+pub enum DisplayFragment {
+    /// Regular plain text
+    PlainText(String),
+    /// Thinking text (shown differently)
+    ThinkingText(String),
+    /// Tool invocation start
+    ToolName { name: String, id: String },
+    /// Parameter for a tool
+    ToolParameter {
+        name: String,
+        value: String,
+        tool_id: String,
+    },
+    /// End of a tool invocation
+    ToolEnd { id: String },
+}
 
 /// Common trait for stream processors
 pub trait StreamProcessorTrait: Send + Sync {
