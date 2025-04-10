@@ -179,6 +179,12 @@ impl LLMProvider for RecordingProvider {
     }
 }
 
+// Track tool information for each block index
+thread_local! {
+    static TOOL_INFO: std::cell::RefCell<std::collections::HashMap<usize, (String, String)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 /// Parse a streaming chunk from a data string
 fn parse_streaming_chunk_from_data(data: &str) -> Result<Option<StreamingChunk>> {
     // Parse the event data as JSON
@@ -186,9 +192,44 @@ fn parse_streaming_chunk_from_data(data: &str) -> Result<Option<StreamingChunk>>
         // Look for text content in different formats depending on the event type
         if let Some(event_type) = json.get("type").and_then(Value::as_str) {
             match event_type {
+                // Content block start event - store tool information if it's a tool_use block
+                "content_block_start" => {
+                    if let (Some(index), Some(content_block)) = (
+                        json.get("index")
+                            .and_then(Value::as_u64)
+                            .map(|i| i as usize),
+                        json.get("content_block"),
+                    ) {
+                        if content_block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                            let id = content_block
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            let name = content_block
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+
+                            // Store the tool info for this block index
+                            TOOL_INFO.with(|tool_info| {
+                                tool_info.borrow_mut().insert(index, (id, name));
+                            });
+                        }
+                    }
+                    // The content_block_start event doesn't directly produce a streaming chunk
+                    return Ok(None);
+                }
                 // Content block delta events contain text updates
                 "content_block_delta" => {
                     if let Some(delta) = json.get("delta") {
+                        // Get the block index to retrieve tool info if needed
+                        let index = json
+                            .get("index")
+                            .and_then(Value::as_u64)
+                            .map(|i| i as usize);
+
                         // Check for text delta
                         if let Some(text) =
                             delta.get("type").and_then(|t| t.as_str()).and_then(|t| {
@@ -209,15 +250,18 @@ fn parse_streaming_chunk_from_data(data: &str) -> Result<Option<StreamingChunk>>
                             } else if delta.get("type").and_then(Value::as_str)
                                 == Some("input_json_delta")
                             {
-                                // Get tool information if available
-                                let tool_name = json
-                                    .get("tool_name")
-                                    .and_then(Value::as_str)
-                                    .map(String::from);
-                                let tool_id = json
-                                    .get("tool_id")
-                                    .and_then(Value::as_str)
-                                    .map(String::from);
+                                // Get tool information from our stored map based on block index
+                                let (tool_id, tool_name) = if let Some(idx) = index {
+                                    TOOL_INFO.with(|tool_info| {
+                                        if let Some((id, name)) = tool_info.borrow().get(&idx) {
+                                            (Some(id.clone()), Some(name.clone()))
+                                        } else {
+                                            (None, None)
+                                        }
+                                    })
+                                } else {
+                                    (None, None)
+                                };
 
                                 return Ok(Some(StreamingChunk::InputJson {
                                     content: text.to_string(),

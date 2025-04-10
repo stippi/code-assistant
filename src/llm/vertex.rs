@@ -382,8 +382,20 @@ impl VertexClient {
                                                 current_text.clear();
                                             }
 
+                                            // Generate a tool ID
+                                            let tool_id = format!("tool-{}", content_blocks.len());
+
+                                            // Stream the JSON input for tools
+                                            if let Some(args_str) = serde_json::to_string(&function_call.args).ok() {
+                                                streaming_callback(&StreamingChunk::InputJson {
+                                                    content: args_str,
+                                                    tool_name: Some(function_call.name.clone()),
+                                                    tool_id: Some(tool_id.clone()),
+                                                })?;
+                                            }
+
                                             content_blocks.push(ContentBlock::ToolUse {
-                                                id: format!("tool-{}", content_blocks.len()),
+                                                id: tool_id,
                                                 name: function_call.name.clone(),
                                                 input: function_call.args.clone(),
                                             });

@@ -9,7 +9,7 @@ use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use std::str::{self};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Response structure for Anthropic error messages
 #[derive(Debug, Serialize, serde::Deserialize)]
@@ -267,10 +267,12 @@ struct StreamContentBlock {
     // Fields for thinking blocks
     thinking: Option<String>,
     signature: Option<String>,
+    // Fields for redacted_thinking blocks
+    data: Option<String>,
     // Fields for tool use blocks
     id: Option<String>,
     name: Option<String>,
-    input: Option<String>,
+    input: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -449,12 +451,11 @@ impl AnthropicClient {
                 recorder: &Option<APIRecorder>,
             ) -> Result<()> {
                 if let Some(data) = line.strip_prefix("data: ") {
+                    // Record the chunk if recorder is available
+                    if let Some(recorder) = &recorder {
+                        recorder.record_chunk(data)?;
+                    }
                     if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
-                        // Record the chunk if recorder is available
-                        if let Some(recorder) = &recorder {
-                            recorder.record_chunk(data)?;
-                        }
-
                         // Extract and check index for relevant events
                         match &event {
                             StreamEvent::ContentBlockStart { common, .. } => {
@@ -511,6 +512,14 @@ impl AnthropicClient {
                                             signature: content_block.signature.unwrap_or_default(),
                                         }
                                     }
+                                    "redacted_thinking" => {
+                                        if let Some(data) = content_block.data {
+                                            current_content.push_str(&data);
+                                        }
+                                        ContentBlock::RedactedThinking {
+                                            data: current_content.clone(),
+                                        }
+                                    }
                                     "text" => {
                                         if let Some(text) = content_block.text {
                                             current_content.push_str(&text);
@@ -520,13 +529,25 @@ impl AnthropicClient {
                                         }
                                     }
                                     "tool_use" => {
-                                        if let Some(input) = content_block.input {
-                                            current_content.push_str(&input);
-                                        }
+                                        // Handle input as JSON value directly
+                                        let input_json = if let Some(input) = &content_block.input {
+                                            input.clone()
+                                        } else {
+                                            serde_json::Value::Null
+                                        };
+
+                                        let tool_id = content_block.id.unwrap_or_default();
+                                        let tool_name = content_block.name.unwrap_or_default();
+
+                                        debug!(
+                                            "Creating ToolUse block with id={:?}, name={:?}",
+                                            tool_id, tool_name
+                                        );
+
                                         ContentBlock::ToolUse {
-                                            id: content_block.id.unwrap_or_default(),
-                                            name: content_block.name.unwrap_or_default(),
-                                            input: serde_json::Value::Null,
+                                            id: tool_id,
+                                            name: tool_name,
+                                            input: input_json,
                                         }
                                     }
                                     _ => ContentBlock::Text {
@@ -559,29 +580,23 @@ impl AnthropicClient {
                                         current_content.push_str(delta_text);
                                     }
                                     ContentDelta::InputJsonDelta { partial_json } => {
-                                        // Accumulate JSON parts as string and send as specific type
-                                        /*
-                                        // TODO: Keep this here, but disable it. For now, the other providers don't send parameter chunks.
-                                        // The StreamingProcessor shall eventuall emit DisplayFragment::ToolParameter chunks,
-                                        // but the implementation is incomplete anyway. It does work already in XML-tools mode.
+                                        let (tool_name, tool_id) =
+                                            blocks.last().map_or((None, None), |block| {
+                                                if let ContentBlock::ToolUse { name, id, .. } =
+                                                    block
+                                                {
+                                                    (Some(name.clone()), Some(id.clone()))
+                                                } else {
+                                                    warn!("Last block is not a ToolUse type!");
+                                                    (None, None)
+                                                }
+                                            });
+
                                         callback(&StreamingChunk::InputJson {
                                             content: partial_json.clone(),
-                                            tool_name: blocks.last().and_then(|block| {
-                                                if let ContentBlock::ToolUse { name, .. } = block {
-                                                    Some(name.clone())
-                                                } else {
-                                                    None
-                                                }
-                                            }),
-                                            tool_id: blocks.last().and_then(|block| {
-                                                if let ContentBlock::ToolUse { id, .. } = block {
-                                                    Some(id.clone())
-                                                } else {
-                                                    None
-                                                }
-                                            }),
+                                            tool_name,
+                                            tool_id,
                                         })?;
-                                         */
 
                                         current_content.push_str(partial_json);
                                     }
@@ -605,6 +620,8 @@ impl AnthropicClient {
                             }
                             _ => {}
                         }
+                    } else {
+                        return Err(anyhow::anyhow!("Failed to parse stream event:\n{}", line));
                     }
                 }
                 Ok(())
@@ -706,7 +723,7 @@ impl LLMProvider for AnthropicClient {
         let has_tools = request.tools.is_some();
         let tool_choice = if has_tools {
             Some(serde_json::json!({
-                "type": "any",
+                "type": "auto",
             }))
         } else {
             None

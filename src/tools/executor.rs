@@ -195,17 +195,19 @@ impl ToolExecutor {
                     }
                 };
 
-                // Check for absolute paths
-                for path in paths {
-                    if let Some(error) = check_absolute_path(path) {
-                        return Ok((String::new(), error));
-                    }
-                }
-
                 let mut expanded_paths = Vec::new();
                 let mut failed_paths = Vec::new();
 
                 for path in paths {
+                    // Check if path is absolute and handle it properly
+                    if path.is_absolute() {
+                        failed_paths.push((
+                            path.display().to_string(),
+                            "Path must be relative to project root".to_string()
+                        ));
+                        continue;
+                    }
+
                     let full_path = explorer.root_dir().join(path);
                     match explorer.list_files(&full_path, *max_depth) {
                         Ok(tree_entry) => {
