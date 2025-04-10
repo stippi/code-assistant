@@ -221,22 +221,34 @@ impl Agent {
 
                 for action in actions {
                     let (output, result) = self.execute_action(&action).await?;
+                    let success = result.result.is_success();
 
-                    if !result.result.is_success() {
+                    if !success {
                         all_actions_succeeded = false;
-                        // Add error message to conversation
-                        let error_msg = if self.tool_mode == ToolMode::Native {
-                            Message {
-                                role: MessageRole::User,
-                                content: MessageContent::Structured(vec![
-                                    ContentBlock::ToolResult {
-                                        tool_use_id: action.tool_id.clone(),
-                                        content: result.result.format_message(),
-                                        is_error: Some(true),
-                                    },
-                                ]),
-                            }
-                        } else {
+                    }
+
+                    // Add result to working memory
+                    self.working_memory.action_history.push(result.clone());
+
+                    // Add result to messages for both modes
+                    if self.tool_mode == ToolMode::Native {
+                        // Using structured ToolResult for Native mode
+                        let message = Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                                tool_use_id: action.tool_id.clone(),
+                                content: output,
+                                is_error: if success { None } else { Some(true) },
+                            }]),
+                        };
+
+                        messages.push(message.clone());
+                        if self.agent_mode == AgentMode::MessageHistory {
+                            self.message_history.push(message);
+                        }
+                    } else {
+                        // For XML mode
+                        let message = if !success {
                             Message {
                                 role: MessageRole::User,
                                 content: MessageContent::Text(format!(
@@ -244,38 +256,23 @@ impl Agent {
                                     result.result.format_message()
                                 )),
                             }
+                        } else {
+                            Message {
+                                role: MessageRole::User,
+                                content: MessageContent::Text(output),
+                            }
                         };
 
-                        messages.push(error_msg.clone());
+                        messages.push(message.clone());
                         if self.agent_mode == AgentMode::MessageHistory {
-                            self.message_history.push(error_msg);
+                            self.message_history.push(message);
                         }
-                        break; // Stop processing remaining actions
                     }
 
-                    // Add result to working memory
-                    self.working_memory.action_history.push(result);
-
-                    // Add result to messages for both modes - using structured ToolResult for Native mode
-                    let output_msg = if self.tool_mode == ToolMode::Native {
-                        Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                                tool_use_id: action.tool_id.clone(),
-                                content: output,
-                                is_error: None,
-                            }]),
-                        }
-                    } else {
-                        Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Text(output),
-                        }
-                    };
-
-                    messages.push(output_msg.clone());
-                    if self.agent_mode == AgentMode::MessageHistory {
-                        self.message_history.push(output_msg);
+                    // In WorkingMemory mode, stop processing remaining actions on failure
+                    // But in MessageHistory mode, continue processing all actions
+                    if !success && self.agent_mode == AgentMode::WorkingMemory {
+                        break;
                     }
 
                     // Save state based on mode
