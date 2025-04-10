@@ -47,10 +47,12 @@ impl OpenAIRequest {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct OpenAIChatMessage {
     role: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     content: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OpenAIToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -257,6 +259,7 @@ impl OpenAIClient {
         format!("{}/chat/completions", self.base_url)
     }
 
+    /// Convert a single message to OpenAI format without special handling for tool results
     fn convert_message(message: &Message) -> OpenAIChatMessage {
         OpenAIChatMessage {
             role: match message.role {
@@ -302,7 +305,71 @@ impl OpenAIClient {
                 }
                 _ => None,
             },
+            tool_call_id: None,
         }
+    }
+
+    /// Convert messages to OpenAI format with special handling for tool results
+    fn convert_messages(messages: &[Message]) -> Vec<OpenAIChatMessage> {
+        let mut openai_messages = Vec::new();
+
+        for message in messages {
+            match &message.content {
+                MessageContent::Structured(blocks) if message.role == MessageRole::User => {
+                    // Check if message contains tool result blocks
+                    let tool_results: Vec<&ContentBlock> = blocks
+                        .iter()
+                        .filter(|block| matches!(block, ContentBlock::ToolResult { .. }))
+                        .collect();
+
+                    if !tool_results.is_empty() {
+                        // For each tool result, create a separate "tool" message
+                        for block in tool_results {
+                            if let ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error: _,
+                            } = block
+                            {
+                                openai_messages.push(OpenAIChatMessage {
+                                    role: "tool".to_string(),
+                                    content: content.clone(),
+                                    tool_calls: None,
+                                    tool_call_id: Some(tool_use_id.clone()),
+                                });
+                            }
+                        }
+
+                        // If there are other content blocks, handle them separately
+                        let other_blocks: Vec<&ContentBlock> = blocks
+                            .iter()
+                            .filter(|block| !matches!(block, ContentBlock::ToolResult { .. }))
+                            .collect();
+
+                        if !other_blocks.is_empty() {
+                            // Create a user message with the remaining blocks
+                            // This creates a clone of the message with only non-tool-result blocks
+                            let user_message = Message {
+                                role: MessageRole::User,
+                                content: MessageContent::Structured(
+                                    other_blocks.iter().map(|&b| b.clone()).collect(),
+                                ),
+                            };
+                            openai_messages.push(Self::convert_message(&user_message));
+                        }
+                    } else {
+                        // Normal conversion for user messages without tool results
+                        openai_messages.push(Self::convert_message(message));
+                    }
+                }
+                _ => {
+                    // Normal conversion for all other message types
+                    openai_messages.push(Self::convert_message(message));
+                }
+            }
+        }
+
+        openai_messages
     }
 
     async fn send_with_retry(
@@ -641,10 +708,11 @@ impl LLMProvider for OpenAIClient {
             role: "system".to_string(),
             content: request.system_prompt,
             tool_calls: None,
+            tool_call_id: None,
         });
 
-        // Add conversation messages
-        messages.extend(request.messages.iter().map(Self::convert_message));
+        // Add conversation messages with special handling for tool results
+        messages.extend(Self::convert_messages(&request.messages));
 
         let openai_request = OpenAIRequest {
             model: self.model.clone(),
