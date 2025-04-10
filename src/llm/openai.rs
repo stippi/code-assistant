@@ -331,9 +331,16 @@ impl OpenAIClient {
                                 is_error: _,
                             } = block
                             {
+                                // Ensure content is never empty
+                                let safe_content = if content.is_empty() {
+                                    "No output".to_string()
+                                } else {
+                                    content.clone()
+                                };
+
                                 openai_messages.push(OpenAIChatMessage {
                                     role: "tool".to_string(),
-                                    content: content.clone(),
+                                    content: safe_content,
                                     tool_calls: None,
                                     tool_call_id: Some(tool_use_id.clone()),
                                 });
