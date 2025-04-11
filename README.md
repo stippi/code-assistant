@@ -70,14 +70,17 @@ Open that file in your favorite text editor.
 
 An example configuration is given below:
 
-```json
+```jsonc
 {
   "mcpServers": {
     "code-assistant": {
       "command": "/Users/<username>/workspace/code-assistant/target/release/code-assistant",
       "args": [
         "server"
-      ]
+      ],
+      "env": {
+        "PERPLEXITY_API_KEY": "pplx-..." // optional, enables perplexity_ask tool
+      }
     }
   }
 }
