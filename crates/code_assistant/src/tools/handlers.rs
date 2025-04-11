@@ -77,17 +77,16 @@ fn format_output_for_result(result: &ToolResult) -> Result<String> {
             Ok(output)
         }
         ToolResult::PerplexityAsk {
-            query,
             answer,
             citations,
             error,
+            ..
         } => {
             // Format detailed output with answer and citations
             let mut output = String::new();
             if let Some(e) = error {
                 output.push_str(&format!("Failed to get answer from Perplexity: {}", e));
             } else {
-                output.push_str(&format!("Answer to query: '{}'\n\n", query));
                 output.push_str(answer);
 
                 if !citations.is_empty() {
