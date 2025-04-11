@@ -20,4 +20,4 @@ tokio = { version = "1.44", features = ["full"] }
 url = "2.5"
 
 [dev-dependencies]
-mockito = "1.1"
+axum = "0.7"
