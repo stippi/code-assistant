@@ -500,8 +500,9 @@ impl ToolExecutor {
                 // Create a new Perplexity client
                 let client = web::PerplexityClient::new(api_key);
 
-                // Extrahieren der letzten User-Nachricht für die Anzeige
-                let query = messages.iter()
+                // Extract last 'user' message for display
+                let query = messages
+                    .iter()
                     .filter(|m| m.role == "user")
                     .last()
                     .map(|m| m.content.clone())
