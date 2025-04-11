@@ -1,5 +1,5 @@
 [package]
-name = "code_assistant"
+name = "code-assistant"
 version = "0.1.5"
 edition = "2021"
 
