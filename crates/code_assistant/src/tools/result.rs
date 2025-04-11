@@ -197,15 +197,15 @@ impl ToolResult {
                 }
             }
             ToolResult::PerplexityAsk {
-                query,
                 answer,
                 citations,
                 error,
+                ..
             } => {
                 if let Some(e) = error {
                     format!("Failed to get answer from Perplexity: {}", e)
                 } else {
-                    let mut result = format!("Answer to query: '{}'\n\n{}", query, answer);
+                    let mut result = format!("{}", answer);
 
                     if !citations.is_empty() {
                         result.push_str("\n\nCitations:\n");
