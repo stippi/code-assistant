@@ -76,6 +76,34 @@ fn format_output_for_result(result: &ToolResult) -> Result<String> {
             }
             Ok(output)
         }
+        ToolResult::PerplexityAsk {
+            query,
+            answer,
+            citations,
+            error,
+        } => {
+            // Format detailed output with answer and citations
+            let mut output = String::new();
+            if let Some(e) = error {
+                output.push_str(&format!("Failed to get answer from Perplexity: {}", e));
+            } else {
+                output.push_str(&format!("Answer to query: '{}'\n\n", query));
+                output.push_str(answer);
+
+                if !citations.is_empty() {
+                    output.push_str("\n\nCitations:\n");
+                    for (i, citation) in citations.iter().enumerate() {
+                        output.push_str(&format!(
+                            "[{}] {}: {}\n",
+                            i + 1,
+                            citation.text,
+                            citation.url
+                        ));
+                    }
+                }
+            }
+            Ok(output)
+        }
         // All other tools use standard message
         _ => Ok(result.format_message()),
     }
@@ -174,7 +202,11 @@ fn update_working_memory(working_memory: &mut WorkingMemory, result: &ToolResult
                     .loaded_resources
                     .insert((project, path), LoadedResource::WebPage(page.clone()));
             }
-            ToolResult::Summarize { project, path, summary } => {
+            ToolResult::Summarize {
+                project,
+                path,
+                summary,
+            } => {
                 // Remove from loaded resources
                 working_memory
                     .loaded_resources
@@ -228,6 +260,39 @@ fn update_working_memory(working_memory: &mut WorkingMemory, result: &ToolResult
                         .summaries
                         .remove(&(project.clone(), path.clone()));
                 }
+            }
+            ToolResult::PerplexityAsk {
+                query,
+                answer,
+                citations,
+                error: None,
+            } => {
+                // Store the result as a WebSearch resource with a synthetic path
+                let path = PathBuf::from(format!(
+                    "perplexity-ask-{}",
+                    percent_encoding::utf8_percent_encode(
+                        &query,
+                        percent_encoding::NON_ALPHANUMERIC
+                    )
+                ));
+
+                // Format the answer with citations
+                let mut full_answer = answer.clone();
+                if !citations.is_empty() {
+                    full_answer.push_str("\n\nCitations:\n");
+                    for (i, citation) in citations.iter().enumerate() {
+                        full_answer.push_str(&format!(
+                            "[{}] {}: {}\n",
+                            i + 1,
+                            citation.text,
+                            citation.url
+                        ));
+                    }
+                }
+
+                // Store as a file resource
+                let project = "perplexity".to_string();
+                working_memory.add_resource(project, path, LoadedResource::File(full_answer));
             }
             _ => {}
         }

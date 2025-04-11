@@ -524,6 +524,7 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         Tool::UserInput { .. } => "user_input",
         Tool::WebSearch { .. } => "web_search",
         Tool::WebFetch { .. } => "web_fetch",
+        Tool::PerplexityAsk { .. } => "perplexity_ask",
     };
     let tool_input = match &tool {
         Tool::ListProjects {} => serde_json::json!({}),
@@ -626,6 +627,9 @@ fn create_test_response(tool: Tool, reasoning: &str) -> LLMResponse {
         Tool::WebFetch { url, selectors } => serde_json::json!({
             "url": url,
             "selectors": selectors
+        }),
+        Tool::PerplexityAsk { messages } => serde_json::json!({
+            "messages": messages
         }),
     };
 

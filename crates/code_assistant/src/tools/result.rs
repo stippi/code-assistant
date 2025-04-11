@@ -196,6 +196,32 @@ impl ToolResult {
                     format!("Page fetched successfully: {}", page.url)
                 }
             }
+            ToolResult::PerplexityAsk {
+                query,
+                answer,
+                citations,
+                error,
+            } => {
+                if let Some(e) = error {
+                    format!("Failed to get answer from Perplexity: {}", e)
+                } else {
+                    let mut result = format!("Answer to query: '{}'\n\n{}", query, answer);
+
+                    if !citations.is_empty() {
+                        result.push_str("\n\nCitations:\n");
+                        for (i, citation) in citations.iter().enumerate() {
+                            result.push_str(&format!(
+                                "[{}] {}: {}\n",
+                                i + 1,
+                                citation.text,
+                                citation.url
+                            ));
+                        }
+                    }
+
+                    result
+                }
+            }
         }
     }
 
@@ -214,6 +240,7 @@ impl ToolResult {
             ToolResult::DeleteFiles {
                 deleted, failed, ..
             } => !deleted.is_empty() && failed.is_empty(),
+            ToolResult::PerplexityAsk { error, .. } => error.is_none(),
             ToolResult::Summarize { .. } => true,
             _ => true,
         }

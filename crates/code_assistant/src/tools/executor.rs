@@ -490,6 +490,39 @@ impl ToolExecutor {
                 }
             }
 
+            Tool::PerplexityAsk { messages } => {
+                // Check if the API key exists
+                let api_key = match std::env::var("PERPLEXITY_API_KEY") {
+                    Ok(key) => Some(key),
+                    Err(_) => None,
+                };
+
+                // Create a new Perplexity client
+                let client = web::PerplexityClient::new(api_key);
+
+                // Extrahieren der letzten User-Nachricht für die Anzeige
+                let query = messages.iter()
+                    .filter(|m| m.role == "user")
+                    .last()
+                    .map(|m| m.content.clone())
+                    .unwrap_or_else(|| "No user query found".to_string());
+
+                match client.ask(&messages, None).await {
+                    Ok(response) => ToolResult::PerplexityAsk {
+                        query,
+                        answer: response.content,
+                        citations: response.citations,
+                        error: None,
+                    },
+                    Err(e) => ToolResult::PerplexityAsk {
+                        query,
+                        answer: String::new(),
+                        citations: vec![],
+                        error: Some(e.to_string()),
+                    },
+                }
+            }
+
             _ => unreachable!(),
         };
 
