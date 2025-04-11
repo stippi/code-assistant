@@ -336,6 +336,10 @@ pub enum Tool {
         url: String,
         selectors: Option<Vec<String>>,
     },
+    /// Ask a question using Perplexity API
+    PerplexityAsk {
+        messages: Vec<web::PerplexityMessage>,
+    },
 }
 
 /// Specific results for each tool type
@@ -405,6 +409,12 @@ pub enum ToolResult {
     },
     WebFetch {
         page: WebPage,
+        error: Option<String>,
+    },
+    PerplexityAsk {
+        query: String,
+        answer: String,
+        citations: Vec<web::PerplexityCitation>,
         error: Option<String>,
     },
 }

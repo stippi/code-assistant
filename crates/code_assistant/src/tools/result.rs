@@ -189,11 +189,18 @@ impl ToolResult {
                     msg
                 }
             }
-            ToolResult::WebFetch { page, error } => {
+            ToolResult::WebFetch { error, .. } => {
                 if let Some(e) = error {
                     format!("Failed to fetch page: {}", e)
                 } else {
-                    format!("Page fetched successfully: {}", page.url)
+                    format!("Page fetched successfully")
+                }
+            }
+            ToolResult::PerplexityAsk { error, .. } => {
+                if let Some(e) = error {
+                    format!("Failed to get answer from Perplexity: {}", e)
+                } else {
+                    format!("Answer received from Perplexity")
                 }
             }
         }
@@ -214,6 +221,7 @@ impl ToolResult {
             ToolResult::DeleteFiles {
                 deleted, failed, ..
             } => !deleted.is_empty() && failed.is_empty(),
+            ToolResult::PerplexityAsk { error, .. } => error.is_none(),
             ToolResult::Summarize { .. } => true,
             _ => true,
         }

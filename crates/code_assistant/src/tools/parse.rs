@@ -2,6 +2,7 @@ use crate::types::{FileReplacement, Tool, ToolError};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::trace;
+use web;
 
 pub const TOOL_TAG_PREFIX: &str = "tool:";
 const PARAM_TAG_PREFIX: &str = "param:";
@@ -342,6 +343,19 @@ pub fn parse_tool_from_params(
 
         "list_projects" => Ok(Tool::ListProjects),
 
+        "perplexity_ask" => {
+            let messages_param = get_required_param(params, "messages")?;
+            let messages_json: Result<Vec<web::PerplexityMessage>, _> =
+                serde_json::from_str(messages_param);
+
+            match messages_json {
+                Ok(messages) => Ok(Tool::PerplexityAsk { messages }),
+                Err(_) => Err(ToolError::ParseError(
+                    "Invalid messages format for perplexity_ask".into(),
+                )),
+            }
+        }
+
         _ => Err(ToolError::UnknownTool(tool_name.to_string())),
     }
 }
@@ -409,12 +423,15 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
         }),
         "summarize" => Ok(Tool::Summarize {
             project: get_project(params)?,
-            path: PathBuf::from(params["path"].as_str().ok_or_else(|| {
-                ToolError::ParseError("Missing required parameter: path".into())
-            })?),
-            summary: params["summary"].as_str().ok_or_else(|| {
-                ToolError::ParseError("Missing required parameter: summary".into())
-            })?.to_string(),
+            path: PathBuf::from(
+                params["path"].as_str().ok_or_else(|| {
+                    ToolError::ParseError("Missing required parameter: path".into())
+                })?,
+            ),
+            summary: params["summary"]
+                .as_str()
+                .ok_or_else(|| ToolError::ParseError("Missing required parameter: summary".into()))?
+                .to_string(),
         }),
         "replace_in_file" => {
             Ok(Tool::ReplaceInFile {
@@ -473,6 +490,33 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
                     .collect()
             }),
         }),
+        "perplexity_ask" => {
+            // Parse the messages array
+            let messages = params["messages"]
+                .as_array()
+                .ok_or_else(|| {
+                    ToolError::ParseError("Missing required parameter: messages array".into())
+                })?
+                .iter()
+                .map(|msg| {
+                    let role = msg["role"]
+                        .as_str()
+                        .ok_or_else(|| ToolError::ParseError("Missing 'role' in message".into()))?
+                        .to_string();
+
+                    let content = msg["content"]
+                        .as_str()
+                        .ok_or_else(|| {
+                            ToolError::ParseError("Missing 'content' in message".into())
+                        })?
+                        .to_string();
+
+                    Ok(web::PerplexityMessage { role, content })
+                })
+                .collect::<Result<Vec<web::PerplexityMessage>, ToolError>>()?;
+
+            Ok(Tool::PerplexityAsk { messages })
+        }
         _ => Err(ToolError::UnknownTool(name.to_string())),
     }
 }

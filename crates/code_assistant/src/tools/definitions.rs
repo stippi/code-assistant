@@ -5,7 +5,7 @@ use serde_json::json;
 impl Tools {
     /// Returns all available tool definitions
     pub fn all() -> Vec<ToolDefinition> {
-        vec![
+        let mut tools = vec![
             Self::execute_command(),
             Self::search_files(),
             Self::list_files(),
@@ -16,11 +16,18 @@ impl Tools {
             Self::delete_files(),
             Self::web_search(),
             Self::web_fetch(),
-        ]
+        ];
+
+        // Add Perplexity tools if API key is available
+        if std::env::var("PERPLEXITY_API_KEY").is_ok() {
+            tools.push(Self::perplexity_ask());
+        }
+
+        tools
     }
 
     pub fn mcp() -> Vec<ToolDefinition> {
-        vec![
+        let mut tools = vec![
             Self::list_projects(),
             Self::execute_command(),
             Self::search_files(),
@@ -31,7 +38,14 @@ impl Tools {
             Self::delete_files(),
             Self::web_search(),
             Self::web_fetch(),
-        ]
+        ];
+
+        // Add Perplexity tools if API key is available
+        if std::env::var("PERPLEXITY_API_KEY").is_ok() {
+            tools.push(Self::perplexity_ask());
+        }
+
+        tools
     }
 
     pub fn list_projects() -> ToolDefinition {
@@ -308,6 +322,37 @@ impl Tools {
                     }
                 },
                 "required": ["url"]
+            }),
+        }
+    }
+
+    pub fn perplexity_ask() -> ToolDefinition {
+        ToolDefinition {
+            name: "perplexity_ask".to_string(),
+            description: "Engages in a conversation using the Perplexity Sonar API and returns an AI-generated answer with citations.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "messages": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "role": {
+                                    "type": "string",
+                                    "description": "Role of the message (e.g., system, user, assistant)"
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "The content of the message"
+                                }
+                            },
+                            "required": ["role", "content"]
+                        },
+                        "description": "Array of conversation messages"
+                    }
+                },
+                "required": ["messages"]
             }),
         }
     }

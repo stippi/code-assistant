@@ -1232,7 +1232,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "code_assistant"
+name = "code-assistant"
 version = "0.1.5"
 dependencies = [
  "anyhow",
@@ -6965,6 +6965,7 @@ version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "chromiumoxide",
  "futures",
  "htmd",
