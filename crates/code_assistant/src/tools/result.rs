@@ -189,37 +189,18 @@ impl ToolResult {
                     msg
                 }
             }
-            ToolResult::WebFetch { page, error } => {
+            ToolResult::WebFetch { error, .. } => {
                 if let Some(e) = error {
                     format!("Failed to fetch page: {}", e)
                 } else {
-                    format!("Page fetched successfully: {}", page.url)
+                    format!("Page fetched successfully")
                 }
             }
-            ToolResult::PerplexityAsk {
-                answer,
-                citations,
-                error,
-                ..
-            } => {
+            ToolResult::PerplexityAsk { error, .. } => {
                 if let Some(e) = error {
                     format!("Failed to get answer from Perplexity: {}", e)
                 } else {
-                    let mut result = format!("{}", answer);
-
-                    if !citations.is_empty() {
-                        result.push_str("\n\nCitations:\n");
-                        for (i, citation) in citations.iter().enumerate() {
-                            result.push_str(&format!(
-                                "[{}] {}: {}\n",
-                                i + 1,
-                                citation.text,
-                                citation.url
-                            ));
-                        }
-                    }
-
-                    result
+                    format!("Answer received from Perplexity")
                 }
             }
         }
