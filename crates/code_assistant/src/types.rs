@@ -1,11 +1,11 @@
 use llm::Message;
 
-use crate::web::{WebPage, WebSearchResult};
 use anyhow::Result;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use web::{WebPage, WebSearchResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Project {

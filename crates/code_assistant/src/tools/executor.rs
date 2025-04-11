@@ -3,10 +3,10 @@ use crate::config::{self, ProjectManager};
 use crate::types::{SearchMode, SearchOptions, Tool, ToolResult};
 use crate::ui::{UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
-use crate::web::{WebClient, WebPage};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use web::{WebClient, WebPage};
 
 pub struct ToolExecutor {}
 
@@ -36,12 +36,14 @@ impl ToolExecutor {
 
             Tool::UpdatePlan { plan } => ToolResult::UpdatePlan { plan: plan.clone() },
 
-            Tool::Summarize { project, path, summary } => {
-                ToolResult::Summarize {
-                    project: project.clone(),
-                    path: path.clone(),
-                    summary: summary.clone(),
-                }
+            Tool::Summarize {
+                project,
+                path,
+                summary,
+            } => ToolResult::Summarize {
+                project: project.clone(),
+                path: path.clone(),
+                summary: summary.clone(),
             },
 
             Tool::CompleteTask { message } => match &ui {
@@ -203,7 +205,7 @@ impl ToolExecutor {
                     if path.is_absolute() {
                         failed_paths.push((
                             path.display().to_string(),
-                            "Path must be relative to project root".to_string()
+                            "Path must be relative to project root".to_string(),
                         ));
                         continue;
                     }
@@ -481,7 +483,11 @@ impl ToolExecutor {
                     }
                 }
 
-                ToolResult::DeleteFiles { project: project.clone(), deleted, failed }
+                ToolResult::DeleteFiles {
+                    project: project.clone(),
+                    deleted,
+                    failed,
+                }
             }
 
             _ => unreachable!(),

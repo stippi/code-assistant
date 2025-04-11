@@ -7,7 +7,6 @@ mod tools;
 mod types;
 mod ui;
 mod utils;
-mod web;
 
 use crate::agent::Agent;
 use crate::mcp::MCPServer;
