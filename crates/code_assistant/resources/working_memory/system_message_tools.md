@@ -36,6 +36,7 @@ Tool use is formatted using XML-style tags. The tool name is prefixed by 'tool:'
 For example:
 
 <tool:read_files>
+<param:project>frontend</param:project>
 <param:path>src/main.js</param:path>
 </tool:read_files>
 

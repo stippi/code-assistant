@@ -36,6 +36,7 @@ multiple lines
 For example:
 
 <tool:read_files>
+<param:project>frontend</param:project>
 <param:path>src/main.js</param:path>
 </tool:read_files>
 
