@@ -1,10 +1,10 @@
+use crate::tools::types::AnnotatedToolDefinition;
 use crate::types::Tools;
-use llm::ToolDefinition;
 use serde_json::json;
 
 impl Tools {
     /// Returns all available tool definitions
-    pub fn all() -> Vec<ToolDefinition> {
+    pub fn all() -> Vec<AnnotatedToolDefinition> {
         let mut tools = vec![
             Self::execute_command(),
             Self::search_files(),
@@ -26,7 +26,7 @@ impl Tools {
         tools
     }
 
-    pub fn mcp() -> Vec<ToolDefinition> {
+    pub fn mcp() -> Vec<AnnotatedToolDefinition> {
         let mut tools = vec![
             Self::list_projects(),
             Self::execute_command(),
@@ -48,8 +48,8 @@ impl Tools {
         tools
     }
 
-    pub fn list_projects() -> ToolDefinition {
-        ToolDefinition {
+    pub fn list_projects() -> AnnotatedToolDefinition {
+        AnnotatedToolDefinition {
             name: "list_projects".to_string(),
             description: "List all available projects".to_string(),
             parameters: json!({
@@ -63,8 +63,8 @@ impl Tools {
         }
     }
 
-    pub fn execute_command() -> ToolDefinition {
-        ToolDefinition {
+    pub fn execute_command() -> AnnotatedToolDefinition {
+        AnnotatedToolDefinition {
             name: "execute_command".to_string(),
             description: "Execute a command line program within a specified project".to_string(),
             parameters: json!({
@@ -91,8 +91,8 @@ impl Tools {
         }
     }
 
-    pub fn search_files() -> ToolDefinition {
-        ToolDefinition {
+    pub fn search_files() -> AnnotatedToolDefinition {
+        AnnotatedToolDefinition {
             name: "search_files".to_string(),
             description: "Search for text in files within a specified project using regex in Rust syntax. This tool searches for specific content across multiple files, displaying each match with context.".to_string(),
             parameters: json!({
@@ -115,8 +115,8 @@ impl Tools {
         }
     }
 
-    pub fn list_files() -> ToolDefinition {
-        ToolDefinition {
+    pub fn list_files() -> AnnotatedToolDefinition {
+        AnnotatedToolDefinition {
             name: "list_files".to_string(),
             description: "List files in directories within a specified project".to_string(),
             parameters: json!({
@@ -146,7 +146,7 @@ impl Tools {
         }
     }
 
-    pub fn read_files() -> ToolDefinition {
+    pub fn read_files() -> AnnotatedToolDefinition {
         let description = concat!(
             "Load files into working memory. You can specify line ranges by appending them to the file path using a colon.\n\n",
             "Examples:\n",
@@ -156,7 +156,7 @@ impl Tools {
             "- file.txt:-20 - Read from the beginning to line 20\n",
             "- file.txt:15 - Read only line 15");
 
-        ToolDefinition {
+        AnnotatedToolDefinition {
             name: "read_files".to_string(),
             description: description.to_string(),
             parameters: json!({
@@ -182,8 +182,8 @@ impl Tools {
         }
     }
 
-    pub fn summarize() -> ToolDefinition {
-        ToolDefinition {
+    pub fn summarize() -> AnnotatedToolDefinition {
+        AnnotatedToolDefinition {
             name: "summarize".to_string(),
             description:
                 "Replace resource content with a summary in working memory, unloading the full content. The purpose of this tool is to free up precious space in the working memory by keeping only relevant information from a resource."
@@ -212,8 +212,8 @@ impl Tools {
         }
     }
 
-    pub fn replace_in_file() -> ToolDefinition {
-        ToolDefinition {
+    pub fn replace_in_file() -> AnnotatedToolDefinition {
+        AnnotatedToolDefinition {
             name: "replace_in_file".to_string(),
             description: "Replace sections in a file within a specified project using search/replace blocks. By default, each search text must match exactly once in the file, but you can use SEARCH_ALL/REPLACE_ALL blocks to replace all occurrences of a pattern.".to_string(),
             parameters: json!({
@@ -241,8 +241,8 @@ impl Tools {
         }
     }
 
-    pub fn write_file() -> ToolDefinition {
-        ToolDefinition {
+    pub fn write_file() -> AnnotatedToolDefinition {
+        AnnotatedToolDefinition {
             name: "write_file".to_string(),
             description:
                 "Creates or overwrites a file. Use for new files or when updating most content of a file. \
@@ -281,8 +281,8 @@ impl Tools {
         }
     }
 
-    pub fn delete_files() -> ToolDefinition {
-        ToolDefinition {
+    pub fn delete_files() -> AnnotatedToolDefinition {
+        AnnotatedToolDefinition {
             name: "delete_files".to_string(),
             description: "Delete files from a specified project. This operation cannot be undone!"
                 .to_string(),
@@ -310,8 +310,8 @@ impl Tools {
         }
     }
 
-    pub fn web_search() -> ToolDefinition {
-        ToolDefinition {
+    pub fn web_search() -> AnnotatedToolDefinition {
+        AnnotatedToolDefinition {
             name: "web_search".to_string(),
             description: "Search the web using DuckDuckGo".to_string(),
             parameters: json!({
@@ -336,8 +336,8 @@ impl Tools {
         }
     }
 
-    pub fn web_fetch() -> ToolDefinition {
-        ToolDefinition {
+    pub fn web_fetch() -> AnnotatedToolDefinition {
+        AnnotatedToolDefinition {
             name: "web_fetch".to_string(),
             description: "Fetch and extract content from a web page".to_string(),
             parameters: json!({
@@ -364,8 +364,8 @@ impl Tools {
         }
     }
 
-    pub fn perplexity_ask() -> ToolDefinition {
-        ToolDefinition {
+    pub fn perplexity_ask() -> AnnotatedToolDefinition {
+        AnnotatedToolDefinition {
             name: "perplexity_ask".to_string(),
             description: "Engages in a conversation using the Perplexity Sonar API and returns an AI-generated answer with citations.".to_string(),
             parameters: json!({

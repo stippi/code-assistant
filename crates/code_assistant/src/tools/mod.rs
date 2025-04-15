@@ -6,10 +6,12 @@ mod executor;
 mod handlers;
 mod parse;
 mod result;
+mod types;
 
 pub use executor::ToolExecutor;
 pub use handlers::{AgentChatToolHandler, AgentToolHandler, MCPToolHandler};
 pub use parse::{parse_tool_json, parse_tool_xml, TOOL_TAG_PREFIX};
+pub use types::AnnotatedToolDefinition;
 
 #[async_trait::async_trait]
 pub trait ToolResultHandler: Send + Sync {

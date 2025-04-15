@@ -656,7 +656,7 @@ impl Agent {
             messages,
             system_prompt: self.get_system_prompt(),
             tools: match self.tool_mode {
-                ToolMode::Native => Some(Tools::all()),
+                ToolMode::Native => Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(Tools::all())),
                 ToolMode::Xml => None,
             },
         };

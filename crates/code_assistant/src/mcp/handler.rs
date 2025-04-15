@@ -194,6 +194,7 @@ impl MessageHandler {
         debug!("Handling tools/list request");
         
         // Map tool definitions to the expected JSON structure
+        // AnnotatedToolDefinition already has all the fields we need including annotations
         let tools_json = Tools::mcp()
             .into_iter()
             .map(|tool| {
