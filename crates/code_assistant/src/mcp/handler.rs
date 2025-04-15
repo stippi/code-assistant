@@ -192,9 +192,8 @@ impl MessageHandler {
     /// Handle tools/list request
     async fn handle_tools_list(&mut self, id: RequestId) -> Result<()> {
         debug!("Handling tools/list request");
-        
+
         // Map tool definitions to the expected JSON structure
-        // AnnotatedToolDefinition already has all the fields we need including annotations
         let tools_json = Tools::mcp()
             .into_iter()
             .map(|tool| {
@@ -203,16 +202,16 @@ impl MessageHandler {
                     "description": tool.description,
                     "inputSchema": tool.parameters
                 });
-                
+
                 // Include annotations if present
                 if let Some(annotations) = &tool.annotations {
                     json["annotations"] = annotations.clone();
                 }
-                
+
                 json
             })
             .collect();
-            
+
         self.send_response(
             id,
             ListToolsResult {

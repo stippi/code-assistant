@@ -86,7 +86,8 @@ impl Tools {
                 "required": ["project", "command_line"]
             }),
             annotations: Some(json!({
-                "readOnlyHint": false
+                "readOnlyHint": false,
+                "idempotentHint": false
             })),
         }
     }
@@ -177,7 +178,8 @@ impl Tools {
                 "required": ["project", "paths"]
             }),
             annotations: Some(json!({
-                "readOnlyHint": true
+                "readOnlyHint": true,
+                "idempotentHint": true
             })),
         }
     }
@@ -207,7 +209,8 @@ impl Tools {
                 "required": ["project", "path", "summary"]
             }),
             annotations: Some(json!({
-                "readOnlyHint": true
+                "readOnlyHint": false,
+                "destructiveHint": false
             })),
         }
     }
@@ -276,7 +279,8 @@ impl Tools {
             }),
             annotations: Some(json!({
                 "readOnlyHint": false,
-                "destructiveHint": true
+                "destructiveHint": true,
+                "idempotentHint": false
             })),
         }
     }
@@ -305,7 +309,8 @@ impl Tools {
             }),
             annotations: Some(json!({
                 "readOnlyHint": false,
-                "destructiveHint": true
+                "destructiveHint": true,
+                "idempotentHint": true
             })),
         }
     }
@@ -331,6 +336,7 @@ impl Tools {
             }),
             annotations: Some(json!({
                 "readOnlyHint": true,
+                "idempotentHint": true,
                 "openWorldHint": true
             })),
         }
@@ -359,6 +365,7 @@ impl Tools {
             }),
             annotations: Some(json!({
                 "readOnlyHint": true,
+                "idempotentHint": true,
                 "openWorldHint": true
             })),
         }
@@ -394,6 +401,7 @@ impl Tools {
             }),
             annotations: Some(json!({
                 "readOnlyHint": true,
+                "idempotentHint": false,
                 "openWorldHint": true
             })),
         }
