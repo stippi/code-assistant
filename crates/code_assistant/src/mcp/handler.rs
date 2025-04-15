@@ -192,19 +192,30 @@ impl MessageHandler {
     /// Handle tools/list request
     async fn handle_tools_list(&mut self, id: RequestId) -> Result<()> {
         debug!("Handling tools/list request");
+        
+        // Map tool definitions to the expected JSON structure
+        let tools_json = Tools::mcp()
+            .into_iter()
+            .map(|tool| {
+                let mut json = serde_json::json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputSchema": tool.parameters
+                });
+                
+                // Include annotations if present
+                if let Some(annotations) = &tool.annotations {
+                    json["annotations"] = annotations.clone();
+                }
+                
+                json
+            })
+            .collect();
+            
         self.send_response(
             id,
             ListToolsResult {
-                tools: Tools::mcp()
-                    .into_iter()
-                    .map(|tool| {
-                        serde_json::json!({
-                            "name": tool.name,
-                            "description": tool.description,
-                            "inputSchema": tool.parameters
-                        })
-                    })
-                    .collect(),
+                tools: tools_json,
                 next_cursor: None,
             },
         )

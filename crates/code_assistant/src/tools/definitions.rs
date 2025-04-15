@@ -57,6 +57,9 @@ impl Tools {
                 "properties": {},
                 "required": []
             }),
+            annotations: Some(json!({
+                "readOnlyHint": true
+            })),
         }
     }
 
@@ -82,6 +85,9 @@ impl Tools {
                 },
                 "required": ["project", "command_line"]
             }),
+            annotations: Some(json!({
+                "readOnlyHint": false
+            })),
         }
     }
 
@@ -103,6 +109,9 @@ impl Tools {
                 },
                 "required": ["project", "regex"]
             }),
+            annotations: Some(json!({
+                "readOnlyHint": true
+            })),
         }
     }
 
@@ -131,6 +140,9 @@ impl Tools {
                 },
                 "required": ["project", "paths"]
             }),
+            annotations: Some(json!({
+                "readOnlyHint": true
+            })),
         }
     }
 
@@ -164,6 +176,9 @@ impl Tools {
                 },
                 "required": ["project", "paths"]
             }),
+            annotations: Some(json!({
+                "readOnlyHint": true
+            })),
         }
     }
 
@@ -191,6 +206,9 @@ impl Tools {
                 },
                 "required": ["project", "path", "summary"]
             }),
+            annotations: Some(json!({
+                "readOnlyHint": true
+            })),
         }
     }
 
@@ -216,6 +234,10 @@ impl Tools {
                 },
                 "required": ["project", "path", "diff"]
             }),
+            annotations: Some(json!({
+                "readOnlyHint": false,
+                "destructiveHint": true
+            })),
         }
     }
 
@@ -252,6 +274,10 @@ impl Tools {
                 },
                 "required": ["project", "path", "content"]
             }),
+            annotations: Some(json!({
+                "readOnlyHint": false,
+                "destructiveHint": true
+            })),
         }
     }
 
@@ -277,6 +303,10 @@ impl Tools {
                 },
                 "required": ["project", "paths"]
             }),
+            annotations: Some(json!({
+                "readOnlyHint": false,
+                "destructiveHint": true
+            })),
         }
     }
 
@@ -299,6 +329,10 @@ impl Tools {
                 },
                 "required": ["query", "hits_page_number"]
             }),
+            annotations: Some(json!({
+                "readOnlyHint": true,
+                "openWorldHint": true
+            })),
         }
     }
 
@@ -323,6 +357,10 @@ impl Tools {
                 },
                 "required": ["url"]
             }),
+            annotations: Some(json!({
+                "readOnlyHint": true,
+                "openWorldHint": true
+            })),
         }
     }
 
@@ -354,6 +392,10 @@ impl Tools {
                 },
                 "required": ["messages"]
             }),
+            annotations: Some(json!({
+                "readOnlyHint": true,
+                "openWorldHint": true
+            })),
         }
     }
 }
