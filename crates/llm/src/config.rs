@@ -1,4 +1,4 @@
-use crate::error::{ProxyError, Result};
+use anyhow::{Context, Result};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 
@@ -19,23 +19,23 @@ impl DeploymentConfig {
 
         match keyring.get_password() {
             Ok(config_json) => serde_json::from_str(&config_json)
-                .map_err(|e| ProxyError::Config(format!("Failed to parse config: {}", e))),
+                .with_context(|| "Failed to parse config"),
             Err(keyring::Error::NoEntry) => {
                 // If no config exists, create it interactively
                 let config = Self::create_interactive()?;
                 config.save()?;
                 Ok(config)
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e).with_context(|| "Failed to access keyring"),
         }
     }
 
     pub fn save(&self) -> Result<()> {
         let keyring = Entry::new(Self::SERVICE_NAME, Self::USERNAME)?;
         let config_json = serde_json::to_string(self)
-            .map_err(|e| ProxyError::Config(format!("Failed to serialize config: {}", e)))?;
-        keyring.set_password(&config_json)?;
-        Ok(())
+            .with_context(|| "Failed to serialize config")?;
+        keyring.set_password(&config_json)
+            .with_context(|| "Failed to save config to keyring")
     }
 
     fn create_interactive() -> Result<Self> {

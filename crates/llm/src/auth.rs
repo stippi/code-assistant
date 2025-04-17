@@ -1,5 +1,5 @@
 use crate::config::DeploymentConfig;
-use crate::error::{ProxyError, Result};
+use anyhow::Result;
 use base64::engine::{general_purpose, Engine};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -70,10 +70,7 @@ impl TokenManager {
         let status = res.status();
         if !status.is_success() {
             let error_text = res.text().await?;
-            return Err(ProxyError::Auth(format!(
-                "Token request failed: {} - {}",
-                status, error_text
-            )));
+            anyhow::bail!("Token request failed: {} - {}", status, error_text);
         }
 
         let token_response = res.json::<TokenResponse>().await?;
