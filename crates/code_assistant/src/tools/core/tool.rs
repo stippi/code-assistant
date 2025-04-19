@@ -1,0 +1,31 @@
+use super::spec::ToolSpec;
+use super::render::Render;
+use anyhow::Result;
+use serde::de::DeserializeOwned;
+
+/// Context provided to tools during execution
+pub struct ToolContext {
+    /// Project manager for accessing files
+    pub project_manager: Box<dyn crate::config::ProjectManager>,
+    // Additional context fields can be added as needed
+}
+
+/// Core trait for tools, defining the execution interface
+#[async_trait::async_trait]
+pub trait Tool: Send + Sync + 'static {
+    /// Input type for this tool, must be deserializable from JSON
+    type Input: DeserializeOwned + Send;
+
+    /// Output type for this tool, must implement Render
+    type Output: Render + Send + Sync;
+
+    /// Get the metadata for this tool
+    fn spec(&self) -> ToolSpec;
+
+    /// Execute the tool with the given context and input
+    async fn execute(
+        &self,
+        context: &mut ToolContext,
+        input: Self::Input
+    ) -> Result<Self::Output>;
+}
