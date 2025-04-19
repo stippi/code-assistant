@@ -3,7 +3,7 @@ use crate::tools::parse::PathWithLineRange;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // Input type for the read_files tool
 #[derive(Deserialize)]
@@ -168,10 +168,10 @@ impl Tool for ReadFilesTool {
 
             match read_result {
                 Ok(content) => {
-                    loaded_files.insert(path.clone(), content);
+                    loaded_files.insert(PathBuf::from(&path_str), content);
                 }
                 Err(e) => {
-                    failed_files.push((path.clone(), e.to_string()));
+                    failed_files.push((PathBuf::from(&path_str), e.to_string()));
                 }
             }
         }
@@ -187,142 +187,6 @@ impl Tool for ReadFilesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ProjectManager;
-    use crate::types::{CodeExplorer, Project};
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    // Mock CodeExplorer for testing
-    #[derive(Clone)]
-    struct MockExplorer {
-        root_dir: PathBuf,
-        test_files: HashMap<PathBuf, String>,
-    }
-
-    impl MockExplorer {
-        fn new() -> Self {
-            let root_dir = PathBuf::from("/mock/root");
-
-            let mut test_files = HashMap::new();
-            test_files.insert(
-                PathBuf::from("test.txt"),
-                "Line 1\nLine 2\nLine 3\nLine 4\nLine 5".to_string(),
-            );
-
-            Self {
-                root_dir,
-                test_files,
-            }
-        }
-    }
-
-    impl CodeExplorer for MockExplorer {
-        fn root_dir(&self) -> PathBuf {
-            self.root_dir.clone()
-        }
-
-        fn read_file(&self, path: &PathBuf) -> Result<String> {
-            let rel_path = path
-                .strip_prefix(&self.root_dir)
-                .map_err(|_| anyhow!("Not a child of root directory"))?;
-
-            self.test_files
-                .get(rel_path)
-                .cloned()
-                .ok_or_else(|| anyhow!("File not found: {}", rel_path.display()))
-        }
-
-        fn read_file_range(
-            &self,
-            path: &PathBuf,
-            start_line: Option<usize>,
-            end_line: Option<usize>,
-        ) -> Result<String> {
-            let content = self.read_file(path)?;
-            let lines: Vec<&str> = content.lines().collect();
-
-            let start = start_line.unwrap_or(1).saturating_sub(1); // 0-based index
-            let end = end_line.unwrap_or(lines.len());
-
-            if start >= lines.len() {
-                return Err(anyhow!("Start line out of range"));
-            }
-
-            let selected_lines = &lines[start..end.min(lines.len())];
-            Ok(selected_lines.join("\n"))
-        }
-
-        fn write_file(&self, _path: &PathBuf, _content: &String, _append: bool) -> Result<()> {
-            unimplemented!()
-        }
-
-        fn delete_file(&self, _path: &PathBuf) -> Result<()> {
-            unimplemented!()
-        }
-
-        fn create_initial_tree(
-            &mut self,
-            _max_depth: usize,
-        ) -> Result<crate::types::FileTreeEntry> {
-            unimplemented!()
-        }
-
-        fn list_files(
-            &mut self,
-            _path: &PathBuf,
-            _max_depth: Option<usize>,
-        ) -> Result<crate::types::FileTreeEntry> {
-            unimplemented!()
-        }
-
-        fn apply_replacements(
-            &self,
-            _path: &Path,
-            _replacements: &[crate::types::FileReplacement],
-        ) -> Result<String> {
-            unimplemented!()
-        }
-
-        fn search(
-            &self,
-            _path: &Path,
-            _options: crate::types::SearchOptions,
-        ) -> Result<Vec<crate::types::SearchResult>> {
-            unimplemented!()
-        }
-    }
-
-    // Mock ProjectManager for testing
-    struct MockProjectManager {
-        explorer: MockExplorer,
-    }
-
-    impl MockProjectManager {
-        fn new() -> Self {
-            Self {
-                explorer: MockExplorer::new(),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl ProjectManager for MockProjectManager {
-        fn add_temporary_project(&mut self, _path: PathBuf) -> Result<String> {
-            unimplemented!()
-        }
-
-        fn get_projects(&self) -> Result<HashMap<String, Project>> {
-            unimplemented!()
-        }
-
-        fn get_project(&self, _name: &str) -> Result<Option<Project>> {
-            unimplemented!()
-        }
-
-        fn get_explorer_for_project(&self, _name: &str) -> Result<Box<dyn CodeExplorer>> {
-            Ok(Box::new(self.explorer.clone()))
-        }
-    }
 
     #[tokio::test]
     async fn test_read_files_output_rendering() {
