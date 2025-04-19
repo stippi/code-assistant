@@ -4,13 +4,6 @@ use anyhow::Result;
 use serde::Deserialize;
 use std::collections::HashMap;
 
-// Tool mode constants
-const SUPPORTED_MODES: &[ToolMode] = &[
-    ToolMode::McpServer,
-    ToolMode::WorkingMemoryAgent,
-    ToolMode::MessageHistoryAgent,
-];
-
 // Input type (empty for this tool)
 #[derive(Deserialize)]
 pub struct ListProjectsInput {}
@@ -62,7 +55,11 @@ impl Tool for ListProjectsTool {
                 "required": []
             }),
             annotations: None,
-            supported_modes: SUPPORTED_MODES,
+            supported_modes: &[
+                ToolMode::McpServer,
+                ToolMode::WorkingMemoryAgent,
+                ToolMode::MessageHistoryAgent,
+            ],
         }
     }
 
