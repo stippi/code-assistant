@@ -1,116 +1,15 @@
-use crate::tools::core::{DynTool, Tool, ToolContext, ToolRegistry};
-use crate::tools::impls::{ListProjectsTool, ReadFilesTool, WriteFileTool};
+use crate::tools::core::{ToolContext, ToolRegistry};
+use crate::tools::impls::{ListFilesTool, ListProjectsTool, ReadFilesTool, WriteFileTool};
 use crate::tools::parse::{parse_tool_json, parse_tool_xml};
-use crate::types::{CodeExplorer, Project, Tool as LegacyTool};
+use crate::tools::tests::mocks::{MockExplorer, MockProjectManager};
+use crate::types::{FileSystemEntryType, FileTreeEntry, Tool as LegacyTool};
 
 use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-// Helper MockProjectManager for testing
-pub struct MockProjectManager {
-    projects: HashMap<String, Project>,
-}
-
-impl MockProjectManager {
-    pub fn new() -> Self {
-        let mut projects = HashMap::new();
-        projects.insert(
-            "test-project".to_string(),
-            Project {
-                path: PathBuf::from("/mock/root"),
-            },
-        );
-
-        Self { projects }
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::config::ProjectManager for MockProjectManager {
-    fn add_temporary_project(&mut self, _path: PathBuf) -> Result<String> {
-        Ok("temp-project".to_string())
-    }
-
-    fn get_projects(&self) -> Result<HashMap<String, Project>> {
-        Ok(self.projects.clone())
-    }
-
-    fn get_project(&self, name: &str) -> Result<Option<Project>> {
-        Ok(self.projects.get(name).cloned())
-    }
-
-    fn get_explorer_for_project(&self, _name: &str) -> Result<Box<dyn CodeExplorer>> {
-        // Return a minimal mock explorer that's sufficient for tests
-        struct MockExplorer {
-            root_path: PathBuf,
-        }
-
-        impl CodeExplorer for MockExplorer {
-            fn root_dir(&self) -> PathBuf {
-                self.root_path.clone()
-            }
-
-            fn read_file(&self, _path: &PathBuf) -> Result<String> {
-                Ok("Mock file content".to_string())
-            }
-
-            fn read_file_range(
-                &self,
-                _path: &PathBuf,
-                _start_line: Option<usize>,
-                _end_line: Option<usize>,
-            ) -> Result<String> {
-                Ok("Mock file content (range)".to_string())
-            }
-
-            fn write_file(&self, _path: &PathBuf, content: &String, append: bool) -> Result<String> {
-                // Return the content that would be written
-                Ok(content.clone())
-            }
-
-            fn delete_file(&self, _path: &PathBuf) -> Result<()> {
-                Ok(())
-            }
-
-            fn create_initial_tree(
-                &mut self,
-                _max_depth: usize,
-            ) -> Result<crate::types::FileTreeEntry> {
-                unimplemented!()
-            }
-
-            fn list_files(
-                &mut self,
-                _path: &PathBuf,
-                _max_depth: Option<usize>,
-            ) -> Result<crate::types::FileTreeEntry> {
-                unimplemented!()
-            }
-
-            fn apply_replacements(
-                &self,
-                _path: &Path,
-                _replacements: &[crate::types::FileReplacement],
-            ) -> Result<String> {
-                unimplemented!()
-            }
-
-            fn search(
-                &self,
-                _path: &Path,
-                _options: crate::types::SearchOptions,
-            ) -> Result<Vec<crate::types::SearchResult>> {
-                unimplemented!()
-            }
-        }
-
-        Ok(Box::new(MockExplorer {
-            root_path: PathBuf::from("/mock/root"),
-        }))
-    }
-}
+// Make the MockProjectManager public so it can be used by other tests
 
 #[tokio::test]
 async fn test_tool_dispatch_via_registry() -> Result<()> {
@@ -118,12 +17,46 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
     let mut registry = ToolRegistry::new();
 
     // Register tools manually rather than using the global registry
+    registry.register(Box::new(ListFilesTool));
     registry.register(Box::new(ListProjectsTool));
     registry.register(Box::new(ReadFilesTool));
     registry.register(Box::new(WriteFileTool));
 
-    // Create a mock project manager
-    let project_manager = Box::new(MockProjectManager::new());
+    // Set up sample test files
+    let mut files = HashMap::new();
+    files.insert(
+        PathBuf::from("./root/test.txt"),
+        "Test file content".to_string(),
+    );
+
+    // Create file tree
+    let mut children = HashMap::new();
+    children.insert(
+        "test.txt".to_string(),
+        FileTreeEntry {
+            name: "test.txt".to_string(),
+            entry_type: FileSystemEntryType::File,
+            children: HashMap::new(),
+            is_expanded: false,
+        },
+    );
+
+    let file_tree = Some(FileTreeEntry {
+        name: "./root".to_string(),
+        entry_type: FileSystemEntryType::Directory,
+        children,
+        is_expanded: true,
+    });
+
+    // Create a custom explorer
+    let explorer = MockExplorer::new(files, file_tree);
+
+    // Create a mock project manager with our files
+    let project_manager = Box::new(MockProjectManager::default().with_project(
+        "test-project",
+        PathBuf::from("./root"),
+        explorer,
+    ));
 
     // Create a tool context
     let mut context = ToolContext::<'_> {
@@ -205,6 +138,32 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
         assert!(output.contains("new_test.txt"));
     }
 
+    // Test list_files tool
+    {
+        // Get the tool from the registry
+        let list_files_tool = registry
+            .get("list_files")
+            .expect("list_files tool should be registered");
+
+        // Parameters for list_files
+        let params = json!({
+            "project": "test-project",
+            "paths": ["."],
+            "max_depth": 2
+        });
+
+        // Execute the tool
+        let result = list_files_tool.invoke(&mut context, params).await?;
+
+        // Format the output
+        let mut tracker = crate::tools::core::ResourcesTracker::new();
+        let output = result.as_render().render(&mut tracker);
+
+        // The output should contain information about our test file
+        assert!(output.contains("Path: ."));
+        assert!(output.contains("test.txt"));
+    }
+
     Ok(())
 }
 
@@ -269,8 +228,26 @@ async fn test_parse_to_legacy_tool_to_new_tool() -> Result<()> {
                 "paths": path_strings
             });
 
-            // Create a mock context
-            let project_manager = Box::new(MockProjectManager::new());
+            // Set up a proper mock explorer with test files
+            let mut files = HashMap::new();
+            files.insert(
+                PathBuf::from("./root/file1.txt"),
+                "File 1 content".to_string(),
+            );
+            files.insert(
+                PathBuf::from("./root/file2.txt"),
+                "Line 1\nLine 2\nLine 3\nLine 4\nLine 5".to_string(),
+            );
+
+            let explorer = MockExplorer::new(files, None);
+
+            // Create a mock context with our test files
+            let project_manager = Box::new(MockProjectManager::default().with_project(
+                "test-project",
+                PathBuf::from("./root"),
+                explorer,
+            ));
+
             let mut context = ToolContext::<'_> {
                 project_manager,
                 working_memory: None,

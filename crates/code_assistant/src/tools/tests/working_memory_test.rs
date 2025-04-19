@@ -1,8 +1,10 @@
 use crate::tools::core::{ToolContext, ToolRegistry};
-use crate::tools::tests::integration_test::MockProjectManager;
+use crate::tools::tests::mocks::{MockExplorer, MockProjectManager};
 use crate::types::WorkingMemory;
 use anyhow::Result;
 use serde_json::json;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[tokio::test]
 async fn test_read_files_updates_memory() -> Result<()> {
@@ -14,8 +16,26 @@ async fn test_read_files_updates_memory() -> Result<()> {
         .get("read_files")
         .expect("read_files tool should be registered");
 
-    // Create a mock project manager
-    let project_manager = Box::new(MockProjectManager::new());
+    // Create test files
+    let mut files = HashMap::new();
+    files.insert(
+        PathBuf::from("./root/test.txt"),
+        "Test file content".to_string(),
+    );
+    files.insert(
+        PathBuf::from("./root/test2.txt"),
+        "Another file content".to_string(),
+    );
+
+    // Create a mock explorer with these files
+    let explorer = MockExplorer::new(files, None);
+
+    // Create a mock project manager with our test files
+    let project_manager = Box::new(MockProjectManager::default().with_project(
+        "test-project",
+        PathBuf::from("./root"),
+        explorer,
+    ));
 
     // Create working memory
     let mut working_memory = WorkingMemory::default();

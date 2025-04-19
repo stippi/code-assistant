@@ -164,8 +164,10 @@ impl Tool for WriteFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::tests::integration_test::MockProjectManager;
+    use crate::tools::tests::mocks::{MockExplorer, MockProjectManager};
     use crate::types::WorkingMemory;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
 
     #[tokio::test]
     async fn test_write_file_output_rendering() {
@@ -198,8 +200,17 @@ mod tests {
         // Create a tool registry (not needed for this test but kept for consistency)
         let write_file_tool = WriteFileTool;
 
-        // Create a mock project manager
-        let project_manager = Box::new(MockProjectManager::new());
+        // Create test files
+        let mut files = HashMap::new();
+
+        // Create a mock explorer with these files
+        let explorer = MockExplorer::new(files, None);
+
+        // Create a mock project manager with our test files
+        let project_manager = Box::new(
+            MockProjectManager::default()
+                .with_project("test-project", PathBuf::from("./root"), explorer)
+        );
 
         // Create working memory
         let mut working_memory = WorkingMemory::default();
@@ -244,12 +255,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_file_append_no_memory_update() -> Result<()> {
+    async fn test_write_file_append_has_memory_update() -> Result<()> {
         // Create a tool registry (not needed for this test but kept for consistency)
         let write_file_tool = WriteFileTool;
 
-        // Create a mock project manager
-        let project_manager = Box::new(MockProjectManager::new());
+        // Create test files with existing content
+        let mut files = HashMap::new();
+        files.insert(PathBuf::from("./root/test.txt"), "Initial content".to_string());
+
+        // Create a mock explorer with these files
+        let explorer = MockExplorer::new(files, None);
+
+        // Create a mock project manager with our test files
+        let project_manager = Box::new(
+            MockProjectManager::default()
+                .with_project("test-project", PathBuf::from("./root"), explorer)
+        );
 
         // Create working memory
         let mut working_memory = WorkingMemory::default();
@@ -274,8 +295,20 @@ mod tests {
         // Check the result
         assert!(result.error.is_none());
 
-        // Verify that the file was NOT added to working memory (since we're appending)
-        assert_eq!(working_memory.loaded_resources.len(), 0);
+        // Verify that the file WAS added to working memory (we fixed the behavior)
+        assert_eq!(working_memory.loaded_resources.len(), 1);
+
+        // Check that the file is in the working memory
+        let resource_key = ("test-project".to_string(), PathBuf::from("test.txt"));
+        assert!(working_memory.loaded_resources.contains_key(&resource_key));
+
+        // Check that the content is the combined content (initial + appended)
+        if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&resource_key) {
+            assert!(content.contains("Initial content"));
+            assert!(content.contains("Test content"));
+        } else {
+            panic!("Expected file resource in working memory");
+        }
 
         Ok(())
     }
