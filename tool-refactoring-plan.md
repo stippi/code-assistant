@@ -44,6 +44,7 @@ pub enum ToolMode {
     MessageHistoryAgent,
 }
 
+#[derive(Clone)]
 pub struct ToolSpec {
     pub name: &'static str,
     pub description: &'static str,
@@ -64,8 +65,8 @@ pub trait Tool: Send + Sync + 'static {
     type Input: DeserializeOwned + Send;
     type Output: Render + Send + Sync;
 
-    // Static metadata
-    fn spec(&self) -> &'static ToolSpec;
+    // Tool metadata
+    fn spec(&self) -> ToolSpec;
 
     // Main execution method
     async fn execute(
@@ -128,7 +129,7 @@ The ResourcesTracker helps prevent showing the same resource (like a file's cont
 ```rust
 #[async_trait::async_trait]
 pub trait DynTool: Send + Sync + 'static {
-    fn spec(&self) -> &'static ToolSpec;
+    fn spec(&self) -> ToolSpec;
 
     async fn invoke(
         &self,
@@ -161,7 +162,7 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     pub fn global() -> &'static Self {
         // Singleton instance of the registry
-        static INSTANCE: OnceCell<ToolRegistry> = OnceCell::new();
+        static INSTANCE: OnceLock<ToolRegistry> = OnceLock::new();
         INSTANCE.get_or_init(|| {
             let mut registry = ToolRegistry::new();
             registry.register_default_tools();
@@ -223,8 +224,10 @@ impl ToolRegistry {
 
     fn register_default_tools(&mut self) {
         // Register all the standard tools
+        use crate::tools::impls::{ListProjectsTool, ReadFilesTool};
+        
+        self.register(Box::new(ListProjectsTool));
         self.register(Box::new(ReadFilesTool));
-        self.register(Box::new(ListFilesTool));
         // ... register other tools
     }
 }
@@ -242,7 +245,7 @@ where
     T::Input: DeserializeOwned,
     T::Output: Render + Send + Sync + 'static,
 {
-    fn spec(&self) -> &'static ToolSpec {
+    fn spec(&self) -> ToolSpec {
         Tool::spec(self)
     }
 
@@ -268,70 +271,41 @@ This blanket implementation allows any concrete Tool implementation to be used w
 
 ### Example Tool Implementation
 
-Each tool would have its own folder under `src/tools/impls/` with the following structure:
+Each tool lives in its own folder under `src/tools/impls/` with the following structure:
 
 ```
 src/tools/impls/
   read_files/
     mod.rs         # Tool implementation
     description.md # Tool description embedded in the binary
-    tests.rs       # Tests for this tool
+    tests.rs       # Tests for this tool (if needed)
 ```
 
 Example implementation:
 
 ```rust
 // src/tools/impls/read_files/mod.rs
-use crate::tools::core::{Tool, ToolSpec, Render, ToolContext, ResourcesTracker};
+use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
 use anyhow::Result;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-// ToolSpec definition for this tool
-static READ_FILES_SPEC: ToolSpec = ToolSpec {
-    name: "read_files",
-    description: include_str!("description.md"),
-    parameters_schema: serde_json::json!({
-        "type": "object",
-        "properties": {
-            "project": {
-                "type": "string",
-                "description": "Name of the project containing the files"
-            },
-            "paths": {
-                "type": "array",
-                "description": "Paths to the files relative to the project root directory",
-                "items": {
-                    "type": "string"
-                }
-            }
-        },
-        "required": ["project", "paths"]
-    }),
-    annotations: None,
-    supported_modes: &[
-        ToolMode::McpServer,
-        ToolMode::WorkingMemoryAgent,
-        ToolMode::MessageHistoryAgent,
-    ], // This tool is available in all modes
-};
-
-// Input type
+// Input type for the read_files tool
 #[derive(Deserialize)]
 pub struct ReadFilesInput {
     pub project: String,
     pub paths: Vec<String>,
 }
 
-// Output type
+// Output type 
 pub struct ReadFilesOutput {
     pub project: String,
     pub loaded_files: HashMap<PathBuf, String>,
     pub failed_files: Vec<(PathBuf, String)>,
 }
 
-// Render implementation for output
+// Render implementation for output formatting
 impl Render for ReadFilesOutput {
     fn status(&self) -> String {
         if self.failed_files.is_empty() {
@@ -391,7 +365,7 @@ impl Render for ReadFilesOutput {
     }
 }
 
-// The actual tool
+// Tool implementation
 pub struct ReadFilesTool;
 
 #[async_trait::async_trait]
@@ -399,8 +373,34 @@ impl Tool for ReadFilesTool {
     type Input = ReadFilesInput;
     type Output = ReadFilesOutput;
 
-    fn spec(&self) -> &'static ToolSpec {
-        &READ_FILES_SPEC
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "read_files",
+            description: include_str!("description.md"),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": "string",
+                        "description": "Name of the project containing the files"
+                    },
+                    "paths": {
+                        "type": "array",
+                        "description": "Paths to the files relative to the project root directory. Can include line ranges using 'file.txt:10-20' syntax.",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "required": ["project", "paths"]
+            }),
+            annotations: None,
+            supported_modes: &[
+                ToolMode::McpServer,
+                ToolMode::WorkingMemoryAgent,
+                ToolMode::MessageHistoryAgent,
+            ],
+        }
     }
 
     async fn execute(
@@ -408,16 +408,13 @@ impl Tool for ReadFilesTool {
         context: &mut ToolContext,
         input: Self::Input
     ) -> Result<Self::Output> {
-        let project_manager = context.project_manager;
-        let mut loaded_files = HashMap::new();
-        let mut failed_files = Vec::new();
-
         // Implementation details...
+        // ...
 
         Ok(ReadFilesOutput {
             project: input.project,
-            loaded_files,
-            failed_files,
+            loaded_files: HashMap::new(),
+            failed_files: Vec::new(),
         })
     }
 }
@@ -425,48 +422,38 @@ impl Tool for ReadFilesTool {
 
 ## Implementation Strategy
 
-Refactoring a significant piece of the system will require a careful, step-by-step approach:
+Refactoring a significant piece of the system requires a careful, step-by-step approach:
 
 ### Addressing Naming Conflicts
 
-To avoid naming conflicts during the transition phase, we'll use the following structure:
+To avoid naming conflicts during the transition phase, we use the following structure:
 
 ```
 src/tools/
   core/          - Core traits and types for the new tool system
-    mod.rs       - Exports all core types
-    tool.rs      - Tool trait definition
-    spec.rs      - ToolSpec structure
-    render.rs    - Render trait and ResourcesTracker
-    dyn_tool.rs  - DynTool trait and AnyOutput
-    registry.rs  - ToolRegistry implementation
   impls/         - Individual tool implementations
-    read_files/  - Implementation of read_files tool
-    list_files/  - Implementation of list_files tool
-    ...
   adapter.rs     - Adapter between old and new systems during transition
-  registry.rs    - Main entry point that re-exports from core
   mod.rs         - Main module that controls what's exposed
 ```
 
 This structure allows us to keep both the old `Tool` enum and the new `Tool` trait in the codebase simultaneously.
 
-### Phase 1: Core Traits and Registry Implementation
+### Phase 1: Core Traits and Registry Implementation ✓
 
-1. **Create Tool and ToolSpec**: Define the core traits in `tools/core/`
-2. **Implement Render and ResourcesTracker**: Create the rendering system
-3. **Implement DynTool and AnyOutput**: Create the type erasure system
-4. **Implement ToolRegistry**: Create the central registry for tools
+1. **Create Tool and ToolSpec**: Define the core traits in `tools/core/` ✓
+2. **Implement Render and ResourcesTracker**: Create the rendering system ✓
+3. **Implement DynTool and AnyOutput**: Create the type erasure system ✓
+4. **Implement ToolRegistry**: Create the central registry for tools ✓
 
-### Phase 2: First Tool Migration
+### Phase 2: First Tool Migration ✓
 
-1. **Choose a Simple Tool**: Begin with a simple tool like `list_projects`
-2. **Create Directory Structure**: Set up the directory structure for this tool
-3. **Implement Tool Trait**: Migrate the tool to implement the Tool trait
-4. **Register the Tool**: Register the tool with the registry
-5. **Test Compatibility**: Ensure the tool works with both old and new systems
+1. **Choose a Simple Tool**: Implement a simple tool like `list_projects` ✓
+2. **Create Directory Structure**: Set up the directory structure for this tool ✓
+3. **Implement Tool Trait**: Implement the Tool trait ✓
+4. **Register the Tool**: Register the tool with the registry ✓
+5. **Create Tests**: Ensure the tool works with appropriate tests ✓
 
-### Phase 3: Adaptation Layer
+### Phase 3: Adaptation Layer (In Progress)
 
 1. **Create Adapter**: Create an adapter that maps between old enum-based tools and new trait-based tools
    - Create a method to convert `crate::types::Tool` to tool invocations via the registry
@@ -504,10 +491,10 @@ This structure allows us to keep both the old `Tool` enum and the new `Tool` tra
    }
    ```
 
-3. **Tool Definition Generation**: Generate tool descriptions for system messages dynamically
-   - Create a function that generates XML tool definitions from the registry
-   - Ensure compatibility with existing parsing code
-   - Add tests to verify the generated XML matches expected format
+3. **XML/JSON Parameter Handling**: Create a conversion function to handle parameters from XML/JSON
+   - Use each tool's `parameters_schema` to understand the expected types
+   - Create a conversion function that transforms `HashMap<String, Vec<String>>` to `serde_json::Value`
+   - Add tests to verify parameter conversion works correctly
 
 ### Phase 4: Gradual Migration
 
@@ -523,13 +510,25 @@ This structure allows us to keep both the old `Tool` enum and the new `Tool` tra
 
 ## Conclusion
 
-This refactoring plan provides a clear path to transform the current tools system into a more maintainable, extensible architecture. By following a modular, trait-based approach, we can simplify the addition of new tools while improving code organization and reducing duplication. The incremental migration strategy ensures minimal disruption while gradually adopting the new design.
+This refactoring plan transforms the current tools system into a more maintainable, extensible architecture. By following a modular, trait-based approach, we simplify the addition of new tools while improving code organization and reducing duplication. The incremental migration strategy ensures minimal disruption while gradually adopting the new design.
 
-The proposed architecture addresses the key goals:
+The architecture addresses the key goals:
 1. Centralized tool registry for discovery and extension
 2. Self-contained tool implementation in dedicated folders
 3. Automatic embedding of tool descriptions from markdown files
 4. Intelligent handling of redundant output via ResourcesTracker
 5. Simplified process for adding new tools
 
-By following this plan, we can maintain compatibility during the transition while progressively moving to a more maintainable and extensible architecture.
+By following this plan, we maintain compatibility during the transition while progressively moving to a more maintainable and extensible architecture.
+
+## Implementation Progress
+
+- ✓ Implemented core traits and interfaces (Tool, ToolSpec, Render, ResourcesTracker)
+- ✓ Created registry for tool discovery
+- ✓ Implemented `list_projects` tool
+- ✓ Implemented `read_files` tool 
+- ✓ Created basic adapter framework
+- ✓ Added integration tests showing end-to-end flow
+- ⏳ Handling XML/JSON parameter conversion (in progress)
+- ⏳ Integrating with existing executor
+- ⏳ Migrating remaining tools
