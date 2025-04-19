@@ -13,7 +13,7 @@ The current tools implementation in the code-assistant project is located in `cr
 
 This architecture has several limitations:
 
-- Adding a new tool requires modifying multiple files (at minimum `types.rs` and `definitions.rs`)
+- Adding a new tool requires modifying multiple files
 - Tool definitions, implementations, and results handling are spread across different files
 - There's no centralized registration mechanism for tools
 - The XML tool descriptions for system messages are statically defined
@@ -36,11 +36,20 @@ This architecture has several limitations:
 #### 1. ToolSpec for Tool Definition
 
 ```rust
+// Define available modes for tools
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolMode {
+    McpServer,
+    WorkingMemoryAgent,
+    MessageHistoryAgent,
+}
+
 pub struct ToolSpec {
     pub name: &'static str,
     pub description: &'static str,
     pub parameters_schema: serde_json::Value,
     pub annotations: Option<serde_json::Value>, // For special LLM instructions
+    pub supported_modes: &'static [ToolMode], // Which execution modes this tool supports
 }
 ```
 
@@ -176,9 +185,33 @@ impl ToolRegistry {
         self.tools.values().collect()
     }
 
+    // Get tools for a specific mode
+    pub fn tools_for_mode(&self, mode: ToolMode) -> Vec<&Box<dyn DynTool>> {
+        self.tools
+            .values()
+            .filter(|tool| {
+                tool.spec().supported_modes.contains(&mode)
+            })
+            .collect()
+    }
+
     pub fn get_tool_definitions(&self) -> Vec<AnnotatedToolDefinition> {
         self.tools
             .values()
+            .map(|tool| AnnotatedToolDefinition {
+                name: tool.spec().name.to_string(),
+                description: tool.spec().description.to_string(),
+                parameters: tool.spec().parameters_schema.clone(),
+                annotations: tool.spec().annotations.clone(),
+            })
+            .collect()
+    }
+
+    // Get tool definitions for a specific mode
+    pub fn get_tool_definitions_for_mode(&self, mode: ToolMode) -> Vec<AnnotatedToolDefinition> {
+        self.tools
+            .values()
+            .filter(|tool| tool.spec().supported_modes.contains(&mode))
             .map(|tool| AnnotatedToolDefinition {
                 name: tool.spec().name.to_string(),
                 description: tool.spec().description.to_string(),
@@ -277,6 +310,11 @@ static READ_FILES_SPEC: ToolSpec = ToolSpec {
         "required": ["project", "paths"]
     }),
     annotations: None,
+    supported_modes: &[
+        ToolMode::McpServer,
+        ToolMode::WorkingMemoryAgent,
+        ToolMode::MessageHistoryAgent,
+    ], // This tool is available in all modes
 };
 
 // Input type
