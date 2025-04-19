@@ -1,13 +1,15 @@
-use super::spec::ToolSpec;
 use super::render::Render;
+use super::spec::ToolSpec;
+use crate::types::WorkingMemory;
 use anyhow::Result;
 use serde::de::DeserializeOwned;
 
 /// Context provided to tools during execution
-pub struct ToolContext {
+pub struct ToolContext<'a> {
     /// Project manager for accessing files
     pub project_manager: Box<dyn crate::config::ProjectManager>,
-    // Additional context fields can be added as needed
+    /// Optional working memory (available in WorkingMemoryAgent mode)
+    pub working_memory: Option<&'a mut WorkingMemory>,
 }
 
 /// Core trait for tools, defining the execution interface
@@ -23,9 +25,9 @@ pub trait Tool: Send + Sync + 'static {
     fn spec(&self) -> ToolSpec;
 
     /// Execute the tool with the given context and input
-    async fn execute(
+    async fn execute<'a>(
         &self,
-        context: &mut ToolContext,
-        input: Self::Input
+        context: &mut ToolContext<'a>,
+        input: Self::Input,
     ) -> Result<Self::Output>;
 }

@@ -9,12 +9,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 // Helper MockProjectManager for testing
-struct MockProjectManager {
+pub struct MockProjectManager {
     projects: HashMap<String, Project>,
 }
 
 impl MockProjectManager {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let mut projects = HashMap::new();
         projects.insert(
             "test-project".to_string(),
@@ -124,7 +124,10 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
     let project_manager = Box::new(MockProjectManager::new());
 
     // Create a tool context
-    let mut context = ToolContext { project_manager };
+    let mut context = ToolContext::<'_> {
+        project_manager,
+        working_memory: None,
+    };
 
     // Test list_projects tool
     {
@@ -239,7 +242,10 @@ async fn test_parse_to_legacy_tool_to_new_tool() -> Result<()> {
 
             // Create a mock context
             let project_manager = Box::new(MockProjectManager::new());
-            let mut context = ToolContext { project_manager };
+            let mut context = ToolContext::<'_> {
+                project_manager,
+                working_memory: None,
+            };
 
             // Execute the tool - this would be done in the adapter
             let result = read_files_tool.invoke(&mut context, params).await?;

@@ -1,5 +1,6 @@
 use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
 use crate::tools::parse::PathWithLineRange;
+use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -118,7 +119,7 @@ impl Tool for ReadFilesTool {
         }
     }
 
-    async fn execute(&self, context: &mut ToolContext, input: Self::Input) -> Result<Self::Output> {
+    async fn execute<'a>(&self, context: &mut ToolContext<'a>, input: Self::Input) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
             .project_manager
@@ -173,6 +174,17 @@ impl Tool for ReadFilesTool {
                 Err(e) => {
                     failed_files.push((PathBuf::from(&path_str), e.to_string()));
                 }
+            }
+        }
+
+        // If we have a working memory reference, update it with the loaded files
+        if let Some(working_memory) = &mut context.working_memory {
+            // Store successfully loaded files in working memory
+            for (path, content) in &loaded_files {
+                working_memory.loaded_resources.insert(
+                    (input.project.clone(), path.clone()),
+                    LoadedResource::File(content.clone()),
+                );
             }
         }
 

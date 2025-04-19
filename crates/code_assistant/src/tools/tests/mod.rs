@@ -1,2 +1,3 @@
 // Integration tests for tool system
-mod integration_test;
+pub mod integration_test;
+mod working_memory_test;

@@ -178,12 +178,16 @@ fn convert_to_legacy_result(
 }
 
 /// Execute a legacy Tool using the new system
-pub async fn execute_with_new_system(
+pub async fn execute_with_new_system<'a>(
     tool: &Tool,
     project_manager: Box<dyn ProjectManager>,
+    working_memory: Option<&'a mut crate::types::WorkingMemory>,
 ) -> Result<ToolResult> {
     // Create tool context
-    let mut context = ToolContext { project_manager };
+    let mut context = ToolContext {
+        project_manager,
+        working_memory,
+    };
 
     // Get the tool registry
     let registry = ToolRegistry::global();
@@ -287,9 +291,9 @@ mod tests {
             }
         }
 
-        async fn execute(
+        async fn execute<'a>(
             &self,
-            _context: &mut ToolContext,
+            _context: &mut ToolContext<'a>,
             _input: Self::Input,
         ) -> Result<Self::Output> {
             unimplemented!()

@@ -63,9 +63,9 @@ impl Tool for ListProjectsTool {
         }
     }
 
-    async fn execute(
+    async fn execute<'a>(
         &self,
-        context: &mut ToolContext,
+        context: &mut ToolContext<'a>,
         _input: Self::Input,
     ) -> Result<Self::Output> {
         // Load projects using the ProjectManager from the context

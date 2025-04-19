@@ -25,9 +25,9 @@ pub trait DynTool: Send + Sync + 'static {
     fn spec(&self) -> ToolSpec;
 
     /// Invoke the tool with JSON parameters and get a type-erased output
-    async fn invoke(
+    async fn invoke<'a>(
         &self,
-        context: &mut ToolContext,
+        context: &mut ToolContext<'a>,
         params: Value
     ) -> Result<Box<dyn AnyOutput>>;
 }
@@ -44,9 +44,9 @@ where
         Tool::spec(self)
     }
 
-    async fn invoke(
+    async fn invoke<'a>(
         &self,
-        context: &mut ToolContext,
+        context: &mut ToolContext<'a>,
         params: Value
     ) -> Result<Box<dyn AnyOutput>> {
         // Deserialize input
