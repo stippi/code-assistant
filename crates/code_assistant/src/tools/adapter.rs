@@ -26,17 +26,6 @@ pub fn convert_xml_params_to_json(
     // Access properties from schema
     if let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) {
         for (prop_name, prop_schema) in properties {
-            // Skip if parameter not provided
-            if !params.contains_key(prop_name) {
-                continue;
-            }
-
-            // Get the parameter values
-            let param_values = &params[prop_name];
-            if param_values.is_empty() {
-                continue;
-            }
-
             // Determine type from schema
             let prop_type = prop_schema
                 .get("type")
@@ -44,43 +33,80 @@ pub fn convert_xml_params_to_json(
                 .unwrap_or("string");
 
             match prop_type {
-                // For arrays
+                // For arrays - handle both singular and plural forms
                 "array" => {
-                    // For a simple array, we just use all values
-                    result[prop_name] = json!(param_values);
-                }
-                // For boolean convert from string
-                "boolean" => {
-                    let bool_value = param_values[0].to_lowercase() == "true";
-                    result[prop_name] = json!(bool_value);
-                }
-                // For numbers convert from string
-                "number" => {
-                    if let Ok(num) = param_values[0].parse::<f64>() {
-                        result[prop_name] = json!(num);
+                    // First try exact property name
+                    let values_exact = params.get(prop_name).filter(|v| !v.is_empty());
+
+                    // If not found, try alternative singular/plural form
+                    let values = if values_exact.is_none() {
+                        // Get alternative name (singular/plural form)
+                        let alt_name = if prop_name.ends_with('s') {
+                            // Remove the 's' at the end for singular form
+                            prop_name[0..prop_name.len() - 1].to_string()
+                        } else {
+                            // Add 's' for plural form
+                            format!("{}s", prop_name)
+                        };
+
+                        params.get(&alt_name).filter(|v| !v.is_empty())
                     } else {
-                        return Err(anyhow!(
-                            "Failed to parse '{}' as number for parameter '{}'",
-                            param_values[0],
-                            prop_name
-                        ));
+                        values_exact
+                    };
+
+                    // If we have values, add them as an array
+                    if let Some(array_values) = values {
+                        result[prop_name] = json!(array_values);
                     }
                 }
-                // For integers convert from string
-                "integer" => {
-                    if let Ok(num) = param_values[0].parse::<i64>() {
-                        result[prop_name] = json!(num);
-                    } else {
-                        return Err(anyhow!(
-                            "Failed to parse '{}' as integer for parameter '{}'",
-                            param_values[0],
-                            prop_name
-                        ));
-                    }
-                }
-                // Default to string (first value only)
+                // For all other types, use normal parameter handling
                 _ => {
-                    result[prop_name] = json!(param_values[0]);
+                    // Skip if parameter not provided
+                    if !params.contains_key(prop_name) {
+                        continue;
+                    }
+
+                    // Get the parameter values
+                    let param_values = &params[prop_name];
+                    if param_values.is_empty() {
+                        continue;
+                    }
+
+                    match prop_type {
+                        // For boolean convert from string
+                        "boolean" => {
+                            let bool_value = param_values[0].to_lowercase() == "true";
+                            result[prop_name] = json!(bool_value);
+                        }
+                        // For numbers convert from string
+                        "number" => {
+                            if let Ok(num) = param_values[0].parse::<f64>() {
+                                result[prop_name] = json!(num);
+                            } else {
+                                return Err(anyhow!(
+                                    "Failed to parse '{}' as number for parameter '{}'",
+                                    param_values[0],
+                                    prop_name
+                                ));
+                            }
+                        }
+                        // For integers convert from string
+                        "integer" => {
+                            if let Ok(num) = param_values[0].parse::<i64>() {
+                                result[prop_name] = json!(num);
+                            } else {
+                                return Err(anyhow!(
+                                    "Failed to parse '{}' as integer for parameter '{}'",
+                                    param_values[0],
+                                    prop_name
+                                ));
+                            }
+                        }
+                        // Default to string (first value only)
+                        _ => {
+                            result[prop_name] = json!(param_values[0]);
+                        }
+                    }
                 }
             }
         }
@@ -371,7 +397,7 @@ mod tests {
             convert_xml_params_to_json("list_projects", &empty_params, &registry).unwrap();
         assert_eq!(json_params, json!({}));
 
-        // Test read_files
+        // Test read_files with singular "path" in params (XML style)
         let mut params = HashMap::new();
         params.insert("project".to_string(), vec!["test-project".to_string()]);
         params.insert(
@@ -381,7 +407,7 @@ mod tests {
 
         let json_params = convert_xml_params_to_json("read_files", &params, &registry).unwrap();
         assert_eq!(json_params["project"], "test-project");
-        assert!(json_params["path"].is_array());
-        assert_eq!(json_params["path"].as_array().unwrap().len(), 2);
+        assert!(json_params["paths"].is_array()); // Should match "paths" (plural) from schema
+        assert_eq!(json_params["paths"].as_array().unwrap().len(), 2);
     }
 }
