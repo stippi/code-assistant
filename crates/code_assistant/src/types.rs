@@ -563,8 +563,8 @@ pub trait CodeExplorer: Send + Sync {
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String>;
-    /// Write the content of a file
-    fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()>;
+    /// Write the content of a file and return the complete content after writing
+    fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<String>;
     fn delete_file(&self, path: &PathBuf) -> Result<()>;
     #[allow(dead_code)]
     fn create_initial_tree(&mut self, max_depth: usize) -> Result<FileTreeEntry>;

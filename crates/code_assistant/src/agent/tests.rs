@@ -336,7 +336,7 @@ impl CodeExplorer for MockExplorer {
         Ok(selected_content)
     }
 
-    fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()> {
+    fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<String> {
         // Check parent directories
         for component in path.parent().unwrap_or(path).components() {
             let current = PathBuf::from(component.as_os_str());
@@ -350,18 +350,23 @@ impl CodeExplorer for MockExplorer {
         }
 
         let mut files = self.files.lock().unwrap();
+        let result_content;
 
         if append && files.contains_key(path) {
             // Append content to existing file
             if let Some(existing) = files.get_mut(path) {
                 *existing = format!("{}{}", existing, content);
+                result_content = existing.clone();
+            } else {
+                result_content = content.clone();
             }
         } else {
             // Write or overwrite file
             files.insert(path.to_path_buf(), content.clone());
+            result_content = content.clone();
         }
 
-        Ok(())
+        Ok(result_content)
     }
 
     fn delete_file(&self, path: &PathBuf) -> Result<()> {

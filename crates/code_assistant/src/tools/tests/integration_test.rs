@@ -1,5 +1,5 @@
 use crate::tools::core::{DynTool, Tool, ToolContext, ToolRegistry};
-use crate::tools::impls::{ListProjectsTool, ReadFilesTool};
+use crate::tools::impls::{ListProjectsTool, ReadFilesTool, WriteFileTool};
 use crate::tools::parse::{parse_tool_json, parse_tool_xml};
 use crate::types::{CodeExplorer, Project, Tool as LegacyTool};
 
@@ -65,8 +65,9 @@ impl crate::config::ProjectManager for MockProjectManager {
                 Ok("Mock file content (range)".to_string())
             }
 
-            fn write_file(&self, _path: &PathBuf, _content: &String, _append: bool) -> Result<()> {
-                Ok(())
+            fn write_file(&self, _path: &PathBuf, content: &String, append: bool) -> Result<String> {
+                // Return the content that would be written
+                Ok(content.clone())
             }
 
             fn delete_file(&self, _path: &PathBuf) -> Result<()> {
@@ -119,6 +120,7 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
     // Register tools manually rather than using the global registry
     registry.register(Box::new(ListProjectsTool));
     registry.register(Box::new(ReadFilesTool));
+    registry.register(Box::new(WriteFileTool));
 
     // Create a mock project manager
     let project_manager = Box::new(MockProjectManager::new());
@@ -174,6 +176,33 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
         // Check the output
         assert!(output.contains("Successfully loaded"));
         assert!(output.contains(">>>>> FILE: test.txt"));
+    }
+
+    // Test write_file tool
+    {
+        // Get the tool from the registry
+        let write_file_tool = registry
+            .get("write_file")
+            .expect("write_file tool should be registered");
+
+        // Parameters for write_file
+        let params = json!({
+            "project": "test-project",
+            "path": "new_test.txt",
+            "content": "This is a test content",
+            "append": false
+        });
+
+        // Execute the tool
+        let result = write_file_tool.invoke(&mut context, params).await?;
+
+        // Format the output
+        let mut tracker = crate::tools::core::ResourcesTracker::new();
+        let output = result.as_render().render(&mut tracker);
+
+        // Check the output
+        assert!(output.contains("Successfully wrote"));
+        assert!(output.contains("new_test.txt"));
     }
 
     Ok(())
