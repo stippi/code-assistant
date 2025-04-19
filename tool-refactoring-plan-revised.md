@@ -54,14 +54,14 @@ pub trait Tool: Send + Sync + 'static {
     // Associated types for input and output
     type Input: DeserializeOwned + Send;
     type Output: Render + Send + Sync;
-    
+
     // Static metadata
     fn spec(&self) -> &'static ToolSpec;
-    
+
     // Main execution method
     async fn execute(
-        &self, 
-        context: &mut ToolContext, 
+        &self,
+        context: &mut ToolContext,
         input: Self::Input
     ) -> Result<Self::Output>;
 }
@@ -75,7 +75,7 @@ This trait provides the interface that concrete tools must implement. Note the u
 pub trait Render: Send + Sync + 'static {
     // Generate a short status message for display in action history
     fn status(&self) -> String;
-    
+
     // Format the detailed output, with awareness of other tool results
     // The resources_tracker helps detect and handle redundant output
     fn render(&self, resources_tracker: &mut ResourcesTracker) -> String;
@@ -120,10 +120,10 @@ The ResourcesTracker helps prevent showing the same resource (like a file's cont
 #[async_trait::async_trait]
 pub trait DynTool: Send + Sync + 'static {
     fn spec(&self) -> &'static ToolSpec;
-    
+
     async fn invoke(
-        &self, 
-        context: &mut ToolContext, 
+        &self,
+        context: &mut ToolContext,
         params: serde_json::Value
     ) -> Result<Box<dyn AnyOutput>>;
 }
@@ -203,8 +203,8 @@ The ToolRegistry provides a central point for tool registration and discovery.
 
 ```rust
 #[async_trait::async_trait]
-impl<T> DynTool for T 
-where 
+impl<T> DynTool for T
+where
     T: Tool,
     T::Input: DeserializeOwned,
     T::Output: Render + Send + Sync + 'static,
@@ -212,19 +212,19 @@ where
     fn spec(&self) -> &'static ToolSpec {
         Tool::spec(self)
     }
-    
+
     async fn invoke(
-        &self, 
-        context: &mut ToolContext, 
+        &self,
+        context: &mut ToolContext,
         params: serde_json::Value
     ) -> Result<Box<dyn AnyOutput>> {
         // Deserialize input
         let input: T::Input = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Failed to parse parameters: {}", e))?;
-        
+
         // Execute the tool
         let output = self.execute(context, input).await?;
-        
+
         // Box the output as AnyOutput
         Ok(Box::new(output) as Box<dyn AnyOutput>)
     }
@@ -306,7 +306,7 @@ impl Render for ReadFilesOutput {
             )
         }
     }
-    
+
     fn render(&self, tracker: &mut ResourcesTracker) -> String {
         let mut formatted = String::new();
 
@@ -360,11 +360,11 @@ pub struct ReadFilesTool;
 impl Tool for ReadFilesTool {
     type Input = ReadFilesInput;
     type Output = ReadFilesOutput;
-    
+
     fn spec(&self) -> &'static ToolSpec {
         &READ_FILES_SPEC
     }
-    
+
     async fn execute(
         &self,
         context: &mut ToolContext,
@@ -373,9 +373,9 @@ impl Tool for ReadFilesTool {
         let project_manager = context.project_manager;
         let mut loaded_files = HashMap::new();
         let mut failed_files = Vec::new();
-        
+
         // Implementation details...
-        
+
         Ok(ReadFilesOutput {
             project: input.project,
             loaded_files,
