@@ -1,0 +1,351 @@
+use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
+use crate::tools::parse::PathWithLineRange;
+use anyhow::{anyhow, Result};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+// Input type for the read_files tool
+#[derive(Deserialize)]
+pub struct ReadFilesInput {
+    pub project: String,
+    pub paths: Vec<String>,
+}
+
+// Output type
+pub struct ReadFilesOutput {
+    pub project: String,
+    pub loaded_files: HashMap<PathBuf, String>,
+    pub failed_files: Vec<(PathBuf, String)>,
+}
+
+// Render implementation for output formatting
+impl Render for ReadFilesOutput {
+    fn status(&self) -> String {
+        if self.failed_files.is_empty() {
+            format!("Successfully loaded {} file(s)", self.loaded_files.len())
+        } else {
+            format!(
+                "Loaded {} file(s), failed to load {} file(s)",
+                self.loaded_files.len(),
+                self.failed_files.len()
+            )
+        }
+    }
+
+    fn render(&self, tracker: &mut ResourcesTracker) -> String {
+        let mut formatted = String::new();
+
+        // Handle failed files first
+        for (path, error) in &self.failed_files {
+            formatted.push_str(&format!(
+                "Failed to load '{}' in project '{}': {}\n",
+                path.display(),
+                self.project,
+                error
+            ));
+        }
+
+        // Format loaded files, checking for redundancy
+        if !self.loaded_files.is_empty() {
+            formatted.push_str("Successfully loaded the following file(s):\n");
+
+            for (path, content) in &self.loaded_files {
+                // Generate a unique resource ID for this file with content hash
+                let content_hash = format!("{:x}", md5::compute(content));
+                let resource_id =
+                    format!("file:{}:{}:{}", self.project, path.display(), content_hash);
+
+                if !tracker.is_rendered(&resource_id) {
+                    // This file hasn't been rendered yet
+                    formatted.push_str(&format!(
+                        ">>>>> FILE: {}\n{}\n<<<<< END FILE\n",
+                        path.display(),
+                        content
+                    ));
+
+                    // Mark as rendered
+                    tracker.mark_rendered(resource_id);
+                } else {
+                    // This file has already been rendered
+                    formatted.push_str(&format!(
+                        ">>>>> FILE: {} (content shown in another tool invocation)\n<<<<< END FILE\n",
+                        path.display()
+                    ));
+                }
+            }
+        }
+
+        formatted
+    }
+}
+
+// Tool implementation
+pub struct ReadFilesTool;
+
+#[async_trait::async_trait]
+impl Tool for ReadFilesTool {
+    type Input = ReadFilesInput;
+    type Output = ReadFilesOutput;
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "read_files",
+            description: include_str!("description.md"),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": "string",
+                        "description": "Name of the project containing the files"
+                    },
+                    "paths": {
+                        "type": "array",
+                        "description": "Paths to the files relative to the project root directory. Can include line ranges using 'file.txt:10-20' syntax.",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "required": ["project", "paths"]
+            }),
+            annotations: None,
+            supported_modes: &[
+                ToolMode::McpServer,
+                ToolMode::WorkingMemoryAgent,
+                ToolMode::MessageHistoryAgent,
+            ],
+        }
+    }
+
+    async fn execute(&self, context: &mut ToolContext, input: Self::Input) -> Result<Self::Output> {
+        // Get explorer for the specified project
+        let explorer = context
+            .project_manager
+            .get_explorer_for_project(&input.project)
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to get explorer for project {}: {}",
+                    input.project,
+                    e
+                )
+            })?;
+
+        let mut loaded_files = HashMap::new();
+        let mut failed_files = Vec::new();
+
+        // Process each path
+        for path_str in input.paths {
+            // Parse the path string to extract line range information
+            let parsed_path = match PathWithLineRange::parse(&path_str) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    failed_files.push((PathBuf::from(path_str), e.to_string()));
+                    continue;
+                }
+            };
+
+            let path = &parsed_path.path;
+
+            // Check for absolute paths
+            if path.is_absolute() {
+                failed_files.push((path.clone(), "Absolute paths are not allowed".to_string()));
+                continue;
+            }
+
+            // Join with root_dir to get full path
+            let full_path = explorer.root_dir().join(path);
+
+            // Use either read_file_range or read_file based on whether we have line range info
+            let read_result = if parsed_path.start_line.is_some() || parsed_path.end_line.is_some()
+            {
+                // We have line range information, use read_file_range
+                explorer.read_file_range(&full_path, parsed_path.start_line, parsed_path.end_line)
+            } else {
+                // No line range specified, read the whole file
+                explorer.read_file(&full_path)
+            };
+
+            match read_result {
+                Ok(content) => {
+                    loaded_files.insert(path.clone(), content);
+                }
+                Err(e) => {
+                    failed_files.push((path.clone(), e.to_string()));
+                }
+            }
+        }
+
+        Ok(ReadFilesOutput {
+            project: input.project,
+            loaded_files,
+            failed_files,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ProjectManager;
+    use crate::types::{CodeExplorer, Project};
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    // Mock CodeExplorer for testing
+    #[derive(Clone)]
+    struct MockExplorer {
+        root_dir: PathBuf,
+        test_files: HashMap<PathBuf, String>,
+    }
+
+    impl MockExplorer {
+        fn new() -> Self {
+            let root_dir = PathBuf::from("/mock/root");
+
+            let mut test_files = HashMap::new();
+            test_files.insert(
+                PathBuf::from("test.txt"),
+                "Line 1\nLine 2\nLine 3\nLine 4\nLine 5".to_string(),
+            );
+
+            Self {
+                root_dir,
+                test_files,
+            }
+        }
+    }
+
+    impl CodeExplorer for MockExplorer {
+        fn root_dir(&self) -> PathBuf {
+            self.root_dir.clone()
+        }
+
+        fn read_file(&self, path: &PathBuf) -> Result<String> {
+            let rel_path = path
+                .strip_prefix(&self.root_dir)
+                .map_err(|_| anyhow!("Not a child of root directory"))?;
+
+            self.test_files
+                .get(rel_path)
+                .cloned()
+                .ok_or_else(|| anyhow!("File not found: {}", rel_path.display()))
+        }
+
+        fn read_file_range(
+            &self,
+            path: &PathBuf,
+            start_line: Option<usize>,
+            end_line: Option<usize>,
+        ) -> Result<String> {
+            let content = self.read_file(path)?;
+            let lines: Vec<&str> = content.lines().collect();
+
+            let start = start_line.unwrap_or(1).saturating_sub(1); // 0-based index
+            let end = end_line.unwrap_or(lines.len());
+
+            if start >= lines.len() {
+                return Err(anyhow!("Start line out of range"));
+            }
+
+            let selected_lines = &lines[start..end.min(lines.len())];
+            Ok(selected_lines.join("\n"))
+        }
+
+        fn write_file(&self, _path: &PathBuf, _content: &String, _append: bool) -> Result<()> {
+            unimplemented!()
+        }
+
+        fn delete_file(&self, _path: &PathBuf) -> Result<()> {
+            unimplemented!()
+        }
+
+        fn create_initial_tree(
+            &mut self,
+            _max_depth: usize,
+        ) -> Result<crate::types::FileTreeEntry> {
+            unimplemented!()
+        }
+
+        fn list_files(
+            &mut self,
+            _path: &PathBuf,
+            _max_depth: Option<usize>,
+        ) -> Result<crate::types::FileTreeEntry> {
+            unimplemented!()
+        }
+
+        fn apply_replacements(
+            &self,
+            _path: &Path,
+            _replacements: &[crate::types::FileReplacement],
+        ) -> Result<String> {
+            unimplemented!()
+        }
+
+        fn search(
+            &self,
+            _path: &Path,
+            _options: crate::types::SearchOptions,
+        ) -> Result<Vec<crate::types::SearchResult>> {
+            unimplemented!()
+        }
+    }
+
+    // Mock ProjectManager for testing
+    struct MockProjectManager {
+        explorer: MockExplorer,
+    }
+
+    impl MockProjectManager {
+        fn new() -> Self {
+            Self {
+                explorer: MockExplorer::new(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ProjectManager for MockProjectManager {
+        fn add_temporary_project(&mut self, _path: PathBuf) -> Result<String> {
+            unimplemented!()
+        }
+
+        fn get_projects(&self) -> Result<HashMap<String, Project>> {
+            unimplemented!()
+        }
+
+        fn get_project(&self, _name: &str) -> Result<Option<Project>> {
+            unimplemented!()
+        }
+
+        fn get_explorer_for_project(&self, _name: &str) -> Result<Box<dyn CodeExplorer>> {
+            Ok(Box::new(self.explorer.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_files_output_rendering() {
+        // Create output with some test data
+        let mut loaded_files = HashMap::new();
+        loaded_files.insert(PathBuf::from("test.txt"), "Test file content".to_string());
+
+        let mut failed_files = Vec::new();
+        failed_files.push((PathBuf::from("missing.txt"), "File not found".to_string()));
+
+        let output = ReadFilesOutput {
+            project: "test-project".to_string(),
+            loaded_files,
+            failed_files,
+        };
+
+        let mut tracker = ResourcesTracker::new();
+        let rendered = output.render(&mut tracker);
+
+        // Verify rendering
+        assert!(rendered.contains("Failed to load 'missing.txt'"));
+        assert!(rendered.contains("File not found"));
+        assert!(rendered.contains(">>>>> FILE: test.txt"));
+        assert!(rendered.contains("Test file content"));
+    }
+}

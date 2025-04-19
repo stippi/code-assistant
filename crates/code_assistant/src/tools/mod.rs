@@ -14,6 +14,9 @@ pub mod adapter;
 pub mod core;
 pub mod impls;
 
+#[cfg(test)]
+mod tests;
+
 pub use executor::ToolExecutor;
 pub use handlers::{AgentChatToolHandler, AgentToolHandler, MCPToolHandler};
 pub use parse::{parse_tool_json, parse_tool_xml, TOOL_TAG_PREFIX};
