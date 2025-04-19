@@ -10,7 +10,6 @@ mod result;
 mod types;
 
 // New trait-based tools implementation
-pub mod adapter;
 pub mod core;
 pub mod impls;
 
