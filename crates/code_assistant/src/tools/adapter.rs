@@ -1,10 +1,7 @@
-use crate::config::ProjectManager;
-use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry};
-use crate::types::{Tool, ToolResult};
+use crate::tools::core::ToolRegistry;
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 /// Convert XML parameter HashMap to JSON Value based on tool schema
 pub fn convert_xml_params_to_json(
@@ -115,132 +112,10 @@ pub fn convert_xml_params_to_json(
     Ok(result)
 }
 
-/// Converts a tool result from the new system to the legacy ToolResult enum
-fn convert_to_legacy_result(
-    tool: &Tool,
-    result: Box<dyn crate::tools::core::AnyOutput>,
-) -> Result<ToolResult> {
-    let mut tracker = ResourcesTracker::new();
-    let output = result.as_render().render(&mut tracker);
-
-    match tool {
-        Tool::ListProjects => {
-            use crate::config;
-            // For ListProjects, we need to parse the output or directly access the projects
-            let projects = config::load_projects()?;
-            Ok(ToolResult::ListProjects { projects })
-        }
-        Tool::ReadFiles { project, paths } => {
-            // For ReadFiles, extract the output from the rendered result
-            // This is a simplification - in a full implementation we would
-            // need more direct access to the output data
-
-            // Since we can't directly access the ReadFilesOutput struct fields,
-            // we'll extract the projects and paths from the original tool invocation
-            let project = project.clone();
-            let mut loaded_files = HashMap::new();
-            let mut failed_files = Vec::new();
-
-            // Parse the output to populate loaded_files and failed_files
-            // This is not ideal but serves as a bridge during transition
-            for line in output.lines() {
-                if line.starts_with(">>>>> FILE: ") {
-                    let file_path = line.trim_start_matches(">>>>> FILE: ");
-                    if !file_path.contains("(content shown in another tool invocation)") {
-                        // Simplified approach - would need more robust parsing in practice
-                        let path = PathBuf::from(file_path);
-                        // Get content from subsequent lines up to <<<<< END FILE
-                        // This is a simplification
-                        loaded_files.insert(path, "Content extracted from output".to_string());
-                    }
-                } else if line.starts_with("Failed to load '") {
-                    // Extract failed file path and error message
-                    // Simplified implementation
-                    let parts: Vec<&str> = line.splitn(2, "': ").collect();
-                    if parts.len() == 2 {
-                        let path_str = parts[0].trim_start_matches("Failed to load '");
-                        let path = PathBuf::from(path_str);
-                        let error = parts[1].to_string();
-                        failed_files.push((path, error));
-                    }
-                }
-            }
-
-            Ok(ToolResult::ReadFiles {
-                project,
-                loaded_files,
-                failed_files,
-            })
-        }
-        // Other conversion cases will be added as we implement more tools
-        _ => Err(anyhow!("Unsupported tool type for adapter: {:?}", tool)),
-    }
-}
-
-/// Execute a legacy Tool using the new system
-pub async fn execute_with_new_system<'a>(
-    tool: &Tool,
-    project_manager: Box<dyn ProjectManager>,
-    working_memory: Option<&'a mut crate::types::WorkingMemory>,
-) -> Result<ToolResult> {
-    // Create tool context
-    let mut context = ToolContext {
-        project_manager,
-        working_memory,
-    };
-
-    // Get the tool registry
-    let registry = ToolRegistry::global();
-
-    match tool {
-        Tool::ListProjects => {
-            if let Some(list_projects_tool) = registry.get("list_projects") {
-                // Empty parameters for list_projects
-                let params = json!({});
-
-                // Execute the tool
-                let result = list_projects_tool.invoke(&mut context, params).await?;
-
-                // Convert the result back to the old format
-                convert_to_legacy_result(tool, result)
-            } else {
-                Err(anyhow!("list_projects tool not found in registry"))
-            }
-        }
-        Tool::ReadFiles { project, paths } => {
-            if let Some(read_files_tool) = registry.get("read_files") {
-                // Convert paths to strings for the new tool format
-                let path_strings: Vec<String> = paths
-                    .iter()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .collect();
-
-                // Prepare parameters
-                let params = json!({
-                    "project": project,
-                    "paths": path_strings
-                });
-
-                // Execute the tool
-                let result = read_files_tool.invoke(&mut context, params).await?;
-
-                // Convert the result back to the old format
-                convert_to_legacy_result(tool, result)
-            } else {
-                Err(anyhow!("read_files tool not found in registry"))
-            }
-        }
-        // Other tool mappings will be added as we implement more tools
-        _ => Err(anyhow!(
-            "Tool not yet implemented in new system: {:?}",
-            tool
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::core::ResourcesTracker;
     use crate::tools::core::{Tool, ToolContext, ToolMode, ToolSpec};
     use crate::tools::impls::{ListProjectsTool, ReadFilesTool};
     use std::collections::HashMap;
