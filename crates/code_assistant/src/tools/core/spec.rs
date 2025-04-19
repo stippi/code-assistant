@@ -1,5 +1,3 @@
-use serde_json::Value;
-
 /// Define available modes for tools
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolMode {
@@ -19,9 +17,9 @@ pub struct ToolSpec {
     /// Detailed description of what the tool does
     pub description: &'static str,
     /// JSON Schema for the tool's parameters
-    pub parameters_schema: Value,
+    pub parameters_schema: serde_json::Value,
     /// Optional annotations for LLM-specific instructions
-    pub annotations: Option<Value>,
+    pub annotations: Option<serde_json::Value>,
     /// Which execution modes this tool supports
     pub supported_modes: &'static [ToolMode],
 }
