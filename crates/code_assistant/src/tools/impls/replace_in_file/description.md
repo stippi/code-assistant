@@ -1,0 +1,1 @@
+Replace sections in a file within a specified project using search/replace blocks. By default, each search text must match exactly once in the file, but you can use SEARCH_ALL/REPLACE_ALL blocks to replace all occurrences of a pattern.
