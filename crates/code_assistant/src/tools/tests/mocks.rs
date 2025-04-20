@@ -12,14 +12,14 @@ use std::sync::{Arc, Mutex};
 
 // Mock CommandExecutor
 #[derive(Clone)]
-struct MockCommandExecutor {
+pub struct MockCommandExecutor {
     responses: Arc<Mutex<Vec<Result<CommandOutput, anyhow::Error>>>>,
     calls: Arc<AtomicUsize>,
     captured_commands: Arc<Mutex<Vec<(String, Option<PathBuf>)>>>,
 }
 
 impl MockCommandExecutor {
-    fn new(responses: Vec<Result<CommandOutput, anyhow::Error>>) -> Self {
+    pub fn new(responses: Vec<Result<CommandOutput, anyhow::Error>>) -> Self {
         Self {
             responses: Arc::new(Mutex::new(responses)),
             calls: Arc::new(AtomicUsize::new(0)),
@@ -27,7 +27,7 @@ impl MockCommandExecutor {
         }
     }
 
-    fn get_captured_commands(&self) -> Vec<(String, Option<PathBuf>)> {
+    pub fn get_captured_commands(&self) -> Vec<(String, Option<PathBuf>)> {
         self.captured_commands.lock().unwrap().clone()
     }
 }

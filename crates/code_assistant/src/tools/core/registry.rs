@@ -83,16 +83,18 @@ impl ToolRegistry {
     /// This will be expanded as we implement more tools
     fn register_default_tools(&mut self) {
         // Import all tools
-        use crate::tools::impls::{DeleteFilesTool, ExecuteCommandTool, ListFilesTool, ListProjectsTool, ReadFilesTool, ReplaceInFileTool, SearchFilesTool, WebFetchTool, WebSearchTool, WriteFileTool};
+        use crate::tools::impls::{DeleteFilesTool, ExecuteCommandTool, ListFilesTool, ListProjectsTool, PerplexityAskTool, ReadFilesTool, ReplaceInFileTool, SearchFilesTool, SummarizeTool, WebFetchTool, WebSearchTool, WriteFileTool};
 
         // Register tools
         self.register(Box::new(DeleteFilesTool));
         self.register(Box::new(ExecuteCommandTool));
         self.register(Box::new(ListFilesTool));
         self.register(Box::new(ListProjectsTool));
+        self.register(Box::new(PerplexityAskTool));
         self.register(Box::new(ReadFilesTool));
         self.register(Box::new(ReplaceInFileTool));
         self.register(Box::new(SearchFilesTool));
+        self.register(Box::new(SummarizeTool));
         self.register(Box::new(WebFetchTool));
         self.register(Box::new(WebSearchTool));
         self.register(Box::new(WriteFileTool));
