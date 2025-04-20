@@ -1,0 +1,1 @@
+Fetch and extract content from a web page. This tool downloads the specified web page and converts its content to a readable format. Optionally, you can provide CSS selectors to extract specific sections of the page. The tool handles various formats and cleans up the output to provide readable content that can be used for further analysis.

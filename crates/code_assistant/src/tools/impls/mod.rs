@@ -6,6 +6,7 @@ pub mod list_projects;
 pub mod read_files;
 pub mod replace_in_file;
 pub mod search_files;
+pub mod web_fetch;
 pub mod web_search;
 pub mod write_file;
 
@@ -17,5 +18,6 @@ pub use list_projects::ListProjectsTool;
 pub use read_files::ReadFilesTool;
 pub use replace_in_file::ReplaceInFileTool;
 pub use search_files::SearchFilesTool;
+pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
 pub use write_file::WriteFileTool;
