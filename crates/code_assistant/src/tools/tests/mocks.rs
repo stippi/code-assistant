@@ -231,8 +231,12 @@ impl CodeExplorer for MockExplorer {
 
     fn delete_file(&self, path: &PathBuf) -> Result<()> {
         let mut files = self.files.lock().unwrap();
-        files.remove(path);
-        Ok(())
+        if files.contains_key(path) {
+            files.remove(path);
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("File not found: {}", path.display()))
+        }
     }
 
     fn create_initial_tree(&mut self, _max_depth: usize) -> Result<FileTreeEntry, anyhow::Error> {
