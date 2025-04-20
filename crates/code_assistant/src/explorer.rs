@@ -517,6 +517,9 @@ impl CodeExplorer for Explorer {
                 }
             };
 
+            // Normalize content for consistent search results
+            let content = crate::utils::encoding::normalize_content(&content);
+
             // Find all matches in the entire content
             let matches: Vec<_> = regex.find_iter(&content).collect();
             if matches.is_empty() {
