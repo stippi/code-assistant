@@ -40,9 +40,13 @@ async fn test_read_files_updates_memory() -> Result<()> {
     // Create working memory
     let mut working_memory = WorkingMemory::default();
 
+    // Create a default command executor
+    let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
+
     // Create a tool context with working memory
     let mut context = ToolContext::<'_> {
         project_manager,
+        command_executor,
         working_memory: Some(&mut working_memory),
     };
 

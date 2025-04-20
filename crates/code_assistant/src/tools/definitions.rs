@@ -66,7 +66,7 @@ impl Tools {
     pub fn execute_command() -> AnnotatedToolDefinition {
         AnnotatedToolDefinition {
             name: "execute_command".to_string(),
-            description: "Execute a command line program within a specified project".to_string(),
+            description: "Execute a command line within a specified project".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

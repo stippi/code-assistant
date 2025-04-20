@@ -201,23 +201,28 @@ mod tests {
         let write_file_tool = WriteFileTool;
 
         // Create test files
-        let mut files = HashMap::new();
+        let files = HashMap::new();
 
         // Create a mock explorer with these files
         let explorer = MockExplorer::new(files, None);
 
         // Create a mock project manager with our test files
-        let project_manager = Box::new(
-            MockProjectManager::default()
-                .with_project("test-project", PathBuf::from("./root"), explorer)
-        );
+        let project_manager = Box::new(MockProjectManager::default().with_project(
+            "test-project",
+            PathBuf::from("./root"),
+            explorer,
+        ));
 
         // Create working memory
         let mut working_memory = WorkingMemory::default();
 
         // Create a tool context with working memory
+        // Create a default command executor
+        let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
+
         let mut context = ToolContext::<'_> {
             project_manager,
+            command_executor,
             working_memory: Some(&mut working_memory),
         };
 
@@ -261,23 +266,31 @@ mod tests {
 
         // Create test files with existing content
         let mut files = HashMap::new();
-        files.insert(PathBuf::from("./root/test.txt"), "Initial content".to_string());
+        files.insert(
+            PathBuf::from("./root/test.txt"),
+            "Initial content".to_string(),
+        );
 
         // Create a mock explorer with these files
         let explorer = MockExplorer::new(files, None);
 
         // Create a mock project manager with our test files
-        let project_manager = Box::new(
-            MockProjectManager::default()
-                .with_project("test-project", PathBuf::from("./root"), explorer)
-        );
+        let project_manager = Box::new(MockProjectManager::default().with_project(
+            "test-project",
+            PathBuf::from("./root"),
+            explorer,
+        ));
 
         // Create working memory
         let mut working_memory = WorkingMemory::default();
 
         // Create a tool context with working memory
+        // Create a default command executor
+        let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
+
         let mut context = ToolContext::<'_> {
             project_manager,
+            command_executor,
             working_memory: Some(&mut working_memory),
         };
 
@@ -303,7 +316,9 @@ mod tests {
         assert!(working_memory.loaded_resources.contains_key(&resource_key));
 
         // Check that the content is the combined content (initial + appended)
-        if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&resource_key) {
+        if let Some(LoadedResource::File(content)) =
+            working_memory.loaded_resources.get(&resource_key)
+        {
             assert!(content.contains("Initial content"));
             assert!(content.contains("Test content"));
         } else {

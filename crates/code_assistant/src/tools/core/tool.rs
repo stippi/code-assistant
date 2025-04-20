@@ -8,6 +8,8 @@ use serde::de::DeserializeOwned;
 pub struct ToolContext<'a> {
     /// Project manager for accessing files
     pub project_manager: Box<dyn crate::config::ProjectManager>,
+    /// Command executor for running shell commands
+    pub command_executor: Box<dyn crate::utils::CommandExecutor>,
     /// Optional working memory (available in WorkingMemoryAgent mode)
     pub working_memory: Option<&'a mut WorkingMemory>,
 }

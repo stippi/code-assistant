@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+#[derive(Clone)]
 pub struct CommandOutput {
     pub success: bool,
     pub output: String,

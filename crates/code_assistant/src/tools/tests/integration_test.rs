@@ -58,9 +58,13 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
         explorer,
     ));
 
+    // Create a default mock command executor
+    let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
+
     // Create a tool context
     let mut context = ToolContext::<'_> {
         project_manager,
+        command_executor,
         working_memory: None,
     };
 
@@ -248,8 +252,12 @@ async fn test_parse_to_legacy_tool_to_new_tool() -> Result<()> {
                 explorer,
             ));
 
+            // Create a default command executor
+            let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
+
             let mut context = ToolContext::<'_> {
                 project_manager,
+                command_executor,
                 working_memory: None,
             };
 

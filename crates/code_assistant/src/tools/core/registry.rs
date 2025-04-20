@@ -83,9 +83,10 @@ impl ToolRegistry {
     /// This will be expanded as we implement more tools
     fn register_default_tools(&mut self) {
         // Import all tools
-        use crate::tools::impls::{ListFilesTool, ListProjectsTool, ReadFilesTool, WriteFileTool};
+        use crate::tools::impls::{ExecuteCommandTool, ListFilesTool, ListProjectsTool, ReadFilesTool, WriteFileTool};
 
         // Register tools
+        self.register(Box::new(ExecuteCommandTool));
         self.register(Box::new(ListFilesTool));
         self.register(Box::new(ListProjectsTool));
         self.register(Box::new(ReadFilesTool));
