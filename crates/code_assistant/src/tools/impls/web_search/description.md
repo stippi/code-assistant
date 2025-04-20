@@ -1,0 +1,1 @@
+Search the web using DuckDuckGo. This tool performs a web search for the specified query and returns a list of search results, each containing a title, URL, and text snippet. The search results are paginated, and you can request different pages of results using the `hits_page_number` parameter (starting from 1).
