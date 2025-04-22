@@ -46,9 +46,11 @@ impl Tool for ListProjectsTool {
     type Output = ListProjectsOutput;
 
     fn spec(&self) -> ToolSpec {
+        let description = concat!("List all available projects. Returns information about each project including its path.\n",
+            "Use this tool to discover which projects are available for exploration.");
         ToolSpec {
             name: "list_projects",
-            description: include_str!("description.md"),
+            description,
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},

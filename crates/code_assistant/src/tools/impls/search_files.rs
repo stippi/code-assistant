@@ -68,9 +68,13 @@ impl Tool for SearchFilesTool {
     type Output = SearchFilesOutput;
 
     fn spec(&self) -> ToolSpec {
+        let description = concat!(
+            "Search for text in files within a specified project using regex in Rust syntax.\n",
+            "This tool searches for specific content across multiple files, displaying each match with context."
+        );
         ToolSpec {
             name: "search_files",
-            description: include_str!("description.md"),
+            description,
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

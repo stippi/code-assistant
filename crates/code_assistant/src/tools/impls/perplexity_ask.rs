@@ -61,9 +61,15 @@ impl Tool for PerplexityAskTool {
     type Output = PerplexityAskOutput;
 
     fn spec(&self) -> ToolSpec {
+        let description = concat!(
+            "Engages in a conversation using the Perplexity Sonar API and returns an AI-generated answer with citations.\n",
+            "This tool allows you to ask questions and receive comprehensive answers with references to source materials.\n",
+            "The conversation is maintained as an array of messages with different roles (system, user, assistant), ",
+            "allowing for multi-turn interactions (asking follow up questions)."
+        );
         ToolSpec {
             name: "perplexity_ask",
-            description: include_str!("description.md"),
+            description,
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

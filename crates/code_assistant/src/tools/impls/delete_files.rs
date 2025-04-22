@@ -67,7 +67,7 @@ impl Tool for DeleteFilesTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "delete_files",
-            description: include_str!("description.md"),
+            description: "Delete files from a specified project. This operation cannot be undone!",
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

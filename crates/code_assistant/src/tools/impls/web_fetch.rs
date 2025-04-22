@@ -47,9 +47,16 @@ impl Tool for WebFetchTool {
     type Output = WebFetchOutput;
 
     fn spec(&self) -> ToolSpec {
+        let description = concat!(
+            "Fetch and extract content from a web page.\n",
+            "This tool downloads the specified web page and converts its content to a readable format.\n",
+            "Optionally, you can provide CSS selectors to extract specific sections of the page.\n",
+            "The tool handles various formats and cleans up the output to provide readable content that ",
+            "can be used for further analysis."
+        );
         ToolSpec {
             name: "web_fetch",
-            description: include_str!("description.md"),
+            description,
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -98,7 +105,8 @@ impl Tool for WebFetchTool {
                 // Update working memory if available
                 if let Some(working_memory) = &mut context.working_memory {
                     // Use the URL as path (normalized)
-                    let path = std::path::PathBuf::from(page.url.replace([':', '/', '?', '#'], "_"));
+                    let path =
+                        std::path::PathBuf::from(page.url.replace([':', '/', '?', '#'], "_"));
 
                     // Use "web" as the project name for web resources
                     let project = "web".to_string();
@@ -107,12 +115,12 @@ impl Tool for WebFetchTool {
                     working_memory.add_resource(
                         project,
                         path,
-                        crate::types::LoadedResource::WebPage(page.clone())
+                        crate::types::LoadedResource::WebPage(page.clone()),
                     );
                 }
 
                 Ok(WebFetchOutput { page, error: None })
-            },
+            }
             Err(e) => Ok(WebFetchOutput {
                 page: WebPage::default(),
                 error: Some(e.to_string()),

@@ -117,7 +117,7 @@ impl Tool for ListFilesTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "list_files",
-            description: include_str!("description.md"),
+            description: "List files in directories within a specified project",
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

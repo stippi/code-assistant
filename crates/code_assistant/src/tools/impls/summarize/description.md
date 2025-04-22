@@ -1,1 +1,0 @@
-Replace contents of resources with summaries in working memory. This tool allows you to create a summary for a resource that you have previously loaded, reducing memory usage while preserving key information. The summary will replace the full content in working memory, making it easier to keep track of important information without keeping all details in memory.

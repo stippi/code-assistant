@@ -61,9 +61,16 @@ impl Tool for WebSearchTool {
     type Output = WebSearchOutput;
 
     fn spec(&self) -> ToolSpec {
+        let description = concat!(
+            "Search the web using DuckDuckGo. ",
+            "This tool performs a web search for the specified query and returns a list of search results, ",
+            "each containing a title, URL, and text snippet. ",
+            "The search results are paginated, and you can request different pages of results using the ",
+            "`hits_page_number` parameter (starting from 1)."
+        );
         ToolSpec {
             name: "web_search",
-            description: include_str!("description.md"),
+            description,
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

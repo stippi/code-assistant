@@ -75,9 +75,14 @@ impl Tool for ReplaceInFileTool {
     type Output = ReplaceInFileOutput;
 
     fn spec(&self) -> ToolSpec {
+        let description = concat!(
+            "Replace sections in a file within a specified project using search/replace blocks.\n",
+            "By default, each search text must match exactly once in the file, ",
+            "but you can use SEARCH_ALL/REPLACE_ALL blocks to replace all occurrences of a pattern.",
+        );
         ToolSpec {
             name: "replace_in_file",
-            description: include_str!("description.md"),
+            description,
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

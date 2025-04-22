@@ -62,7 +62,7 @@ impl Tool for ExecuteCommandTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "execute_command",
-            description: include_str!("description.md"),
+            description: "Execute a command line within a specified project",
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

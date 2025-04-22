@@ -47,9 +47,16 @@ impl Tool for SummarizeTool {
     type Output = SummarizeOutput;
 
     fn spec(&self) -> ToolSpec {
+        let description = concat!(
+            "Replace contents of resources with summaries in working memory.\n",
+            "This tool allows you to create a summary for a resource that you have previously loaded, ",
+            "reducing memory usage while preserving key information.\n",
+            "The summary will replace the full content in working memory, ",
+            "making it easier to keep track of important information without keeping all details in memory."
+        );
         ToolSpec {
             name: "summarize",
-            description: include_str!("description.md"),
+            description,
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

@@ -90,9 +90,19 @@ impl Tool for ReadFilesTool {
     type Output = ReadFilesOutput;
 
     fn spec(&self) -> ToolSpec {
+        let description = concat!(
+          "Load files into working memory. You can specify line ranges by appending them to the file path using a colon.\n",
+          "\n",
+          "Examples:\n",
+          "- file.txt - Read the entire file. Prefer this form unless you are absolutely sure you need only a section of the file.\n",
+          "- file.txt:10-20 - Read only lines 10 to 20\n",
+          "- file.txt:10- - Read from line 10 to the end\n",
+          "- file.txt:-20 - Read from the beginning to line 20\n",
+          "- file.txt:15 - Read only line 15"
+        );
         ToolSpec {
             name: "read_files",
-            description: include_str!("description.md"),
+            description,
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -119,7 +129,11 @@ impl Tool for ReadFilesTool {
         }
     }
 
-    async fn execute<'a>(&self, context: &mut ToolContext<'a>, input: Self::Input) -> Result<Self::Output> {
+    async fn execute<'a>(
+        &self,
+        context: &mut ToolContext<'a>,
+        input: Self::Input,
+    ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
             .project_manager
