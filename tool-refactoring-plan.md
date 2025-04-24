@@ -471,62 +471,7 @@ This structure allows us to keep both the old `Tool` enum and the new `Tool` tra
 4. **Register the Tool**: Register the tool with the registry ✓
 5. **Create Tests**: Ensure the tool works with appropriate tests ✓
 
-### Phase 3: Adaptation Layer (In Progress)
-
-1. **Create Adapter**: Create an adapter that maps between old enum-based tools and new trait-based tools
-   - Create a method to convert `crate::types::Tool` to tool invocations via the registry
-   - Create a method to convert tool results from the new system to `crate::types::ToolResult`
-   - Implement a wrapper that makes the new tools compatible with existing handlers
-
-2. **Update Executor**: Modify the `ToolExecutor` to use the registry and adapters
-   ```rust
-   // Example adapter method in tools/adapter.rs
-   pub async fn execute_with_new_system(
-       tool: &crate::types::Tool,
-       context: &ToolContext,
-   ) -> Result<crate::types::ToolResult> {
-       match tool {
-           crate::types::Tool::ReadFiles { project, paths } => {
-               let registry = ToolRegistry::global();
-               if let Some(read_files_tool) = registry.get("read_files") {
-                   // Convert parameters to JSON
-                   let params = serde_json::json!({
-                       "project": project,
-                       "paths": paths,
-                   });
-
-                   // Execute the tool
-                   let result = read_files_tool.invoke(context, params).await?;
-
-                   // Convert the result back to the old format
-                   convert_to_legacy_result(result)
-               } else {
-                   Err(anyhow::anyhow!("read_files tool not found in registry"))
-               }
-           },
-           // Other tool mappings...
-       }
-   }
-   ```
-
-3. **XML/JSON Parameter Handling**: Create a conversion function to handle parameters from XML/JSON
-   - Use each tool's `parameters_schema` to understand the expected types
-   - Create a conversion function that transforms `HashMap<String, Vec<String>>` to `serde_json::Value`
-   - Add tests to verify parameter conversion works correctly
-
-### Phase 4: Gradual Migration
-
-1. **Migrate Tools Incrementally**: Move one tool at a time to the new system
-2. **Test Each Migration**: Thoroughly test each tool after migration
-3. **Update Tool Handlers**: Adapt handlers to work with the new output format system
-
-### Phase 5: Complete Transition
-
-1. **Remove Old Code**: Once all tools are migrated, remove the old enum-based code
-2. **Update Documentation**: Update all documentation to reflect the new architecture
-3. **Performance Optimization**: Profile and optimize any performance bottlenecks
-
-## Agent Refactoring Plan
+### Phase 3: Agent Refactoring Plan
 
 After refactoring the tool system to use a trait-based approach, we need to update the agent implementation to work with the new ToolRegistry and remove the WorkingMemory concept, which has not been effective for several reasons:
 
@@ -569,13 +514,25 @@ async fn execute_action(&mut self, tool_use: &ContentBlock) -> Result<(String, b
 }
 ```
 
-5. **Simplify State Persistence**:
-   - Only store MessageHistory (which includes all tool results)
-   - Update start_from_state to just restore MessageHistory
-   - Regenerate tool outputs when loading state using ResourcesTracker
-   - Ensure the newest tool invocation for duplicated resources is the one displayed
+5. **Dynamic Message Generation with ResourceTracker**:
+   - The message_history should not simply be extended anymore, but must be regenerated in each loop iteration
+   - The agent must store the original AnyOutput objects from tool calls (not just the rendered string)
+   - These original outputs are stored in a separate data structure in the agent, along with the tool IDs and timestamp for ordering
+   - When preparing messages for the LLM, the agent recreates the message list completely from scratch
+   - A fresh ResourceTracker is used for each generation process
+   - The stored outputs are processed in reverse chronological order, so that newer tool calls take precedence in resource conflicts
+   - The conversation history (user input, LLM output, tool invocations) is preserved, but the actual tool results are dynamically regenerated using the ResourceTracker
+   - This ensures that if an LLM reads the same file twice, for example, the file content is only shown in the most recent call
 
-6. **Rename Methods for Clarity**:
+6. **Serializable Tool Results for State Persistence**:
+   - All tool output types must be made serializable with Serde
+   - Complex types like PathBuf require special serialization functions
+   - The system must be able to store tool output objects with their type name and tool name
+   - When loading the state, a system must exist to deserialize the correct tool output types based on the tool name
+   - Since we're now storing AnyOutput objects instead of just strings, we need a system to serialize/deserialize them
+   - The conversation history itself can be serialized normally, but the AnyOutput objects require special handling
+
+7. **Rename Methods for Clarity**:
    - Review all method names to ensure they match their updated functionality
    - Remove WorkingMemory-specific methods
    - Update remaining methods to use the new ToolRegistry approach
