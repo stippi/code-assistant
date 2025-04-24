@@ -526,6 +526,62 @@ This structure allows us to keep both the old `Tool` enum and the new `Tool` tra
 2. **Update Documentation**: Update all documentation to reflect the new architecture
 3. **Performance Optimization**: Profile and optimize any performance bottlenecks
 
+## Agent Refactoring Plan
+
+After refactoring the tool system to use a trait-based approach, we need to update the agent implementation to work with the new ToolRegistry and remove the WorkingMemory concept, which has not been effective for several reasons:
+
+1. Current LLMs are not well-trained for the WorkingMemory approach
+2. Maintaing detailed action history gets unwieldy with complex tool parameters
+3. The MessageHistory approach has proven more effective in practice
+
+### Key Changes
+
+1. **Remove WorkingMemory**:
+   - Remove all WorkingMemory-related functionality
+   - Store necessary agent state directly in the Agent struct
+   - Use MessageHistory exclusively to maintain context
+
+2. **Simplify Agent Actions**:
+   - Use ContentBlock::ToolUse directly instead of custom AgentAction
+   - Remove the "Reasoning" field as it's not necessary
+
+3. **Update parse_llm_response**:
+```rust
+pub(crate) fn parse_llm_response(
+    response: &llm::LLMResponse,
+    request_id: u64,
+) -> Result<Vec<ContentBlock>> {
+    // Extract all ToolUse content blocks
+    // For XML parsing, convert to ContentBlock::ToolUse
+    // Return vector of ContentBlock::ToolUse
+}
+```
+
+4. **Update execute_action Method**:
+```rust
+async fn execute_action(&mut self, tool_use: &ContentBlock) -> Result<(String, bool)> {
+    // Extract tool_name and params from ContentBlock::ToolUse
+    // Get tool from ToolRegistry::global()
+    // Create ToolContext with appropriate references
+    // Invoke tool and get result
+    // Use ResourcesTracker to format output
+    // Return (formatted_output, is_success)
+}
+```
+
+5. **Simplify State Persistence**:
+   - Only store MessageHistory (which includes all tool results)
+   - Update start_from_state to just restore MessageHistory
+   - Regenerate tool outputs when loading state using ResourcesTracker
+   - Ensure the newest tool invocation for duplicated resources is the one displayed
+
+6. **Rename Methods for Clarity**:
+   - Review all method names to ensure they match their updated functionality
+   - Remove WorkingMemory-specific methods
+   - Update remaining methods to use the new ToolRegistry approach
+
+This approach will significantly simplify the agent implementation while making it more effective. By focusing on MessageHistory and using the trait-based tool system directly, we'll have a more maintainable and extensible architecture.
+
 ## Conclusion
 
 This refactoring plan transforms the current tools system into a more maintainable, extensible architecture. By following a modular, trait-based approach, we simplify the addition of new tools while improving code organization and reducing duplication. The incremental migration strategy ensures minimal disruption while gradually adopting the new design.
@@ -536,6 +592,7 @@ The architecture addresses the key goals:
 3. Automatic embedding of tool descriptions from markdown files
 4. Intelligent handling of redundant output via ResourcesTracker
 5. Simplified process for adding new tools
+6. Improved agent implementation with focus on MessageHistory and removal of the problematic WorkingMemory
 
 By following this plan, we maintain compatibility during the transition while progressively moving to a more maintainable and extensible architecture.
 
