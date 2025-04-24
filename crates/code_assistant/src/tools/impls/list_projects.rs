@@ -1,4 +1,4 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
+use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
 use crate::types::Project;
 use anyhow::Result;
 use serde::Deserialize;
@@ -34,6 +34,13 @@ impl Render for ListProjectsOutput {
         }
 
         output
+    }
+}
+
+// ToolResult implementation
+impl ToolResult for ListProjectsOutput {
+    fn is_success(&self) -> bool {
+        true // Always successful even if no projects are found
     }
 }
 

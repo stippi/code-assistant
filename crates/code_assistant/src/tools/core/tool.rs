@@ -1,4 +1,5 @@
 use super::render::Render;
+use super::result::ToolResult;
 use super::spec::ToolSpec;
 use crate::types::WorkingMemory;
 use anyhow::Result;
@@ -20,8 +21,8 @@ pub trait Tool: Send + Sync + 'static {
     /// Input type for this tool, must be deserializable from JSON
     type Input: DeserializeOwned + Send;
 
-    /// Output type for this tool, must implement Render
-    type Output: Render + Send + Sync;
+    /// Output type for this tool, must implement Render and ToolResult
+    type Output: Render + ToolResult + Send + Sync;
 
     /// Get the metadata for this tool
     fn spec(&self) -> ToolSpec;

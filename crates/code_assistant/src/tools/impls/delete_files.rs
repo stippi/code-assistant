@@ -1,4 +1,4 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
+use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -53,6 +53,13 @@ impl Render for DeleteFilesOutput {
         }
 
         formatted
+    }
+}
+
+// ToolResult implementation
+impl ToolResult for DeleteFilesOutput {
+    fn is_success(&self) -> bool {
+        !self.deleted.is_empty() && self.failed.is_empty()
     }
 }
 

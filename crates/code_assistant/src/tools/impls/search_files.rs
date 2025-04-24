@@ -1,4 +1,4 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
+use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
 use crate::types::{SearchMode, SearchOptions, SearchResult};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
@@ -56,6 +56,13 @@ impl Render for SearchFilesOutput {
         }
 
         formatted
+    }
+}
+
+// ToolResult implementation
+impl ToolResult for SearchFilesOutput {
+    fn is_success(&self) -> bool {
+        true // Always successful even if no matches are found
     }
 }
 

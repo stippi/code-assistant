@@ -1,4 +1,4 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
+use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -48,6 +48,13 @@ impl Render for ExecuteCommandOutput {
         formatted.push_str("\n<<<<< END OF OUTPUT");
 
         formatted
+    }
+}
+
+// ToolResult implementation
+impl ToolResult for ExecuteCommandOutput {
+    fn is_success(&self) -> bool {
+        self.success
     }
 }
 

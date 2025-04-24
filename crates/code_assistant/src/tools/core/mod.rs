@@ -4,6 +4,7 @@ pub mod render;
 pub mod tool;
 pub mod dyn_tool;
 pub mod registry;
+pub mod result;
 
 // Re-export all core components for easier imports
 pub use spec::{ToolMode, ToolSpec};
@@ -11,3 +12,4 @@ pub use render::{Render, ResourcesTracker};
 pub use tool::{Tool, ToolContext};
 pub use dyn_tool::{AnyOutput, DynTool};
 pub use registry::ToolRegistry;
+pub use result::ToolResult;

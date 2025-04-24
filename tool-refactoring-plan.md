@@ -63,7 +63,7 @@ This encapsulates all the static metadata about a tool, making tool definitions 
 pub trait Tool: Send + Sync + 'static {
     // Associated types for input and output
     type Input: DeserializeOwned + Send;
-    type Output: Render + Send + Sync;
+    type Output: Render + ToolResult + Send + Sync;
 
     // Tool metadata
     fn spec(&self) -> ToolSpec;
@@ -94,7 +94,18 @@ pub trait Render: Send + Sync + 'static {
 
 This trait handles the formatting of tool outputs, decoupling the execution logic from the presentation concerns.
 
-#### 4. ResourcesTracker for Deduplication
+#### 4. ToolResult Trait for Success Status
+
+```rust
+pub trait ToolResult: Send + Sync + 'static {
+    // Indicates whether the tool execution was successful
+    fn is_success(&self) -> bool;
+}
+```
+
+This trait provides a consistent way to determine if a tool execution was successful, separate from the rendering concerns.
+
+#### 5. ResourcesTracker for Deduplication
 
 ```rust
 /// Tracks resources that have been included in tool outputs to prevent redundant display
@@ -124,7 +135,7 @@ impl ResourcesTracker {
 
 The ResourcesTracker helps prevent showing the same resource (like a file's content) multiple times in the output. Tools generate unique IDs for their resources, and the tracker keeps track of what has already been displayed.
 
-#### 5. DynTool for Type Erasure
+#### 6. DynTool for Type Erasure
 
 ```rust
 #[async_trait::async_trait]
@@ -140,19 +151,26 @@ pub trait DynTool: Send + Sync + 'static {
 
 pub trait AnyOutput: Send + Sync {
     fn as_render(&self) -> &dyn Render;
+
+    fn is_success(&self) -> bool;
 }
 
 // Automatically implemented for all Tool outputs
-impl<T: Render + Send + Sync + 'static> AnyOutput for T {
+impl<T: Render + ToolResult + Send + Sync + 'static> AnyOutput for T {
     fn as_render(&self) -> &dyn Render {
         self
+    }
+
+    fn is_success(&self) -> bool {
+        ToolResult::is_success(self)
     }
 }
 ```
 
-The DynTool trait provides type erasure for tools, allowing them to be stored in a collection. The AnyOutput trait allows for type-safe access to rendering functionality without downcasting.
+The DynTool trait provides type erasure for tools, allowing them to be stored in a collection.
+The AnyOutput trait allows for type-safe access to both rendering functionality and success status without downcasting.
 
-#### 6. Tool Registry
+#### 7. Tool Registry
 
 ```rust
 pub struct ToolRegistry {
@@ -225,7 +243,7 @@ impl ToolRegistry {
     fn register_default_tools(&mut self) {
         // Register all the standard tools
         use crate::tools::impls::{ListProjectsTool, ReadFilesTool};
-        
+
         self.register(Box::new(ListProjectsTool));
         self.register(Box::new(ReadFilesTool));
         // ... register other tools
@@ -298,7 +316,7 @@ pub struct ReadFilesInput {
     pub paths: Vec<String>,
 }
 
-// Output type 
+// Output type
 pub struct ReadFilesOutput {
     pub project: String,
     pub loaded_files: HashMap<PathBuf, String>,
@@ -523,12 +541,15 @@ By following this plan, we maintain compatibility during the transition while pr
 
 ## Implementation Progress
 
-- ✓ Implemented core traits and interfaces (Tool, ToolSpec, Render, ResourcesTracker)
+- ✓ Implemented core traits and interfaces (Tool, ToolSpec, Render, ResourcesTracker, ToolResult)
 - ✓ Created registry for tool discovery
 - ✓ Implemented `list_projects` tool
-- ✓ Implemented `read_files` tool 
+- ✓ Implemented `read_files` tool
 - ✓ Created basic adapter framework
 - ✓ Added integration tests showing end-to-end flow
+- ✓ Added ToolResult trait for determining success/failure of tool execution
+- ✓ Implemented ToolResult for all tool output types
+- ✓ Integrated success/failure information with DynTool and AnyOutput
 - ⏳ Handling XML/JSON parameter conversion (in progress)
 - ⏳ Integrating with existing executor
 - ⏳ Migrating remaining tools

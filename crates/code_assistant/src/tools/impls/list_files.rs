@@ -1,4 +1,6 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
+use crate::tools::core::{
+    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+};
 use crate::types::FileTreeEntry;
 use anyhow::Result;
 use serde::Deserialize;
@@ -103,6 +105,13 @@ impl Render for ListFilesOutput {
         }
 
         output
+    }
+}
+
+// ToolResult implementation
+impl ToolResult for ListFilesOutput {
+    fn is_success(&self) -> bool {
+        !self.expanded_paths.is_empty()
     }
 }
 

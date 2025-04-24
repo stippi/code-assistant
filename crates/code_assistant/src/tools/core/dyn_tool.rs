@@ -1,20 +1,28 @@
 use super::render::Render;
+use super::result::ToolResult;
 use super::spec::ToolSpec;
 use super::tool::{Tool, ToolContext};
 use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-/// Type-erased tool output that can be rendered
+/// Type-erased tool output that can be rendered and determined for success
 pub trait AnyOutput: Send + Sync {
     /// Get a reference to the output as a Render trait object
     fn as_render(&self) -> &dyn Render;
+
+    /// Determine if the tool execution was successful
+    fn is_success(&self) -> bool;
 }
 
-/// Automatically implemented for all types that implement Render
-impl<T: Render + Send + Sync + 'static> AnyOutput for T {
+/// Automatically implemented for all types that implement both Render and ToolResult
+impl<T: Render + ToolResult + Send + Sync + 'static> AnyOutput for T {
     fn as_render(&self) -> &dyn Render {
         self
+    }
+
+    fn is_success(&self) -> bool {
+        ToolResult::is_success(self)
     }
 }
 
@@ -38,7 +46,7 @@ impl<T> DynTool for T
 where
     T: Tool,
     T::Input: DeserializeOwned,
-    T::Output: Render + Send + Sync + 'static,
+    T::Output: Render + ToolResult + Send + Sync + 'static,
 {
     fn spec(&self) -> ToolSpec {
         Tool::spec(self)

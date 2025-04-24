@@ -722,6 +722,12 @@ mod tests {
         }
     }
 
+    impl crate::tools::core::ToolResult for TestOutput {
+        fn is_success(&self) -> bool {
+            true
+        }
+    }
+
     #[tokio::test]
     async fn test_convert_xml_params_to_json() {
         // Create a registry with our test tool

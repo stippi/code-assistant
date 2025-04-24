@@ -1,4 +1,4 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
+use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
 use anyhow::Result;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -49,6 +49,13 @@ impl Render for PerplexityAskOutput {
         }
 
         output
+    }
+}
+
+// ToolResult implementation
+impl ToolResult for PerplexityAskOutput {
+    fn is_success(&self) -> bool {
+        self.error.is_none()
     }
 }
 

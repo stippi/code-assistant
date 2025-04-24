@@ -1,4 +1,4 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
+use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
 use crate::types::LoadedResource;
 use anyhow::Result;
 use serde::Deserialize;
@@ -45,6 +45,13 @@ impl Render for WriteFileOutput {
                 self.path.display()
             )
         }
+    }
+}
+
+// ToolResult implementation
+impl ToolResult for WriteFileOutput {
+    fn is_success(&self) -> bool {
+        self.error.is_none()
     }
 }
 

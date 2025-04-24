@@ -1,4 +1,4 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
+use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
 use crate::tools::parse::PathWithLineRange;
 use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
@@ -78,6 +78,13 @@ impl Render for ReadFilesOutput {
         }
 
         formatted
+    }
+}
+
+// ToolResult implementation
+impl ToolResult for ReadFilesOutput {
+    fn is_success(&self) -> bool {
+        !self.loaded_files.is_empty() && self.failed_files.is_empty()
     }
 }
 

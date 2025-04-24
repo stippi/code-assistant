@@ -1,4 +1,4 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
+use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -35,6 +35,13 @@ impl Render for SummarizeOutput {
             self.path.display(),
             self.summary
         )
+    }
+}
+
+// ToolResult implementation
+impl ToolResult for SummarizeOutput {
+    fn is_success(&self) -> bool {
+        true // Always successful if we got to this point
     }
 }
 

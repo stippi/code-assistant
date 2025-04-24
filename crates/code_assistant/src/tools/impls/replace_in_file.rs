@@ -1,4 +1,4 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
+use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
 use crate::tools::parse::parse_search_replace_blocks;
 use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
@@ -63,6 +63,13 @@ impl Render for ReplaceInFileOutput {
                 self.path.display()
             )
         }
+    }
+}
+
+// ToolResult implementation
+impl ToolResult for ReplaceInFileOutput {
+    fn is_success(&self) -> bool {
+        self.error.is_none()
     }
 }
 

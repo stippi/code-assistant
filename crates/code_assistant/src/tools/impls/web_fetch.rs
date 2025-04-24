@@ -1,4 +1,4 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolSpec};
+use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
 use anyhow::Result;
 use serde::Deserialize;
 use web::{WebClient, WebPage};
@@ -35,6 +35,13 @@ impl Render for WebFetchOutput {
             "Page fetched successfully:\n>>>>> CONTENT:\n{}\n<<<<< END CONTENT",
             self.page.content
         )
+    }
+}
+
+// ToolResult implementation
+impl ToolResult for WebFetchOutput {
+    fn is_success(&self) -> bool {
+        self.error.is_none()
     }
 }
 
