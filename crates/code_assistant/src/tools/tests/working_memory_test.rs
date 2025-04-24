@@ -30,23 +30,17 @@ async fn test_read_files_updates_memory() -> Result<()> {
     // Create a mock explorer with these files
     let explorer = MockExplorer::new(files, None);
 
-    // Create a mock project manager with our test files
-    let project_manager = Box::new(MockProjectManager::default().with_project(
-        "test-project",
-        PathBuf::from("./root"),
-        explorer,
-    ));
-
     // Create working memory
     let mut working_memory = WorkingMemory::default();
 
-    // Create a default command executor
-    let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
-
     // Create a tool context with working memory
     let mut context = ToolContext::<'_> {
-        project_manager,
-        command_executor,
+        project_manager: &MockProjectManager::default().with_project(
+            "test-project",
+            PathBuf::from("./root"),
+            explorer,
+        ),
+        command_executor: &crate::utils::DefaultCommandExecutor,
         working_memory: Some(&mut working_memory),
     };
 

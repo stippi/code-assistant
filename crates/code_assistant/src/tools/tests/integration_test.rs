@@ -52,19 +52,19 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
     let explorer = MockExplorer::new(files, file_tree);
 
     // Create a mock project manager with our files
-    let project_manager = Box::new(MockProjectManager::default().with_project(
+    let project_manager = MockProjectManager::default().with_project(
         "test-project",
         PathBuf::from("./root"),
         explorer,
-    ));
+    );
 
     // Create a default mock command executor
-    let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
+    let command_executor = crate::utils::DefaultCommandExecutor;
 
     // Create a tool context
     let mut context = ToolContext::<'_> {
-        project_manager,
-        command_executor,
+        project_manager: &project_manager,
+        command_executor: &command_executor,
         working_memory: None,
     };
 
@@ -246,18 +246,18 @@ async fn test_parse_to_legacy_tool_to_new_tool() -> Result<()> {
             let explorer = MockExplorer::new(files, None);
 
             // Create a mock context with our test files
-            let project_manager = Box::new(MockProjectManager::default().with_project(
+            let project_manager = MockProjectManager::default().with_project(
                 "test-project",
                 PathBuf::from("./root"),
                 explorer,
-            ));
+            );
 
             // Create a default command executor
-            let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
+            let command_executor = crate::utils::DefaultCommandExecutor;
 
             let mut context = ToolContext::<'_> {
-                project_manager,
-                command_executor,
+                project_manager: &project_manager,
+                command_executor: &command_executor,
                 working_memory: None,
             };
 

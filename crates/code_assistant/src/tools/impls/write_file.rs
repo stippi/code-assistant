@@ -236,8 +236,8 @@ mod tests {
         let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
 
         let mut context = ToolContext::<'_> {
-            project_manager,
-            command_executor,
+            project_manager: project_manager.as_ref(),
+            command_executor: command_executor.as_ref(),
             working_memory: Some(&mut working_memory),
         };
 
@@ -304,8 +304,8 @@ mod tests {
         let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
 
         let mut context = ToolContext::<'_> {
-            project_manager,
-            command_executor,
+            project_manager: project_manager.as_ref(),
+            command_executor: command_executor.as_ref(),
             working_memory: Some(&mut working_memory),
         };
 

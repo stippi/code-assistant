@@ -1,4 +1,6 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
+use crate::tools::core::{
+    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -217,14 +219,14 @@ mod tests {
         let explorer = MockExplorer::new(files, None);
 
         // Create a mock project manager
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = MockProjectManager::default().with_project(
             "test-project",
             PathBuf::from("./root"),
             explorer,
-        ));
+        );
 
         // Create a command executor
-        let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
+        let command_executor = crate::utils::DefaultCommandExecutor;
 
         // Create working memory with loaded resources
         let mut working_memory = WorkingMemory::default();
@@ -247,8 +249,8 @@ mod tests {
 
         // Create a tool context with working memory
         let mut context = ToolContext {
-            project_manager,
-            command_executor,
+            project_manager: &project_manager,
+            command_executor: &command_executor,
             working_memory: Some(&mut working_memory),
         };
 
@@ -295,19 +297,19 @@ mod tests {
         let explorer = MockExplorer::new(files, None);
 
         // Create a mock project manager
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = MockProjectManager::default().with_project(
             "test-project",
             PathBuf::from("./root"),
             explorer,
-        ));
+        );
 
         // Create a command executor
-        let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
+        let command_executor = crate::utils::DefaultCommandExecutor;
 
         // Create a tool context
         let mut context = ToolContext {
-            project_manager,
-            command_executor,
+            project_manager: &project_manager,
+            command_executor: &command_executor,
             working_memory: None,
         };
 

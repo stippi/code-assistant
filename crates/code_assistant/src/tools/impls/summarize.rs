@@ -1,4 +1,6 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
+use crate::tools::core::{
+    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -159,8 +161,8 @@ mod tests {
 
         // Create context with working memory
         let mut context = ToolContext {
-            project_manager: Box::new(MockProjectManager::new()),
-            command_executor: Box::new(MockCommandExecutor::new(vec![])),
+            project_manager: &MockProjectManager::new(),
+            command_executor: &MockCommandExecutor::new(vec![]),
             working_memory: Some(&mut working_memory),
         };
 

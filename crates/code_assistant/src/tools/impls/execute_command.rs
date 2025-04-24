@@ -1,4 +1,6 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
+use crate::tools::core::{
+    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -229,8 +231,8 @@ mod tests {
 
         // Create tool context with both project manager and command executor
         let mut context = ToolContext {
-            project_manager: Box::new(mock_project_manager),
-            command_executor: Box::new(test_cmd_executor),
+            project_manager: &mock_project_manager,
+            command_executor: &test_cmd_executor,
             working_memory: None,
         };
 

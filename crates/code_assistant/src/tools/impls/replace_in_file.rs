@@ -1,4 +1,6 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
+use crate::tools::core::{
+    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+};
 use crate::tools::parse::parse_search_replace_blocks;
 use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
@@ -284,8 +286,8 @@ mod tests {
 
         // Create a tool context with working memory
         let mut context = ToolContext {
-            project_manager,
-            command_executor,
+            project_manager: project_manager.as_ref(),
+            command_executor: command_executor.as_ref(),
             working_memory: Some(&mut working_memory),
         };
 
@@ -340,8 +342,8 @@ mod tests {
 
         // Create a tool context
         let mut context = ToolContext {
-            project_manager,
-            command_executor,
+            project_manager: project_manager.as_ref(),
+            command_executor: command_executor.as_ref(),
             working_memory: None,
         };
 
