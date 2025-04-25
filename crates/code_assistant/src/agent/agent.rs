@@ -363,11 +363,6 @@ impl Agent {
             }
         }
 
-        // Note: With the new tool registry approach, we no longer need to manually
-        // reconstruct file and web resource state from action history.
-        // Instead, the tool outputs themselves (stored in tool_executions)
-        // will be used to dynamically generate responses.
-
         Ok(())
     }
 
