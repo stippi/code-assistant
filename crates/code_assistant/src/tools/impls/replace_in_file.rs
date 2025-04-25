@@ -211,7 +211,7 @@ impl Tool for ReplaceInFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::tests::mocks::MockProjectManager;
+    use crate::tests::mocks::{MockCommandExecutor, MockExplorer, MockProjectManager};
     use crate::types::WorkingMemory;
     use std::collections::HashMap;
 
@@ -267,7 +267,7 @@ mod tests {
             "fn original() {\n    println!(\"Original\");\n}".to_string(),
         );
 
-        let explorer = crate::tools::tests::mocks::MockExplorer::new(files, None);
+        let explorer = MockExplorer::new(files, None);
 
         let project_manager = Box::new(MockProjectManager::default().with_project(
             "test-project",
@@ -276,7 +276,7 @@ mod tests {
         ));
 
         // Create a command executor
-        let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
+        let command_executor = Box::new(MockCommandExecutor::new(vec![]));
 
         // Create working memory
         let mut working_memory = WorkingMemory::default();
@@ -326,7 +326,7 @@ mod tests {
             "console.log('test');\nconsole.log('test');\nconsole.log('test');".to_string(),
         );
 
-        let explorer = crate::tools::tests::mocks::MockExplorer::new(files, None);
+        let explorer = MockExplorer::new(files, None);
 
         let project_manager = Box::new(MockProjectManager::default().with_project(
             "test-project",
@@ -335,7 +335,7 @@ mod tests {
         ));
 
         // Create a command executor
-        let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
+        let command_executor = Box::new(MockCommandExecutor::new(vec![]));
 
         // Create a tool context
         let mut context = ToolContext {

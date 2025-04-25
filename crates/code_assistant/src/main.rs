@@ -8,6 +8,9 @@ mod types;
 mod ui;
 mod utils;
 
+#[cfg(test)]
+mod tests;
+
 use crate::agent::Agent;
 use crate::mcp::MCPServer;
 use crate::types::ToolMode;

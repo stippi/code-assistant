@@ -182,7 +182,7 @@ impl Tool for WriteFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::tests::mocks::{MockExplorer, MockProjectManager};
+    use crate::tests::mocks::{MockExplorer, MockProjectManager};
     use crate::types::WorkingMemory;
     use std::collections::HashMap;
     use std::path::PathBuf;

@@ -157,7 +157,7 @@ impl Tool for SearchFilesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::tests::mocks::{create_explorer_mock, MockProjectManager};
+    use crate::tests::mocks::{create_explorer_mock, MockProjectManager};
     use std::collections::HashMap;
     use std::path::PathBuf;
 

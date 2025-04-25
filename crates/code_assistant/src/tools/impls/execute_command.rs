@@ -153,7 +153,7 @@ impl Tool for ExecuteCommandTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::tests::mocks::{create_explorer_mock, MockProjectManager};
+    use crate::tests::mocks::{create_explorer_mock, MockProjectManager};
     use crate::utils::CommandOutput;
     use std::sync::{Arc, Mutex};
 

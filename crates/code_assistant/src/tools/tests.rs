@@ -1,6 +1,6 @@
+use crate::tests::mocks::{MockExplorer, MockProjectManager};
 use crate::tools::core::{ToolContext, ToolRegistry};
 use crate::tools::impls::{ListFilesTool, ListProjectsTool, ReadFilesTool, WriteFileTool};
-use crate::tools::tests::mocks::{MockExplorer, MockProjectManager};
 use crate::types::{FileSystemEntryType, FileTreeEntry};
 
 use anyhow::Result;

@@ -627,7 +627,6 @@ impl Agent {
         // Create and store the ToolExecution record
         let tool_execution = ToolExecution {
             tool_request: tool_request.clone(),
-            timestamp: std::time::SystemTime::now(),
             result,
         };
 
