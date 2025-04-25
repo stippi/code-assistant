@@ -53,9 +53,17 @@ impl CommandExecutor for MockCommandExecutor {
     }
 }
 
+pub fn create_command_executor_mock() -> MockCommandExecutor {
+    // Use the new mock from the mocks module
+    MockCommandExecutor::new(vec![Ok(CommandOutput {
+        success: true,
+        output: "Command output".to_string(),
+    })])
+}
+
 // Mock UI
 #[derive(Default, Clone)]
-struct MockUI {
+pub struct MockUI {
     messages: Arc<Mutex<Vec<UIMessage>>>,
     streaming: Arc<Mutex<Vec<String>>>,
     responses: Arc<Mutex<Vec<Result<String, UIError>>>>,
@@ -376,6 +384,169 @@ impl CodeExplorer for MockExplorer {
     }
 }
 
+#[test]
+fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
+    let mut files = HashMap::new();
+    files.insert(
+        PathBuf::from("./root/test1.txt"),
+        "line 1\nline 2\nline 3\n".to_string(),
+    );
+    files.insert(
+        PathBuf::from("./root/test2.txt"),
+        "another line\nmatching line\n".to_string(),
+    );
+    files.insert(
+        PathBuf::from("./root/subdir/test3.txt"),
+        "subdir line\nmatching line\n".to_string(),
+    );
+
+    let explorer = MockExplorer::new(files, None);
+
+    // Test basic search
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: "matching".to_string(),
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().any(|r| r.file.ends_with("test2.txt")));
+    assert!(results.iter().any(|r| r.file.ends_with("test3.txt")));
+
+    // Test case-sensitive search
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: "LINE".to_string(),
+            case_sensitive: true,
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(results.len(), 0); // Should find nothing with case-sensitive search
+
+    // Test case-insensitive search
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: "LINE".to_string(),
+            case_sensitive: false,
+            ..Default::default()
+        },
+    )?;
+    assert!(results.len() > 0); // Should find matches
+
+    // Test whole word search
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: "line".to_string(),
+            whole_words: true,
+            ..Default::default()
+        },
+    )?;
+    // When searching for whole words, matches should not be part of other words
+    assert!(results.iter().all(|r| {
+        r.line_content.iter().all(|line| {
+            // Check that "line" is not part of another word
+            !line.contains(&"inline".to_string())
+                && !line.contains(&"pipeline".to_string())
+                && !line.contains(&"airline".to_string())
+        })
+    }));
+
+    // Test regex mode
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: r"line \d".to_string(),
+            mode: SearchMode::Regex,
+            ..Default::default()
+        },
+    )?;
+    assert!(results.iter().any(|r| r
+        .line_content
+        .iter()
+        .any(|line| line.contains(&"line 1".to_string()))));
+
+    // Test regex search
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: r"line \d+".to_string(), // Match "line" followed by numbers
+            mode: SearchMode::Regex,
+            ..Default::default()
+        },
+    )?;
+    assert!(results.iter().any(|r| r
+        .line_content
+        .iter()
+        .any(|line| line.contains(&"line 1".to_string()))));
+
+    // Test with max_results
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: "line".to_string(),
+            max_results: Some(2),
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(results.len(), 2);
+
+    // Test search in subdirectory
+    let results = explorer.search(
+        &PathBuf::from("./root/subdir"),
+        SearchOptions {
+            query: "subdir".to_string(),
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(results.len(), 1);
+    assert!(results[0].file.ends_with("test3.txt"));
+
+    // Test search with no matches
+    let results = explorer.search(
+        &PathBuf::from("./root"),
+        SearchOptions {
+            query: "nonexistent".to_string(),
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(results.len(), 0);
+
+    Ok(())
+}
+
+#[test]
+fn test_mock_explorer_apply_replacements() -> Result<(), anyhow::Error> {
+    let mut files = HashMap::new();
+    files.insert(
+        PathBuf::from("./root/test.txt"),
+        "Hello World\nThis is a test\nGoodbye".to_string(),
+    );
+
+    let explorer = MockExplorer::new(files, None);
+
+    let replacements = vec![
+        FileReplacement {
+            search: "Hello World".to_string(),
+            replace: "Hi there".to_string(),
+            replace_all: false,
+        },
+        FileReplacement {
+            search: "Goodbye".to_string(),
+            replace: "See you".to_string(),
+            replace_all: false,
+        },
+    ];
+
+    let result = explorer.apply_replacements(&PathBuf::from("./root/test.txt"), &replacements)?;
+
+    assert_eq!(result, "Hi there\nThis is a test\nSee you");
+    Ok(())
+}
+
 pub fn create_explorer_mock() -> MockExplorer {
     let mut files = HashMap::new();
     files.insert(
@@ -405,7 +576,6 @@ pub fn create_explorer_mock() -> MockExplorer {
     MockExplorer::new(files, file_tree)
 }
 
-// Mock ProjectManager for tests
 #[derive(Default)]
 pub struct MockProjectManager {
     explorers: HashMap<String, MockExplorer>,
