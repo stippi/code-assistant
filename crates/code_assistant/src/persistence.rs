@@ -1,4 +1,3 @@
-use crate::types::ActionResult;
 use anyhow::Result;
 use llm::Message;
 use serde::{Deserialize, Serialize};
@@ -10,21 +9,12 @@ use tracing::debug;
 pub struct AgentState {
     /// Original task description
     pub task: String,
-    /// Memory of all previous actions and their results
-    pub actions: Vec<ActionResult>,
-    /// Message history for MessageHistory mode
-    #[serde(default)]
-    pub messages: Option<Vec<Message>>,
+    /// Message history
+    pub messages: Vec<Message>,
 }
 
 pub trait StatePersistence: Send + Sync {
-    fn save_state(&mut self, task: String, actions: Vec<ActionResult>) -> Result<()>;
-    fn save_state_with_messages(
-        &mut self,
-        task: String,
-        actions: Vec<ActionResult>,
-        messages: Vec<Message>,
-    ) -> Result<()>;
+    fn save_state(&mut self, task: String, messages: Vec<Message>) -> Result<()>;
     fn load_state(&mut self) -> Result<Option<AgentState>>;
     fn cleanup(&mut self) -> Result<()>;
 }
@@ -42,32 +32,10 @@ impl FileStatePersistence {
 const STATE_FILE: &str = ".code-assistant.state.json";
 
 impl StatePersistence for FileStatePersistence {
-    fn save_state(&mut self, task: String, actions: Vec<ActionResult>) -> Result<()> {
-        let state = AgentState {
-            task,
-            actions,
-            messages: None,
-        };
+    fn save_state(&mut self, task: String, messages: Vec<Message>) -> Result<()> {
+        let state = AgentState { task, messages };
         let state_path = self.root_dir.join(STATE_FILE);
         debug!("Saving state to {}", state_path.display());
-        let json = serde_json::to_string_pretty(&state)?;
-        std::fs::write(state_path, json)?;
-        Ok(())
-    }
-
-    fn save_state_with_messages(
-        &mut self,
-        task: String,
-        actions: Vec<ActionResult>,
-        messages: Vec<Message>,
-    ) -> Result<()> {
-        let state = AgentState {
-            task,
-            actions,
-            messages: Some(messages),
-        };
-        let state_path = self.root_dir.join(STATE_FILE);
-        debug!("Saving state with messages to {}", state_path.display());
         let json = serde_json::to_string_pretty(&state)?;
         std::fs::write(state_path, json)?;
         Ok(())
@@ -109,29 +77,9 @@ impl MockStatePersistence {
 
 #[cfg(test)]
 impl StatePersistence for MockStatePersistence {
-    fn save_state(&mut self, task: String, actions: Vec<ActionResult>) -> Result<()> {
+    fn save_state(&mut self, task: String, messages: Vec<Message>) -> Result<()> {
         // In-Memory state
-        let state = AgentState {
-            task,
-            actions,
-            messages: None,
-        };
-        self.state = Some(state);
-        Ok(())
-    }
-
-    fn save_state_with_messages(
-        &mut self,
-        task: String,
-        actions: Vec<ActionResult>,
-        messages: Vec<Message>,
-    ) -> Result<()> {
-        // In-Memory state
-        let state = AgentState {
-            task,
-            actions,
-            messages: Some(messages),
-        };
+        let state = AgentState { task, messages };
         self.state = Some(state);
         Ok(())
     }

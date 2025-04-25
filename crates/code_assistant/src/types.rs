@@ -81,8 +81,6 @@ pub struct WorkingMemory {
     pub current_task: String,
     /// Current plan
     pub plan: String,
-    /// Memory of previous actions and their results
-    pub action_history: Vec<ActionResult>,
     /// Currently loaded resources (files, web search results, web pages)
     /// Key is (project_name, path)
     pub loaded_resources: HashMap<(String, PathBuf), LoadedResource>,
@@ -118,115 +116,6 @@ impl std::fmt::Display for LoadedResource {
 }
 
 impl WorkingMemory {
-    /// Convert working memory to markdown format
-    pub fn to_markdown(&self) -> String {
-        let mut result = String::new();
-
-        // Header
-        result.push_str("# Working Memory\n\n");
-        result.push_str("This is your accumulated working memory.\n\n");
-
-        // Task
-        result.push_str("## Current Task\n\n```\n");
-        result.push_str(&self.current_task);
-        result.push_str("\n```\n\n");
-
-        // Plan
-        result.push_str("## Your Plan\n\n");
-        result.push_str(&self.plan);
-        result.push_str("\n\n====\n\n");
-
-        // Available Projects
-        result.push_str("## Available Projects\n\n");
-        if self.available_projects.is_empty() {
-            result.push_str("No projects available\n\n");
-        } else {
-            for project in &self.available_projects {
-                result.push_str(&format!("- {}\n", project));
-            }
-            result.push_str("\n");
-        }
-
-        // Action history
-        result.push_str("## Previous Tools\n\n");
-        if self.action_history.is_empty() {
-            result.push_str("No actions performed yet\n");
-        } else {
-            result.push_str("You have already executed the following tools:\n\n");
-            // Format action history
-            let action_history = self
-                .action_history
-                .iter()
-                .map(|a| {
-                    format!(
-                        "{:?}\n  Reasoning: {}\n  Result: {}",
-                        a.tool,
-                        a.reasoning,
-                        a.result.format_message()
-                    )
-                })
-                .collect::<Vec<_>>();
-
-            for action in &action_history {
-                result.push_str(&format!("- {}\n", action));
-            }
-
-            result.push_str("\n====\n\n");
-            result.push_str(
-                "By executing the above tools, you have gathered the following information:\n\n",
-            );
-        }
-
-        // Resources
-        result.push_str("## Resources in Memory\n\n");
-        if self.loaded_resources.is_empty() {
-            result.push_str("No resources loaded\n\n");
-        } else {
-            result.push_str("All resources are shown in their latest version. They already reflect the tools you may have used.\n\n");
-            for ((project, path), resource) in &self.loaded_resources {
-                result.push_str(&format!(
-                    ">>>>> RESOURCE: [{}] {}\n",
-                    project,
-                    path.display()
-                ));
-                result.push_str(&resource.to_string());
-                result.push_str("\n<<<<< END RESOURCE\n\n");
-            }
-        }
-
-        // File trees
-        result.push_str("## File Trees\n\n");
-        if self.file_trees.is_empty() {
-            result.push_str("No file trees available\n");
-        } else {
-            for (project, tree) in &self.file_trees {
-                result.push_str(&format!("### Project: {}\n\n", project));
-                result.push_str(
-                    "This is the file tree showing directories expanded via list_files:\n\n",
-                );
-                result.push_str(&tree.to_string());
-                result.push_str("\n\n");
-            }
-        }
-
-        // Summaries
-        result.push_str("## Summaries\n\n");
-        if self.summaries.is_empty() {
-            result.push_str("No summaries created\n");
-        } else {
-            result.push_str("The following resources were previously loaded, but you have decided to keep a summary only:\n\n");
-            for ((project, path), summary) in &self.summaries {
-                result.push_str(&format!(
-                    "- `[{}] {}`: {}\n",
-                    project,
-                    path.display(),
-                    summary
-                ));
-            }
-        }
-
-        result
-    }
     /// Add a new resource to working memory
     pub fn add_resource(&mut self, project: String, path: PathBuf, resource: LoadedResource) {
         self.loaded_resources.insert((project, path), resource);
@@ -422,22 +311,6 @@ pub enum ToolError {
     ParseError(String),
 }
 
-/// Represents the parsed response from the LLM
-#[derive(Debug, Deserialize)]
-pub struct AgentAction {
-    pub tool: Tool,
-    pub reasoning: String,
-    pub tool_id: String, // ID of the tool for UI status tracking
-}
-
-/// Result of a tool execution
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ActionResult {
-    pub tool: Tool,
-    pub result: ToolResult,
-    pub reasoning: String,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error("LLM error: {0}")]
@@ -517,10 +390,6 @@ impl ValueEnum for ToolMode {
         }
     }
 }
-
-// NOTE: AgentMode has been removed, as we only support MessageHistory now.
-// This enum has been removed to avoid confusion. The agent always behaves like
-// the former MessageHistory mode.
 
 pub trait CodeExplorer: Send + Sync {
     fn root_dir(&self) -> PathBuf;

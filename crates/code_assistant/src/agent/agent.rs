@@ -1,9 +1,8 @@
 use crate::agent::types::{ToolExecution, ToolRequest};
 use crate::config::ProjectManager;
 use crate::persistence::StatePersistence;
-use crate::tools::{
-    parse_tool_json, parse_tool_xml, AgentChatToolHandler, ToolExecutor, TOOL_TAG_PREFIX,
-};
+use crate::tools::core::{ToolContext, ToolRegistry};
+use crate::tools::{parse_tool_xml, TOOL_TAG_PREFIX};
 use crate::types::*;
 use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
@@ -12,8 +11,7 @@ use llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
     StreamingChunk,
 };
-use percent_encoding;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tracing::debug;
@@ -67,11 +65,10 @@ impl Agent {
         }
     }
 
-    /// Save the current state including messages
+    /// Save the current state (message history)
     fn save_state(&mut self) -> Result<()> {
-        self.state_persistence.save_state_with_messages(
+        self.state_persistence.save_state(
             self.working_memory.current_task.clone(),
-            self.working_memory.action_history.clone(),
             self.message_history.clone(),
         )?;
         Ok(())
@@ -162,16 +159,7 @@ impl Agent {
                         content: MessageContent::Text(user_input.clone()),
                     };
 
-                    // Add user input as an action result to working memory
-                    let action_result = ActionResult {
-                        tool: Tool::UserInput {},
-                        result: ToolResult::UserInput {
-                            message: user_input,
-                        },
-                        reasoning: "User provided input".to_string(),
-                    };
-
-                    self.working_memory.action_history.push(action_result);
+                    // No need to add to action history anymore, we use message history
 
                     // Add the message to history
                     self.message_history.push(user_msg);
@@ -189,15 +177,11 @@ impl Agent {
                 all_actions_succeeded = true; // Will be set to false if any action fails
 
                 for tool_request in &tool_requests {
-                    let (output, result) = self.execute_tool(tool_request).await?;
-                    let success = result.result.is_success();
+                    let (output, success) = self.execute_tool(tool_request).await?;
 
                     if !success {
                         all_actions_succeeded = false;
                     }
-
-                    // Add result to working memory
-                    self.working_memory.action_history.push(result.clone());
 
                     // Add result to messages
                     if self.tool_mode == ToolMode::Native {
@@ -220,7 +204,7 @@ impl Agent {
                                 role: MessageRole::User,
                                 content: MessageContent::Text(format!(
                                     "Error executing tool: {}",
-                                    result.result.format_message()
+                                    output // Use output string directly which will contain error
                                 )),
                             }
                         } else {
@@ -332,29 +316,18 @@ impl Agent {
             // Initialize working memory
             self.init_working_memory(state.task.clone())?;
 
-            // Restore action history from saved state
-            self.working_memory.action_history = state.actions.clone();
-
-            // Restore messages if available
-            if let Some(messages) = state.messages {
-                self.message_history = messages;
-                debug!("Restored {} previous messages", self.message_history.len());
-            } else {
-                // If no messages were saved, create an initial message with the task
-                self.message_history = vec![Message {
-                    role: MessageRole::User,
-                    content: MessageContent::Text(state.task.clone()),
-                }];
-            }
+            // Restore message history
+            self.message_history = state.messages;
+            debug!("Restored {} previous messages", self.message_history.len());
 
             // Load current state of files into memory - will create file trees as needed
             self.load_current_files_to_memory().await?;
 
             self.ui
                 .display(UIMessage::Action(format!(
-                    "Continuing task: {}, loaded {} previous actions",
+                    "Continuing task: {}, loaded {} previous messages",
                     state.task,
-                    state.actions.len()
+                    self.message_history.len()
                 )))
                 .await?;
 
@@ -367,127 +340,39 @@ impl Agent {
         }
     }
 
-    /// Load all currently existing files and web resources into working memory based on action history
+    /// Initialize file trees for available projects
+    /// This is a simplified version that doesn't rely on action_history
     async fn load_current_files_to_memory(&mut self) -> Result<()> {
-        // Group files by project and organize paths that should exist
-        let mut project_files: HashMap<String, (HashSet<PathBuf>, Vec<String>)> = HashMap::new();
+        // In the new version, we don't need to build file trees from action history
+        // Instead, we'll just initialize file trees for the available projects
 
-        // First pass: Handle files
-        for action in &self.working_memory.action_history {
-            let project = match &action.tool {
-                Tool::WriteFile { project, path, .. } => {
-                    let project_entry = project_files
-                        .entry(project.clone())
-                        .or_insert_with(|| (HashSet::new(), Vec::new()));
-                    project_entry.0.insert(path.clone());
-                    Some(project)
-                }
-                Tool::ReplaceInFile { project, path, .. } => {
-                    let project_entry = project_files
-                        .entry(project.clone())
-                        .or_insert_with(|| (HashSet::new(), Vec::new()));
-                    project_entry.0.insert(path.clone());
-                    Some(project)
-                }
-                Tool::ReadFiles { project, paths, .. } => {
-                    let project_entry = project_files
-                        .entry(project.clone())
-                        .or_insert_with(|| (HashSet::new(), Vec::new()));
-                    for path in paths {
-                        project_entry.0.insert(path.clone());
-                    }
-                    Some(project)
-                }
-                Tool::DeleteFiles { project, paths, .. } => {
-                    let project_entry = project_files
-                        .entry(project.clone())
-                        .or_insert_with(|| (HashSet::new(), Vec::new()));
-                    for path in paths {
-                        project_entry.0.remove(path);
-                    }
-                    Some(project)
-                }
-                _ => None,
-            };
+        // If there's an initial project, make sure it's in the list
+        if let Some(project_name) = &self.initial_project {
+            // Create file tree for the project
+            match self.project_manager.get_explorer_for_project(project_name) {
+                Ok(mut explorer) => {
+                    match explorer.create_initial_tree(2) {
+                        Ok(tree) => {
+                            self.working_memory
+                                .file_trees
+                                .insert(project_name.clone(), tree);
 
-            // If this action might have errors for a specific project, record it
-            if let Some(proj) = project {
-                if let ToolResult::ReadFiles { failed_files, .. } = &action.result {
-                    if !failed_files.is_empty() {
-                        project_files.get_mut(proj).unwrap().1.push(format!(
-                            "Skipping failed files: {}",
-                            failed_files
-                                .iter()
-                                .map(|(path, _)| path.display().to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Load files for each project
-        for (project_name, (files, errors)) in project_files {
-            // Get explorer for this project
-            match self.project_manager.get_explorer_for_project(&project_name) {
-                Ok(explorer) => {
-                    let root_dir = explorer.root_dir();
-
-                    // Create file tree for this project if it doesn't exist yet
-                    if !self.working_memory.file_trees.contains_key(&project_name) {
-                        let mut explorer_for_tree = self
-                            .project_manager
-                            .get_explorer_for_project(&project_name)?;
-                        match explorer_for_tree.create_initial_tree(2) {
-                            Ok(tree) => {
+                            // Add to available projects if not already there
+                            if !self
+                                .working_memory
+                                .available_projects
+                                .contains(project_name)
+                            {
                                 self.working_memory
-                                    .file_trees
-                                    .insert(project_name.clone(), tree);
-                                // Add to available projects if not already there
-                                if !self
-                                    .working_memory
                                     .available_projects
-                                    .contains(&project_name)
-                                {
-                                    self.working_memory
-                                        .available_projects
-                                        .push(project_name.clone());
-                                }
-                            }
-                            Err(e) => {
-                                debug!(
-                                    "Error creating file tree for project {}: {}",
-                                    project_name, e
-                                );
+                                    .push(project_name.clone());
                             }
                         }
-                    }
-
-                    // Load files into memory
-                    for path in files {
-                        let full_path = if path.is_absolute() {
-                            path.clone()
-                        } else {
-                            root_dir.join(&path)
-                        };
-
-                        match explorer.read_file(&full_path) {
-                            Ok(content) => {
-                                debug!(
-                                    "Loading existing file from project {}: {}",
-                                    project_name,
-                                    full_path.display()
-                                );
-                                self.working_memory.add_resource(
-                                    project_name.clone(),
-                                    path,
-                                    LoadedResource::File(content),
-                                );
-                            }
-                            Err(e) => {
-                                debug!("Error loading file {}: {}", full_path.display(), e);
-                            }
+                        Err(e) => {
+                            debug!(
+                                "Error creating file tree for project {}: {}",
+                                project_name, e
+                            );
                         }
                     }
                 }
@@ -495,55 +380,12 @@ impl Agent {
                     debug!("Error getting explorer for project {}: {}", project_name, e);
                 }
             }
-
-            // Add any errors to working memory
-            for error in errors {
-                debug!("Errors for project {}: {}", project_name, error);
-            }
         }
 
-        // Second pass: Handle web resources from action results
-        // This must be done after the file processing to avoid losing web resources
-        // that were added in the same continuation session
-        for action in &self.working_memory.action_history {
-            match &action.result {
-                ToolResult::WebSearch {
-                    query,
-                    results,
-                    error: None,
-                } => {
-                    // Use a synthetic path that includes the query (same as in AgentToolHandler)
-                    let path = PathBuf::from(format!(
-                        "web-search-{}",
-                        percent_encoding::utf8_percent_encode(
-                            &query,
-                            percent_encoding::NON_ALPHANUMERIC
-                        )
-                    ));
-                    debug!("Loading web search results for: {}", query);
-                    // Use "web" as the project name for web resources
-                    let project = "web".to_string();
-                    self.working_memory.loaded_resources.insert(
-                        (project, path),
-                        LoadedResource::WebSearch {
-                            query: query.clone(),
-                            results: results.clone(),
-                        },
-                    );
-                }
-                ToolResult::WebFetch { page, error: None } => {
-                    // Use the URL as path (normalized, same as in AgentToolHandler)
-                    let path = PathBuf::from(page.url.replace([':', '/', '?', '#'], "_"));
-                    debug!("Loading web page content: {}", page.url);
-                    // Use "web" as the project name for web resources
-                    let project = "web".to_string();
-                    self.working_memory
-                        .loaded_resources
-                        .insert((project, path), LoadedResource::WebPage(page.clone()));
-                }
-                _ => {}
-            }
-        }
+        // Note: With the new tool registry approach, we no longer need to manually
+        // reconstruct file and web resource state from action history.
+        // Instead, the tool outputs themselves (stored in tool_executions)
+        // will be used to dynamically generate responses.
 
         Ok(())
     }
@@ -684,7 +526,7 @@ impl Agent {
     }
 
     /// Executes a tool and returns the result
-    async fn execute_tool(&mut self, tool_request: &ToolRequest) -> Result<(String, ActionResult)> {
+    async fn execute_tool(&mut self, tool_request: &ToolRequest) -> Result<(String, bool)> {
         debug!(
             "Executing tool request: {} (id: {})",
             tool_request.name, tool_request.id
@@ -695,30 +537,25 @@ impl Agent {
             .update_tool_status(&tool_request.id, crate::ui::ToolStatus::Running, None)
             .await?;
 
-        // Parse the tool parameters and create Tool
-        let tool = if self.tool_mode == ToolMode::Native {
-            parse_tool_json(&tool_request.name, &tool_request.input)?
-        } else {
-            // For XML mode, we'd need to convert the JSON back to XML
-            // For simplicity, we can assume the input is already in a format that can be parsed
-            parse_tool_json(&tool_request.name, &tool_request.input)?
+        // Get the tool from the registry
+        let tool = ToolRegistry::global()
+            .get(&tool_request.name)
+            .ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", tool_request.name))?;
+
+        // Create a tool context
+        let mut context = ToolContext {
+            project_manager: self.project_manager.as_ref(),
+            command_executor: self.command_executor.as_ref(),
+            working_memory: Some(&mut self.working_memory),
         };
 
-        // Execute the tool and get both the output and result
-        let (output, tool_result) = {
-            let mut handler = AgentChatToolHandler::new(&mut self.working_memory);
-            ToolExecutor::execute(
-                &mut handler,
-                &self.project_manager,
-                &self.command_executor,
-                Some(&self.ui),
-                &tool,
-            )
-            .await?
-        };
+        // Execute the tool using the new tool interface
+        let result = tool
+            .invoke(&mut context, tool_request.input.clone())
+            .await?;
 
         // Determine status based on result
-        let status = if tool_result.is_success() {
+        let status = if result.is_success() {
             crate::ui::ToolStatus::Success
         } else {
             crate::ui::ToolStatus::Error
@@ -729,25 +566,17 @@ impl Agent {
             .update_tool_status(&tool_request.id, status, Some(output.clone()))
             .await?;
 
-        // Create ActionResult (still needed for WorkingMemory)
-        let action_result = ActionResult {
-            tool,
-            result: tool_result,
-            reasoning: "".to_string(), // We no longer track reasoning
-        };
-
         // Create and store the ToolExecution record
         let tool_execution = ToolExecution {
             tool_request: tool_request.clone(),
             timestamp: std::time::SystemTime::now(),
-            result: Ok(Box::new(action_result.result.clone())), // This will need updating when we migrate to new Tool system
-            rendered_output: output.clone(),
+            result,
         };
 
         // Store the execution record
         self.tool_executions.push(tool_execution);
 
-        Ok((output, action_result))
+        Ok((output, success))
     }
 }
 

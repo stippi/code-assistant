@@ -1,5 +1,4 @@
 use crate::tools::core::AnyOutput;
-use anyhow::Result;
 use serde_json::Value;
 use std::time::SystemTime;
 
@@ -42,10 +41,8 @@ impl ToolRequest {
 }
 
 /// Record of a tool execution with its result
-//#[derive(Debug)]
 pub struct ToolExecution {
     pub tool_request: ToolRequest,
     pub timestamp: SystemTime,
-    pub result: Result<Box<dyn AnyOutput>>,
-    pub rendered_output: String,
+    pub result: Box<dyn AnyOutput>,
 }
