@@ -108,7 +108,7 @@ fn parse_path_array(arr: &serde_json::Value, param_name: &str) -> Result<Vec<Pat
         .collect::<Result<Vec<_>, _>>()
 }
 
-pub fn parse_tool_xml(xml: &str) -> Result<Tool, ToolError> {
+pub fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
     trace!("Parsing XML:\n{}", xml);
 
     let tool_name = xml
@@ -159,7 +159,12 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool, ToolError> {
     }
 
     trace!("Final parameters: {:?}", params);
-    parse_tool_from_params(&tool_name, &params)
+    
+    // Convert parameters to JSON using the ToolRegistry
+    let json_params = convert_xml_params_to_json(&tool_name, &params, &ToolRegistry::global())
+        .map_err(|e| ToolError::ParseError(format!("Error converting parameters to JSON: {}", e)))?;
+        
+    Ok((tool_name, json_params))
 }
 
 pub(crate) fn parse_search_replace_blocks(
