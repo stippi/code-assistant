@@ -481,10 +481,13 @@ After refactoring the tool system to use a trait-based approach, we need to upda
 
 ### Key Changes
 
-1. **Remove WorkingMemory**:
-   - Remove all WorkingMemory-related functionality
-   - Store necessary agent state directly in the Agent struct
-   - Use MessageHistory exclusively to maintain context
+0. **Remove WorkingMemory Mode from Agent**:
+   - Remove conditional behavior in agent, keep only MessageHistory behavior
+   - Remove code needed to restore state for WorkingMemory (action playback)
+
+1. **Slim down WorkingMemory**:
+   - Remove WorkingMemory rendering
+   - Remove action history and all features needed by WorkingMemory agent mode
 
 2. **Simplify Agent Actions**:
    - Use ContentBlock::ToolUse directly instead of custom AgentAction
@@ -557,13 +560,17 @@ By following this plan, we maintain compatibility during the transition while pr
 
 - ✓ Implemented core traits and interfaces (Tool, ToolSpec, Render, ResourcesTracker, ToolResult)
 - ✓ Created registry for tool discovery
-- ✓ Implemented `list_projects` tool
-- ✓ Implemented `read_files` tool
+- ✓ Re-implemented all tools
 - ✓ Created basic adapter framework
 - ✓ Added integration tests showing end-to-end flow
 - ✓ Added ToolResult trait for determining success/failure of tool execution
 - ✓ Implemented ToolResult for all tool output types
 - ✓ Integrated success/failure information with DynTool and AnyOutput
+- ✓ Implemented serialization for Tool Output types and AnyOutput::to_json()
+- ⏳ Remove no longer needed functionality from WorkingMemory
+- ⏳ Integrate new tool registry into agent
+- ⏳ Create XML-tools version of system prompt dynamically
 - ⏳ Handling XML/JSON parameter conversion (in progress)
-- ⏳ Integrating with existing executor
+- ⏳ Integrate new tool registry into agent
+- ⏳ Replacing existing executor and handlers
 - ⏳ Migrating remaining tools
