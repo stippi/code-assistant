@@ -1,3 +1,4 @@
+use crate::agent::types::{ToolExecution, ToolRequest};
 use crate::config::ProjectManager;
 use crate::persistence::StatePersistence;
 use crate::tools::{
@@ -37,6 +38,8 @@ pub struct Agent {
     init_path: Option<PathBuf>,
     // Name of the initial project (if any)
     initial_project: Option<String>,
+    // Store the history of tool executions
+    tool_executions: Vec<crate::agent::types::ToolExecution>,
 }
 
 impl Agent {
@@ -60,6 +63,7 @@ impl Agent {
             message_history: Vec::new(),
             init_path,
             initial_project: None,
+            tool_executions: Vec::new(),
         }
     }
 
@@ -92,7 +96,10 @@ impl Agent {
             // Keep trying until all actions succeed
             let mut all_actions_succeeded = false;
             while !all_actions_succeeded {
-                let (actions, assistant_msg) = match self.get_next_actions(messages.clone()).await {
+                let (tool_requests, assistant_msg) = match self
+                    .get_next_actions(messages.clone())
+                    .await
+                {
                     Ok(result) => result,
                     Err(e) => match e {
                         AgentError::LLMError(e) => return Err(e),
@@ -139,8 +146,8 @@ impl Agent {
                 // Save message history in state
                 self.save_state()?;
 
-                // If no actions were returned, get user input
-                if actions.is_empty() {
+                // If no tools were requested, get user input
+                if tool_requests.is_empty() {
                     // Get input from UI
                     let user_input = self.get_input_from_ui("").await?;
 
@@ -181,8 +188,8 @@ impl Agent {
 
                 all_actions_succeeded = true; // Will be set to false if any action fails
 
-                for action in actions {
-                    let (output, result) = self.execute_action(&action).await?;
+                for tool_request in &tool_requests {
+                    let (output, result) = self.execute_tool(tool_request).await?;
                     let success = result.result.is_success();
 
                     if !success {
@@ -198,7 +205,7 @@ impl Agent {
                         let message = Message {
                             role: MessageRole::User,
                             content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                                tool_use_id: action.tool_id.clone(),
+                                tool_use_id: tool_request.id.clone(),
                                 content: output,
                                 is_error: if success { None } else { Some(true) },
                             }]),
@@ -234,7 +241,7 @@ impl Agent {
                     let _ = self.ui.update_memory(&self.working_memory).await;
 
                     // Check if this was a CompleteTask action
-                    if let Tool::CompleteTask { .. } = action.tool {
+                    if tool_request.name == "complete_task" {
                         // Clean up state file on successful completion
                         self.state_persistence.cleanup()?;
                         debug!("Task completed");
@@ -578,11 +585,11 @@ impl Agent {
         base_prompt
     }
 
-    /// Get next actions from LLM
+    /// Get next tool requests from LLM
     async fn get_next_actions(
         &self,
         messages: Vec<Message>,
-    ) -> Result<(Vec<AgentAction>, Message), AgentError> {
+    ) -> Result<(Vec<ToolRequest>, Message), AgentError> {
         // Inform UI that a new LLM request is starting
         let request_id = self
             .ui
@@ -654,7 +661,7 @@ impl Agent {
         debug!("Completed LLM request with ID: {}", request_id);
 
         match parse_llm_response(&response, request_id) {
-            Ok(actions) => Ok((actions, assistant_msg)),
+            Ok(tool_requests) => Ok((tool_requests, assistant_msg)),
             Err(e) => Err(AgentError::ActionError {
                 error: e,
                 message: assistant_msg,
@@ -676,14 +683,26 @@ impl Agent {
         }
     }
 
-    /// Executes an action and returns the result
-    async fn execute_action(&mut self, action: &AgentAction) -> Result<(String, ActionResult)> {
-        debug!("Executing action: {:?}", action.tool);
+    /// Executes a tool and returns the result
+    async fn execute_tool(&mut self, tool_request: &ToolRequest) -> Result<(String, ActionResult)> {
+        debug!(
+            "Executing tool request: {} (id: {})",
+            tool_request.name, tool_request.id
+        );
 
         // Update status to Running before execution
         self.ui
-            .update_tool_status(&action.tool_id, crate::ui::ToolStatus::Running, None)
+            .update_tool_status(&tool_request.id, crate::ui::ToolStatus::Running, None)
             .await?;
+
+        // Parse the tool parameters and create Tool
+        let tool = if self.tool_mode == ToolMode::Native {
+            parse_tool_json(&tool_request.name, &tool_request.input)?
+        } else {
+            // For XML mode, we'd need to convert the JSON back to XML
+            // For simplicity, we can assume the input is already in a format that can be parsed
+            parse_tool_json(&tool_request.name, &tool_request.input)?
+        };
 
         // Execute the tool and get both the output and result
         let (output, tool_result) = {
@@ -693,7 +712,7 @@ impl Agent {
                 &self.project_manager,
                 &self.command_executor,
                 Some(&self.ui),
-                &action.tool,
+                &tool,
             )
             .await?
         };
@@ -707,14 +726,26 @@ impl Agent {
 
         // Update tool status with result
         self.ui
-            .update_tool_status(&action.tool_id, status, Some(output.clone()))
+            .update_tool_status(&tool_request.id, status, Some(output.clone()))
             .await?;
 
+        // Create ActionResult (still needed for WorkingMemory)
         let action_result = ActionResult {
-            tool: action.tool.clone(),
+            tool,
             result: tool_result,
-            reasoning: action.reasoning.clone(),
+            reasoning: "".to_string(), // We no longer track reasoning
         };
+
+        // Create and store the ToolExecution record
+        let tool_execution = ToolExecution {
+            tool_request: tool_request.clone(),
+            timestamp: std::time::SystemTime::now(),
+            result: Ok(Box::new(action_result.result.clone())), // This will need updating when we migrate to new Tool system
+            rendered_output: output.clone(),
+        };
+
+        // Store the execution record
+        self.tool_executions.push(tool_execution);
 
         Ok((output, action_result))
     }
@@ -723,9 +754,8 @@ impl Agent {
 pub(crate) fn parse_llm_response(
     response: &llm::LLMResponse,
     request_id: u64,
-) -> Result<Vec<AgentAction>> {
-    let mut actions = Vec::new();
-
+) -> Result<Vec<ToolRequest>> {
+    let mut tool_requests = Vec::new();
     let mut reasoning = String::new();
 
     for block in &response.content {
@@ -736,7 +766,7 @@ pub(crate) fn parse_llm_response(
             {
                 let abs_start = current_pos + tool_start;
 
-                // Add text before tool to reasoning
+                // Add text before tool to reasoning (kept for potential future use)
                 reasoning.push_str(text[current_pos..abs_start].trim());
                 if !reasoning.is_empty() {
                     reasoning.push('\n');
@@ -758,17 +788,22 @@ pub(crate) fn parse_llm_response(
                         let tool_content = &text[abs_start..abs_end];
                         debug!("Found tool content:\n{}", tool_content);
 
-                        // Parse and add the tool action
+                        // Parse the tool
                         let tool = parse_tool_xml(tool_content)?;
+
                         // Generate a unique tool ID that matches the one generated by the UI
                         // The UI increments its counter before generating an ID, so we add 1
-                        let tool_id = format!("tool-{}-{}", request_id, actions.len() + 1);
-                        actions.push(AgentAction {
-                            tool,
-                            reasoning: remove_thinking_tags(&reasoning).to_owned(),
-                            tool_id,
-                        });
+                        let tool_id = format!("tool-{}-{}", request_id, tool_requests.len() + 1);
 
+                        // Create a ToolRequest
+                        let tool_json = serde_json::to_value(&tool).unwrap_or_default();
+                        let tool_request = ToolRequest {
+                            id: tool_id,
+                            name: get_tool_name(&tool),
+                            input: tool_json,
+                        };
+
+                        tool_requests.push(tool_request);
                         current_pos = abs_end;
                         continue;
                     }
@@ -786,28 +821,40 @@ pub(crate) fn parse_llm_response(
             }
         }
 
-        if let ContentBlock::ToolUse {
-            name, input, id, ..
-        } = block
-        {
-            let tool = parse_tool_json(name, input)?;
-            // Generate a tool ID - either use the provided one or create a new one
-            // Note: for API-native tools, this ID is important as it will be used to match with tool_result
-            let tool_id = if id.is_empty() {
-                format!("tool-json-{}", actions.len())
-            } else {
-                id.clone()
+        if let ContentBlock::ToolUse { id, name, input } = block {
+            // For ToolUse blocks, create ToolRequest directly
+            let tool_request = ToolRequest {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
             };
-            actions.push(AgentAction {
-                tool,
-                reasoning: remove_thinking_tags(&reasoning).to_owned(),
-                tool_id,
-            });
+            tool_requests.push(tool_request);
             reasoning = String::new();
         }
     }
 
-    Ok(actions)
+    Ok(tool_requests)
+}
+
+// Helper function to get a tool name from the Tool enum
+fn get_tool_name(tool: &Tool) -> String {
+    match tool {
+        Tool::ListProjects { .. } => "list_projects",
+        Tool::UpdatePlan { .. } => "update_plan",
+        Tool::SearchFiles { .. } => "search_files",
+        Tool::ExecuteCommand { .. } => "execute_command",
+        Tool::ListFiles { .. } => "list_files",
+        Tool::ReadFiles { .. } => "read_files",
+        Tool::WriteFile { .. } => "write_file",
+        Tool::ReplaceInFile { .. } => "replace_in_file",
+        Tool::DeleteFiles { .. } => "delete_files",
+        Tool::CompleteTask { .. } => "complete_task",
+        Tool::UserInput { .. } => "user_input",
+        Tool::WebSearch { .. } => "web_search",
+        Tool::WebFetch { .. } => "web_fetch",
+        Tool::PerplexityAsk { .. } => "perplexity_ask",
+    }
+    .to_string()
 }
 
 fn remove_thinking_tags(input: &str) -> String {
