@@ -4,7 +4,7 @@ use crate::tools::core::{
 use crate::tools::parse::parse_search_replace_blocks;
 use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -17,6 +17,7 @@ pub struct ReplaceInFileInput {
 }
 
 // Output type
+#[derive(Serialize, Deserialize)]
 pub struct ReplaceInFileOutput {
     #[allow(dead_code)]
     pub project: String,

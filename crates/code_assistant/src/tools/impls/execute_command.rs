@@ -2,7 +2,7 @@ use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::{anyhow, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -15,6 +15,7 @@ pub struct ExecuteCommandInput {
 }
 
 // Output type
+#[derive(Serialize, Deserialize)]
 pub struct ExecuteCommandOutput {
     #[allow(dead_code)]
     pub project: String,

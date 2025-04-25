@@ -2,7 +2,7 @@ use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
 use web::{PerplexityCitation, PerplexityClient, PerplexityMessage};
@@ -14,6 +14,7 @@ pub struct PerplexityAskInput {
 }
 
 // Output type
+#[derive(Serialize, Deserialize)]
 pub struct PerplexityAskOutput {
     #[allow(dead_code)]
     pub query: String,

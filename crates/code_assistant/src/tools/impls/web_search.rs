@@ -2,7 +2,7 @@ use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use web::{WebClient, WebSearchResult};
 
@@ -14,6 +14,7 @@ pub struct WebSearchInput {
 }
 
 // Output type with search results
+#[derive(Serialize, Deserialize)]
 pub struct WebSearchOutput {
     #[allow(dead_code)]
     pub query: String,

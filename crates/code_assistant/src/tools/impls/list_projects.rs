@@ -3,7 +3,7 @@ use crate::tools::core::{
 };
 use crate::types::Project;
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -12,6 +12,7 @@ use std::collections::HashMap;
 pub struct ListProjectsInput {}
 
 // Output type
+#[derive(Serialize, Deserialize)]
 pub struct ListProjectsOutput {
     pub projects: HashMap<String, Project>,
 }

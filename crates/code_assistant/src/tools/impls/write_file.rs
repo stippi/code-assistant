@@ -3,7 +3,7 @@ use crate::tools::core::{
 };
 use crate::types::LoadedResource;
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -18,6 +18,7 @@ pub struct WriteFileInput {
 }
 
 // Output type
+#[derive(Serialize, Deserialize)]
 pub struct WriteFileOutput {
     pub path: PathBuf,
     pub content: String,

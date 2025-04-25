@@ -3,7 +3,7 @@ use crate::tools::core::{
 };
 use crate::types::{SearchMode, SearchOptions, SearchResult};
 use anyhow::{anyhow, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 // Input type for the search_files tool
@@ -14,6 +14,7 @@ pub struct SearchFilesInput {
 }
 
 // Output type
+#[derive(Serialize, Deserialize)]
 pub struct SearchFilesOutput {
     #[allow(dead_code)]
     pub project: String,

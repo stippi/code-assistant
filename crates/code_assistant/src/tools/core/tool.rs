@@ -2,8 +2,8 @@ use super::render::Render;
 use super::result::ToolResult;
 use super::spec::ToolSpec;
 use crate::types::WorkingMemory;
-use anyhow::Result;
-use serde::de::DeserializeOwned;
+use anyhow::{anyhow, Result};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 /// Context provided to tools during execution
 pub struct ToolContext<'a> {
@@ -21,8 +21,8 @@ pub trait Tool: Send + Sync + 'static {
     /// Input type for this tool, must be deserializable from JSON
     type Input: DeserializeOwned + Send;
 
-    /// Output type for this tool, must implement Render and ToolResult
-    type Output: Render + ToolResult + Send + Sync;
+    /// Output type for this tool, must implement Render, ToolResult and Serialize/Deserialize
+    type Output: Render + ToolResult + Serialize + for<'de> Deserialize<'de> + Send + Sync;
 
     /// Get the metadata for this tool
     fn spec(&self) -> ToolSpec;
@@ -33,4 +33,10 @@ pub trait Tool: Send + Sync + 'static {
         context: &mut ToolContext<'a>,
         input: Self::Input,
     ) -> Result<Self::Output>;
+
+    /// Deserialize a JSON value into this tool's output type
+    fn deserialize_output(&self, json: serde_json::Value) -> Result<Self::Output> {
+        serde_json::from_value(json)
+            .map_err(|e| anyhow!("Failed to deserialize output: {}", e))
+    }
 }

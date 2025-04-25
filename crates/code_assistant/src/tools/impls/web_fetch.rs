@@ -2,7 +2,7 @@ use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use web::{WebClient, WebPage};
 
@@ -14,6 +14,7 @@ pub struct WebFetchInput {
 }
 
 // Output type
+#[derive(Serialize, Deserialize)]
 pub struct WebFetchOutput {
     pub page: WebPage,
     pub error: Option<String>,

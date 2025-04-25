@@ -4,7 +4,7 @@ use crate::tools::core::{
 use crate::tools::parse::PathWithLineRange;
 use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,6 +17,7 @@ pub struct ReadFilesInput {
 }
 
 // Output type
+#[derive(Serialize, Deserialize)]
 pub struct ReadFilesOutput {
     pub project: String,
     pub loaded_files: HashMap<PathBuf, String>,

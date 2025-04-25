@@ -3,7 +3,7 @@ use crate::tools::core::{
 };
 use crate::types::FileTreeEntry;
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -17,6 +17,7 @@ pub struct ListFilesInput {
 }
 
 // Output type
+#[derive(Serialize, Deserialize)]
 pub struct ListFilesOutput {
     pub expanded_paths: Vec<(PathBuf, FileTreeEntry)>,
     pub failed_paths: Vec<(String, String)>,

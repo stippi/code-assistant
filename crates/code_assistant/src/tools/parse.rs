@@ -403,6 +403,7 @@ mod tests {
         array_param: Option<Vec<String>>,
     }
 
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct TestOutput;
 
     impl crate::tools::core::Render for TestOutput {
