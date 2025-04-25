@@ -1,9 +1,10 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use crate::types::FileTreeEntry;
 use anyhow::Result;
 use serde::Deserialize;
+use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the list_files tool
@@ -127,7 +128,7 @@ impl Tool for ListFilesTool {
         ToolSpec {
             name: "list_files",
             description: "List files in directories within a specified project",
-            parameters_schema: serde_json::json!({
+            parameters_schema: json!({
                 "type": "object",
                 "properties": {
                     "project": {
@@ -148,8 +149,10 @@ impl Tool for ListFilesTool {
                 },
                 "required": ["project", "paths"]
             }),
-            annotations: None,
-            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
+            annotations: Some(json!({
+                "readOnlyHint": true
+            })),
+            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
         }
     }
 

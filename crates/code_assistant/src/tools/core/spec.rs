@@ -1,10 +1,10 @@
 /// Define available modes for tools
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolMode {
+pub enum ToolScope {
     /// Tool can be used in the MCP server
     McpServer,
     /// Tool can be used in the message history agent
-    MessageHistoryAgent,
+    Agent,
 }
 
 /// Specification for a tool, including metadata
@@ -19,5 +19,5 @@ pub struct ToolSpec {
     /// Optional annotations for LLM-specific instructions
     pub annotations: Option<serde_json::Value>,
     /// Which execution modes this tool supports
-    pub supported_modes: &'static [ToolMode],
+    pub supported_scopes: &'static [ToolScope],
 }

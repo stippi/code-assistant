@@ -1,8 +1,9 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::Result;
 use serde::Deserialize;
+use serde_json::json;
 use std::path::PathBuf;
 use web::{PerplexityCitation, PerplexityClient, PerplexityMessage};
 
@@ -79,7 +80,7 @@ impl Tool for PerplexityAskTool {
         ToolSpec {
             name: "perplexity_ask",
             description,
-            parameters_schema: serde_json::json!({
+            parameters_schema: json!({
                 "type": "object",
                 "properties": {
                     "messages": {
@@ -103,8 +104,12 @@ impl Tool for PerplexityAskTool {
                 },
                 "required": ["messages"]
             }),
-            annotations: None,
-            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
+            annotations: Some(json!({
+                "readOnlyHint": true,
+                "idempotentHint": false,
+                "openWorldHint": true
+            })),
+            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
         }
     }
 

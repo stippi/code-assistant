@@ -620,7 +620,7 @@ mod tests {
     use super::super::parse::parse_search_replace_blocks;
     use super::*;
     use crate::tools::core::ResourcesTracker;
-    use crate::tools::core::{Tool, ToolContext, ToolMode, ToolSpec};
+    use crate::tools::core::{Tool, ToolContext, ToolScope, ToolSpec};
     use crate::tools::impls::{ListProjectsTool, ReadFilesTool};
     use std::collections::HashMap;
 
@@ -666,7 +666,7 @@ mod tests {
                     "required": ["string_param"]
                 }),
                 annotations: None,
-                supported_modes: &[ToolMode::McpServer],
+                supported_scopes: &[ToolScope::McpServer],
             }
         }
 

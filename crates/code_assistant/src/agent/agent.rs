@@ -1,7 +1,7 @@
 use crate::agent::types::{ToolExecution, ToolRequest};
 use crate::config::ProjectManager;
 use crate::persistence::StatePersistence;
-use crate::tools::core::{ToolContext, ToolRegistry};
+use crate::tools::core::{ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{parse_tool_xml, TOOL_TAG_PREFIX};
 use crate::types::*;
 use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface};
@@ -81,14 +81,13 @@ impl Agent {
     async fn run_agent_loop(&mut self) -> Result<()> {
         // Main agent loop
         loop {
-            // Get messages from history or create initial ones
-            let mut messages = if self.message_history.is_empty() {
-                let initial_messages = self.prepare_messages();
-                self.message_history = initial_messages.clone();
-                initial_messages
-            } else {
-                self.message_history.clone()
-            };
+            // Prepare messages with dynamically rendered tool outputs
+            let mut messages = self.prepare_messages();
+
+            // If message history is empty (first run), initialize it
+            if self.message_history.is_empty() {
+                self.message_history = messages.clone();
+            }
 
             // Keep trying until all actions succeed
             let mut all_actions_succeeded = false;
@@ -177,46 +176,28 @@ impl Agent {
                 all_actions_succeeded = true; // Will be set to false if any action fails
 
                 for tool_request in &tool_requests {
-                    let (output, success) = self.execute_tool(tool_request).await?;
-
+                    let success = self.execute_tool(tool_request).await?;
                     if !success {
                         all_actions_succeeded = false;
                     }
 
-                    // Add result to messages
-                    if self.tool_mode == ToolMode::Native {
-                        // Using structured ToolResult for Native mode
-                        let message = Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                                tool_use_id: tool_request.id.clone(),
-                                content: output,
-                                is_error: if success { None } else { Some(true) },
-                            }]),
-                        };
+                    // Create a message with just the tool use reference
+                    // The actual output will be dynamically generated in prepare_messages
+                    let message = Message {
+                        role: MessageRole::User,
+                        content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                            tool_use_id: tool_request.id.clone(),
+                            content: String::new(), // Empty placeholder, will be filled dynamically
+                            is_error: if success { None } else { Some(true) },
+                        }]),
+                    };
 
-                        messages.push(message.clone());
-                        self.message_history.push(message);
-                    } else {
-                        // For XML mode
-                        let message = if !success {
-                            Message {
-                                role: MessageRole::User,
-                                content: MessageContent::Text(format!(
-                                    "Error executing tool: {}",
-                                    output // Use output string directly which will contain error
-                                )),
-                            }
-                        } else {
-                            Message {
-                                role: MessageRole::User,
-                                content: MessageContent::Text(output),
-                            }
-                        };
+                    // Add to message history (output will be dynamically generated when needed)
+                    self.message_history.push(message.clone());
 
-                        messages.push(message.clone());
-                        self.message_history.push(message);
-                    }
+                    // For the current conversation, use prepare_messages to get updated messages
+                    // with dynamically rendered content
+                    messages = self.prepare_messages();
 
                     // Save state
                     self.save_state()?;
@@ -444,9 +425,11 @@ impl Agent {
             messages,
             system_prompt: self.get_system_prompt(),
             tools: match self.tool_mode {
-                ToolMode::Native => Some(
-                    crate::tools::AnnotatedToolDefinition::to_tool_definitions(Tools::all()),
-                ),
+                ToolMode::Native => {
+                    Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
+                        ToolRegistry::global().get_tool_definitions_for_scope(ToolScope::Agent),
+                    ))
+                }
                 ToolMode::Xml => None,
             },
         };
@@ -511,22 +494,91 @@ impl Agent {
         }
     }
 
-    /// Prepare initial messages for LLM request
+    /// Prepare messages for LLM request, dynamically rendering tool outputs
     fn prepare_messages(&self) -> Vec<Message> {
         if self.message_history.is_empty() {
             // Initial message with just the task
-            vec![Message {
+            return vec![Message {
                 role: MessageRole::User,
                 content: MessageContent::Text(self.working_memory.current_task.clone()),
-            }]
-        } else {
-            // Return the whole message history
-            self.message_history.clone()
+            }];
         }
+
+        // Start with a clean slate
+        let mut messages = Vec::new();
+
+        // Create a fresh ResourcesTracker for this rendering pass
+        let mut resources_tracker = crate::tools::core::render::ResourcesTracker::new();
+
+        // First, collect all tool executions and build a map from tool_use_id to rendered output
+        let mut tool_outputs = std::collections::HashMap::new();
+
+        // Process tool executions in reverse chronological order (newest first)
+        // so newer tool calls take precedence in resource conflicts
+        for execution in self.tool_executions.iter().rev() {
+            let tool_use_id = &execution.tool_request.id;
+            let rendered_output = execution.result.as_render().render(&mut resources_tracker);
+            tool_outputs.insert(tool_use_id.clone(), rendered_output);
+        }
+
+        // Now rebuild the message history, replacing tool outputs with our dynamically rendered versions
+        for msg in &self.message_history {
+            match &msg.content {
+                MessageContent::Structured(blocks) => {
+                    // Look for ToolResult blocks
+                    let mut new_blocks = Vec::new();
+                    let mut need_update = false;
+
+                    for block in blocks {
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            is_error,
+                            ..
+                        } = block
+                        {
+                            // If we have an execution result for this tool use, use it
+                            if let Some(output) = tool_outputs.get(tool_use_id) {
+                                // Create a new ToolResult with updated content
+                                new_blocks.push(ContentBlock::ToolResult {
+                                    tool_use_id: tool_use_id.clone(),
+                                    content: output.clone(),
+                                    is_error: *is_error,
+                                });
+                                need_update = true;
+                            } else {
+                                // Keep the original block
+                                new_blocks.push(block.clone());
+                            }
+                        } else {
+                            // Keep non-ToolResult blocks as is
+                            new_blocks.push(block.clone());
+                        }
+                    }
+
+                    if need_update {
+                        // Create a new message with updated blocks
+                        let new_msg = Message {
+                            role: msg.role.clone(),
+                            content: MessageContent::Structured(new_blocks),
+                        };
+                        messages.push(new_msg);
+                    } else {
+                        // No changes needed, use original message
+                        messages.push(msg.clone());
+                    }
+                }
+                _ => {
+                    // For non-tool messages, just copy them as is
+                    messages.push(msg.clone());
+                }
+            }
+        }
+
+        messages
     }
 
     /// Executes a tool and returns the result
-    async fn execute_tool(&mut self, tool_request: &ToolRequest) -> Result<(String, bool)> {
+    async fn execute_tool(&mut self, tool_request: &ToolRequest) -> Result<bool> {
         debug!(
             "Executing tool request: {} (id: {})",
             tool_request.name, tool_request.id
@@ -554,16 +606,22 @@ impl Agent {
             .invoke(&mut context, tool_request.input.clone())
             .await?;
 
-        // Determine status based on result
-        let status = if result.is_success() {
+        // Get success status from result
+        let success = result.is_success();
+
+        // Determine UI status based on result
+        let status = if success {
             crate::ui::ToolStatus::Success
         } else {
             crate::ui::ToolStatus::Error
         };
 
+        // Generate status string from result
+        let short_output = result.as_render().status();
+
         // Update tool status with result
         self.ui
-            .update_tool_status(&tool_request.id, status, Some(output.clone()))
+            .update_tool_status(&tool_request.id, status, Some(short_output))
             .await?;
 
         // Create and store the ToolExecution record
@@ -576,7 +634,7 @@ impl Agent {
         // Store the execution record
         self.tool_executions.push(tool_execution);
 
-        Ok((output, success))
+        Ok(success)
     }
 }
 
@@ -684,47 +742,4 @@ fn get_tool_name(tool: &Tool) -> String {
         Tool::PerplexityAsk { .. } => "perplexity_ask",
     }
     .to_string()
-}
-
-fn remove_thinking_tags(input: &str) -> String {
-    // First attempt to remove entire <thinking>...</thinking> blocks
-    let mut result = String::new();
-    let mut current_pos = 0;
-    let mut found_any = false;
-
-    while let Some(tag_start) = input[current_pos..].find("<thinking>") {
-        let abs_start = current_pos + tag_start;
-
-        // Add text before the <thinking> tag
-        result.push_str(&input[current_pos..abs_start]);
-
-        // Find the closing tag
-        if let Some(rel_end) = input[abs_start..].find("</thinking>") {
-            let abs_end = abs_start + rel_end + "</thinking>".len();
-            current_pos = abs_end;
-            found_any = true;
-        } else {
-            // No closing tag found, keep the opening tag and continue
-            result.push_str("<thinking>");
-            current_pos = abs_start + "<thinking>".len();
-        }
-    }
-
-    // Add any remaining text
-    if current_pos < input.len() {
-        result.push_str(&input[current_pos..]);
-    }
-
-    let result = result.trim().to_string();
-
-    // If the result is empty or we didn't find any tags, fall back to just removing the tag markers
-    if result.is_empty() || !found_any {
-        input
-            .replace("<thinking>", "")
-            .replace("</thinking>", "")
-            .trim()
-            .to_string()
-    } else {
-        result
-    }
 }

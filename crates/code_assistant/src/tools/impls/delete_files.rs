@@ -1,8 +1,9 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
+use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the delete_files tool
@@ -77,7 +78,7 @@ impl Tool for DeleteFilesTool {
         ToolSpec {
             name: "delete_files",
             description: "Delete files from a specified project. This operation cannot be undone!",
-            parameters_schema: serde_json::json!({
+            parameters_schema: json!({
                 "type": "object",
                 "properties": {
                     "project": {
@@ -94,12 +95,12 @@ impl Tool for DeleteFilesTool {
                 },
                 "required": ["project", "paths"]
             }),
-            annotations: Some(serde_json::json!({
+            annotations: Some(json!({
                 "readOnlyHint": false,
                 "destructiveHint": true,
                 "idempotentHint": true
             })),
-            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
+            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
         }
     }
 

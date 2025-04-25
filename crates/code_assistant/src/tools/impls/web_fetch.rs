@@ -1,8 +1,9 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::Result;
 use serde::Deserialize;
+use serde_json::json;
 use web::{WebClient, WebPage};
 
 // Input type for the web_fetch tool
@@ -66,7 +67,7 @@ impl Tool for WebFetchTool {
         ToolSpec {
             name: "web_fetch",
             description,
-            parameters_schema: serde_json::json!({
+            parameters_schema: json!({
                 "type": "object",
                 "properties": {
                     "url": {
@@ -83,8 +84,12 @@ impl Tool for WebFetchTool {
                 },
                 "required": ["url"]
             }),
-            annotations: None,
-            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
+            annotations: Some(json!({
+                "readOnlyHint": true,
+                "idempotentHint": true,
+                "openWorldHint": true
+            })),
+            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
         }
     }
 

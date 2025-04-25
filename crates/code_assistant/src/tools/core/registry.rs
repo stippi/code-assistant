@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::tools::core::dyn_tool::DynTool;
-use crate::tools::core::spec::ToolMode;
+use crate::tools::core::spec::ToolScope;
 use crate::tools::AnnotatedToolDefinition;
 
 /// Central registry for all tools in the system
@@ -24,7 +24,9 @@ impl ToolRegistry {
 
     /// Create a new empty registry
     pub fn new() -> Self {
-        Self { tools: HashMap::new() }
+        Self {
+            tools: HashMap::new(),
+        }
     }
 
     /// Register a tool in the registry
@@ -37,39 +39,11 @@ impl ToolRegistry {
         self.tools.get(name)
     }
 
-    /// Get all registered tools
-    pub fn all(&self) -> Vec<&Box<dyn DynTool>> {
-        self.tools.values().collect()
-    }
-
-    /// Get tools available for a specific mode
-    pub fn tools_for_mode(&self, mode: ToolMode) -> Vec<&Box<dyn DynTool>> {
-        self.tools
-            .values()
-            .filter(|tool| {
-                tool.spec().supported_modes.contains(&mode)
-            })
-            .collect()
-    }
-
-    /// Get tool definitions for all tools
-    pub fn get_tool_definitions(&self) -> Vec<AnnotatedToolDefinition> {
-        self.tools
-            .values()
-            .map(|tool| AnnotatedToolDefinition {
-                name: tool.spec().name.to_string(),
-                description: tool.spec().description.to_string(),
-                parameters: tool.spec().parameters_schema.clone(),
-                annotations: tool.spec().annotations.clone(),
-            })
-            .collect()
-    }
-
     /// Get tool definitions for a specific mode
-    pub fn get_tool_definitions_for_mode(&self, mode: ToolMode) -> Vec<AnnotatedToolDefinition> {
+    pub fn get_tool_definitions_for_scope(&self, mode: ToolScope) -> Vec<AnnotatedToolDefinition> {
         self.tools
             .values()
-            .filter(|tool| tool.spec().supported_modes.contains(&mode))
+            .filter(|tool| tool.spec().supported_scopes.contains(&mode))
             .map(|tool| AnnotatedToolDefinition {
                 name: tool.spec().name.to_string(),
                 description: tool.spec().description.to_string(),
@@ -83,7 +57,11 @@ impl ToolRegistry {
     /// This will be expanded as we implement more tools
     fn register_default_tools(&mut self) {
         // Import all tools
-        use crate::tools::impls::{DeleteFilesTool, ExecuteCommandTool, ListFilesTool, ListProjectsTool, PerplexityAskTool, ReadFilesTool, ReplaceInFileTool, SearchFilesTool, WebFetchTool, WebSearchTool, WriteFileTool};
+        use crate::tools::impls::{
+            DeleteFilesTool, ExecuteCommandTool, ListFilesTool, ListProjectsTool,
+            PerplexityAskTool, ReadFilesTool, ReplaceInFileTool, SearchFilesTool, WebFetchTool,
+            WebSearchTool, WriteFileTool,
+        };
 
         // Register tools
         self.register(Box::new(DeleteFilesTool));

@@ -1,8 +1,9 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
+use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the execute_command tool
@@ -72,7 +73,7 @@ impl Tool for ExecuteCommandTool {
         ToolSpec {
             name: "execute_command",
             description: "Execute a command line within a specified project",
-            parameters_schema: serde_json::json!({
+            parameters_schema: json!({
                 "type": "object",
                 "properties": {
                     "project": {
@@ -90,8 +91,11 @@ impl Tool for ExecuteCommandTool {
                 },
                 "required": ["project", "command_line"]
             }),
-            annotations: None,
-            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
+            annotations: Some(json!({
+                "readOnlyHint": false,
+                "idempotentHint": false
+            })),
+            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
         }
     }
 

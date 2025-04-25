@@ -1,8 +1,9 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use anyhow::Result;
 use serde::Deserialize;
+use serde_json::json;
 use web::{WebClient, WebSearchResult};
 
 // Input type for the web_search tool
@@ -80,7 +81,7 @@ impl Tool for WebSearchTool {
         ToolSpec {
             name: "web_search",
             description,
-            parameters_schema: serde_json::json!({
+            parameters_schema: json!({
                 "type": "object",
                 "properties": {
                     "query": {
@@ -95,8 +96,12 @@ impl Tool for WebSearchTool {
                 },
                 "required": ["query", "hits_page_number"]
             }),
-            annotations: None,
-            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
+            annotations: Some(json!({
+                "readOnlyHint": true,
+                "idempotentHint": true,
+                "openWorldHint": true
+            })),
+            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
         }
     }
 

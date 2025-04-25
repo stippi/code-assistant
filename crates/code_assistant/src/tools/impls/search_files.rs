@@ -1,9 +1,10 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use crate::types::{SearchMode, SearchOptions, SearchResult};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
+use serde_json::json;
 
 // Input type for the search_files tool
 #[derive(Deserialize)]
@@ -84,7 +85,7 @@ impl Tool for SearchFilesTool {
         ToolSpec {
             name: "search_files",
             description,
-            parameters_schema: serde_json::json!({
+            parameters_schema: json!({
                 "type": "object",
                 "properties": {
                     "project": {
@@ -98,8 +99,10 @@ impl Tool for SearchFilesTool {
                 },
                 "required": ["project", "regex"]
             }),
-            annotations: None,
-            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
+            annotations: Some(json!({
+                "readOnlyHint": true
+            })),
+            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
         }
     }
 

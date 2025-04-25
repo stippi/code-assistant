@@ -1,10 +1,11 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use crate::tools::parse::PathWithLineRange;
 use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -129,8 +130,11 @@ impl Tool for ReadFilesTool {
                 },
                 "required": ["project", "paths"]
             }),
-            annotations: None,
-            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
+            annotations: Some(json!({
+                "readOnlyHint": true,
+                "idempotentHint": true
+            })),
+            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
         }
     }
 

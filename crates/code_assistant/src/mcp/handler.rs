@@ -195,7 +195,7 @@ impl MessageHandler {
         // Use the ToolRegistry to get tool definitions
         let registry = ToolRegistry::global();
         let tool_defs =
-            registry.get_tool_definitions_for_mode(crate::tools::core::ToolMode::McpServer);
+            registry.get_tool_definitions_for_scope(crate::tools::core::ToolScope::McpServer);
 
         // Map tool definitions to the expected JSON structure
         let tools_json = tool_defs

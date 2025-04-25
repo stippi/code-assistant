@@ -1,9 +1,10 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use crate::types::Project;
 use anyhow::Result;
 use serde::Deserialize;
+use serde_json::json;
 use std::collections::HashMap;
 
 // Input type (empty for this tool)
@@ -60,13 +61,15 @@ impl Tool for ListProjectsTool {
         ToolSpec {
             name: "list_projects",
             description,
-            parameters_schema: serde_json::json!({
+            parameters_schema: json!({
                 "type": "object",
                 "properties": {},
                 "required": []
             }),
-            annotations: None,
-            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
+            annotations: Some(json!({
+                "readOnlyHint": true
+            })),
+            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
         }
     }
 

@@ -1,10 +1,11 @@
 use crate::tools::core::{
-    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+    Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use crate::tools::parse::parse_search_replace_blocks;
 use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
+use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the replace_in_file tool
@@ -92,7 +93,7 @@ impl Tool for ReplaceInFileTool {
         ToolSpec {
             name: "replace_in_file",
             description,
-            parameters_schema: serde_json::json!({
+            parameters_schema: json!({
                 "type": "object",
                 "properties": {
                     "project": {
@@ -110,11 +111,11 @@ impl Tool for ReplaceInFileTool {
                 },
                 "required": ["project", "path", "diff"]
             }),
-            annotations: Some(serde_json::json!({
+            annotations: Some(json!({
                 "readOnlyHint": false,
                 "destructiveHint": true
             })),
-            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
+            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
         }
     }
 
