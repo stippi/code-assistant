@@ -99,11 +99,7 @@ impl Tool for DeleteFilesTool {
                 "destructiveHint": true,
                 "idempotentHint": true
             })),
-            supported_modes: &[
-                ToolMode::McpServer,
-                ToolMode::WorkingMemoryAgent,
-                ToolMode::MessageHistoryAgent,
-            ],
+            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
         }
     }
 

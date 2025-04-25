@@ -99,11 +99,7 @@ impl Tool for SearchFilesTool {
                 "required": ["project", "regex"]
             }),
             annotations: None,
-            supported_modes: &[
-                ToolMode::McpServer,
-                ToolMode::WorkingMemoryAgent,
-                ToolMode::MessageHistoryAgent,
-            ],
+            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
         }
     }
 

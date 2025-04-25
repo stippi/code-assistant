@@ -114,11 +114,7 @@ impl Tool for ReplaceInFileTool {
                 "readOnlyHint": false,
                 "destructiveHint": true
             })),
-            supported_modes: &[
-                ToolMode::McpServer,
-                ToolMode::WorkingMemoryAgent,
-                ToolMode::MessageHistoryAgent,
-            ],
+            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
         }
     }
 

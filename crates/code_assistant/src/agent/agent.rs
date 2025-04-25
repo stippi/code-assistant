@@ -1,8 +1,7 @@
 use crate::config::ProjectManager;
 use crate::persistence::StatePersistence;
 use crate::tools::{
-    parse_tool_json, parse_tool_xml, AgentChatToolHandler, AgentToolHandler, ToolExecutor,
-    TOOL_TAG_PREFIX,
+    parse_tool_json, parse_tool_xml, AgentChatToolHandler, ToolExecutor, TOOL_TAG_PREFIX,
 };
 use crate::types::*;
 use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface};
@@ -18,14 +17,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tracing::debug;
 
-use super::{AgentMode, ToolMode};
+use super::ToolMode;
 
-// System messages for WorkingMemory mode
-const SYSTEM_MESSAGE_WM: &str = include_str!("../../resources/working_memory/system_message.md");
-const SYSTEM_MESSAGE_TOOLS_WM: &str =
-    include_str!("../../resources/working_memory/system_message_tools.md");
-
-// System messages for MessageHistory mode
+// System messages
 const SYSTEM_MESSAGE_MH: &str = include_str!("../../resources/chat/system_message.md");
 const SYSTEM_MESSAGE_TOOLS_MH: &str = include_str!("../../resources/chat/system_message_tools.md");
 
@@ -33,12 +27,11 @@ pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
     tool_mode: ToolMode,
-    agent_mode: AgentMode,
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
     state_persistence: Box<dyn StatePersistence>,
-    // For MessageHistory mode: store all messages exchanged
+    // Store all messages exchanged
     message_history: Vec<Message>,
     // Path provided during agent initialization
     init_path: Option<PathBuf>,
@@ -50,7 +43,6 @@ impl Agent {
     pub fn new(
         llm_provider: Box<dyn LLMProvider>,
         tool_mode: ToolMode,
-        agent_mode: AgentMode,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         ui: Box<dyn UserInterface>,
@@ -61,7 +53,6 @@ impl Agent {
             working_memory: WorkingMemory::default(),
             llm_provider,
             tool_mode,
-            agent_mode,
             project_manager,
             ui: Arc::new(ui),
             command_executor,
@@ -72,23 +63,13 @@ impl Agent {
         }
     }
 
-    /// Helper method to save the state based on the current agent mode
-    fn save_state_based_on_mode(&mut self) -> Result<()> {
-        match self.agent_mode {
-            AgentMode::WorkingMemory => {
-                self.state_persistence.save_state(
-                    self.working_memory.current_task.clone(),
-                    self.working_memory.action_history.clone(),
-                )?;
-            }
-            AgentMode::MessageHistory => {
-                self.state_persistence.save_state_with_messages(
-                    self.working_memory.current_task.clone(),
-                    self.working_memory.action_history.clone(),
-                    self.message_history.clone(),
-                )?;
-            }
-        }
+    /// Save the current state including messages
+    fn save_state(&mut self) -> Result<()> {
+        self.state_persistence.save_state_with_messages(
+            self.working_memory.current_task.clone(),
+            self.working_memory.action_history.clone(),
+            self.message_history.clone(),
+        )?;
         Ok(())
     }
 
@@ -99,18 +80,13 @@ impl Agent {
     async fn run_agent_loop(&mut self) -> Result<()> {
         // Main agent loop
         loop {
-            // Get messages based on the agent mode
-            let mut messages = match self.agent_mode {
-                AgentMode::WorkingMemory => self.prepare_messages(),
-                AgentMode::MessageHistory => {
-                    if self.message_history.is_empty() {
-                        let initial_messages = self.prepare_messages();
-                        self.message_history = initial_messages.clone();
-                        initial_messages
-                    } else {
-                        self.message_history.clone()
-                    }
-                }
+            // Get messages from history or create initial ones
+            let mut messages = if self.message_history.is_empty() {
+                let initial_messages = self.prepare_messages();
+                self.message_history = initial_messages.clone();
+                initial_messages
+            } else {
+                self.message_history.clone()
             };
 
             // Keep trying until all actions succeed
@@ -122,9 +98,7 @@ impl Agent {
                         AgentError::LLMError(e) => return Err(e),
                         AgentError::ActionError { error, message } => {
                             messages.push(message.clone());
-                            if self.agent_mode == AgentMode::MessageHistory {
-                                self.message_history.push(message);
-                            }
+                            self.message_history.push(message);
 
                             if let Some(tool_error) = error.downcast_ref::<ToolError>() {
                                 match tool_error {
@@ -137,9 +111,7 @@ impl Agent {
                                             )),
                                         };
                                         messages.push(error_msg.clone());
-                                        if self.agent_mode == AgentMode::MessageHistory {
-                                            self.message_history.push(error_msg);
-                                        }
+                                        self.message_history.push(error_msg);
                                         continue;
                                     }
                                     ToolError::ParseError(msg) => {
@@ -151,9 +123,7 @@ impl Agent {
                                             )),
                                         };
                                         messages.push(error_msg.clone());
-                                        if self.agent_mode == AgentMode::MessageHistory {
-                                            self.message_history.push(error_msg);
-                                        }
+                                        self.message_history.push(error_msg);
                                         continue;
                                     }
                                 }
@@ -164,16 +134,10 @@ impl Agent {
                 };
 
                 messages.push(assistant_msg.clone());
-                if self.agent_mode == AgentMode::MessageHistory {
-                    self.message_history.push(assistant_msg);
+                self.message_history.push(assistant_msg);
 
-                    // Save message history in state
-                    self.state_persistence.save_state_with_messages(
-                        self.working_memory.current_task.clone(),
-                        self.working_memory.action_history.clone(),
-                        self.message_history.clone(),
-                    )?;
-                }
+                // Save message history in state
+                self.save_state()?;
 
                 // If no actions were returned, get user input
                 if actions.is_empty() {
@@ -202,13 +166,11 @@ impl Agent {
 
                     self.working_memory.action_history.push(action_result);
 
-                    // For MessageHistory mode, add the message to history
-                    if self.agent_mode == AgentMode::MessageHistory {
-                        self.message_history.push(user_msg);
-                    }
+                    // Add the message to history
+                    self.message_history.push(user_msg);
 
-                    // Save the state based on current mode
-                    self.save_state_based_on_mode()?;
+                    // Save the state
+                    self.save_state()?;
 
                     // Notify UI of working memory change
                     let _ = self.ui.update_memory(&self.working_memory).await;
@@ -230,7 +192,7 @@ impl Agent {
                     // Add result to working memory
                     self.working_memory.action_history.push(result.clone());
 
-                    // Add result to messages for both modes
+                    // Add result to messages
                     if self.tool_mode == ToolMode::Native {
                         // Using structured ToolResult for Native mode
                         let message = Message {
@@ -243,9 +205,7 @@ impl Agent {
                         };
 
                         messages.push(message.clone());
-                        if self.agent_mode == AgentMode::MessageHistory {
-                            self.message_history.push(message);
-                        }
+                        self.message_history.push(message);
                     } else {
                         // For XML mode
                         let message = if !success {
@@ -264,20 +224,11 @@ impl Agent {
                         };
 
                         messages.push(message.clone());
-                        if self.agent_mode == AgentMode::MessageHistory {
-                            self.message_history.push(message);
-                        }
+                        self.message_history.push(message);
                     }
 
-                    // In WorkingMemory mode, stop processing remaining actions on failure
-                    // But in MessageHistory mode, continue processing all actions
-                    if !success && self.agent_mode == AgentMode::WorkingMemory {
-                        break;
-                    }
-
-                    // Save state based on mode
-                    // Save the state based on current mode
-                    self.save_state_based_on_mode()?;
+                    // Save state
+                    self.save_state()?;
 
                     // Notify UI of working memory change
                     let _ = self.ui.update_memory(&self.working_memory).await;
@@ -350,17 +301,15 @@ impl Agent {
         self.message_history.clear();
         self.ui.display(UIMessage::UserInput(task.clone())).await?;
 
-        // For message history mode, create the initial user message
-        if self.agent_mode == AgentMode::MessageHistory {
-            let user_msg = Message {
-                role: MessageRole::User,
-                content: MessageContent::Text(task.clone()),
-            };
-            self.message_history.push(user_msg);
-        }
+        // Create the initial user message
+        let user_msg = Message {
+            role: MessageRole::User,
+            content: MessageContent::Text(task.clone()),
+        };
+        self.message_history.push(user_msg);
 
-        // Save initial state based on agent mode
-        self.save_state_based_on_mode()?;
+        // Save initial state
+        self.save_state()?;
 
         // Notify UI of initial working memory
         let _ = self.ui.update_memory(&self.working_memory).await;
@@ -379,13 +328,12 @@ impl Agent {
             // Restore action history from saved state
             self.working_memory.action_history = state.actions.clone();
 
-            // For MessageHistory mode, restore messages if available
+            // Restore messages if available
             if let Some(messages) = state.messages {
                 self.message_history = messages;
                 debug!("Restored {} previous messages", self.message_history.len());
-            } else if self.agent_mode == AgentMode::MessageHistory {
-                // If no messages were saved but we're in MessageHistory mode,
-                // create an initial message with the task
+            } else {
+                // If no messages were saved, create an initial message with the task
                 self.message_history = vec![Message {
                     role: MessageRole::User,
                     content: MessageContent::Text(state.task.clone()),
@@ -593,47 +541,38 @@ impl Agent {
         Ok(())
     }
 
-    /// Get the appropriate system prompt based on agent mode and tool mode
+    /// Get the appropriate system prompt based on tool mode
     fn get_system_prompt(&self) -> String {
-        let base_prompt = match self.agent_mode {
-            AgentMode::WorkingMemory => match self.tool_mode {
-                ToolMode::Native => SYSTEM_MESSAGE_WM.to_string(),
-                ToolMode::Xml => SYSTEM_MESSAGE_TOOLS_WM.to_string(),
-            },
-            AgentMode::MessageHistory => match self.tool_mode {
-                ToolMode::Native => SYSTEM_MESSAGE_MH.to_string(),
-                ToolMode::Xml => SYSTEM_MESSAGE_TOOLS_MH.to_string(),
-            },
+        let base_prompt = match self.tool_mode {
+            ToolMode::Native => SYSTEM_MESSAGE_MH.to_string(),
+            ToolMode::Xml => SYSTEM_MESSAGE_TOOLS_MH.to_string(),
         };
 
-        // In MessageHistory mode, append project information to the system prompt
-        if self.agent_mode == AgentMode::MessageHistory {
-            let mut project_info = String::new();
+        let mut project_info = String::new();
 
-            // Add information about the initial project if available
-            if let Some(project) = &self.initial_project {
-                project_info.push_str("\n\n# Project Information\n\n");
-                project_info.push_str(&format!("## Initial Project: {}\n\n", project));
+        // Add information about the initial project if available
+        if let Some(project) = &self.initial_project {
+            project_info.push_str("\n\n# Project Information\n\n");
+            project_info.push_str(&format!("## Initial Project: {}\n\n", project));
 
-                // Add file tree for the initial project if available
-                if let Some(tree) = self.working_memory.file_trees.get(project) {
-                    project_info.push_str("### File Structure:\n");
-                    project_info.push_str(&format!("```\n{}\n```\n\n", tree.to_string()));
-                }
+            // Add file tree for the initial project if available
+            if let Some(tree) = self.working_memory.file_trees.get(project) {
+                project_info.push_str("### File Structure:\n");
+                project_info.push_str(&format!("```\n{}\n```\n\n", tree.to_string()));
             }
+        }
 
-            // Add information about available projects
-            if !self.working_memory.available_projects.is_empty() {
-                project_info.push_str("## Available Projects:\n");
-                for project in &self.working_memory.available_projects {
-                    project_info.push_str(&format!("- {}\n", project));
-                }
+        // Add information about available projects
+        if !self.working_memory.available_projects.is_empty() {
+            project_info.push_str("## Available Projects:\n");
+            for project in &self.working_memory.available_projects {
+                project_info.push_str(&format!("- {}\n", project));
             }
+        }
 
-            // Append project information to base prompt if available
-            if !project_info.is_empty() {
-                return format!("{}\n{}", base_prompt, project_info);
-            }
+        // Append project information to base prompt if available
+        if !project_info.is_empty() {
+            return format!("{}\n{}", base_prompt, project_info);
         }
 
         base_prompt
@@ -656,7 +595,9 @@ impl Agent {
             messages,
             system_prompt: self.get_system_prompt(),
             tools: match self.tool_mode {
-                ToolMode::Native => Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(Tools::all())),
+                ToolMode::Native => Some(
+                    crate::tools::AnnotatedToolDefinition::to_tool_definitions(Tools::all()),
+                ),
                 ToolMode::Xml => None,
             },
         };
@@ -721,28 +662,17 @@ impl Agent {
         }
     }
 
-    /// Prepare messages for LLM request based on the agent mode
+    /// Prepare initial messages for LLM request
     fn prepare_messages(&self) -> Vec<Message> {
-        match self.agent_mode {
-            AgentMode::WorkingMemory => {
-                // Single message with working memory
-                vec![Message {
-                    role: MessageRole::User,
-                    content: MessageContent::Text(self.working_memory.to_markdown()),
-                }]
-            }
-            AgentMode::MessageHistory => {
-                if self.message_history.is_empty() {
-                    // Initial message with just the task
-                    vec![Message {
-                        role: MessageRole::User,
-                        content: MessageContent::Text(self.working_memory.current_task.clone()),
-                    }]
-                } else {
-                    // Return the whole message history
-                    self.message_history.clone()
-                }
-            }
+        if self.message_history.is_empty() {
+            // Initial message with just the task
+            vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text(self.working_memory.current_task.clone()),
+            }]
+        } else {
+            // Return the whole message history
+            self.message_history.clone()
         }
     }
 
@@ -755,30 +685,17 @@ impl Agent {
             .update_tool_status(&action.tool_id, crate::ui::ToolStatus::Running, None)
             .await?;
 
-        // Execute the tool and get both the output and result based on agent mode
-        let (output, tool_result) = match self.agent_mode {
-            AgentMode::WorkingMemory => {
-                let mut handler = AgentToolHandler::new(&mut self.working_memory);
-                ToolExecutor::execute(
-                    &mut handler,
-                    &self.project_manager,
-                    &self.command_executor,
-                    Some(&self.ui),
-                    &action.tool,
-                )
-                .await?
-            }
-            AgentMode::MessageHistory => {
-                let mut handler = AgentChatToolHandler::new(&mut self.working_memory);
-                ToolExecutor::execute(
-                    &mut handler,
-                    &self.project_manager,
-                    &self.command_executor,
-                    Some(&self.ui),
-                    &action.tool,
-                )
-                .await?
-            }
+        // Execute the tool and get both the output and result
+        let (output, tool_result) = {
+            let mut handler = AgentChatToolHandler::new(&mut self.working_memory);
+            ToolExecutor::execute(
+                &mut handler,
+                &self.project_manager,
+                &self.command_executor,
+                Some(&self.ui),
+                &action.tool,
+            )
+            .await?
         };
 
         // Determine status based on result

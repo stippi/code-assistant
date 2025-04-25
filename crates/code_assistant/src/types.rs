@@ -304,12 +304,6 @@ pub enum Tool {
         path: PathBuf,
         replacements: Vec<FileReplacement>,
     },
-    /// Replace contents of resources with summaries in working memory
-    Summarize {
-        project: String,
-        path: PathBuf,
-        summary: String,
-    },
     /// Complete the current task
     CompleteTask { message: String },
     /// Execute a CLI command
@@ -393,11 +387,6 @@ pub enum ToolResult {
         project: String,
         deleted: Vec<PathBuf>,
         failed: Vec<(PathBuf, String)>,
-    },
-    Summarize {
-        project: String,
-        path: PathBuf,
-        summary: String,
     },
     CompleteTask {
         result: String,
@@ -529,28 +518,9 @@ impl ValueEnum for ToolMode {
     }
 }
 
-/// Specifies the agent operation mode
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AgentMode {
-    /// Traditional mode with working memory
-    WorkingMemory,
-    /// Chat-like mode with persistent message history
-    MessageHistory,
-}
-
-/// Implements ValueEnum for AgentMode to use with clap
-impl ValueEnum for AgentMode {
-    fn value_variants<'a>() -> &'a [Self] {
-        &[Self::WorkingMemory, Self::MessageHistory]
-    }
-
-    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
-        match self {
-            Self::WorkingMemory => Some(clap::builder::PossibleValue::new("working_memory")),
-            Self::MessageHistory => Some(clap::builder::PossibleValue::new("message_history")),
-        }
-    }
-}
+// NOTE: AgentMode has been removed, as we only support MessageHistory now.
+// This enum has been removed to avoid confusion. The agent always behaves like
+// the former MessageHistory mode.
 
 pub trait CodeExplorer: Send + Sync {
     fn root_dir(&self) -> PathBuf;

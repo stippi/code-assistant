@@ -91,11 +91,7 @@ impl Tool for ExecuteCommandTool {
                 "required": ["project", "command_line"]
             }),
             annotations: None,
-            supported_modes: &[
-                ToolMode::McpServer,
-                ToolMode::WorkingMemoryAgent,
-                ToolMode::MessageHistoryAgent,
-            ],
+            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
         }
     }
 

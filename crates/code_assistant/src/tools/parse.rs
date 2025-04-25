@@ -290,12 +290,6 @@ pub fn parse_tool_from_params(
                 .collect::<Result<Vec<PathBuf>, ToolError>>()?,
         }),
 
-        "summarize" => Ok(Tool::Summarize {
-            project: get_required_param(params, "project")?.clone(),
-            path: PathBuf::from(get_required_param(params, "path")?),
-            summary: get_required_param(params, "summary")?.clone(),
-        }),
-
         "replace_in_file" => Ok(Tool::ReplaceInFile {
             project: get_required_param(params, "project")?.clone(),
             path: PathBuf::from(get_required_param(params, "path")?),
@@ -423,18 +417,6 @@ pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, T
                     Ok(PathBuf::from(path_str))
                 })
                 .collect::<Result<Vec<PathBuf>, ToolError>>()?,
-        }),
-        "summarize" => Ok(Tool::Summarize {
-            project: get_project(params)?,
-            path: PathBuf::from(
-                params["path"].as_str().ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: path".into())
-                })?,
-            ),
-            summary: params["summary"]
-                .as_str()
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: summary".into()))?
-                .to_string(),
         }),
         "replace_in_file" => {
             Ok(Tool::ReplaceInFile {

@@ -201,21 +201,6 @@ fn update_working_memory(working_memory: &mut WorkingMemory, result: &ToolResult
                     .loaded_resources
                     .insert((project, path), LoadedResource::WebPage(page.clone()));
             }
-            ToolResult::Summarize {
-                project,
-                path,
-                summary,
-            } => {
-                // Remove from loaded resources
-                working_memory
-                    .loaded_resources
-                    .remove(&(project.clone(), path.clone()));
-
-                // Add to summaries
-                working_memory
-                    .summaries
-                    .insert((project.to_string(), path.clone()), summary.clone());
-            }
             ToolResult::ReplaceInFile {
                 project,
                 path,
@@ -315,21 +300,6 @@ impl<'a> ToolResultHandler for AgentToolHandler<'a> {
         // Update working memory if tool was successful
         update_working_memory(self.working_memory, result)?;
         Ok(result.format_message())
-    }
-}
-
-pub struct MCPToolHandler;
-
-impl MCPToolHandler {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl ToolResultHandler for MCPToolHandler {
-    async fn handle_result(&mut self, result: &ToolResult) -> Result<String> {
-        format_output_for_result(result)
     }
 }
 

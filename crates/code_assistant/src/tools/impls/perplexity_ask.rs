@@ -1,4 +1,6 @@
-use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec};
+use crate::tools::core::{
+    Render, ResourcesTracker, Tool, ToolContext, ToolMode, ToolResult, ToolSpec,
+};
 use anyhow::Result;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -102,11 +104,7 @@ impl Tool for PerplexityAskTool {
                 "required": ["messages"]
             }),
             annotations: None,
-            supported_modes: &[
-                ToolMode::McpServer,
-                ToolMode::WorkingMemoryAgent,
-                ToolMode::MessageHistoryAgent,
-            ],
+            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
         }
     }
 

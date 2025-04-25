@@ -17,7 +17,7 @@ pub mod impls;
 mod tests;
 
 pub use executor::ToolExecutor;
-pub use handlers::{AgentChatToolHandler, AgentToolHandler, MCPToolHandler};
+pub use handlers::{AgentChatToolHandler, AgentToolHandler};
 pub use parse::{parse_tool_json, parse_tool_xml, TOOL_TAG_PREFIX};
 pub use types::AnnotatedToolDefinition;
 

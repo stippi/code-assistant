@@ -168,9 +168,6 @@ impl ToolResult {
                 }
                 msg
             }
-            ToolResult::Summarize { project, path, .. } => {
-                format!("Created summary for [{}] {}", project, path.display())
-            }
             ToolResult::UserInput { message } => message.clone(),
             ToolResult::CompleteTask { result } => result.clone(),
             ToolResult::WebSearch { results, error, .. } => {
@@ -222,7 +219,6 @@ impl ToolResult {
                 deleted, failed, ..
             } => !deleted.is_empty() && failed.is_empty(),
             ToolResult::PerplexityAsk { error, .. } => error.is_none(),
-            ToolResult::Summarize { .. } => true,
             _ => true,
         }
     }

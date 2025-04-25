@@ -36,16 +36,6 @@ impl ToolExecutor {
 
             Tool::UpdatePlan { plan } => ToolResult::UpdatePlan { plan: plan.clone() },
 
-            Tool::Summarize {
-                project,
-                path,
-                summary,
-            } => ToolResult::Summarize {
-                project: project.clone(),
-                path: path.clone(),
-                summary: summary.clone(),
-            },
-
             Tool::CompleteTask { message } => match &ui {
                 Some(ui) => match ui.display(UIMessage::Action(message.clone())).await {
                     Ok(_) => ToolResult::CompleteTask {

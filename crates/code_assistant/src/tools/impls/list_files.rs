@@ -149,11 +149,7 @@ impl Tool for ListFilesTool {
                 "required": ["project", "paths"]
             }),
             annotations: None,
-            supported_modes: &[
-                ToolMode::McpServer,
-                ToolMode::WorkingMemoryAgent,
-                ToolMode::MessageHistoryAgent,
-            ],
+            supported_modes: &[ToolMode::McpServer, ToolMode::MessageHistoryAgent],
         }
     }
 

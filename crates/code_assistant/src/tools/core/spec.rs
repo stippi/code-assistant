@@ -3,8 +3,6 @@
 pub enum ToolMode {
     /// Tool can be used in the MCP server
     McpServer,
-    /// Tool can be used in the working memory agent
-    WorkingMemoryAgent,
     /// Tool can be used in the message history agent
     MessageHistoryAgent,
 }
