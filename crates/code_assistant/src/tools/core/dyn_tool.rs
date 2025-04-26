@@ -2,6 +2,7 @@ use super::render::Render;
 use super::result::ToolResult;
 use super::spec::ToolSpec;
 use super::tool::{Tool, ToolContext};
+use crate::types::ToolError;
 use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -30,8 +31,7 @@ impl<T: Render + ToolResult + Serialize + Send + Sync + 'static> AnyOutput for T
     }
 
     fn to_json(&self) -> Result<serde_json::Value> {
-        serde_json::to_value(self)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize output: {}", e))
+        serde_json::to_value(self).map_err(|e| anyhow::anyhow!("Failed to serialize output: {}", e))
     }
 }
 
@@ -70,8 +70,10 @@ where
         params: Value,
     ) -> Result<Box<dyn AnyOutput>> {
         // Deserialize input
-        let input: T::Input = serde_json::from_value(params)
-            .map_err(|e| anyhow::anyhow!("Failed to parse parameters: {}", e))?;
+        let input: T::Input = serde_json::from_value(params).map_err(|e| {
+            // Convert Serde error to ToolError::ParseError
+            ToolError::ParseError(format!("Failed to parse parameters: {}", e))
+        })?;
 
         // Execute the tool
         let output = self.execute(context, input).await?;

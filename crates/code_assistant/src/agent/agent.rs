@@ -587,7 +587,7 @@ impl Agent {
         // Get the tool from the registry
         let tool = ToolRegistry::global()
             .get(&tool_request.name)
-            .ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", tool_request.name))?;
+            .ok_or_else(|| ToolError::UnknownTool(tool_request.name.clone()))?;
 
         // Create a tool context
         let mut context = ToolContext {
