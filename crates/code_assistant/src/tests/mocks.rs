@@ -4,11 +4,114 @@ use crate::ui::{ToolStatus, UIError, UIMessage, UserInterface};
 use crate::utils::{CommandExecutor, CommandOutput};
 use anyhow::Result;
 use async_trait::async_trait;
+use llm::{types::*, LLMProvider, LLMRequest, StreamingCallback};
 use regex::RegexBuilder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+// New MockLLMProvider that works with the trait-based tool system
+#[derive(Default, Clone)]
+pub struct MockLLMProvider {
+    requests: Arc<Mutex<Vec<LLMRequest>>>,
+    responses: Arc<Mutex<Vec<Result<LLMResponse, anyhow::Error>>>>,
+}
+
+impl MockLLMProvider {
+    pub fn new(mut responses: Vec<Result<LLMResponse, anyhow::Error>>) -> Self {
+        // Add CompleteTask response at the beginning if the first response is ok
+        if responses.first().map_or(false, |r| r.is_ok()) {
+            responses.insert(
+                0,
+                Ok(create_test_response(
+                    "complete_task",
+                    serde_json::json!({
+                        "message": "Task completed successfully"
+                    }),
+                    "Completing task after successful execution",
+                )),
+            );
+        }
+
+        Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(responses)),
+        }
+    }
+
+    pub fn with_tools(tool_responses: Vec<(String, serde_json::Value, String)>) -> Self {
+        let responses = tool_responses
+            .into_iter()
+            .map(|(name, input, reasoning)| {
+                Ok(create_test_response(
+                    name.as_str(),
+                    input,
+                    reasoning.as_str(),
+                ))
+            })
+            .collect();
+
+        Self::new(responses)
+    }
+
+    // Get access to the stored requests
+    pub fn get_requests(&self) -> Vec<LLMRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    #[allow(dead_code)]
+    pub fn print_requests(&self) {
+        let requests = self.requests.lock().unwrap();
+        println!("\nTotal number of requests: {}", requests.len());
+        for (i, request) in requests.iter().enumerate() {
+            println!("\nRequest {}:", i);
+            for (j, message) in request.messages.iter().enumerate() {
+                println!("  Message {}:", j);
+                if let MessageContent::Text(content) = &message.content {
+                    println!("    {}", content.replace('\n', "\n    "));
+                }
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl LLMProvider for MockLLMProvider {
+    async fn send_message(
+        &self,
+        request: LLMRequest,
+        _streaming_callback: Option<&StreamingCallback>,
+    ) -> Result<LLMResponse, anyhow::Error> {
+        self.requests.lock().unwrap().push(request);
+        self.responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Err(anyhow::anyhow!("No more mock responses")))
+    }
+}
+
+// Helper function to create a test response for tool invocation
+pub fn create_test_response(
+    tool_name: &str,
+    tool_input: serde_json::Value,
+    reasoning: &str,
+) -> LLMResponse {
+    LLMResponse {
+        content: vec![
+            ContentBlock::Text {
+                text: reasoning.to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "some-tool-id".to_string(),
+                name: tool_name.to_string(),
+                input: tool_input,
+            },
+        ],
+        usage: Usage::zero(),
+    }
+}
 
 // Mock CommandExecutor
 #[derive(Clone)]
