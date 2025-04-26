@@ -139,6 +139,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
 
     agent.start_with_task("Test task".to_string()).await?;
 
+    mock_llm_ref.print_requests();
     let requests = mock_llm_ref.get_requests();
 
     // Should see three requests:
