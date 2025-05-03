@@ -1,3 +1,4 @@
+use crate::agent::tool_description_generator::generate_tool_documentation;
 use crate::agent::types::{ToolExecution, ToolRequest};
 use crate::config::ProjectManager;
 use crate::persistence::StatePersistence;
@@ -13,7 +14,7 @@ use llm::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tracing::debug;
 
 use super::ToolMode;
@@ -38,6 +39,8 @@ pub struct Agent {
     initial_project: Option<String>,
     // Store the history of tool executions
     tool_executions: Vec<crate::agent::types::ToolExecution>,
+    // Cached system message
+    cached_system_message: OnceLock<String>,
 }
 
 impl Agent {
@@ -79,6 +82,7 @@ impl Agent {
             init_path,
             initial_project: None,
             tool_executions: Vec::new(),
+            cached_system_message: OnceLock::new(),
         }
     }
 
@@ -375,11 +379,29 @@ impl Agent {
 
     /// Get the appropriate system prompt based on tool mode
     fn get_system_prompt(&self) -> String {
-        let base_prompt = match self.tool_mode {
+        // Check if we already have a cached system message
+        if let Some(cached) = self.cached_system_message.get() {
+            return cached.clone();
+        }
+
+        // Generate the system message
+        let mut system_message = match self.tool_mode {
             ToolMode::Native => SYSTEM_MESSAGE.to_string(),
-            ToolMode::Xml => SYSTEM_MESSAGE_TOOLS.to_string(),
+            ToolMode::Xml => {
+                // For XML tool mode, get the base template and replace the {{tools}} placeholder
+                let mut base = SYSTEM_MESSAGE_TOOLS.to_string();
+
+                // Only generate tools documentation for XML mode
+                let tools_doc = generate_tool_documentation(ToolScope::Agent);
+
+                // Replace the {{tools}} placeholder with the generated documentation
+                base = base.replace("{{tools}}", &tools_doc);
+
+                base
+            }
         };
 
+        // Add project information
         let mut project_info = String::new();
 
         // Add information about the initial project if available
@@ -404,10 +426,21 @@ impl Agent {
 
         // Append project information to base prompt if available
         if !project_info.is_empty() {
-            return format!("{}\n{}", base_prompt, project_info);
+            system_message = format!("{}\n{}", system_message, project_info);
         }
 
-        base_prompt
+        // Cache the system message
+        let _ = self.cached_system_message.set(system_message.clone());
+
+        print!("{}", system_message);
+
+        system_message
+    }
+
+    /// Invalidate the cached system message to force regeneration
+    #[allow(dead_code)]
+    pub fn invalidate_system_message_cache(&mut self) {
+        self.cached_system_message = OnceLock::new();
     }
 
     /// Gets the next assistant message from the LLM provider.
