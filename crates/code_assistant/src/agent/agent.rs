@@ -91,11 +91,21 @@ impl Agent {
         Ok(())
     }
 
+    /// Adds a message to the history and saves the state
+    fn append_message(&mut self, message: Message) -> Result<()> {
+        self.message_history.push(message);
+        self.save_state()?;
+        Ok(())
+    }
+
     pub async fn get_input_from_ui(&self, prompt: &str) -> Result<String> {
         self.ui.get_input(prompt).await.map_err(|e| e.into())
     }
 
     async fn run_agent_loop(&mut self) -> Result<()> {
+        // Counter for request IDs
+        let mut request_counter: u64 = 0;
+
         // Main agent loop
         loop {
             // Prepare messages with dynamically rendered tool outputs
@@ -106,34 +116,36 @@ impl Agent {
                 self.message_history = messages.clone();
             }
 
-            // Get next actions from LLM
-            let (tool_requests, assistant_msg) = match self.get_next_actions(messages).await {
-                Ok(result) => result,
-                Err(e) => match e {
-                    AgentError::LLMError(e) => return Err(e), // Critical errors terminate loop
-                    AgentError::ActionError { message, user_facing_error, .. } => {
-                        // Add the assistant message to history
-                        self.message_history.push(message);
+            // Increment request counter
+            request_counter += 1;
 
-                        // Create error message using pre-formatted error text
-                        let error_msg = Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Text(user_facing_error),
-                        };
-
-                        // Add error message to history
-                        self.message_history.push(error_msg);
-                        self.save_state()?;
-
-                        // Continue the loop to get new actions
-                        continue;
-                    }
-                },
+            // Get next assistant message from LLM
+            let assistant_msg = match self.get_next_assistant_message(messages).await {
+                Ok(msg) => msg,
+                Err(e) => return Err(e), // Critical errors terminate loop
             };
 
             // Add assistant message to history
-            self.message_history.push(assistant_msg);
-            self.save_state()?;
+            self.append_message(assistant_msg.clone())?;
+
+            // Parse tool requests from the assistant message
+            let tool_requests = match self.parse_tool_requests(&assistant_msg, request_counter) {
+                Ok(requests) => requests,
+                Err(e) => {
+                    // Create error message with formatted error text
+                    let error_text = Self::format_error_for_user(&e);
+                    let error_msg = Message {
+                        role: MessageRole::User,
+                        content: MessageContent::Text(error_text),
+                    };
+
+                    // Add error message to history
+                    self.append_message(error_msg)?;
+
+                    // Continue the loop to get new actions
+                    continue;
+                }
+            };
 
             // If no tools were requested, get user input
             if tool_requests.is_empty() {
@@ -152,17 +164,14 @@ impl Agent {
                 };
 
                 // Add the message to history
-                self.message_history.push(user_msg);
-
-                // Save the state
-                self.save_state()?;
-
-                // Notify UI of working memory change
-                let _ = self.ui.update_memory(&self.working_memory).await;
+                self.append_message(user_msg)?;
 
                 // Continue to next iteration
                 continue;
             }
+
+            // Content blocks for the new user message
+            let mut content_blocks = Vec::new();
 
             // Process each tool request
             for tool_request in &tool_requests {
@@ -173,17 +182,15 @@ impl Agent {
                     debug!("Task completed");
                     return Ok(());
                 }
+
                 // Try to execute the tool
-                let result = match self.execute_tool(tool_request).await {
+                let result_block = match self.execute_tool(tool_request).await {
                     Ok(success) => {
                         // Success case - normal tool result
-                        Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                                tool_use_id: tool_request.id.clone(),
-                                content: String::new(), // Will be filled dynamically in prepare_messages
-                                is_error: if success { None } else { Some(true) },
-                            }]),
+                        ContentBlock::ToolResult {
+                            tool_use_id: tool_request.id.clone(),
+                            content: String::new(), // Will be filled dynamically in prepare_messages
+                            is_error: if success { None } else { Some(true) },
                         }
                     }
                     Err(e) => {
@@ -191,23 +198,26 @@ impl Agent {
                         let error_text = Self::format_error_for_user(&e);
 
                         // Create a tool result with error
-                        Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                                tool_use_id: tool_request.id.clone(),
-                                content: error_text,
-                                is_error: Some(true),
-                            }]),
+                        ContentBlock::ToolResult {
+                            tool_use_id: tool_request.id.clone(),
+                            content: error_text,
+                            is_error: Some(true),
                         }
                     }
                 };
 
-                // Add result message to history
-                self.message_history.push(result);
-
-                // Save state
-                self.save_state()?;
+                // Add content block to the list
+                content_blocks.push(result_block);
             }
+
+            // Create a user message with all tool results
+            let result_message = Message {
+                role: MessageRole::User,
+                content: MessageContent::Structured(content_blocks),
+            };
+
+            // Add the message to history
+            self.append_message(result_message)?;
 
             // Notify UI of working memory change
             let _ = self.ui.update_memory(&self.working_memory).await;
@@ -275,10 +285,7 @@ impl Agent {
             role: MessageRole::User,
             content: MessageContent::Text(task.clone()),
         };
-        self.message_history.push(user_msg);
-
-        // Save initial state
-        self.save_state()?;
+        self.append_message(user_msg)?;
 
         // Notify UI of initial working memory
         let _ = self.ui.update_memory(&self.working_memory).await;
@@ -401,18 +408,36 @@ impl Agent {
     }
 
     /// Get next tool requests from LLM
-    async fn get_next_actions(
-        &self,
-        messages: Vec<Message>,
-    ) -> Result<(Vec<ToolRequest>, Message), AgentError> {
+    /// Parse tool requests from an assistant message
+    fn parse_tool_requests(&self, message: &Message, request_id: u64) -> Result<Vec<ToolRequest>> {
+        // If the message doesn't have structured content, there are no tool requests
+        let content = match &message.content {
+            MessageContent::Structured(content) => content,
+            _ => return Ok(Vec::new()),
+        };
+
+        // Create a dummy response to use with parse_llm_response
+        let response = llm::LLMResponse {
+            content: content.clone(),
+            usage: llm::Usage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+        };
+
+        // Use the existing parse_llm_response function
+        parse_llm_response(&response, request_id)
+    }
+
+    /// Gets the next assistant message from the LLM provider.
+    async fn get_next_assistant_message(&self, messages: Vec<Message>) -> Result<Message> {
         // Inform UI that a new LLM request is starting
-        let request_id = self
-            .ui
-            .begin_llm_request()
-            .await
-            .map_err(|e| AgentError::LLMError(e.into()))?;
+        let request_id = self.ui.begin_llm_request().await?;
         debug!("Starting LLM request with ID: {}", request_id);
 
+        // Create the LLM request with appropriate tools
         let request = LLMRequest {
             messages,
             system_prompt: self.get_system_prompt(),
@@ -426,6 +451,7 @@ impl Agent {
             },
         };
 
+        // Log messages for debugging
         for (i, message) in request.messages.iter().enumerate() {
             if let MessageContent::Text(text) = &message.content {
                 debug!("Message {}: Role={:?}\n---\n{}\n---", i, message.role, text);
@@ -443,11 +469,13 @@ impl Agent {
                 .map_err(|e| anyhow::anyhow!("Failed to process streaming chunk: {}", e))
         });
 
+        // Send message to LLM provider
         let response = self
             .llm_provider
             .send_message(request, Some(&streaming_callback))
             .await?;
 
+        // Print response for debugging
         println!("Raw LLM response:");
         for block in &response.content {
             match block {
@@ -460,14 +488,16 @@ impl Agent {
                 _ => {}
             }
         }
+
         println!(
-            "\n==== Token usage: Input: {}, Output: {}, Cache: Created: {}, Read: {} ====",
+            "\n==== Token usage: Input: {}, Output: {}, Cache: Created: {}, Read: {} ====\n",
             response.usage.input_tokens,
             response.usage.output_tokens,
             response.usage.cache_creation_input_tokens,
             response.usage.cache_read_input_tokens
         );
 
+        // Create assistant message
         let assistant_msg = Message {
             role: MessageRole::Assistant,
             content: MessageContent::Structured(response.content.clone()),
@@ -477,19 +507,7 @@ impl Agent {
         let _ = self.ui.end_llm_request(request_id).await;
         debug!("Completed LLM request with ID: {}", request_id);
 
-        match parse_llm_response(&response, request_id) {
-            Ok(tool_requests) => Ok((tool_requests, assistant_msg)),
-            Err(e) => {
-                // Format the error message for the user
-                let user_facing_error = Self::format_error_for_user(&e);
-                
-                Err(AgentError::ActionError {
-                    error: e,
-                    message: assistant_msg,
-                    user_facing_error,
-                })
-            },
-        }
+        Ok(assistant_msg)
     }
 
     /// Prepare messages for LLM request, dynamically rendering tool outputs

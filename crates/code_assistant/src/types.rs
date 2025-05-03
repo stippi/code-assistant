@@ -1,5 +1,3 @@
-use llm::Message;
-
 use anyhow::Result;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -159,19 +157,6 @@ pub enum ToolError {
 
     #[error("Failed to parse tool parameters: {0}")]
     ParseError(String),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum AgentError {
-    #[error("LLM error: {0}")]
-    LLMError(#[from] anyhow::Error),
-
-    #[error("Action error: {error}")]
-    ActionError {
-        error: anyhow::Error,
-        message: Message,
-        user_facing_error: String,
-    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
