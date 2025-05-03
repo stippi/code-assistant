@@ -82,138 +82,156 @@ impl Agent {
         // Main agent loop
         loop {
             // Prepare messages with dynamically rendered tool outputs
-            let mut messages = self.prepare_messages();
+            let messages = self.prepare_messages();
 
             // If message history is empty (first run), initialize it
             if self.message_history.is_empty() {
                 self.message_history = messages.clone();
             }
 
-            // Keep trying until all actions succeed
-            let mut all_actions_succeeded = false;
-            while !all_actions_succeeded {
-                let (tool_requests, assistant_msg) = match self
-                    .get_next_actions(messages.clone())
-                    .await
-                {
-                    Ok(result) => result,
-                    Err(e) => match e {
-                        AgentError::LLMError(e) => return Err(e),
-                        AgentError::ActionError { error, message } => {
-                            messages.push(message.clone());
-                            self.message_history.push(message);
+            // Get next actions from LLM
+            let (tool_requests, assistant_msg) = match self.get_next_actions(messages).await {
+                Ok(result) => result,
+                Err(e) => match e {
+                    AgentError::LLMError(e) => return Err(e), // Critical errors terminate loop
+                    AgentError::ActionError { error, message } => {
+                        // Add the assistant message to history
+                        self.message_history.push(message);
 
-                            if let Some(tool_error) = error.downcast_ref::<ToolError>() {
-                                match tool_error {
-                                    ToolError::UnknownTool(t) => {
-                                        let error_msg = Message {
-                                            role: MessageRole::User,
-                                            content: MessageContent::Text(format!(
-                                                "Unknown tool '{}'. Please use only available tools.",
-                                                t
-                                            )),
-                                        };
-                                        messages.push(error_msg.clone());
-                                        self.message_history.push(error_msg);
-                                        continue;
-                                    }
-                                    ToolError::ParseError(msg) => {
-                                        let error_msg = Message {
-                                            role: MessageRole::User,
-                                            content: MessageContent::Text(format!(
-                                                "Tool parameter error: {}. Please try again.",
-                                                msg
-                                            )),
-                                        };
-                                        messages.push(error_msg.clone());
-                                        self.message_history.push(error_msg);
-                                        continue;
-                                    }
-                                }
+                        // Create error message based on error type
+                        let error_msg = if let Some(tool_error) = error.downcast_ref::<ToolError>()
+                        {
+                            match tool_error {
+                                ToolError::UnknownTool(t) => Message {
+                                    role: MessageRole::User,
+                                    content: MessageContent::Text(format!(
+                                        "Unknown tool '{}'. Please use only available tools.",
+                                        t
+                                    )),
+                                },
+                                ToolError::ParseError(msg) => Message {
+                                    role: MessageRole::User,
+                                    content: MessageContent::Text(format!(
+                                        "Tool parameter error: {}. Please try again.",
+                                        msg
+                                    )),
+                                },
                             }
-                            return Err(error);
-                        }
-                    },
+                        } else {
+                            // Generic error message for other errors
+                            Message {
+                                role: MessageRole::User,
+                                content: MessageContent::Text(format!(
+                                    "Error in tool request: {}. Please try again.",
+                                    error
+                                )),
+                            }
+                        };
+
+                        // Add error message to history
+                        self.message_history.push(error_msg);
+                        self.save_state()?;
+
+                        // Continue the loop to get new actions
+                        continue;
+                    }
+                },
+            };
+
+            // Add assistant message to history
+            self.message_history.push(assistant_msg);
+            self.save_state()?;
+
+            // If no tools were requested, get user input
+            if tool_requests.is_empty() {
+                // Get input from UI
+                let user_input = self.get_input_from_ui("").await?;
+
+                // Display the user input as a user message in the UI
+                self.ui
+                    .display(UIMessage::UserInput(user_input.clone()))
+                    .await?;
+
+                // Add user input as a new message
+                let user_msg = Message {
+                    role: MessageRole::User,
+                    content: MessageContent::Text(user_input.clone()),
                 };
 
-                messages.push(assistant_msg.clone());
-                self.message_history.push(assistant_msg);
+                // Add the message to history
+                self.message_history.push(user_msg);
 
-                // Save message history in state
+                // Save the state
                 self.save_state()?;
 
-                // If no tools were requested, get user input
-                if tool_requests.is_empty() {
-                    // Get input from UI
-                    let user_input = self.get_input_from_ui("").await?;
+                // Notify UI of working memory change
+                let _ = self.ui.update_memory(&self.working_memory).await;
 
-                    // Display the user input as a user message in the UI
-                    self.ui
-                        .display(UIMessage::UserInput(user_input.clone()))
-                        .await?;
-
-                    // Add user input as a new message
-                    let user_msg = Message {
-                        role: MessageRole::User,
-                        content: MessageContent::Text(user_input.clone()),
-                    };
-
-                    // No need to add to action history anymore, we use message history
-
-                    // Add the message to history
-                    self.message_history.push(user_msg);
-
-                    // Save the state
-                    self.save_state()?;
-
-                    // Notify UI of working memory change
-                    let _ = self.ui.update_memory(&self.working_memory).await;
-
-                    // Break the inner loop to start a new iteration
-                    break;
-                }
-
-                all_actions_succeeded = true; // Will be set to false if any action fails
-
-                for tool_request in &tool_requests {
-                    let success = self.execute_tool(tool_request).await?;
-                    if !success {
-                        all_actions_succeeded = false;
-                    }
-
-                    // Create a message with just the tool use reference
-                    // The actual output will be dynamically generated in prepare_messages
-                    let message = Message {
-                        role: MessageRole::User,
-                        content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                            tool_use_id: tool_request.id.clone(),
-                            content: String::new(), // Empty placeholder, will be filled dynamically
-                            is_error: if success { None } else { Some(true) },
-                        }]),
-                    };
-
-                    // Add to message history (output will be dynamically generated when needed)
-                    self.message_history.push(message.clone());
-
-                    // For the current conversation, use prepare_messages to get updated messages
-                    // with dynamically rendered content
-                    messages = self.prepare_messages();
-
-                    // Save state
-                    self.save_state()?;
-
-                    // Notify UI of working memory change
-                    let _ = self.ui.update_memory(&self.working_memory).await;
-
-                    // Check if this was a CompleteTask action
-                    if tool_request.name == "complete_task" {
-                        // Clean up state file on successful completion
-                        self.state_persistence.cleanup()?;
-                        debug!("Task completed");
-                        return Ok(());
-                    }
-                }
+                // Continue to next iteration
+                continue;
             }
+
+            // Process each tool request
+            for tool_request in &tool_requests {
+                // Check if this was a CompleteTask action
+                if tool_request.name == "complete_task" {
+                    // Clean up state file on successful completion
+                    self.state_persistence.cleanup()?;
+                    debug!("Task completed");
+                    return Ok(());
+                }
+                // Try to execute the tool
+                let result = match self.execute_tool(tool_request).await {
+                    Ok(success) => {
+                        // Success case - normal tool result
+                        Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                                tool_use_id: tool_request.id.clone(),
+                                content: String::new(), // Will be filled dynamically in prepare_messages
+                                is_error: if success { None } else { Some(true) },
+                            }]),
+                        }
+                    }
+                    Err(e) => {
+                        // Error case - create appropriate error message
+                        let error_text = if let Some(tool_error) = e.downcast_ref::<ToolError>() {
+                            match tool_error {
+                                ToolError::UnknownTool(t) => {
+                                    format!(
+                                        "Unknown tool '{}'. Please use only available tools.",
+                                        t
+                                    )
+                                }
+                                ToolError::ParseError(msg) => {
+                                    format!("Tool parameter error: {}. Please try again.", msg)
+                                }
+                            }
+                        } else {
+                            format!("Error executing tool: {}", e)
+                        };
+
+                        // Create a tool result with error
+                        Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                                tool_use_id: tool_request.id.clone(),
+                                content: error_text,
+                                is_error: Some(true),
+                            }]),
+                        }
+                    }
+                };
+
+                // Add result message to history
+                self.message_history.push(result);
+
+                // Save state
+                self.save_state()?;
+            }
+
+            // Notify UI of working memory change
+            let _ = self.ui.update_memory(&self.working_memory).await;
         }
     }
 
@@ -572,7 +590,7 @@ impl Agent {
         messages
     }
 
-    /// Executes a tool and returns the result
+    /// Executes a tool and catches all errors, returning them as Results
     async fn execute_tool(&mut self, tool_request: &ToolRequest) -> Result<bool> {
         debug!(
             "Executing tool request: {} (id: {})",
@@ -584,10 +602,11 @@ impl Agent {
             .update_tool_status(&tool_request.id, crate::ui::ToolStatus::Running, None)
             .await?;
 
-        // Get the tool from the registry
-        let tool = ToolRegistry::global()
-            .get(&tool_request.name)
-            .ok_or_else(|| ToolError::UnknownTool(tool_request.name.clone()))?;
+        // Get the tool - could fail with UnknownTool
+        let tool = match ToolRegistry::global().get(&tool_request.name) {
+            Some(tool) => tool,
+            None => return Err(ToolError::UnknownTool(tool_request.name.clone()).into()),
+        };
 
         // Create a tool context
         let mut context = ToolContext {
@@ -596,7 +615,7 @@ impl Agent {
             working_memory: Some(&mut self.working_memory),
         };
 
-        // Execute the tool using the new tool interface
+        // Execute the tool - could fail with ParseError or other errors
         let result = tool
             .invoke(&mut context, tool_request.input.clone())
             .await?;
