@@ -112,7 +112,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
             "read_files",
             serde_json::json!({
                 "project": "test",
-                "paths": ["test.txt"]
+                "paths": ["test.txt:1-2"]
             }),
             "Reading file after getting unknown tool error",
         )),
@@ -153,25 +153,63 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
     let error_request = &requests[1];
     assert!(error_request.messages.len() >= 2); // May have changed with the new implementation
 
-    // Find the error message
-    let error_message = error_request.messages.iter().find_map(|msg| {
-        if let MessageContent::Text(content) = &msg.content {
-            if content.contains("Error") || content.contains("error") {
-                Some(content)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    });
+    // Check that we have the expected number of messages in the error request
+    assert_eq!(error_request.messages.len(), 3);
 
-    assert!(
-        error_message.is_some(),
-        "Error message not found in response"
-    );
-    assert!(error_message.unwrap().contains("unknown_tool"));
-    assert!(error_message.unwrap().contains("available tools"));
+    // Check first message (task)
+    assert_eq!(error_request.messages[0].role, MessageRole::User);
+    if let MessageContent::Text(content) = &error_request.messages[0].content {
+        assert_eq!(content, "Test task");
+    } else {
+        panic!("Expected Text content in first message");
+    }
+
+    // Check second message (assistant message with unknown tool)
+    assert_eq!(error_request.messages[1].role, MessageRole::Assistant);
+    if let MessageContent::Structured(blocks) = &error_request.messages[1].content {
+        assert_eq!(blocks.len(), 2);
+
+        // Check first block - text reasoning
+        if let ContentBlock::Text { text } = &blocks[0] {
+            assert!(text.contains("Calling unknown tool"));
+        } else {
+            panic!("Expected Text block as first block in assistant message");
+        }
+
+        // Check second block - tool use
+        if let ContentBlock::ToolUse { id, name, input } = &blocks[1] {
+            assert_eq!(id, "test-id");
+            assert_eq!(name, "unknown_tool");
+            assert_eq!(input["some_param"], "value");
+        } else {
+            panic!("Expected ToolUse block as second block in assistant message");
+        }
+    } else {
+        panic!("Expected Structured content in second message");
+    }
+
+    // Check third message (error response)
+    assert_eq!(error_request.messages[2].role, MessageRole::User);
+    if let MessageContent::Structured(blocks) = &error_request.messages[2].content {
+        assert_eq!(blocks.len(), 1);
+
+        // Check error block
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } = &blocks[0]
+        {
+            assert_eq!(tool_use_id, "test-id");
+            assert!(is_error.unwrap_or(false));
+            assert!(content.contains("unknown_tool"));
+            assert!(content.contains("available tools"));
+        } else {
+            panic!("Expected ToolResult block in error message");
+        }
+    } else {
+        panic!("Expected Structured content in third message");
+    }
 
     Ok(())
 }
@@ -225,29 +263,78 @@ async fn test_parse_error_handling() -> Result<()> {
     let error_request = &requests[1];
     assert!(error_request.messages.len() >= 2); // May have changed with the new implementation
 
-    // Find the error message
-    let error_message = error_request.messages.iter().find_map(|msg| {
-        if let MessageContent::Text(content) = &msg.content {
-            if content.contains("Error") || content.contains("error") || content.contains("missing")
-            {
-                Some(content)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    });
+    // Check that we have the expected number of messages in the error request
+    assert_eq!(error_request.messages.len(), 3);
 
-    assert!(
-        error_message.is_some(),
-        "Error message not found in response"
-    );
-    assert!(
-        error_message.unwrap().contains("parameter")
-            || error_message.unwrap().contains("parameters")
-    );
-    assert!(error_message.unwrap().contains("read_files"));
+    // Check first message (task)
+    assert_eq!(error_request.messages[0].role, MessageRole::User);
+    if let MessageContent::Text(content) = &error_request.messages[0].content {
+        assert_eq!(content, "Test task");
+    } else {
+        panic!("Expected Text content in first message");
+    }
+
+    // Check second message (assistant message with incorrect parameters)
+    assert_eq!(error_request.messages[1].role, MessageRole::Assistant);
+    if let MessageContent::Structured(blocks) = &error_request.messages[1].content {
+        assert_eq!(blocks.len(), 2);
+
+        // Check first block - text reasoning
+        if let ContentBlock::Text { text } = &blocks[0] {
+            assert!(text.contains("Reading with incorrect parameters"));
+        } else {
+            panic!("Expected Text block as first block in assistant message");
+        }
+
+        // Check second block - tool use with wrong parameters
+        if let ContentBlock::ToolUse { id, name, input } = &blocks[1] {
+            assert_eq!(id, "read-files-1");
+            assert_eq!(name, "read_files");
+            assert!(
+                input.get("paths").is_none(),
+                "Should not have 'paths' parameter"
+            );
+            assert_eq!(input["wrong_param"], "value");
+        } else {
+            panic!("Expected ToolUse block as second block in assistant message");
+        }
+    } else {
+        panic!("Expected Structured content in second message");
+    }
+
+    // Check third message (error response)
+    assert_eq!(error_request.messages[2].role, MessageRole::User);
+    if let MessageContent::Structured(blocks) = &error_request.messages[2].content {
+        assert_eq!(blocks.len(), 1);
+
+        // Check error block
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } = &blocks[0]
+        {
+            assert_eq!(tool_use_id, "read-files-1");
+            assert!(is_error.unwrap_or(false));
+
+            // Check for error content about missing parameters
+            let error_content = content.to_lowercase();
+            assert!(
+                error_content.contains("parameter") || error_content.contains("parameters"),
+                "Error should mention parameters: {}",
+                content
+            );
+            assert!(
+                error_content.contains("read_files"),
+                "Error should mention the tool name: {}",
+                content
+            );
+        } else {
+            panic!("Expected ToolResult block in error message");
+        }
+    } else {
+        panic!("Expected Structured content in third message");
+    }
 
     Ok(())
 }
