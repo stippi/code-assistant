@@ -432,8 +432,6 @@ impl Agent {
         // Cache the system message
         let _ = self.cached_system_message.set(system_message.clone());
 
-        print!("{}", system_message);
-
         system_message
     }
 
@@ -443,15 +441,87 @@ impl Agent {
         self.cached_system_message = OnceLock::new();
     }
 
+    /// Convert ToolResult blocks to Text blocks for XML mode
+    fn convert_tool_results_to_text(&self, messages: Vec<Message>) -> Vec<Message> {
+        // Create a fresh ResourcesTracker for rendering
+        let mut resources_tracker = crate::tools::core::render::ResourcesTracker::new();
+
+        // First, build a map of tool_use_id to rendered output
+        let mut tool_outputs = std::collections::HashMap::new();
+
+        // Process tool executions in reverse chronological order (newest first)
+        for execution in self.tool_executions.iter().rev() {
+            let tool_use_id = &execution.tool_request.id;
+            let rendered_output = execution.result.as_render().render(&mut resources_tracker);
+            tool_outputs.insert(tool_use_id.clone(), rendered_output);
+        }
+
+        // Process each message
+        messages
+            .into_iter()
+            .map(|msg| {
+                match &msg.content {
+                    MessageContent::Structured(blocks) => {
+                        // Check if there are any ToolResult blocks that need conversion
+                        let has_tool_results = blocks
+                            .iter()
+                            .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
+
+                        if !has_tool_results {
+                            // No conversion needed
+                            return msg;
+                        }
+
+                        // Convert all blocks to Text
+                        let mut text_content = String::new();
+
+                        for block in blocks {
+                            match block {
+                                ContentBlock::ToolResult { tool_use_id, .. } => {
+                                    // Get the dynamically rendered content for this tool result
+                                    if let Some(rendered_output) = tool_outputs.get(tool_use_id) {
+                                        // Add the rendered tool output
+                                        text_content.push_str(rendered_output);
+                                        text_content.push_str("\n\n");
+                                    }
+                                }
+                                ContentBlock::Text { text } => {
+                                    // For existing Text blocks, keep as is
+                                    text_content.push_str(&text);
+                                    text_content.push_str("\n\n");
+                                }
+                                _ => {} // Ignore other block types
+                            }
+                        }
+
+                        // Create a new message with Text content
+                        Message {
+                            role: msg.role,
+                            content: MessageContent::Text(text_content.trim().to_string()),
+                        }
+                    }
+                    // For non-structured content, keep as is
+                    _ => msg,
+                }
+            })
+            .collect()
+    }
+
     /// Gets the next assistant message from the LLM provider.
     async fn get_next_assistant_message(&self, messages: Vec<Message>) -> Result<llm::LLMResponse> {
         // Inform UI that a new LLM request is starting
         let request_id = self.ui.begin_llm_request().await?;
         debug!("Starting LLM request with ID: {}", request_id);
 
+        // Convert messages based on tool mode
+        let converted_messages = match self.tool_mode {
+            ToolMode::Native => messages, // No conversion needed
+            ToolMode::Xml => self.convert_tool_results_to_text(messages), // Convert ToolResults to Text
+        };
+
         // Create the LLM request with appropriate tools
         let request = LLMRequest {
-            messages,
+            messages: converted_messages,
             system_prompt: self.get_system_prompt(),
             tools: match self.tool_mode {
                 ToolMode::Native => {
