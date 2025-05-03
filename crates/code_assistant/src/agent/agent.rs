@@ -120,16 +120,19 @@ impl Agent {
             request_counter += 1;
 
             // Get next assistant message from LLM
-            let assistant_msg = match self.get_next_assistant_message(messages).await {
-                Ok(msg) => msg,
+            let llm_response = match self.get_next_assistant_message(messages).await {
+                Ok(response) => response,
                 Err(e) => return Err(e), // Critical errors terminate loop
             };
 
             // Add assistant message to history
-            self.append_message(assistant_msg.clone())?;
+            self.append_message(Message {
+                role: MessageRole::Assistant,
+                content: MessageContent::Structured(llm_response.content.clone()),
+            })?;
 
             // Parse tool requests from the assistant message
-            let tool_requests = match self.parse_tool_requests(&assistant_msg, request_counter) {
+            let tool_requests = match parse_llm_response(&llm_response, request_counter) {
                 Ok(requests) => requests,
                 Err(e) => {
                     // Create error message with formatted error text
@@ -407,32 +410,8 @@ impl Agent {
         base_prompt
     }
 
-    /// Get next tool requests from LLM
-    /// Parse tool requests from an assistant message
-    fn parse_tool_requests(&self, message: &Message, request_id: u64) -> Result<Vec<ToolRequest>> {
-        // If the message doesn't have structured content, there are no tool requests
-        let content = match &message.content {
-            MessageContent::Structured(content) => content,
-            _ => return Ok(Vec::new()),
-        };
-
-        // Create a dummy response to use with parse_llm_response
-        let response = llm::LLMResponse {
-            content: content.clone(),
-            usage: llm::Usage {
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: 0,
-            },
-        };
-
-        // Use the existing parse_llm_response function
-        parse_llm_response(&response, request_id)
-    }
-
     /// Gets the next assistant message from the LLM provider.
-    async fn get_next_assistant_message(&self, messages: Vec<Message>) -> Result<Message> {
+    async fn get_next_assistant_message(&self, messages: Vec<Message>) -> Result<llm::LLMResponse> {
         // Inform UI that a new LLM request is starting
         let request_id = self.ui.begin_llm_request().await?;
         debug!("Starting LLM request with ID: {}", request_id);
@@ -497,17 +476,11 @@ impl Agent {
             response.usage.cache_read_input_tokens
         );
 
-        // Create assistant message
-        let assistant_msg = Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Structured(response.content.clone()),
-        };
-
         // Inform UI that the LLM request has completed
         let _ = self.ui.end_llm_request(request_id).await;
         debug!("Completed LLM request with ID: {}", request_id);
 
-        Ok(assistant_msg)
+        Ok(response)
     }
 
     /// Prepare messages for LLM request, dynamically rendering tool outputs
@@ -729,11 +702,6 @@ pub(crate) fn parse_llm_response(
         }
 
         if let ContentBlock::ToolUse { id, name, input } = block {
-            // Check if the tool exists in the registry before creating a ToolRequest
-            if ToolRegistry::global().get(&name).is_none() {
-                return Err(ToolError::UnknownTool(name.clone()).into());
-            }
-
             // For ToolUse blocks, create ToolRequest directly
             let tool_request = ToolRequest {
                 id: id.clone(),
