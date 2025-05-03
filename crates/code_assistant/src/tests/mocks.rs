@@ -70,8 +70,76 @@ impl MockLLMProvider {
             println!("\nRequest {}:", i);
             for (j, message) in request.messages.iter().enumerate() {
                 println!("  Message {}:", j);
-                if let MessageContent::Text(content) = &message.content {
-                    println!("    {}", content.replace('\n', "\n    "));
+                match &message.content {
+                    MessageContent::Text(content) => {
+                        println!("    Text: {}", content.replace('\n', "\n    "));
+                    }
+                    MessageContent::Structured(blocks) => {
+                        println!("    Structured content with {} blocks:", blocks.len());
+                        for (k, block) in blocks.iter().enumerate() {
+                            match block {
+                                ContentBlock::Text { text } => {
+                                    println!(
+                                        "      Block {}: Text: {}",
+                                        k,
+                                        text.replace('\n', "\n      ")
+                                    );
+                                }
+                                ContentBlock::ToolUse { id, name, input } => {
+                                    println!(
+                                        "      Block {}: ToolUse: id={}, name={}",
+                                        k, id, name
+                                    );
+                                    println!(
+                                        "        Input: {}",
+                                        serde_json::to_string_pretty(input)
+                                            .unwrap_or_else(|_| input.to_string())
+                                            .replace('\n', "\n        ")
+                                    );
+                                }
+                                ContentBlock::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    is_error,
+                                } => {
+                                    let error_suffix = if let Some(is_err) = is_error {
+                                        if *is_err {
+                                            " (ERROR)"
+                                        } else {
+                                            ""
+                                        }
+                                    } else {
+                                        ""
+                                    };
+                                    println!(
+                                        "      Block {}: ToolResult: tool_use_id={}{}",
+                                        k, tool_use_id, error_suffix
+                                    );
+                                    println!(
+                                        "        Content: {}",
+                                        content.replace('\n', "\n        ")
+                                    );
+                                }
+                                ContentBlock::Thinking {
+                                    thinking,
+                                    signature,
+                                } => {
+                                    println!(
+                                        "      Block {}: Thinking: signature={}",
+                                        k, signature
+                                    );
+                                    println!(
+                                        "        Content: {}",
+                                        thinking.replace('\n', "\n        ")
+                                    );
+                                }
+                                ContentBlock::RedactedThinking { data } => {
+                                    println!("      Block {}: RedactedThinking", k);
+                                    println!("        Data: {}", data.replace('\n', "\n        "));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
