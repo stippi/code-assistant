@@ -118,22 +118,6 @@ impl WorkingMemory {
     pub fn add_resource(&mut self, project: String, path: PathBuf, resource: LoadedResource) {
         self.loaded_resources.insert((project, path), resource);
     }
-
-    /// Update an existing resource if it exists
-    pub fn update_resource(
-        &mut self,
-        project: &str,
-        path: &PathBuf,
-        resource: LoadedResource,
-    ) -> bool {
-        let key = (project.to_string(), path.clone());
-        if self.loaded_resources.contains_key(&key) {
-            self.loaded_resources.insert(key, resource);
-            true
-        } else {
-            false
-        }
-    }
 }
 
 /// Details for a text replacement operation

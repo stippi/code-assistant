@@ -19,8 +19,8 @@ use tracing::debug;
 use super::ToolMode;
 
 // System messages
-const SYSTEM_MESSAGE_MH: &str = include_str!("../../resources/chat/system_message.md");
-const SYSTEM_MESSAGE_TOOLS_MH: &str = include_str!("../../resources/chat/system_message_tools.md");
+const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
+const SYSTEM_MESSAGE_TOOLS: &str = include_str!("../../resources/system_message_tools.md");
 
 pub struct Agent {
     working_memory: WorkingMemory,
@@ -373,8 +373,8 @@ impl Agent {
     /// Get the appropriate system prompt based on tool mode
     fn get_system_prompt(&self) -> String {
         let base_prompt = match self.tool_mode {
-            ToolMode::Native => SYSTEM_MESSAGE_MH.to_string(),
-            ToolMode::Xml => SYSTEM_MESSAGE_TOOLS_MH.to_string(),
+            ToolMode::Native => SYSTEM_MESSAGE.to_string(),
+            ToolMode::Xml => SYSTEM_MESSAGE_TOOLS.to_string(),
         };
 
         let mut project_info = String::new();
