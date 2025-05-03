@@ -41,6 +41,23 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Formats an error, particularly ToolErrors, into a user-friendly string.
+    fn format_error_for_user(error: &anyhow::Error) -> String {
+        if let Some(tool_error) = error.downcast_ref::<ToolError>() {
+            match tool_error {
+                ToolError::UnknownTool(t) => {
+                    format!("Unknown tool '{}'. Please use only available tools.", t)
+                }
+                ToolError::ParseError(msg) => {
+                    format!("Tool parameter error: {}. Please try again.", msg)
+                }
+            }
+        } else {
+            // Generic fallback for other error types
+            format!("Error in tool request: {}", error)
+        }
+    }
+
     pub fn new(
         llm_provider: Box<dyn LLMProvider>,
         tool_mode: ToolMode,
@@ -94,38 +111,14 @@ impl Agent {
                 Ok(result) => result,
                 Err(e) => match e {
                     AgentError::LLMError(e) => return Err(e), // Critical errors terminate loop
-                    AgentError::ActionError { error, message } => {
+                    AgentError::ActionError { message, user_facing_error, .. } => {
                         // Add the assistant message to history
                         self.message_history.push(message);
 
-                        // Create error message based on error type
-                        let error_msg = if let Some(tool_error) = error.downcast_ref::<ToolError>()
-                        {
-                            match tool_error {
-                                ToolError::UnknownTool(t) => Message {
-                                    role: MessageRole::User,
-                                    content: MessageContent::Text(format!(
-                                        "Unknown tool '{}'. Please use only available tools.",
-                                        t
-                                    )),
-                                },
-                                ToolError::ParseError(msg) => Message {
-                                    role: MessageRole::User,
-                                    content: MessageContent::Text(format!(
-                                        "Tool parameter error: {}. Please try again.",
-                                        msg
-                                    )),
-                                },
-                            }
-                        } else {
-                            // Generic error message for other errors
-                            Message {
-                                role: MessageRole::User,
-                                content: MessageContent::Text(format!(
-                                    "Error in tool request: {}. Please try again.",
-                                    error
-                                )),
-                            }
+                        // Create error message using pre-formatted error text
+                        let error_msg = Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Text(user_facing_error),
                         };
 
                         // Add error message to history
@@ -194,22 +187,8 @@ impl Agent {
                         }
                     }
                     Err(e) => {
-                        // Error case - create appropriate error message
-                        let error_text = if let Some(tool_error) = e.downcast_ref::<ToolError>() {
-                            match tool_error {
-                                ToolError::UnknownTool(t) => {
-                                    format!(
-                                        "Unknown tool '{}'. Please use only available tools.",
-                                        t
-                                    )
-                                }
-                                ToolError::ParseError(msg) => {
-                                    format!("Tool parameter error: {}. Please try again.", msg)
-                                }
-                            }
-                        } else {
-                            format!("Error executing tool: {}", e)
-                        };
+                        // Error case - use the helper to create formatted error message
+                        let error_text = Self::format_error_for_user(&e);
 
                         // Create a tool result with error
                         Message {
@@ -500,10 +479,16 @@ impl Agent {
 
         match parse_llm_response(&response, request_id) {
             Ok(tool_requests) => Ok((tool_requests, assistant_msg)),
-            Err(e) => Err(AgentError::ActionError {
-                error: e,
-                message: assistant_msg,
-            }),
+            Err(e) => {
+                // Format the error message for the user
+                let user_facing_error = Self::format_error_for_user(&e);
+                
+                Err(AgentError::ActionError {
+                    error: e,
+                    message: assistant_msg,
+                    user_facing_error,
+                })
+            },
         }
     }
 

@@ -170,6 +170,7 @@ pub enum AgentError {
     ActionError {
         error: anyhow::Error,
         message: Message,
+        user_facing_error: String,
     },
 }
 
