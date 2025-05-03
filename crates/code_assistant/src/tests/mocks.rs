@@ -25,6 +25,7 @@ impl MockLLMProvider {
             responses.insert(
                 0,
                 Ok(create_test_response(
+                    "complete-task-id",
                     "complete_task",
                     serde_json::json!({
                         "message": "Task completed successfully"
@@ -40,11 +41,12 @@ impl MockLLMProvider {
         }
     }
 
-    pub fn with_tools(tool_responses: Vec<(String, serde_json::Value, String)>) -> Self {
+    pub fn with_tools(tool_responses: Vec<(String, String, serde_json::Value, String)>) -> Self {
         let responses = tool_responses
             .into_iter()
-            .map(|(name, input, reasoning)| {
+            .map(|(id, name, input, reasoning)| {
                 Ok(create_test_response(
+                    id.as_str(),
                     name.as_str(),
                     input,
                     reasoning.as_str(),
@@ -94,6 +96,7 @@ impl LLMProvider for MockLLMProvider {
 
 // Helper function to create a test response for tool invocation
 pub fn create_test_response(
+    tool_id: &str,
     tool_name: &str,
     tool_input: serde_json::Value,
     reasoning: &str,
@@ -104,7 +107,7 @@ pub fn create_test_response(
                 text: reasoning.to_string(),
             },
             ContentBlock::ToolUse {
-                id: "some-tool-id".to_string(),
+                id: tool_id.to_string(),
                 name: tool_name.to_string(),
                 input: tool_input,
             },

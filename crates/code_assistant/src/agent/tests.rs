@@ -108,6 +108,7 @@ fn test_replacement_xml_parsing() -> Result<()> {
 async fn test_unknown_tool_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(
+            "read-files-id",
             "read_files",
             serde_json::json!({
                 "project": "test",
@@ -116,14 +117,14 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
             "Reading file after getting unknown tool error",
         )),
         // Simulate LLM attempting to use unknown tool
-        Ok(LLMResponse {
-            content: vec![ContentBlock::ToolUse {
-                id: "test-id".to_string(),
-                name: "unknown_tool".to_string(),
-                input: serde_json::json!({}),
-            }],
-            usage: Usage::zero(),
-        }),
+        Ok(create_test_response(
+            "test-id",
+            "unknown_tool",
+            serde_json::json!({
+                "some_param": "value"
+            }),
+            "Calling unknown tool",
+        )),
     ]);
     let mock_llm_ref = mock_llm.clone();
 
@@ -179,6 +180,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
 async fn test_parse_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(
+            "read-files-2",
             "read_files",
             serde_json::json!({
                 "project": "test",
@@ -187,17 +189,15 @@ async fn test_parse_error_handling() -> Result<()> {
             "Reading with correct parameters",
         )),
         // Simulate LLM sending invalid params
-        Ok(LLMResponse {
-            content: vec![ContentBlock::ToolUse {
-                id: "test-id".to_string(),
-                name: "read_files".to_string(),
-                input: serde_json::json!({
-                    // Missing required 'paths' parameter
-                    "wrong_param": "value"
-                }),
-            }],
-            usage: Usage::zero(),
-        }),
+        Ok(create_test_response(
+            "read-files-1",
+            "read_files",
+            serde_json::json!({
+                // Missing required 'paths' parameter
+                "wrong_param": "value"
+            }),
+            "Reading with incorrect parameters",
+        )),
     ]);
     let mock_llm_ref = mock_llm.clone();
 
