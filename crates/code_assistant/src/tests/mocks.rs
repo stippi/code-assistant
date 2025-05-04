@@ -41,22 +41,6 @@ impl MockLLMProvider {
         }
     }
 
-    pub fn with_tools(tool_responses: Vec<(String, String, serde_json::Value, String)>) -> Self {
-        let responses = tool_responses
-            .into_iter()
-            .map(|(id, name, input, reasoning)| {
-                Ok(create_test_response(
-                    id.as_str(),
-                    name.as_str(),
-                    input,
-                    reasoning.as_str(),
-                ))
-            })
-            .collect();
-
-        Self::new(responses)
-    }
-
     // Get access to the stored requests
     pub fn get_requests(&self) -> Vec<LLMRequest> {
         self.requests.lock().unwrap().clone()
@@ -70,77 +54,15 @@ impl MockLLMProvider {
             println!("\nRequest {}:", i);
             for (j, message) in request.messages.iter().enumerate() {
                 println!("  Message {}:", j);
-                match &message.content {
-                    MessageContent::Text(content) => {
-                        println!("    Text: {}", content.replace('\n', "\n    "));
-                    }
-                    MessageContent::Structured(blocks) => {
-                        println!("    Structured content with {} blocks:", blocks.len());
-                        for (k, block) in blocks.iter().enumerate() {
-                            match block {
-                                ContentBlock::Text { text } => {
-                                    println!(
-                                        "      Block {}: Text: {}",
-                                        k,
-                                        text.replace('\n', "\n      ")
-                                    );
-                                }
-                                ContentBlock::ToolUse { id, name, input } => {
-                                    println!(
-                                        "      Block {}: ToolUse: id={}, name={}",
-                                        k, id, name
-                                    );
-                                    println!(
-                                        "        Input: {}",
-                                        serde_json::to_string_pretty(input)
-                                            .unwrap_or_else(|_| input.to_string())
-                                            .replace('\n', "\n        ")
-                                    );
-                                }
-                                ContentBlock::ToolResult {
-                                    tool_use_id,
-                                    content,
-                                    is_error,
-                                } => {
-                                    let error_suffix = if let Some(is_err) = is_error {
-                                        if *is_err {
-                                            " (ERROR)"
-                                        } else {
-                                            ""
-                                        }
-                                    } else {
-                                        ""
-                                    };
-                                    println!(
-                                        "      Block {}: ToolResult: tool_use_id={}{}",
-                                        k, tool_use_id, error_suffix
-                                    );
-                                    println!(
-                                        "        Content: {}",
-                                        content.replace('\n', "\n        ")
-                                    );
-                                }
-                                ContentBlock::Thinking {
-                                    thinking,
-                                    signature,
-                                } => {
-                                    println!(
-                                        "      Block {}: Thinking: signature={}",
-                                        k, signature
-                                    );
-                                    println!(
-                                        "        Content: {}",
-                                        thinking.replace('\n', "\n        ")
-                                    );
-                                }
-                                ContentBlock::RedactedThinking { data } => {
-                                    println!("      Block {}: RedactedThinking", k);
-                                    println!("        Data: {}", data.replace('\n', "\n        "));
-                                }
-                            }
-                        }
-                    }
-                }
+                // Using the Display trait implementation for Message
+                let formatted_message = format!("{}", message);
+                // Add indentation to the message output
+                let indented = formatted_message
+                    .lines()
+                    .map(|line| format!("    {}", line))
+                    .collect::<Vec<String>>()
+                    .join("\n");
+                println!("{}", indented);
             }
         }
     }

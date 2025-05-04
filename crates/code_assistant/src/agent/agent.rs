@@ -535,9 +535,16 @@ impl Agent {
 
         // Log messages for debugging
         for (i, message) in request.messages.iter().enumerate() {
-            if let MessageContent::Text(text) = &message.content {
-                debug!("Message {}: Role={:?}\n---\n{}\n---", i, message.role, text);
-            }
+            debug!("Message {}:", i);
+            // Using the Display trait implementation for Message
+            let formatted_message = format!("{}", message);
+            // Add indentation to the message output
+            let indented = formatted_message
+                .lines()
+                .map(|line| format!("  {}", line))
+                .collect::<Vec<String>>()
+                .join("\n");
+            debug!("{}", indented);
         }
 
         // Create a StreamProcessor and use it to process streaming chunks
