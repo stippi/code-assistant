@@ -565,11 +565,11 @@ impl Agent {
             .await?;
 
         // Print response for debugging
-        println!("Raw LLM response:");
+        debug!("Raw LLM response:");
         for block in &response.content {
             match block {
                 ContentBlock::Text { text } => {
-                    println!("---\n{}\n---", text);
+                    debug!("---\n{}\n---", text);
                 }
                 ContentBlock::ToolUse { name, input, .. } => {
                     debug!("---\ntool: {}, input: {}\n---", name, input);
