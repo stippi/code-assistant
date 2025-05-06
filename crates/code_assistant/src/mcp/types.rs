@@ -8,17 +8,15 @@ pub enum RequestId {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct JSONRPCRequest {
-    pub jsonrpc: String,
-    pub id: Option<RequestId>,
-    pub method: String,
-    pub params: serde_json::Value,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum JSONRPCMessage {
-    Request(JSONRPCRequest),
+    Request {
+        jsonrpc: String,
+        id: RequestId,
+        method: String,
+        #[serde(default)]
+        params: Option<serde_json::Value>,
+    },
     Notification {
         jsonrpc: String,
         method: String,

@@ -296,38 +296,42 @@ impl MessageHandler {
         };
 
         match message {
-            JSONRPCMessage::Request(request) => {
-                trace!("Processing request: {:?}", request);
-                match (request.method.as_str(), request.id) {
-                    ("initialize", Some(id)) => {
-                        let params: InitializeParams = serde_json::from_value(request.params)?;
+            JSONRPCMessage::Request {
+                method, id, params, ..
+            } => {
+                trace!("Processing request: method={}, id={:?}", method, id);
+                match method.as_str() {
+                    "initialize" => {
+                        let params: InitializeParams =
+                            serde_json::from_value(params.unwrap_or_default())?;
                         self.handle_initialize(id, params).await?;
                     }
 
-                    ("resources/list", Some(id)) => {
+                    "resources/list" => {
                         self.handle_resources_list(id).await?;
                     }
-                    ("resources/read", Some(id)) => {
-                        let params: ReadResourceRequest = serde_json::from_value(request.params)?;
+                    "resources/read" => {
+                        let params: ReadResourceRequest =
+                            serde_json::from_value(params.unwrap_or_default())?;
                         self.handle_resources_read(id, params.uri).await?;
                     }
-                    ("resources/subscribe", Some(id)) => {
+                    "resources/subscribe" => {
                         let params: SubscribeResourceRequest =
-                            serde_json::from_value(request.params)?;
+                            serde_json::from_value(params.unwrap_or_default())?;
                         self.handle_resources_subscribe(id, params.uri).await?;
                     }
-                    ("resources/unsubscribe", Some(id)) => {
+                    "resources/unsubscribe" => {
                         let params: UnsubscribeResourceRequest =
-                            serde_json::from_value(request.params)?;
+                            serde_json::from_value(params.unwrap_or_default())?;
                         self.handle_resources_unsubscribe(id, params.uri).await?;
                     }
 
-                    ("tools/list", Some(id)) => {
+                    "tools/list" => {
                         self.handle_tools_list(id).await?;
                     }
 
-                    ("tools/call", Some(id)) => {
-                        match serde_json::from_value::<ToolCallParams>(request.params) {
+                    "tools/call" => {
+                        match serde_json::from_value::<ToolCallParams>(params.unwrap_or_default()) {
                             Ok(params) => {
                                 self.handle_tool_call(id, params).await?;
                             }
@@ -346,17 +350,13 @@ impl MessageHandler {
                         }
                     }
 
-                    ("prompts/list", Some(id)) => {
+                    "prompts/list" => {
                         self.handle_prompts_list(id).await?;
                     }
 
-                    (method, Some(id)) => {
+                    method => {
                         self.send_error(id, -32601, format!("Method not found: {}", method), None)
                             .await?;
-                    }
-
-                    (_, None) => {
-                        debug!("Received notification request - ignoring");
                     }
                 }
             }
