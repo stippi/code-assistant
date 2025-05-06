@@ -155,19 +155,52 @@ pub(crate) fn parse_search_replace_blocks(
 ) -> Result<Vec<FileReplacement>, ToolError> {
     let mut replacements = Vec::new();
     let mut lines = content.lines().peekable();
+    let mut had_valid_block = false;
+
+    // Skip leading empty lines
+    while let Some(line) = lines.peek() {
+        if line.trim().is_empty() {
+            lines.next();
+        } else {
+            break;
+        }
+    }
+
+    // Check first non-empty line is a start marker
+    if let Some(line) = lines.peek() {
+        let trimmed = line.trim_end();
+        if !trimmed.starts_with("<<<<<<< SEARCH") {
+            return Err(ToolError::ParseError(
+                "Malformed diff: Unexpected content before diff markers".to_string(),
+            ));
+        }
+    } else {
+        // Empty content
+        return Err(ToolError::ParseError(
+            "Malformed diff: No search/replace blocks found".to_string(),
+        ));
+    }
 
     while let Some(line) = lines.next() {
+        // Skip empty lines between blocks
+        if line.trim().is_empty() {
+            continue;
+        }
+
         // Match the exact marker without trimming leading whitespace
         let is_search_all = line.trim_end() == "<<<<<<< SEARCH_ALL";
         let is_search = line.trim_end() == "<<<<<<< SEARCH";
 
         if is_search || is_search_all {
+            had_valid_block = true;
             let mut search = String::new();
             let mut replace = String::new();
+            let mut found_separator = false;
 
             // Collect search content until we find the separator
             while let Some(line) = lines.next() {
                 if line.trim_end() == "=======" {
+                    found_separator = true;
                     break;
                 }
                 if !search.is_empty() {
@@ -176,15 +209,24 @@ pub(crate) fn parse_search_replace_blocks(
                 search.push_str(line);
             }
 
+            if !found_separator {
+                return Err(ToolError::ParseError(
+                    "Malformed diff: Missing separator marker".to_string(),
+                ));
+            }
+
             // Collect replace content
             let end_marker = if is_search_all {
                 ">>>>>>> REPLACE_ALL"
             } else {
                 ">>>>>>> REPLACE"
             };
+            let mut found_end_marker = false;
+
             while let Some(current_line) = lines.next() {
                 // Check for end marker
                 if current_line.trim_end() == end_marker {
+                    found_end_marker = true;
                     break;
                 }
 
@@ -206,12 +248,38 @@ pub(crate) fn parse_search_replace_blocks(
                 replace.push_str(current_line);
             }
 
+            if !found_end_marker {
+                return Err(ToolError::ParseError(
+                    "Malformed diff: Missing closing marker".to_string(),
+                ));
+            }
+
             replacements.push(FileReplacement {
                 search,
                 replace,
                 replace_all: is_search_all,
             });
+        } else {
+            // Found a non-empty line that isn't a start marker
+            return Err(ToolError::ParseError(
+                "Malformed diff: Unexpected content between diff blocks".to_string(),
+            ));
         }
+    }
+
+    // Check for non-whitespace content after all blocks are processed
+    while let Some(line) = lines.next() {
+        if !line.trim().is_empty() {
+            return Err(ToolError::ParseError(
+                "Malformed diff: Unexpected content after diff blocks".to_string(),
+            ));
+        }
+    }
+
+    if !had_valid_block {
+        return Err(ToolError::ParseError(
+            "Malformed diff: No valid search/replace blocks found".to_string(),
+        ));
     }
 
     Ok(replacements)
@@ -631,5 +699,99 @@ mod tests {
         assert_eq!(result[1].search, "console.log(");
         assert_eq!(result[1].replace, "logger.debug(");
         assert_eq!(result[1].replace_all, true);
+    }
+
+    #[test]
+    fn test_parse_malformed_diff_with_multiple_separators() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "        content to search\n",
+            "=======\n",
+            "        content to replace with\n",
+            "======="
+        );
+
+        // The diff is malformed (no closing >>>>>>> marker), so the function should return an error
+        let result = parse_search_replace_blocks(content);
+        assert!(result.is_err(), "Expected an error for malformed diff");
+        let error_message = result.unwrap_err().to_string();
+        assert!(
+            error_message.contains("Missing closing marker"), 
+            "Error should mention the missing closing marker: {}", 
+            error_message
+        );
+    }
+
+    #[test]
+    fn test_parse_malformed_diff_missing_start_marker() {
+        let content = concat!(
+            "Some regular content\n",
+            "content to search\n",
+            "=======\n",
+            "content to replace with\n",
+            ">>>>>>> REPLACE"
+        );
+
+        // The diff is malformed (no start <<<<<<< marker), so the function should return an error
+        let result = parse_search_replace_blocks(content);
+        assert!(result.is_err(), "Expected an error for malformed diff");
+        let error_message = result.unwrap_err().to_string();
+        assert!(
+            error_message.contains("content before diff markers"), 
+            "Error should mention unexpected content: {}", 
+            error_message
+        );
+    }
+
+    #[test]
+    fn test_parse_malformed_diff_with_content_between_blocks() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "content to search\n",
+            "=======\n",
+            "content to replace with\n",
+            ">>>>>>> REPLACE\n",
+            "Unexpected content between blocks\n",
+            "<<<<<<< SEARCH\n",
+            "second search\n",
+            "=======\n",
+            "second replace\n",
+            ">>>>>>> REPLACE"
+        );
+
+        // The diff is malformed (non-whitespace content between blocks), so the function should return an error
+        let result = parse_search_replace_blocks(content);
+        assert!(result.is_err(), "Expected an error for malformed diff");
+        let error_message = result.unwrap_err().to_string();
+        assert!(
+            error_message.contains("Unexpected content between diff blocks"), 
+            "Error should mention unexpected content between blocks: {}", 
+            error_message
+        );
+    }
+
+    #[test]
+    fn test_parse_malformed_diff_with_content_after_last_block() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "content to search\n",
+            "=======\n",
+            "content to replace with\n",
+            ">>>>>>> REPLACE\n",
+            "Unexpected content after the last block"
+        );
+
+        // The diff is malformed (non-whitespace content after last block), so the function should return an error
+        let result = parse_search_replace_blocks(content);
+        assert!(result.is_err(), "Expected an error for malformed diff");
+        let error_message = result.unwrap_err().to_string();
+        
+        // With the current implementation, this is detected as content between blocks
+        // since we don't distinguish between "after last block" and "between blocks"
+        assert!(
+            error_message.contains("Unexpected content between diff blocks"), 
+            "Error should mention unexpected content: {}", 
+            error_message
+        );
     }
 }
