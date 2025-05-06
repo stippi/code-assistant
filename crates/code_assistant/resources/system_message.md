@@ -128,4 +128,3 @@ Example scenarios when to use web research:
 ====
 
 ALWAYS respond with your thoughts about what to do next first, then call the appropriate tool according to your reasoning.
-Think step by step. When you have finished your task, use the 'complete_task' tool.

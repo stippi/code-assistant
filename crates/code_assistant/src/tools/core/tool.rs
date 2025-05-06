@@ -1,0 +1,42 @@
+use super::render::Render;
+use super::result::ToolResult;
+use super::spec::ToolSpec;
+use crate::types::WorkingMemory;
+use anyhow::{anyhow, Result};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+/// Context provided to tools during execution
+pub struct ToolContext<'a> {
+    /// Project manager for accessing files
+    pub project_manager: &'a dyn crate::config::ProjectManager,
+    /// Command executor for running shell commands
+    pub command_executor: &'a dyn crate::utils::CommandExecutor,
+    /// Optional working memory (available in WorkingMemoryAgent mode)
+    pub working_memory: Option<&'a mut WorkingMemory>,
+}
+
+/// Core trait for tools, defining the execution interface
+#[async_trait::async_trait]
+pub trait Tool: Send + Sync + 'static {
+    /// Input type for this tool, must be deserializable from JSON
+    type Input: DeserializeOwned + Send;
+
+    /// Output type for this tool, must implement Render, ToolResult and Serialize/Deserialize
+    type Output: Render + ToolResult + Serialize + for<'de> Deserialize<'de> + Send + Sync;
+
+    /// Get the metadata for this tool
+    fn spec(&self) -> ToolSpec;
+
+    /// Execute the tool with the given context and input
+    async fn execute<'a>(
+        &self,
+        context: &mut ToolContext<'a>,
+        input: Self::Input,
+    ) -> Result<Self::Output>;
+
+    /// Deserialize a JSON value into this tool's output type
+    fn deserialize_output(&self, json: serde_json::Value) -> Result<Self::Output> {
+        serde_json::from_value(json)
+            .map_err(|e| anyhow!("Failed to deserialize output: {}", e))
+    }
+}

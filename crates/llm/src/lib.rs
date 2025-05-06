@@ -19,6 +19,7 @@ pub mod anthropic;
 pub mod anthropic_playback;
 pub mod auth;
 pub mod config;
+pub mod display;
 pub mod ollama;
 pub mod openai;
 pub mod openrouter;

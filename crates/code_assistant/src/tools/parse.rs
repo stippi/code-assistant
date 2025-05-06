@@ -1,8 +1,10 @@
-use crate::types::{FileReplacement, Tool, ToolError};
+use crate::tools::core::ToolRegistry;
+use crate::types::{FileReplacement, ToolError};
+use anyhow::{anyhow, Result};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::trace;
-use web;
 
 pub const TOOL_TAG_PREFIX: &str = "tool:";
 const PARAM_TAG_PREFIX: &str = "param:";
@@ -87,25 +89,7 @@ impl PathWithLineRange {
     }
 }
 
-// Helper function to parse JSON arrays containing paths with optional line ranges
-fn parse_path_array(arr: &serde_json::Value, param_name: &str) -> Result<Vec<PathBuf>, ToolError> {
-    arr.as_array()
-        .ok_or_else(|| {
-            ToolError::ParseError(format!("Missing required parameter: {} array", param_name))
-        })?
-        .iter()
-        .map(|p| {
-            let path_str = p.as_str().ok_or_else(|| {
-                ToolError::ParseError(format!("Invalid path in {} array", param_name))
-            })?;
-
-            let parsed = PathWithLineRange::parse(path_str)?;
-            Ok(parsed.path)
-        })
-        .collect::<Result<Vec<_>, _>>()
-}
-
-pub fn parse_tool_xml(xml: &str) -> Result<Tool, ToolError> {
+pub fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
     trace!("Parsing XML:\n{}", xml);
 
     let tool_name = xml
@@ -156,7 +140,14 @@ pub fn parse_tool_xml(xml: &str) -> Result<Tool, ToolError> {
     }
 
     trace!("Final parameters: {:?}", params);
-    parse_tool_from_params(&tool_name, &params)
+
+    // Convert parameters to JSON using the ToolRegistry
+    let json_params = convert_xml_params_to_json(&tool_name, &params, &ToolRegistry::global())
+        .map_err(|e| {
+            ToolError::ParseError(format!("Error converting parameters to JSON: {}", e))
+        })?;
+
+    Ok((tool_name, json_params))
 }
 
 pub(crate) fn parse_search_replace_blocks(
@@ -164,19 +155,52 @@ pub(crate) fn parse_search_replace_blocks(
 ) -> Result<Vec<FileReplacement>, ToolError> {
     let mut replacements = Vec::new();
     let mut lines = content.lines().peekable();
+    let mut had_valid_block = false;
+
+    // Skip leading empty lines
+    while let Some(line) = lines.peek() {
+        if line.trim().is_empty() {
+            lines.next();
+        } else {
+            break;
+        }
+    }
+
+    // Check first non-empty line is a start marker
+    if let Some(line) = lines.peek() {
+        let trimmed = line.trim_end();
+        if !trimmed.starts_with("<<<<<<< SEARCH") {
+            return Err(ToolError::ParseError(
+                "Malformed diff: Unexpected content before diff markers".to_string(),
+            ));
+        }
+    } else {
+        // Empty content
+        return Err(ToolError::ParseError(
+            "Malformed diff: No search/replace blocks found. Expecting content to start with <<<<<<< SEARCH".to_string(),
+        ));
+    }
 
     while let Some(line) = lines.next() {
+        // Skip empty lines between blocks
+        if line.trim().is_empty() {
+            continue;
+        }
+
         // Match the exact marker without trimming leading whitespace
         let is_search_all = line.trim_end() == "<<<<<<< SEARCH_ALL";
         let is_search = line.trim_end() == "<<<<<<< SEARCH";
 
         if is_search || is_search_all {
+            had_valid_block = true;
             let mut search = String::new();
             let mut replace = String::new();
+            let mut found_separator = false;
 
             // Collect search content until we find the separator
             while let Some(line) = lines.next() {
                 if line.trim_end() == "=======" {
+                    found_separator = true;
                     break;
                 }
                 if !search.is_empty() {
@@ -185,27 +209,84 @@ pub(crate) fn parse_search_replace_blocks(
                 search.push_str(line);
             }
 
+            if !found_separator {
+                return Err(ToolError::ParseError(
+                    "Malformed diff: Missing separator marker (=======)".to_string(),
+                ));
+            }
+
             // Collect replace content
             let end_marker = if is_search_all {
                 ">>>>>>> REPLACE_ALL"
             } else {
                 ">>>>>>> REPLACE"
             };
+            let mut found_end_marker = false;
+
+            // Before collecting the replace content, we'll check if there are
+            // additional separator markers in the remaining content
+            {
+                // Clone the iterator to peek ahead without consuming it
+                let mut preview_iter = lines.clone();
+                let mut lines_to_end_marker = Vec::new();
+                let mut reached_end_marker = false;
+
+                // Collect all lines until end marker
+                while let Some(line) = preview_iter.next() {
+                    if line.trim_end() == end_marker {
+                        reached_end_marker = true;
+                        break;
+                    }
+                    lines_to_end_marker.push(line);
+                }
+
+                if !reached_end_marker {
+                    return Err(ToolError::ParseError(
+                        "Malformed diff: Missing closing marker".to_string(),
+                    ));
+                }
+
+                // Check for invalid separators
+                let separator_count = lines_to_end_marker
+                    .iter()
+                    .filter(|line| line.trim_end() == "=======")
+                    .count();
+
+                // Special case: allow one separator if it's the last line before end marker
+                if separator_count > 0 {
+                    let last_line = lines_to_end_marker.last();
+
+                    if separator_count > 1
+                        || (last_line.map_or(false, |line| line.trim_end() != "======="))
+                    {
+                        return Err(ToolError::ParseError(
+                            "Malformed diff: Multiple separator markers (=======) found in the content. This is not allowed as it would make it impossible to edit files containing separators.".to_string(),
+                        ));
+                    }
+                }
+            }
+
+            // Now actually process the replace content
             while let Some(current_line) = lines.next() {
                 // Check for end marker
                 if current_line.trim_end() == end_marker {
+                    found_end_marker = true;
                     break;
                 }
 
-                // Check if the next line is the end marker and the current line is a separator
-                // This handles the case when LLM accidentally adds a separator right before the end marker
+                // Check if this is a separator right before end marker
                 if current_line.trim_end() == "=======" {
                     if let Some(next_line) = lines.peek() {
                         if next_line.trim_end() == end_marker {
-                            // Skip this separator - it's a mistake before the end marker
+                            // Skip this separator if it's right before the end marker
                             continue;
                         }
                     }
+
+                    // This should never happen due to our check above, but just in case
+                    return Err(ToolError::ParseError(
+                        "Malformed diff: Found separator marker (=======) in replace content. This is not allowed as it would make subsequent edits impossible.".to_string(),
+                    ));
                 }
 
                 // Regular content line - add to replace content
@@ -215,315 +296,337 @@ pub(crate) fn parse_search_replace_blocks(
                 replace.push_str(current_line);
             }
 
+            if !found_end_marker {
+                return Err(ToolError::ParseError(
+                    "Malformed diff: Missing closing marker (>>>>>>> REPLACE)".to_string(),
+                ));
+            }
+
             replacements.push(FileReplacement {
                 search,
                 replace,
                 replace_all: is_search_all,
             });
+        } else {
+            // Found a non-empty line that isn't a start marker
+            return Err(ToolError::ParseError(
+                "Malformed diff: Unexpected content between diff blocks".to_string(),
+            ));
         }
+    }
+
+    // Check for non-whitespace content after all blocks are processed
+    while let Some(line) = lines.next() {
+        if !line.trim().is_empty() {
+            return Err(ToolError::ParseError(
+                "Malformed diff: Unexpected content after diff blocks".to_string(),
+            ));
+        }
+    }
+
+    if !had_valid_block {
+        return Err(ToolError::ParseError(
+            "Malformed diff: No valid search/replace blocks found".to_string(),
+        ));
     }
 
     Ok(replacements)
 }
 
-// Function to get the first required parameter or error
-fn get_required_param<'a>(
-    params: &'a HashMap<String, Vec<String>>,
-    key: &str,
-) -> Result<&'a String, ToolError> {
-    params
-        .get(key)
-        .ok_or_else(|| ToolError::ParseError(format!("Missing required parameter: {}", key)))?
-        .first()
-        .ok_or_else(|| ToolError::ParseError(format!("Parameter {} is empty", key)))
-}
-
-// Function to get an optional parameter
-fn get_optional_param<'a>(
-    params: &'a HashMap<String, Vec<String>>,
-    key: &str,
-) -> Option<&'a String> {
-    params.get(key).and_then(|v| v.first())
-}
-
-pub fn parse_tool_from_params(
+/// Convert XML parameter HashMap to JSON Value based on tool schema
+pub fn convert_xml_params_to_json(
     tool_name: &str,
     params: &HashMap<String, Vec<String>>,
-) -> Result<Tool, ToolError> {
-    match tool_name {
-        "update_plan" => Ok(Tool::UpdatePlan {
-            plan: get_required_param(params, "plan")?.clone(),
-        }),
+    registry: &ToolRegistry,
+) -> Result<Value> {
+    // Get tool schema from registry
+    let tool = registry
+        .get(tool_name)
+        .ok_or_else(|| anyhow!("Tool {} not found in registry", tool_name))?;
 
-        "search_files" => Ok(Tool::SearchFiles {
-            project: get_required_param(params, "project")?.clone(),
-            regex: get_required_param(params, "regex")?.clone(),
-        }),
+    let tool_spec = tool.spec();
+    let schema = &tool_spec.parameters_schema;
 
-        "list_files" => Ok(Tool::ListFiles {
-            project: get_required_param(params, "project")?.clone(),
-            paths: params
-                .get("path")
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: path".into()))?
-                .iter()
-                .map(|s| PathBuf::from(s.trim()))
-                .collect(),
-            max_depth: get_optional_param(params, "max_depth")
-                .map(|v| v.trim().parse::<usize>())
-                .transpose()
-                .map_err(|_| ToolError::ParseError("Invalid max_depth parameter".into()))?,
-        }),
+    // Create base object
+    let mut result = json!({});
 
-        "read_files" => Ok(Tool::ReadFiles {
-            project: get_required_param(params, "project")?.clone(),
-            paths: params
-                .get("path")
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: path".into()))?
-                .iter()
-                .map(|s| {
-                    // Keep the original path string including line ranges in the PathBuf
-                    Ok(PathBuf::from(s.trim()))
-                })
-                .collect::<Result<Vec<PathBuf>, ToolError>>()?,
-        }),
+    // Access properties from schema
+    if let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) {
+        for (prop_name, prop_schema) in properties {
+            // Determine type from schema
+            let prop_type = prop_schema
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("string");
 
-        "summarize" => Ok(Tool::Summarize {
-            project: get_required_param(params, "project")?.clone(),
-            path: PathBuf::from(get_required_param(params, "path")?),
-            summary: get_required_param(params, "summary")?.clone(),
-        }),
+            match prop_type {
+                // For arrays - handle both singular and plural forms
+                "array" => {
+                    // First try exact property name
+                    let values_exact = params.get(prop_name).filter(|v| !v.is_empty());
 
-        "replace_in_file" => Ok(Tool::ReplaceInFile {
-            project: get_required_param(params, "project")?.clone(),
-            path: PathBuf::from(get_required_param(params, "path")?),
-            replacements: parse_search_replace_blocks(get_required_param(params, "diff")?)?,
-        }),
+                    // If not found, try alternative singular/plural form
+                    let values = if values_exact.is_none() {
+                        // Get alternative name (singular/plural form)
+                        let alt_name = if prop_name.ends_with('s') {
+                            // Remove the 's' at the end for singular form
+                            prop_name[0..prop_name.len() - 1].to_string()
+                        } else {
+                            // Add 's' for plural form
+                            format!("{}s", prop_name)
+                        };
 
-        "write_file" => Ok(Tool::WriteFile {
-            project: get_required_param(params, "project")?.clone(),
-            path: PathBuf::from(get_required_param(params, "path")?),
-            content: get_required_param(params, "content")?.clone(),
-            append: get_optional_param(params, "append").map_or(false, |s| s == "true"),
-        }),
+                        params.get(&alt_name).filter(|v| !v.is_empty())
+                    } else {
+                        values_exact
+                    };
 
-        "delete_files" => Ok(Tool::DeleteFiles {
-            project: get_required_param(params, "project")?.clone(),
-            paths: params
-                .get("path")
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: path".into()))?
-                .iter()
-                .map(|s| PathBuf::from(s.trim()))
-                .collect(),
-        }),
+                    // If we have values, add them as an array
+                    if let Some(array_values) = values {
+                        result[prop_name] = json!(array_values);
+                    }
+                }
+                // For all other types, use normal parameter handling
+                _ => {
+                    // Skip if parameter not provided
+                    if !params.contains_key(prop_name) {
+                        continue;
+                    }
 
-        "complete_task" => Ok(Tool::CompleteTask {
-            message: get_required_param(params, "message")?.clone(),
-        }),
+                    // Get the parameter values
+                    let param_values = &params[prop_name];
+                    if param_values.is_empty() {
+                        continue;
+                    }
 
-        "execute_command" => Ok(Tool::ExecuteCommand {
-            command_line: get_required_param(params, "command_line")?.clone(),
-            working_dir: get_optional_param(params, "working_dir").map(PathBuf::from),
-            project: get_required_param(params, "project")?.clone(),
-        }),
-
-        "web_search" => Ok(Tool::WebSearch {
-            query: get_required_param(params, "query")?.clone(),
-            hits_page_number: get_required_param(params, "hits_page_number")?
-                .trim()
-                .parse::<u32>()
-                .map_err(|e| ToolError::ParseError(format!("Invalid hits_page_number: {}", e)))?,
-        }),
-
-        "web_fetch" => Ok(Tool::WebFetch {
-            url: get_required_param(params, "url")?.clone(),
-            selectors: params
-                .get("selector")
-                .map(|selectors| selectors.iter().map(|s| s.to_string()).collect()),
-        }),
-
-        "list_projects" => Ok(Tool::ListProjects),
-
-        "perplexity_ask" => {
-            let messages_param = get_required_param(params, "messages")?;
-            let messages_json: Result<Vec<web::PerplexityMessage>, _> =
-                serde_json::from_str(messages_param);
-
-            match messages_json {
-                Ok(messages) => Ok(Tool::PerplexityAsk { messages }),
-                Err(_) => Err(ToolError::ParseError(
-                    "Invalid messages format for perplexity_ask".into(),
-                )),
+                    match prop_type {
+                        // For boolean convert from string
+                        "boolean" => {
+                            let bool_value = param_values[0].to_lowercase() == "true";
+                            result[prop_name] = json!(bool_value);
+                        }
+                        // For numbers convert from string
+                        "number" => {
+                            if let Ok(num) = param_values[0].parse::<f64>() {
+                                result[prop_name] = json!(num);
+                            } else {
+                                return Err(anyhow!(
+                                    "Failed to parse '{}' as number for parameter '{}'",
+                                    param_values[0],
+                                    prop_name
+                                ));
+                            }
+                        }
+                        // For integers convert from string
+                        "integer" => {
+                            if let Ok(num) = param_values[0].parse::<i64>() {
+                                result[prop_name] = json!(num);
+                            } else {
+                                return Err(anyhow!(
+                                    "Failed to parse '{}' as integer for parameter '{}'",
+                                    param_values[0],
+                                    prop_name
+                                ));
+                            }
+                        }
+                        // Default to string (first value only)
+                        _ => {
+                            result[prop_name] = json!(param_values[0]);
+                        }
+                    }
+                }
             }
         }
-
-        _ => Err(ToolError::UnknownTool(tool_name.to_string())),
     }
-}
 
-pub fn parse_tool_json(name: &str, params: &serde_json::Value) -> Result<Tool, ToolError> {
-    // Helper to extract required project field
-    let get_project = |p: &serde_json::Value| -> Result<String, ToolError> {
-        Ok(p["project"] // Wrap the whole expression in Ok()
-            .as_str()
-            .ok_or_else(|| ToolError::ParseError("Missing required parameter: project".into()))?
-            .to_string())
-    };
-
-    match name {
-        "list_projects" => Ok(Tool::ListProjects),
-        "update_plan" => Ok(Tool::UpdatePlan {
-            plan: params["plan"]
-                .as_str()
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: plan".into()))?
-                .to_string(),
-        }),
-        "execute_command" => Ok(Tool::ExecuteCommand {
-            project: get_project(params)?,
-            command_line: params["command_line"]
-                .as_str()
-                .ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: command_line".into())
-                })?
-                .to_string(),
-            working_dir: params
-                .get("working_dir")
-                .and_then(|d| d.as_str())
-                .map(PathBuf::from),
-        }),
-        "search_files" => Ok(Tool::SearchFiles {
-            project: get_project(params)?,
-            regex: params["regex"]
-                .as_str()
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: regex".into()))?
-                .to_string(),
-        }),
-        "list_files" => Ok(Tool::ListFiles {
-            project: get_project(params)?,
-            paths: parse_path_array(&params["paths"], "paths")?,
-            max_depth: params["max_depth"].as_u64().map(|d| d as usize),
-        }),
-        "read_files" => Ok(Tool::ReadFiles {
-            project: get_project(params)?,
-            paths: params["paths"]
-                .as_array()
-                .ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: paths array".into())
-                })?
-                .iter()
-                .map(|p| {
-                    let path_str = p.as_str().ok_or_else(|| {
-                        ToolError::ParseError("Invalid path in paths array".into())
-                    })?;
-
-                    // Just use the original path string in the PathBuf
-                    // The line range parsing will happen in the executor
-                    Ok(PathBuf::from(path_str))
-                })
-                .collect::<Result<Vec<PathBuf>, ToolError>>()?,
-        }),
-        "summarize" => Ok(Tool::Summarize {
-            project: get_project(params)?,
-            path: PathBuf::from(
-                params["path"].as_str().ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: path".into())
-                })?,
-            ),
-            summary: params["summary"]
-                .as_str()
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: summary".into()))?
-                .to_string(),
-        }),
-        "replace_in_file" => {
-            Ok(Tool::ReplaceInFile {
-                project: get_project(params)?,
-                path: PathBuf::from(params["path"].as_str().ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: path".into())
-                })?),
-                replacements: parse_search_replace_blocks(params["diff"].as_str().ok_or_else(
-                    || ToolError::ParseError("Missing required parameter: diff".into()),
-                )?)?,
-            })
-        }
-        "write_file" => Ok(Tool::WriteFile {
-            project: get_project(params)?,
-            path: PathBuf::from(
-                params["path"].as_str().ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: path".into())
-                })?,
-            ),
-            content: params["content"]
-                .as_str()
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: content".into()))?
-                .to_string(),
-            append: params
-                .get("append")
-                .and_then(|b| b.as_bool())
-                .unwrap_or(false),
-        }),
-        "delete_files" => Ok(Tool::DeleteFiles {
-            project: get_project(params)?,
-            paths: parse_path_array(&params["paths"], "paths")?,
-        }),
-        "complete_task" => Ok(Tool::CompleteTask {
-            message: params["message"]
-                .as_str()
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: message".into()))?
-                .to_string(),
-        }),
-        "web_search" => Ok(Tool::WebSearch {
-            query: params["query"]
-                .as_str()
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: query".into()))?
-                .to_string(),
-            hits_page_number: params["hits_page_number"].as_u64().ok_or_else(|| {
-                ToolError::ParseError("Missing required parameter: hits_page_number".into())
-            })? as u32,
-        }),
-        "web_fetch" => Ok(Tool::WebFetch {
-            url: params["url"]
-                .as_str()
-                .ok_or_else(|| ToolError::ParseError("Missing required parameter: url".into()))?
-                .to_string(),
-            selectors: params["selectors"].as_array().map(|arr| {
-                arr.iter()
-                    .map(|v| v.as_str().unwrap_or_default().to_string())
-                    .collect()
-            }),
-        }),
-        "perplexity_ask" => {
-            // Parse the messages array
-            let messages = params["messages"]
-                .as_array()
-                .ok_or_else(|| {
-                    ToolError::ParseError("Missing required parameter: messages array".into())
-                })?
-                .iter()
-                .map(|msg| {
-                    let role = msg["role"]
-                        .as_str()
-                        .ok_or_else(|| ToolError::ParseError("Missing 'role' in message".into()))?
-                        .to_string();
-
-                    let content = msg["content"]
-                        .as_str()
-                        .ok_or_else(|| {
-                            ToolError::ParseError("Missing 'content' in message".into())
-                        })?
-                        .to_string();
-
-                    Ok(web::PerplexityMessage { role, content })
-                })
-                .collect::<Result<Vec<web::PerplexityMessage>, ToolError>>()?;
-
-            Ok(Tool::PerplexityAsk { messages })
-        }
-        _ => Err(ToolError::UnknownTool(name.to_string())),
-    }
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::parse::parse_search_replace_blocks;
+    use super::*;
+    use crate::tools::core::ResourcesTracker;
+    use crate::tools::core::{Tool, ToolContext, ToolScope, ToolSpec};
+    use crate::tools::impls::{ListProjectsTool, ReadFilesTool};
+    use std::collections::HashMap;
+
+    // Test tool to use for schema parsing tests
+    struct TestTool;
+
+    #[async_trait::async_trait]
+    impl Tool for TestTool {
+        type Input = TestInput;
+        type Output = TestOutput;
+
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "test_tool",
+                description: "Test tool for parameter conversion",
+                parameters_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "string_param": {
+                            "type": "string",
+                            "description": "A string parameter"
+                        },
+                        "number_param": {
+                            "type": "number",
+                            "description": "A number parameter"
+                        },
+                        "integer_param": {
+                            "type": "integer",
+                            "description": "An integer parameter"
+                        },
+                        "boolean_param": {
+                            "type": "boolean",
+                            "description": "A boolean parameter"
+                        },
+                        "array_param": {
+                            "type": "array",
+                            "description": "An array parameter",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "required": ["string_param"]
+                }),
+                annotations: None,
+                supported_scopes: &[ToolScope::McpServer],
+            }
+        }
+
+        async fn execute<'a>(
+            &self,
+            _context: &mut ToolContext<'a>,
+            _input: Self::Input,
+        ) -> Result<Self::Output> {
+            unimplemented!()
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct TestInput {
+        string_param: String,
+        #[serde(default)]
+        number_param: Option<f64>,
+        #[serde(default)]
+        integer_param: Option<i64>,
+        #[serde(default)]
+        boolean_param: Option<bool>,
+        #[serde(default)]
+        array_param: Option<Vec<String>>,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct TestOutput;
+
+    impl crate::tools::core::Render for TestOutput {
+        fn status(&self) -> String {
+            "Test output".to_string()
+        }
+
+        fn render(&self, _tracker: &mut ResourcesTracker) -> String {
+            "Test output rendered".to_string()
+        }
+    }
+
+    impl crate::tools::core::ToolResult for TestOutput {
+        fn is_success(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn test_convert_xml_params_to_json() {
+        // Create a registry with our test tool
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(TestTool));
+
+        // Create XML-style params
+        let mut params = HashMap::new();
+        params.insert("string_param".to_string(), vec!["test string".to_string()]);
+        params.insert("number_param".to_string(), vec!["42.5".to_string()]);
+        params.insert("integer_param".to_string(), vec!["42".to_string()]);
+        params.insert("boolean_param".to_string(), vec!["true".to_string()]);
+        params.insert(
+            "array_param".to_string(),
+            vec!["item1".to_string(), "item2".to_string()],
+        );
+
+        // Convert to JSON
+        let json_params = convert_xml_params_to_json("test_tool", &params, &registry).unwrap();
+
+        // Verify conversion results
+        assert_eq!(json_params["string_param"], "test string");
+        assert_eq!(json_params["number_param"], 42.5);
+        assert_eq!(json_params["integer_param"], 42);
+        assert_eq!(json_params["boolean_param"], true);
+        assert!(json_params["array_param"].is_array());
+        assert_eq!(json_params["array_param"][0], "item1");
+        assert_eq!(json_params["array_param"][1], "item2");
+    }
+
+    #[tokio::test]
+    async fn test_convert_xml_params_error_handling() {
+        // Create a registry with our test tool
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(TestTool));
+
+        // Create XML-style params with invalid number
+        let mut params = HashMap::new();
+        params.insert("string_param".to_string(), vec!["test string".to_string()]);
+        params.insert("number_param".to_string(), vec!["not a number".to_string()]);
+
+        // Conversion should fail with a descriptive error
+        let result = convert_xml_params_to_json("test_tool", &params, &registry);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to parse 'not a number' as number"));
+
+        // Test with invalid integer
+        let mut params = HashMap::new();
+        params.insert("string_param".to_string(), vec!["test string".to_string()]);
+        params.insert("integer_param".to_string(), vec!["42.5".to_string()]);
+
+        // Conversion should fail with a descriptive error
+        let result = convert_xml_params_to_json("test_tool", &params, &registry);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to parse '42.5' as integer"));
+    }
+
+    #[tokio::test]
+    async fn test_convert_xml_params_real_tools() {
+        // Create registry with real tools
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ListProjectsTool));
+        registry.register(Box::new(ReadFilesTool));
+
+        // Test list_projects (simple case)
+        let empty_params = HashMap::new();
+        let json_params =
+            convert_xml_params_to_json("list_projects", &empty_params, &registry).unwrap();
+        assert_eq!(json_params, json!({}));
+
+        // Test read_files with singular "path" in params (XML style)
+        let mut params = HashMap::new();
+        params.insert("project".to_string(), vec!["test-project".to_string()]);
+        params.insert(
+            "path".to_string(),
+            vec!["file1.txt".to_string(), "file2.txt".to_string()],
+        );
+
+        let json_params = convert_xml_params_to_json("read_files", &params, &registry).unwrap();
+        assert_eq!(json_params["project"], "test-project");
+        assert!(json_params["paths"].is_array()); // Should match "paths" (plural) from schema
+        assert_eq!(json_params["paths"].as_array().unwrap().len(), 2);
+    }
 
     #[test]
     fn test_parse_search_replace_blocks_normal() {
@@ -644,5 +747,154 @@ mod tests {
         assert_eq!(result[1].search, "console.log(");
         assert_eq!(result[1].replace, "logger.debug(");
         assert_eq!(result[1].replace_all, true);
+    }
+
+    #[test]
+    fn test_parse_multiple_search_replace_blocks_whitespace() {
+        let content = concat!(
+            "\n",
+            "<<<<<<< SEARCH\n",
+            "function test() {\n",
+            "=======\n",
+            "function renamed() {\n",
+            ">>>>>>> REPLACE\n",
+            "\n",
+            "<<<<<<< SEARCH\n",
+            "console.log(\n",
+            "=======\n",
+            "logger.debug(\n",
+            ">>>>>>> REPLACE",
+            "\n",
+        );
+
+        let result = parse_search_replace_blocks(content).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].search, "function test() {");
+        assert_eq!(result[0].replace, "function renamed() {");
+        assert_eq!(result[0].replace_all, false);
+        assert_eq!(result[1].search, "console.log(");
+        assert_eq!(result[1].replace, "logger.debug(");
+        assert_eq!(result[1].replace_all, false);
+    }
+
+    #[test]
+    fn test_parse_malformed_diff_with_missing_closing_marker() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "        content to search\n",
+            "=======\n",
+            "        content to replace with\n",
+            "======="
+        );
+
+        // The diff is malformed (no closing >>>>>>> marker), so the function should return an error
+        let result = parse_search_replace_blocks(content);
+        assert!(result.is_err(), "Expected an error for malformed diff");
+        let error_message = result.unwrap_err().to_string();
+        assert!(
+            error_message.contains("Missing closing marker"),
+            "Error should mention the missing closing marker: {}",
+            error_message
+        );
+    }
+
+    #[test]
+    fn test_parse_malformed_diff_with_multiple_separators() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "        content to search\n",
+            "=======\n",
+            "        some more content to search\n",
+            "=======\n",
+            "        content to replace with\n",
+            ">>>>>>> REPLACE\n",
+        );
+
+        // The diff is malformed (it has multiple separators), so the function should return an error
+        let result = parse_search_replace_blocks(content);
+        assert!(
+            result.is_err(),
+            "Expected an error for malformed diff with multiple separators"
+        );
+        let error_message = result.unwrap_err().to_string();
+
+        assert!(
+            error_message.contains("Multiple separator markers"),
+            "Error should mention the problem with multiple separator markers: {}",
+            error_message
+        );
+    }
+
+    #[test]
+    fn test_parse_malformed_diff_missing_start_marker() {
+        let content = concat!(
+            "Some regular content\n",
+            "content to search\n",
+            "=======\n",
+            "content to replace with\n",
+            ">>>>>>> REPLACE"
+        );
+
+        // The diff is malformed (no start <<<<<<< marker), so the function should return an error
+        let result = parse_search_replace_blocks(content);
+        assert!(result.is_err(), "Expected an error for malformed diff");
+        let error_message = result.unwrap_err().to_string();
+        assert!(
+            error_message.contains("content before diff markers"),
+            "Error should mention unexpected content: {}",
+            error_message
+        );
+    }
+
+    #[test]
+    fn test_parse_malformed_diff_with_content_between_blocks() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "content to search\n",
+            "=======\n",
+            "content to replace with\n",
+            ">>>>>>> REPLACE\n",
+            "Unexpected content between blocks\n",
+            "<<<<<<< SEARCH\n",
+            "second search\n",
+            "=======\n",
+            "second replace\n",
+            ">>>>>>> REPLACE"
+        );
+
+        // The diff is malformed (non-whitespace content between blocks), so the function should return an error
+        let result = parse_search_replace_blocks(content);
+        assert!(result.is_err(), "Expected an error for malformed diff");
+        let error_message = result.unwrap_err().to_string();
+        assert!(
+            error_message.contains("Unexpected content between diff blocks"),
+            "Error should mention unexpected content between blocks: {}",
+            error_message
+        );
+    }
+
+    #[test]
+    fn test_parse_malformed_diff_with_content_after_last_block() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "content to search\n",
+            "=======\n",
+            "content to replace with\n",
+            ">>>>>>> REPLACE\n",
+            "Unexpected content after the last block"
+        );
+
+        // The diff is malformed (non-whitespace content after last block), so the function should return an error
+        let result = parse_search_replace_blocks(content);
+        assert!(result.is_err(), "Expected an error for malformed diff");
+        let error_message = result.unwrap_err().to_string();
+
+        // With the current implementation, this is detected as content between blocks
+        // since we don't distinguish between "after last block" and "between blocks"
+        assert!(
+            error_message.contains("Unexpected content between diff blocks"),
+            "Error should mention unexpected content: {}",
+            error_message
+        );
     }
 }

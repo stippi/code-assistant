@@ -8,9 +8,12 @@ mod types;
 mod ui;
 mod utils;
 
+#[cfg(test)]
+mod tests;
+
 use crate::agent::Agent;
 use crate::mcp::MCPServer;
-use crate::types::{AgentMode, ToolMode};
+use crate::types::ToolMode;
 use crate::ui::terminal::TerminalUI;
 use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
@@ -84,10 +87,6 @@ struct Args {
     /// Type of tool declaration ('native' = tools via API, 'xml' = custom system message)
     #[arg(long, default_value = "xml")]
     tools_type: Option<ToolMode>,
-
-    /// Agent mode to use (working_memory = traditional mode, message_history = chat-like mode)
-    #[arg(long, default_value = "message_history")]
-    agent_mode: Option<AgentMode>,
 
     /// Record API responses to a file (only supported for Anthropic provider currently)
     #[arg(long)]
@@ -273,7 +272,6 @@ async fn run_agent_terminal(
     base_url: Option<String>,
     num_ctx: usize,
     tools_type: ToolMode,
-    agent_mode: AgentMode,
     record: Option<PathBuf>,
     playback: Option<PathBuf>,
     fast_playback: bool,
@@ -303,7 +301,6 @@ async fn run_agent_terminal(
     let mut agent = Agent::new(
         llm_client,
         tools_type,
-        agent_mode,
         project_manager,
         command_executor,
         user_interface,
@@ -328,7 +325,6 @@ fn run_agent_gpui(
     base_url: Option<String>,
     num_ctx: usize,
     tools_type: ToolMode,
-    agent_mode: AgentMode,
     record: Option<PathBuf>,
     playback: Option<PathBuf>,
     fast_playback: bool,
@@ -368,7 +364,6 @@ fn run_agent_gpui(
             let mut agent = Agent::new(
                 llm_client,
                 tools_type,
-                agent_mode,
                 project_manager,
                 command_executor,
                 user_interface,
@@ -408,7 +403,6 @@ async fn run_agent(args: Args) -> Result<()> {
     let base_url = args.base_url.clone();
     let num_ctx = args.num_ctx.unwrap_or(8192);
     let tools_type = args.tools_type.unwrap_or(ToolMode::Xml);
-    let agent_mode = args.agent_mode.unwrap_or(AgentMode::MessageHistory);
     let use_gui = args.ui;
 
     // Setup logging based on verbose flag
@@ -441,7 +435,6 @@ async fn run_agent(args: Args) -> Result<()> {
             base_url,
             num_ctx,
             tools_type,
-            agent_mode,
             args.record.clone(),
             args.playback.clone(),
             args.fast_playback,
@@ -456,7 +449,6 @@ async fn run_agent(args: Args) -> Result<()> {
             base_url,
             num_ctx,
             tools_type,
-            agent_mode,
             args.record.clone(),
             args.playback.clone(),
             args.fast_playback,

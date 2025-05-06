@@ -1,9 +1,9 @@
+use crate::agent::tool_description_generator::generate_tool_documentation;
+use crate::agent::types::{ToolExecution, ToolRequest};
 use crate::config::ProjectManager;
 use crate::persistence::StatePersistence;
-use crate::tools::{
-    parse_tool_json, parse_tool_xml, AgentChatToolHandler, AgentToolHandler, ToolExecutor,
-    TOOL_TAG_PREFIX,
-};
+use crate::tools::core::{ToolContext, ToolRegistry, ToolScope};
+use crate::tools::{parse_tool_xml, TOOL_TAG_PREFIX};
 use crate::types::*;
 use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
@@ -12,45 +12,58 @@ use llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
     StreamingChunk,
 };
-use percent_encoding;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tracing::debug;
 
-use super::{AgentMode, ToolMode};
+use super::ToolMode;
 
-// System messages for WorkingMemory mode
-const SYSTEM_MESSAGE_WM: &str = include_str!("../../resources/working_memory/system_message.md");
-const SYSTEM_MESSAGE_TOOLS_WM: &str =
-    include_str!("../../resources/working_memory/system_message_tools.md");
-
-// System messages for MessageHistory mode
-const SYSTEM_MESSAGE_MH: &str = include_str!("../../resources/chat/system_message.md");
-const SYSTEM_MESSAGE_TOOLS_MH: &str = include_str!("../../resources/chat/system_message_tools.md");
+// System messages
+const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
+const SYSTEM_MESSAGE_TOOLS: &str = include_str!("../../resources/system_message_tools.md");
 
 pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
     tool_mode: ToolMode,
-    agent_mode: AgentMode,
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
     state_persistence: Box<dyn StatePersistence>,
-    // For MessageHistory mode: store all messages exchanged
+    // Store all messages exchanged
     message_history: Vec<Message>,
     // Path provided during agent initialization
     init_path: Option<PathBuf>,
     // Name of the initial project (if any)
     initial_project: Option<String>,
+    // Store the history of tool executions
+    tool_executions: Vec<crate::agent::types::ToolExecution>,
+    // Cached system message
+    cached_system_message: OnceLock<String>,
 }
 
 impl Agent {
+    /// Formats an error, particularly ToolErrors, into a user-friendly string.
+    fn format_error_for_user(error: &anyhow::Error) -> String {
+        if let Some(tool_error) = error.downcast_ref::<ToolError>() {
+            match tool_error {
+                ToolError::UnknownTool(t) => {
+                    format!("Unknown tool '{}'. Please use only available tools.", t)
+                }
+                ToolError::ParseError(msg) => {
+                    format!("Tool parameter error: {}. Please try again.", msg)
+                }
+            }
+        } else {
+            // Generic fallback for other error types
+            format!("Error in tool request: {}", error)
+        }
+    }
+
     pub fn new(
         llm_provider: Box<dyn LLMProvider>,
         tool_mode: ToolMode,
-        agent_mode: AgentMode,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         ui: Box<dyn UserInterface>,
@@ -61,7 +74,6 @@ impl Agent {
             working_memory: WorkingMemory::default(),
             llm_provider,
             tool_mode,
-            agent_mode,
             project_manager,
             ui: Arc::new(ui),
             command_executor,
@@ -69,26 +81,24 @@ impl Agent {
             message_history: Vec::new(),
             init_path,
             initial_project: None,
+            tool_executions: Vec::new(),
+            cached_system_message: OnceLock::new(),
         }
     }
 
-    /// Helper method to save the state based on the current agent mode
-    fn save_state_based_on_mode(&mut self) -> Result<()> {
-        match self.agent_mode {
-            AgentMode::WorkingMemory => {
-                self.state_persistence.save_state(
-                    self.working_memory.current_task.clone(),
-                    self.working_memory.action_history.clone(),
-                )?;
-            }
-            AgentMode::MessageHistory => {
-                self.state_persistence.save_state_with_messages(
-                    self.working_memory.current_task.clone(),
-                    self.working_memory.action_history.clone(),
-                    self.message_history.clone(),
-                )?;
-            }
-        }
+    /// Save the current state (message history)
+    fn save_state(&mut self) -> Result<()> {
+        self.state_persistence.save_state(
+            self.working_memory.current_task.clone(),
+            self.message_history.clone(),
+        )?;
+        Ok(())
+    }
+
+    /// Adds a message to the history and saves the state
+    fn append_message(&mut self, message: Message) -> Result<()> {
+        self.message_history.push(message);
+        self.save_state()?;
         Ok(())
     }
 
@@ -97,200 +107,127 @@ impl Agent {
     }
 
     async fn run_agent_loop(&mut self) -> Result<()> {
+        // Counter for request IDs
+        let mut request_counter: u64 = 0;
+
         // Main agent loop
         loop {
-            // Get messages based on the agent mode
-            let mut messages = match self.agent_mode {
-                AgentMode::WorkingMemory => self.prepare_messages(),
-                AgentMode::MessageHistory => {
-                    if self.message_history.is_empty() {
-                        let initial_messages = self.prepare_messages();
-                        self.message_history = initial_messages.clone();
-                        initial_messages
-                    } else {
-                        self.message_history.clone()
-                    }
+            // Prepare messages with dynamically rendered tool outputs
+            let messages = self.prepare_messages();
+
+            // If message history is empty (first run), initialize it
+            if self.message_history.is_empty() {
+                self.message_history = messages.clone();
+            }
+
+            // Increment request counter
+            request_counter += 1;
+
+            // Get next assistant message from LLM
+            let llm_response = match self.get_next_assistant_message(messages).await {
+                Ok(response) => response,
+                Err(e) => return Err(e), // Critical errors terminate loop
+            };
+
+            // Add assistant message to history
+            self.append_message(Message {
+                role: MessageRole::Assistant,
+                content: MessageContent::Structured(llm_response.content.clone()),
+            })?;
+
+            // Parse tool requests from the assistant message
+            let tool_requests = match parse_llm_response(&llm_response, request_counter) {
+                Ok(requests) => requests,
+                Err(e) => {
+                    // Create error message with formatted error text
+                    let error_text = Self::format_error_for_user(&e);
+                    let error_msg = Message {
+                        role: MessageRole::User,
+                        content: MessageContent::Text(error_text),
+                    };
+
+                    // Add error message to history
+                    self.append_message(error_msg)?;
+
+                    // Continue the loop to get new actions
+                    continue;
                 }
             };
 
-            // Keep trying until all actions succeed
-            let mut all_actions_succeeded = false;
-            while !all_actions_succeeded {
-                let (actions, assistant_msg) = match self.get_next_actions(messages.clone()).await {
-                    Ok(result) => result,
-                    Err(e) => match e {
-                        AgentError::LLMError(e) => return Err(e),
-                        AgentError::ActionError { error, message } => {
-                            messages.push(message.clone());
-                            if self.agent_mode == AgentMode::MessageHistory {
-                                self.message_history.push(message);
-                            }
+            // If no tools were requested, get user input
+            if tool_requests.is_empty() {
+                // Get input from UI
+                let user_input = self.get_input_from_ui("").await?;
 
-                            if let Some(tool_error) = error.downcast_ref::<ToolError>() {
-                                match tool_error {
-                                    ToolError::UnknownTool(t) => {
-                                        let error_msg = Message {
-                                            role: MessageRole::User,
-                                            content: MessageContent::Text(format!(
-                                                "Unknown tool '{}'. Please use only available tools.",
-                                                t
-                                            )),
-                                        };
-                                        messages.push(error_msg.clone());
-                                        if self.agent_mode == AgentMode::MessageHistory {
-                                            self.message_history.push(error_msg);
-                                        }
-                                        continue;
-                                    }
-                                    ToolError::ParseError(msg) => {
-                                        let error_msg = Message {
-                                            role: MessageRole::User,
-                                            content: MessageContent::Text(format!(
-                                                "Tool parameter error: {}. Please try again.",
-                                                msg
-                                            )),
-                                        };
-                                        messages.push(error_msg.clone());
-                                        if self.agent_mode == AgentMode::MessageHistory {
-                                            self.message_history.push(error_msg);
-                                        }
-                                        continue;
-                                    }
-                                }
-                            }
-                            return Err(error);
-                        }
-                    },
+                // Display the user input as a user message in the UI
+                self.ui
+                    .display(UIMessage::UserInput(user_input.clone()))
+                    .await?;
+
+                // Add user input as a new message
+                let user_msg = Message {
+                    role: MessageRole::User,
+                    content: MessageContent::Text(user_input.clone()),
                 };
 
-                messages.push(assistant_msg.clone());
-                if self.agent_mode == AgentMode::MessageHistory {
-                    self.message_history.push(assistant_msg);
+                // Add the message to history
+                self.append_message(user_msg)?;
 
-                    // Save message history in state
-                    self.state_persistence.save_state_with_messages(
-                        self.working_memory.current_task.clone(),
-                        self.working_memory.action_history.clone(),
-                        self.message_history.clone(),
-                    )?;
-                }
-
-                // If no actions were returned, get user input
-                if actions.is_empty() {
-                    // Get input from UI
-                    let user_input = self.get_input_from_ui("").await?;
-
-                    // Display the user input as a user message in the UI
-                    self.ui
-                        .display(UIMessage::UserInput(user_input.clone()))
-                        .await?;
-
-                    // Add user input as a new message
-                    let user_msg = Message {
-                        role: MessageRole::User,
-                        content: MessageContent::Text(user_input.clone()),
-                    };
-
-                    // Add user input as an action result to working memory
-                    let action_result = ActionResult {
-                        tool: Tool::UserInput {},
-                        result: ToolResult::UserInput {
-                            message: user_input,
-                        },
-                        reasoning: "User provided input".to_string(),
-                    };
-
-                    self.working_memory.action_history.push(action_result);
-
-                    // For MessageHistory mode, add the message to history
-                    if self.agent_mode == AgentMode::MessageHistory {
-                        self.message_history.push(user_msg);
-                    }
-
-                    // Save the state based on current mode
-                    self.save_state_based_on_mode()?;
-
-                    // Notify UI of working memory change
-                    let _ = self.ui.update_memory(&self.working_memory).await;
-
-                    // Break the inner loop to start a new iteration
-                    break;
-                }
-
-                all_actions_succeeded = true; // Will be set to false if any action fails
-
-                for action in actions {
-                    let (output, result) = self.execute_action(&action).await?;
-                    let success = result.result.is_success();
-
-                    if !success {
-                        all_actions_succeeded = false;
-                    }
-
-                    // Add result to working memory
-                    self.working_memory.action_history.push(result.clone());
-
-                    // Add result to messages for both modes
-                    if self.tool_mode == ToolMode::Native {
-                        // Using structured ToolResult for Native mode
-                        let message = Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                                tool_use_id: action.tool_id.clone(),
-                                content: output,
-                                is_error: if success { None } else { Some(true) },
-                            }]),
-                        };
-
-                        messages.push(message.clone());
-                        if self.agent_mode == AgentMode::MessageHistory {
-                            self.message_history.push(message);
-                        }
-                    } else {
-                        // For XML mode
-                        let message = if !success {
-                            Message {
-                                role: MessageRole::User,
-                                content: MessageContent::Text(format!(
-                                    "Error executing tool: {}",
-                                    result.result.format_message()
-                                )),
-                            }
-                        } else {
-                            Message {
-                                role: MessageRole::User,
-                                content: MessageContent::Text(output),
-                            }
-                        };
-
-                        messages.push(message.clone());
-                        if self.agent_mode == AgentMode::MessageHistory {
-                            self.message_history.push(message);
-                        }
-                    }
-
-                    // In WorkingMemory mode, stop processing remaining actions on failure
-                    // But in MessageHistory mode, continue processing all actions
-                    if !success && self.agent_mode == AgentMode::WorkingMemory {
-                        break;
-                    }
-
-                    // Save state based on mode
-                    // Save the state based on current mode
-                    self.save_state_based_on_mode()?;
-
-                    // Notify UI of working memory change
-                    let _ = self.ui.update_memory(&self.working_memory).await;
-
-                    // Check if this was a CompleteTask action
-                    if let Tool::CompleteTask { .. } = action.tool {
-                        // Clean up state file on successful completion
-                        self.state_persistence.cleanup()?;
-                        debug!("Task completed");
-                        return Ok(());
-                    }
-                }
+                // Continue to next iteration
+                continue;
             }
+
+            // Content blocks for the new user message
+            let mut content_blocks = Vec::new();
+
+            // Process each tool request
+            for tool_request in &tool_requests {
+                // Check if this was a CompleteTask action
+                if tool_request.name == "complete_task" {
+                    // Clean up state file on successful completion
+                    self.state_persistence.cleanup()?;
+                    debug!("Task completed");
+                    return Ok(());
+                }
+
+                // Try to execute the tool
+                let result_block = match self.execute_tool(tool_request).await {
+                    Ok(success) => {
+                        // Success case - normal tool result
+                        ContentBlock::ToolResult {
+                            tool_use_id: tool_request.id.clone(),
+                            content: String::new(), // Will be filled dynamically in prepare_messages
+                            is_error: if success { None } else { Some(true) },
+                        }
+                    }
+                    Err(e) => {
+                        // Error case - use the helper to create formatted error message
+                        let error_text = Self::format_error_for_user(&e);
+
+                        // Create a tool result with error
+                        ContentBlock::ToolResult {
+                            tool_use_id: tool_request.id.clone(),
+                            content: error_text,
+                            is_error: Some(true),
+                        }
+                    }
+                };
+
+                // Add content block to the list
+                content_blocks.push(result_block);
+            }
+
+            // Create a user message with all tool results
+            let result_message = Message {
+                role: MessageRole::User,
+                content: MessageContent::Structured(content_blocks),
+            };
+
+            // Add the message to history
+            self.append_message(result_message)?;
+
+            // Notify UI of working memory change
+            let _ = self.ui.update_memory(&self.working_memory).await;
         }
     }
 
@@ -350,17 +287,12 @@ impl Agent {
         self.message_history.clear();
         self.ui.display(UIMessage::UserInput(task.clone())).await?;
 
-        // For message history mode, create the initial user message
-        if self.agent_mode == AgentMode::MessageHistory {
-            let user_msg = Message {
-                role: MessageRole::User,
-                content: MessageContent::Text(task.clone()),
-            };
-            self.message_history.push(user_msg);
-        }
-
-        // Save initial state based on agent mode
-        self.save_state_based_on_mode()?;
+        // Create the initial user message
+        let user_msg = Message {
+            role: MessageRole::User,
+            content: MessageContent::Text(task.clone()),
+        };
+        self.append_message(user_msg)?;
 
         // Notify UI of initial working memory
         let _ = self.ui.update_memory(&self.working_memory).await;
@@ -376,30 +308,18 @@ impl Agent {
             // Initialize working memory
             self.init_working_memory(state.task.clone())?;
 
-            // Restore action history from saved state
-            self.working_memory.action_history = state.actions.clone();
-
-            // For MessageHistory mode, restore messages if available
-            if let Some(messages) = state.messages {
-                self.message_history = messages;
-                debug!("Restored {} previous messages", self.message_history.len());
-            } else if self.agent_mode == AgentMode::MessageHistory {
-                // If no messages were saved but we're in MessageHistory mode,
-                // create an initial message with the task
-                self.message_history = vec![Message {
-                    role: MessageRole::User,
-                    content: MessageContent::Text(state.task.clone()),
-                }];
-            }
+            // Restore message history
+            self.message_history = state.messages;
+            debug!("Restored {} previous messages", self.message_history.len());
 
             // Load current state of files into memory - will create file trees as needed
             self.load_current_files_to_memory().await?;
 
             self.ui
                 .display(UIMessage::Action(format!(
-                    "Continuing task: {}, loaded {} previous actions",
+                    "Continuing task: {}, loaded {} previous messages",
                     state.task,
-                    state.actions.len()
+                    self.message_history.len()
                 )))
                 .await?;
 
@@ -412,127 +332,39 @@ impl Agent {
         }
     }
 
-    /// Load all currently existing files and web resources into working memory based on action history
+    /// Initialize file trees for available projects
+    /// This is a simplified version that doesn't rely on action_history
     async fn load_current_files_to_memory(&mut self) -> Result<()> {
-        // Group files by project and organize paths that should exist
-        let mut project_files: HashMap<String, (HashSet<PathBuf>, Vec<String>)> = HashMap::new();
+        // In the new version, we don't need to build file trees from action history
+        // Instead, we'll just initialize file trees for the available projects
 
-        // First pass: Handle files
-        for action in &self.working_memory.action_history {
-            let project = match &action.tool {
-                Tool::WriteFile { project, path, .. } => {
-                    let project_entry = project_files
-                        .entry(project.clone())
-                        .or_insert_with(|| (HashSet::new(), Vec::new()));
-                    project_entry.0.insert(path.clone());
-                    Some(project)
-                }
-                Tool::ReplaceInFile { project, path, .. } => {
-                    let project_entry = project_files
-                        .entry(project.clone())
-                        .or_insert_with(|| (HashSet::new(), Vec::new()));
-                    project_entry.0.insert(path.clone());
-                    Some(project)
-                }
-                Tool::ReadFiles { project, paths, .. } => {
-                    let project_entry = project_files
-                        .entry(project.clone())
-                        .or_insert_with(|| (HashSet::new(), Vec::new()));
-                    for path in paths {
-                        project_entry.0.insert(path.clone());
-                    }
-                    Some(project)
-                }
-                Tool::DeleteFiles { project, paths, .. } => {
-                    let project_entry = project_files
-                        .entry(project.clone())
-                        .or_insert_with(|| (HashSet::new(), Vec::new()));
-                    for path in paths {
-                        project_entry.0.remove(path);
-                    }
-                    Some(project)
-                }
-                _ => None,
-            };
+        // If there's an initial project, make sure it's in the list
+        if let Some(project_name) = &self.initial_project {
+            // Create file tree for the project
+            match self.project_manager.get_explorer_for_project(project_name) {
+                Ok(mut explorer) => {
+                    match explorer.create_initial_tree(2) {
+                        Ok(tree) => {
+                            self.working_memory
+                                .file_trees
+                                .insert(project_name.clone(), tree);
 
-            // If this action might have errors for a specific project, record it
-            if let Some(proj) = project {
-                if let ToolResult::ReadFiles { failed_files, .. } = &action.result {
-                    if !failed_files.is_empty() {
-                        project_files.get_mut(proj).unwrap().1.push(format!(
-                            "Skipping failed files: {}",
-                            failed_files
-                                .iter()
-                                .map(|(path, _)| path.display().to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Load files for each project
-        for (project_name, (files, errors)) in project_files {
-            // Get explorer for this project
-            match self.project_manager.get_explorer_for_project(&project_name) {
-                Ok(explorer) => {
-                    let root_dir = explorer.root_dir();
-
-                    // Create file tree for this project if it doesn't exist yet
-                    if !self.working_memory.file_trees.contains_key(&project_name) {
-                        let mut explorer_for_tree = self
-                            .project_manager
-                            .get_explorer_for_project(&project_name)?;
-                        match explorer_for_tree.create_initial_tree(2) {
-                            Ok(tree) => {
+                            // Add to available projects if not already there
+                            if !self
+                                .working_memory
+                                .available_projects
+                                .contains(project_name)
+                            {
                                 self.working_memory
-                                    .file_trees
-                                    .insert(project_name.clone(), tree);
-                                // Add to available projects if not already there
-                                if !self
-                                    .working_memory
                                     .available_projects
-                                    .contains(&project_name)
-                                {
-                                    self.working_memory
-                                        .available_projects
-                                        .push(project_name.clone());
-                                }
-                            }
-                            Err(e) => {
-                                debug!(
-                                    "Error creating file tree for project {}: {}",
-                                    project_name, e
-                                );
+                                    .push(project_name.clone());
                             }
                         }
-                    }
-
-                    // Load files into memory
-                    for path in files {
-                        let full_path = if path.is_absolute() {
-                            path.clone()
-                        } else {
-                            root_dir.join(&path)
-                        };
-
-                        match explorer.read_file(&full_path) {
-                            Ok(content) => {
-                                debug!(
-                                    "Loading existing file from project {}: {}",
-                                    project_name,
-                                    full_path.display()
-                                );
-                                self.working_memory.add_resource(
-                                    project_name.clone(),
-                                    path,
-                                    LoadedResource::File(content),
-                                );
-                            }
-                            Err(e) => {
-                                debug!("Error loading file {}: {}", full_path.display(), e);
-                            }
+                        Err(e) => {
+                            debug!(
+                                "Error creating file tree for project {}: {}",
+                                project_name, e
+                            );
                         }
                     }
                 }
@@ -540,131 +372,179 @@ impl Agent {
                     debug!("Error getting explorer for project {}: {}", project_name, e);
                 }
             }
-
-            // Add any errors to working memory
-            for error in errors {
-                debug!("Errors for project {}: {}", project_name, error);
-            }
-        }
-
-        // Second pass: Handle web resources from action results
-        // This must be done after the file processing to avoid losing web resources
-        // that were added in the same continuation session
-        for action in &self.working_memory.action_history {
-            match &action.result {
-                ToolResult::WebSearch {
-                    query,
-                    results,
-                    error: None,
-                } => {
-                    // Use a synthetic path that includes the query (same as in AgentToolHandler)
-                    let path = PathBuf::from(format!(
-                        "web-search-{}",
-                        percent_encoding::utf8_percent_encode(
-                            &query,
-                            percent_encoding::NON_ALPHANUMERIC
-                        )
-                    ));
-                    debug!("Loading web search results for: {}", query);
-                    // Use "web" as the project name for web resources
-                    let project = "web".to_string();
-                    self.working_memory.loaded_resources.insert(
-                        (project, path),
-                        LoadedResource::WebSearch {
-                            query: query.clone(),
-                            results: results.clone(),
-                        },
-                    );
-                }
-                ToolResult::WebFetch { page, error: None } => {
-                    // Use the URL as path (normalized, same as in AgentToolHandler)
-                    let path = PathBuf::from(page.url.replace([':', '/', '?', '#'], "_"));
-                    debug!("Loading web page content: {}", page.url);
-                    // Use "web" as the project name for web resources
-                    let project = "web".to_string();
-                    self.working_memory
-                        .loaded_resources
-                        .insert((project, path), LoadedResource::WebPage(page.clone()));
-                }
-                _ => {}
-            }
         }
 
         Ok(())
     }
 
-    /// Get the appropriate system prompt based on agent mode and tool mode
+    /// Get the appropriate system prompt based on tool mode
     fn get_system_prompt(&self) -> String {
-        let base_prompt = match self.agent_mode {
-            AgentMode::WorkingMemory => match self.tool_mode {
-                ToolMode::Native => SYSTEM_MESSAGE_WM.to_string(),
-                ToolMode::Xml => SYSTEM_MESSAGE_TOOLS_WM.to_string(),
-            },
-            AgentMode::MessageHistory => match self.tool_mode {
-                ToolMode::Native => SYSTEM_MESSAGE_MH.to_string(),
-                ToolMode::Xml => SYSTEM_MESSAGE_TOOLS_MH.to_string(),
-            },
+        // Check if we already have a cached system message
+        if let Some(cached) = self.cached_system_message.get() {
+            return cached.clone();
+        }
+
+        // Generate the system message
+        let mut system_message = match self.tool_mode {
+            ToolMode::Native => SYSTEM_MESSAGE.to_string(),
+            ToolMode::Xml => {
+                // For XML tool mode, get the base template and replace the {{tools}} placeholder
+                let mut base = SYSTEM_MESSAGE_TOOLS.to_string();
+
+                // Only generate tools documentation for XML mode
+                let tools_doc = generate_tool_documentation(ToolScope::Agent);
+
+                // Replace the {{tools}} placeholder with the generated documentation
+                base = base.replace("{{tools}}", &tools_doc);
+
+                base
+            }
         };
 
-        // In MessageHistory mode, append project information to the system prompt
-        if self.agent_mode == AgentMode::MessageHistory {
-            let mut project_info = String::new();
+        // Add project information
+        let mut project_info = String::new();
 
-            // Add information about the initial project if available
-            if let Some(project) = &self.initial_project {
-                project_info.push_str("\n\n# Project Information\n\n");
-                project_info.push_str(&format!("## Initial Project: {}\n\n", project));
+        // Add information about the initial project if available
+        if let Some(project) = &self.initial_project {
+            project_info.push_str("\n\n# Project Information\n\n");
+            project_info.push_str(&format!("## Initial Project: {}\n\n", project));
 
-                // Add file tree for the initial project if available
-                if let Some(tree) = self.working_memory.file_trees.get(project) {
-                    project_info.push_str("### File Structure:\n");
-                    project_info.push_str(&format!("```\n{}\n```\n\n", tree.to_string()));
-                }
-            }
-
-            // Add information about available projects
-            if !self.working_memory.available_projects.is_empty() {
-                project_info.push_str("## Available Projects:\n");
-                for project in &self.working_memory.available_projects {
-                    project_info.push_str(&format!("- {}\n", project));
-                }
-            }
-
-            // Append project information to base prompt if available
-            if !project_info.is_empty() {
-                return format!("{}\n{}", base_prompt, project_info);
+            // Add file tree for the initial project if available
+            if let Some(tree) = self.working_memory.file_trees.get(project) {
+                project_info.push_str("### File Structure:\n");
+                project_info.push_str(&format!("```\n{}\n```\n\n", tree.to_string()));
             }
         }
 
-        base_prompt
+        // Add information about available projects
+        if !self.working_memory.available_projects.is_empty() {
+            project_info.push_str("## Available Projects:\n");
+            for project in &self.working_memory.available_projects {
+                project_info.push_str(&format!("- {}\n", project));
+            }
+        }
+
+        // Append project information to base prompt if available
+        if !project_info.is_empty() {
+            system_message = format!("{}\n{}", system_message, project_info);
+        }
+
+        // Cache the system message
+        let _ = self.cached_system_message.set(system_message.clone());
+
+        system_message
     }
 
-    /// Get next actions from LLM
-    async fn get_next_actions(
-        &self,
-        messages: Vec<Message>,
-    ) -> Result<(Vec<AgentAction>, Message), AgentError> {
+    /// Invalidate the cached system message to force regeneration
+    #[allow(dead_code)]
+    pub fn invalidate_system_message_cache(&mut self) {
+        self.cached_system_message = OnceLock::new();
+    }
+
+    /// Convert ToolResult blocks to Text blocks for XML mode
+    fn convert_tool_results_to_text(&self, messages: Vec<Message>) -> Vec<Message> {
+        // Create a fresh ResourcesTracker for rendering
+        let mut resources_tracker = crate::tools::core::render::ResourcesTracker::new();
+
+        // First, build a map of tool_use_id to rendered output
+        let mut tool_outputs = std::collections::HashMap::new();
+
+        // Process tool executions in reverse chronological order (newest first)
+        for execution in self.tool_executions.iter().rev() {
+            let tool_use_id = &execution.tool_request.id;
+            let rendered_output = execution.result.as_render().render(&mut resources_tracker);
+            tool_outputs.insert(tool_use_id.clone(), rendered_output);
+        }
+
+        // Process each message
+        messages
+            .into_iter()
+            .map(|msg| {
+                match &msg.content {
+                    MessageContent::Structured(blocks) => {
+                        // Check if there are any ToolResult blocks that need conversion
+                        let has_tool_results = blocks
+                            .iter()
+                            .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
+
+                        if !has_tool_results {
+                            // No conversion needed
+                            return msg;
+                        }
+
+                        // Convert all blocks to Text
+                        let mut text_content = String::new();
+
+                        for block in blocks {
+                            match block {
+                                ContentBlock::ToolResult { tool_use_id, .. } => {
+                                    // Get the dynamically rendered content for this tool result
+                                    if let Some(rendered_output) = tool_outputs.get(tool_use_id) {
+                                        // Add the rendered tool output
+                                        text_content.push_str(rendered_output);
+                                        text_content.push_str("\n\n");
+                                    }
+                                }
+                                ContentBlock::Text { text } => {
+                                    // For existing Text blocks, keep as is
+                                    text_content.push_str(&text);
+                                    text_content.push_str("\n\n");
+                                }
+                                _ => {} // Ignore other block types
+                            }
+                        }
+
+                        // Create a new message with Text content
+                        Message {
+                            role: msg.role,
+                            content: MessageContent::Text(text_content.trim().to_string()),
+                        }
+                    }
+                    // For non-structured content, keep as is
+                    _ => msg,
+                }
+            })
+            .collect()
+    }
+
+    /// Gets the next assistant message from the LLM provider.
+    async fn get_next_assistant_message(&self, messages: Vec<Message>) -> Result<llm::LLMResponse> {
         // Inform UI that a new LLM request is starting
-        let request_id = self
-            .ui
-            .begin_llm_request()
-            .await
-            .map_err(|e| AgentError::LLMError(e.into()))?;
+        let request_id = self.ui.begin_llm_request().await?;
         debug!("Starting LLM request with ID: {}", request_id);
 
+        // Convert messages based on tool mode
+        let converted_messages = match self.tool_mode {
+            ToolMode::Native => messages, // No conversion needed
+            ToolMode::Xml => self.convert_tool_results_to_text(messages), // Convert ToolResults to Text
+        };
+
+        // Create the LLM request with appropriate tools
         let request = LLMRequest {
-            messages,
+            messages: converted_messages,
             system_prompt: self.get_system_prompt(),
             tools: match self.tool_mode {
-                ToolMode::Native => Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(Tools::all())),
+                ToolMode::Native => {
+                    Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
+                        ToolRegistry::global().get_tool_definitions_for_scope(ToolScope::Agent),
+                    ))
+                }
                 ToolMode::Xml => None,
             },
         };
 
+        // Log messages for debugging
         for (i, message) in request.messages.iter().enumerate() {
-            if let MessageContent::Text(text) = &message.content {
-                debug!("Message {}: Role={:?}\n---\n{}\n---", i, message.role, text);
-            }
+            debug!("Message {}:", i);
+            // Using the Display trait implementation for Message
+            let formatted_message = format!("{}", message);
+            // Add indentation to the message output
+            let indented = formatted_message
+                .lines()
+                .map(|line| format!("  {}", line))
+                .collect::<Vec<String>>()
+                .join("\n");
+            debug!("{}", indented);
         }
 
         // Create a StreamProcessor and use it to process streaming chunks
@@ -678,16 +558,18 @@ impl Agent {
                 .map_err(|e| anyhow::anyhow!("Failed to process streaming chunk: {}", e))
         });
 
+        // Send message to LLM provider
         let response = self
             .llm_provider
             .send_message(request, Some(&streaming_callback))
             .await?;
 
-        println!("Raw LLM response:");
+        // Print response for debugging
+        debug!("Raw LLM response:");
         for block in &response.content {
             match block {
                 ContentBlock::Text { text } => {
-                    println!("---\n{}\n---", text);
+                    debug!("---\n{}\n---", text);
                 }
                 ContentBlock::ToolUse { name, input, .. } => {
                     debug!("---\ntool: {}, input: {}\n---", name, input);
@@ -695,120 +577,171 @@ impl Agent {
                 _ => {}
             }
         }
+
         println!(
-            "\n==== Token usage: Input: {}, Output: {}, Cache: Created: {}, Read: {} ====",
+            "\n==== Token usage: Input: {}, Output: {}, Cache: Created: {}, Read: {} ====\n",
             response.usage.input_tokens,
             response.usage.output_tokens,
             response.usage.cache_creation_input_tokens,
             response.usage.cache_read_input_tokens
         );
 
-        let assistant_msg = Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Structured(response.content.clone()),
-        };
-
         // Inform UI that the LLM request has completed
         let _ = self.ui.end_llm_request(request_id).await;
         debug!("Completed LLM request with ID: {}", request_id);
 
-        match parse_llm_response(&response, request_id) {
-            Ok(actions) => Ok((actions, assistant_msg)),
-            Err(e) => Err(AgentError::ActionError {
-                error: e,
-                message: assistant_msg,
-            }),
-        }
+        Ok(response)
     }
 
-    /// Prepare messages for LLM request based on the agent mode
+    /// Prepare messages for LLM request, dynamically rendering tool outputs
     fn prepare_messages(&self) -> Vec<Message> {
-        match self.agent_mode {
-            AgentMode::WorkingMemory => {
-                // Single message with working memory
-                vec![Message {
-                    role: MessageRole::User,
-                    content: MessageContent::Text(self.working_memory.to_markdown()),
-                }]
-            }
-            AgentMode::MessageHistory => {
-                if self.message_history.is_empty() {
-                    // Initial message with just the task
-                    vec![Message {
-                        role: MessageRole::User,
-                        content: MessageContent::Text(self.working_memory.current_task.clone()),
-                    }]
-                } else {
-                    // Return the whole message history
-                    self.message_history.clone()
+        if self.message_history.is_empty() {
+            // Initial message with just the task
+            return vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text(self.working_memory.current_task.clone()),
+            }];
+        }
+
+        // Start with a clean slate
+        let mut messages = Vec::new();
+
+        // Create a fresh ResourcesTracker for this rendering pass
+        let mut resources_tracker = crate::tools::core::render::ResourcesTracker::new();
+
+        // First, collect all tool executions and build a map from tool_use_id to rendered output
+        let mut tool_outputs = std::collections::HashMap::new();
+
+        // Process tool executions in reverse chronological order (newest first)
+        // so newer tool calls take precedence in resource conflicts
+        for execution in self.tool_executions.iter().rev() {
+            let tool_use_id = &execution.tool_request.id;
+            let rendered_output = execution.result.as_render().render(&mut resources_tracker);
+            tool_outputs.insert(tool_use_id.clone(), rendered_output);
+        }
+
+        // Now rebuild the message history, replacing tool outputs with our dynamically rendered versions
+        for msg in &self.message_history {
+            match &msg.content {
+                MessageContent::Structured(blocks) => {
+                    // Look for ToolResult blocks
+                    let mut new_blocks = Vec::new();
+                    let mut need_update = false;
+
+                    for block in blocks {
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            is_error,
+                            ..
+                        } = block
+                        {
+                            // If we have an execution result for this tool use, use it
+                            if let Some(output) = tool_outputs.get(tool_use_id) {
+                                // Create a new ToolResult with updated content
+                                new_blocks.push(ContentBlock::ToolResult {
+                                    tool_use_id: tool_use_id.clone(),
+                                    content: output.clone(),
+                                    is_error: *is_error,
+                                });
+                                need_update = true;
+                            } else {
+                                // Keep the original block
+                                new_blocks.push(block.clone());
+                            }
+                        } else {
+                            // Keep non-ToolResult blocks as is
+                            new_blocks.push(block.clone());
+                        }
+                    }
+
+                    if need_update {
+                        // Create a new message with updated blocks
+                        let new_msg = Message {
+                            role: msg.role.clone(),
+                            content: MessageContent::Structured(new_blocks),
+                        };
+                        messages.push(new_msg);
+                    } else {
+                        // No changes needed, use original message
+                        messages.push(msg.clone());
+                    }
+                }
+                _ => {
+                    // For non-tool messages, just copy them as is
+                    messages.push(msg.clone());
                 }
             }
         }
+
+        messages
     }
 
-    /// Executes an action and returns the result
-    async fn execute_action(&mut self, action: &AgentAction) -> Result<(String, ActionResult)> {
-        debug!("Executing action: {:?}", action.tool);
+    /// Executes a tool and catches all errors, returning them as Results
+    async fn execute_tool(&mut self, tool_request: &ToolRequest) -> Result<bool> {
+        debug!(
+            "Executing tool request: {} (id: {})",
+            tool_request.name, tool_request.id
+        );
 
         // Update status to Running before execution
         self.ui
-            .update_tool_status(&action.tool_id, crate::ui::ToolStatus::Running, None)
+            .update_tool_status(&tool_request.id, crate::ui::ToolStatus::Running, None)
             .await?;
 
-        // Execute the tool and get both the output and result based on agent mode
-        let (output, tool_result) = match self.agent_mode {
-            AgentMode::WorkingMemory => {
-                let mut handler = AgentToolHandler::new(&mut self.working_memory);
-                ToolExecutor::execute(
-                    &mut handler,
-                    &self.project_manager,
-                    &self.command_executor,
-                    Some(&self.ui),
-                    &action.tool,
-                )
-                .await?
-            }
-            AgentMode::MessageHistory => {
-                let mut handler = AgentChatToolHandler::new(&mut self.working_memory);
-                ToolExecutor::execute(
-                    &mut handler,
-                    &self.project_manager,
-                    &self.command_executor,
-                    Some(&self.ui),
-                    &action.tool,
-                )
-                .await?
-            }
+        // Get the tool - could fail with UnknownTool
+        let tool = match ToolRegistry::global().get(&tool_request.name) {
+            Some(tool) => tool,
+            None => return Err(ToolError::UnknownTool(tool_request.name.clone()).into()),
         };
 
-        // Determine status based on result
-        let status = if tool_result.is_success() {
+        // Create a tool context
+        let mut context = ToolContext {
+            project_manager: self.project_manager.as_ref(),
+            command_executor: self.command_executor.as_ref(),
+            working_memory: Some(&mut self.working_memory),
+        };
+
+        // Execute the tool - could fail with ParseError or other errors
+        let result = tool
+            .invoke(&mut context, tool_request.input.clone())
+            .await?;
+
+        // Get success status from result
+        let success = result.is_success();
+
+        // Determine UI status based on result
+        let status = if success {
             crate::ui::ToolStatus::Success
         } else {
             crate::ui::ToolStatus::Error
         };
 
+        // Generate status string from result
+        let short_output = result.as_render().status();
+
         // Update tool status with result
         self.ui
-            .update_tool_status(&action.tool_id, status, Some(output.clone()))
+            .update_tool_status(&tool_request.id, status, Some(short_output))
             .await?;
 
-        let action_result = ActionResult {
-            tool: action.tool.clone(),
-            result: tool_result,
-            reasoning: action.reasoning.clone(),
+        // Create and store the ToolExecution record
+        let tool_execution = ToolExecution {
+            tool_request: tool_request.clone(),
+            result,
         };
 
-        Ok((output, action_result))
+        // Store the execution record
+        self.tool_executions.push(tool_execution);
+
+        Ok(success)
     }
 }
 
 pub(crate) fn parse_llm_response(
     response: &llm::LLMResponse,
     request_id: u64,
-) -> Result<Vec<AgentAction>> {
-    let mut actions = Vec::new();
-
+) -> Result<Vec<ToolRequest>> {
+    let mut tool_requests = Vec::new();
     let mut reasoning = String::new();
 
     for block in &response.content {
@@ -819,7 +752,7 @@ pub(crate) fn parse_llm_response(
             {
                 let abs_start = current_pos + tool_start;
 
-                // Add text before tool to reasoning
+                // Add text before tool to reasoning (kept for potential future use)
                 reasoning.push_str(text[current_pos..abs_start].trim());
                 if !reasoning.is_empty() {
                     reasoning.push('\n');
@@ -841,17 +774,26 @@ pub(crate) fn parse_llm_response(
                         let tool_content = &text[abs_start..abs_end];
                         debug!("Found tool content:\n{}", tool_content);
 
-                        // Parse and add the tool action
-                        let tool = parse_tool_xml(tool_content)?;
+                        // Parse the tool XML to get tool name and parameters
+                        let (tool_name, tool_params) = parse_tool_xml(tool_content)?;
+
+                        // Check if the tool exists in the registry before creating a ToolRequest
+                        if ToolRegistry::global().get(&tool_name).is_none() {
+                            return Err(ToolError::UnknownTool(tool_name).into());
+                        }
+
                         // Generate a unique tool ID that matches the one generated by the UI
                         // The UI increments its counter before generating an ID, so we add 1
-                        let tool_id = format!("tool-{}-{}", request_id, actions.len() + 1);
-                        actions.push(AgentAction {
-                            tool,
-                            reasoning: remove_thinking_tags(&reasoning).to_owned(),
-                            tool_id,
-                        });
+                        let tool_id = format!("tool-{}-{}", request_id, tool_requests.len() + 1);
 
+                        // Create a ToolRequest
+                        let tool_request = ToolRequest {
+                            id: tool_id,
+                            name: tool_name,
+                            input: tool_params,
+                        };
+
+                        tool_requests.push(tool_request);
                         current_pos = abs_end;
                         continue;
                     }
@@ -869,69 +811,17 @@ pub(crate) fn parse_llm_response(
             }
         }
 
-        if let ContentBlock::ToolUse {
-            name, input, id, ..
-        } = block
-        {
-            let tool = parse_tool_json(name, input)?;
-            // Generate a tool ID - either use the provided one or create a new one
-            // Note: for API-native tools, this ID is important as it will be used to match with tool_result
-            let tool_id = if id.is_empty() {
-                format!("tool-json-{}", actions.len())
-            } else {
-                id.clone()
+        if let ContentBlock::ToolUse { id, name, input } = block {
+            // For ToolUse blocks, create ToolRequest directly
+            let tool_request = ToolRequest {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
             };
-            actions.push(AgentAction {
-                tool,
-                reasoning: remove_thinking_tags(&reasoning).to_owned(),
-                tool_id,
-            });
+            tool_requests.push(tool_request);
             reasoning = String::new();
         }
     }
 
-    Ok(actions)
-}
-
-fn remove_thinking_tags(input: &str) -> String {
-    // First attempt to remove entire <thinking>...</thinking> blocks
-    let mut result = String::new();
-    let mut current_pos = 0;
-    let mut found_any = false;
-
-    while let Some(tag_start) = input[current_pos..].find("<thinking>") {
-        let abs_start = current_pos + tag_start;
-
-        // Add text before the <thinking> tag
-        result.push_str(&input[current_pos..abs_start]);
-
-        // Find the closing tag
-        if let Some(rel_end) = input[abs_start..].find("</thinking>") {
-            let abs_end = abs_start + rel_end + "</thinking>".len();
-            current_pos = abs_end;
-            found_any = true;
-        } else {
-            // No closing tag found, keep the opening tag and continue
-            result.push_str("<thinking>");
-            current_pos = abs_start + "<thinking>".len();
-        }
-    }
-
-    // Add any remaining text
-    if current_pos < input.len() {
-        result.push_str(&input[current_pos..]);
-    }
-
-    let result = result.trim().to_string();
-
-    // If the result is empty or we didn't find any tags, fall back to just removing the tag markers
-    if result.is_empty() || !found_any {
-        input
-            .replace("<thinking>", "")
-            .replace("</thinking>", "")
-            .trim()
-            .to_string()
-    } else {
-        result
-    }
+    Ok(tool_requests)
 }

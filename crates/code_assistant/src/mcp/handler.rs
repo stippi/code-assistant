@@ -1,8 +1,7 @@
 use super::resources::ResourceManager;
 use super::types::*;
 use crate::config::{DefaultProjectManager, ProjectManager};
-use crate::tools::{parse_tool_json, MCPToolHandler, ToolExecutor};
-use crate::types::Tools;
+use crate::tools::core::ToolRegistry;
 use crate::utils::{CommandExecutor, DefaultCommandExecutor};
 use anyhow::Result;
 use tokio::io::{AsyncWriteExt, Stdout};
@@ -193,18 +192,23 @@ impl MessageHandler {
     async fn handle_tools_list(&mut self, id: RequestId) -> Result<()> {
         debug!("Handling tools/list request");
 
+        // Use the ToolRegistry to get tool definitions
+        let registry = ToolRegistry::global();
+        let tool_defs =
+            registry.get_tool_definitions_for_scope(crate::tools::core::ToolScope::McpServer);
+
         // Map tool definitions to the expected JSON structure
-        let tools_json = Tools::mcp()
-            .into_iter()
-            .map(|tool| {
+        let tools_json = tool_defs
+            .iter()
+            .map(|tool_def| {
                 let mut json = serde_json::json!({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "inputSchema": tool.parameters
+                    "name": tool_def.name,
+                    "description": tool_def.description,
+                    "inputSchema": tool_def.parameters
                 });
 
                 // Include annotations if present
-                if let Some(annotations) = &tool.annotations {
+                if let Some(annotations) = &tool_def.annotations {
                     json["annotations"] = annotations.clone();
                 }
 
@@ -239,19 +243,28 @@ impl MessageHandler {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Missing parameters"))?;
 
-            let tool = parse_tool_json(&params.name, arguments)?;
-            let mut handler = MCPToolHandler::new();
+            // Get the tool from the registry
+            let registry = ToolRegistry::global();
+            let tool = registry
+                .get(&params.name)
+                .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", params.name))?;
 
-            let (output, result) = ToolExecutor::execute(
-                &mut handler,
-                &self.project_manager,
-                &self.command_executor,
-                None,
-                &tool,
-            )
-            .await?;
+            // Create a tool context with references
+            let mut context = crate::tools::core::ToolContext {
+                project_manager: self.project_manager.as_ref(),
+                command_executor: self.command_executor.as_ref(),
+                working_memory: None,
+            };
 
-            Ok::<_, anyhow::Error>((output, result.is_success()))
+            // Invoke the tool
+            let result = tool.invoke(&mut context, arguments.clone()).await?;
+
+            // Format the output
+            let mut tracker = crate::tools::core::ResourcesTracker::new();
+            let output = result.as_render().render(&mut tracker);
+            let is_success = result.is_success();
+
+            Ok::<_, anyhow::Error>((output, is_success))
         }
         .await;
 

@@ -345,7 +345,7 @@ impl CodeExplorer for Explorer {
         self.read_file_lines(path, start_line, end_line)
     }
 
-    fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<()> {
+    fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<String> {
         debug!("Writing file: {}, append: {}", path.display(), append);
         // Ensure the parent directory exists
         if let Some(parent) = path.parent() {
@@ -375,7 +375,8 @@ impl CodeExplorer for Explorer {
         // Write the content with the correct format
         crate::utils::encoding::write_file_with_format(path, &content_to_write, &file_format)?;
 
-        Ok(())
+        // Return the complete content after writing
+        Ok(content_to_write)
     }
 
     fn delete_file(&self, path: &PathBuf) -> Result<()> {
@@ -515,6 +516,9 @@ impl CodeExplorer for Explorer {
                     continue;
                 }
             };
+
+            // Normalize content for consistent search results
+            let content = crate::utils::encoding::normalize_content(&content);
 
             // Find all matches in the entire content
             let matches: Vec<_> = regex.find_iter(&content).collect();
