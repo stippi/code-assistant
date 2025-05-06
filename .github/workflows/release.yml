@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release, e.g. "v0.0.1" (optional, will auto-increment if not provided)'
+        description: 'Version to release, e.g. "v0.1.6" (optional, will auto-increment if not provided)'
         required: false
         type: string
 
@@ -24,10 +24,10 @@ jobs:
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
 
-      - name: Parse version from Cargo.toml
+      - name: Parse version from main crate
         id: cargo_version
         run: |
-          CURRENT_VERSION=$(grep -m 1 "^version = " Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          CURRENT_VERSION=$(grep -m 1 "^version = " crates/code_assistant/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
           echo "Current version: $CURRENT_VERSION"
 
@@ -66,19 +66,22 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "Release version: $NEW_VERSION"
 
-      - name: Update Cargo.toml and Cargo.lock
+      - name: Update Cargo.toml files in all crates
         run: |
-          # Update version in Cargo.toml
-          sed -i "s/^version = \"${{ steps.cargo_version.outputs.current_version }}\"/version = \"${{ steps.release_version.outputs.new_version }}\"/" Cargo.toml
-          cat Cargo.toml | grep "^version = "
+          # Update version in all crates
+          for crate_toml in crates/*/Cargo.toml; do
+            echo "Updating version in $crate_toml"
+            sed -i "s/^version = \"${{ steps.cargo_version.outputs.current_version }}\"/version = \"${{ steps.release_version.outputs.new_version }}\"/" "$crate_toml"
+            cat "$crate_toml" | grep "^version = "
+          done
 
-          # Update Cargo.lock
-          cargo update --package code-assistant
+          # Update Cargo.lock for the entire workspace
+          cargo update
 
       - name: Commit and push version update
         run: |
-          # Stage both Cargo.toml and Cargo.lock
-          git add Cargo.toml Cargo.lock
+          # Stage all changes
+          git add crates/*/Cargo.toml Cargo.lock
           git commit -m "Bump version to ${{ steps.release_version.outputs.new_version }}"
           git push
 
