@@ -177,7 +177,7 @@ pub(crate) fn parse_search_replace_blocks(
     } else {
         // Empty content
         return Err(ToolError::ParseError(
-            "Malformed diff: No search/replace blocks found".to_string(),
+            "Malformed diff: No search/replace blocks found. Expecting content to start with <<<<<<< SEARCH".to_string(),
         ));
     }
 
@@ -211,7 +211,7 @@ pub(crate) fn parse_search_replace_blocks(
 
             if !found_separator {
                 return Err(ToolError::ParseError(
-                    "Malformed diff: Missing separator marker".to_string(),
+                    "Malformed diff: Missing separator marker (=======)".to_string(),
                 ));
             }
 
@@ -223,6 +223,47 @@ pub(crate) fn parse_search_replace_blocks(
             };
             let mut found_end_marker = false;
 
+            // Before collecting the replace content, we'll check if there are 
+            // additional separator markers in the remaining content
+            {
+                // Clone the iterator to peek ahead without consuming it
+                let mut preview_iter = lines.clone();
+                let mut lines_to_end_marker = Vec::new();
+                let mut reached_end_marker = false;
+                
+                // Collect all lines until end marker
+                while let Some(line) = preview_iter.next() {
+                    if line.trim_end() == end_marker {
+                        reached_end_marker = true;
+                        break;
+                    }
+                    lines_to_end_marker.push(line);
+                }
+                
+                if !reached_end_marker {
+                    return Err(ToolError::ParseError(
+                        "Malformed diff: Missing closing marker".to_string(),
+                    ));
+                }
+                
+                // Check for invalid separators
+                let separator_count = lines_to_end_marker.iter()
+                    .filter(|line| line.trim_end() == "=======")
+                    .count();
+                
+                // Special case: allow one separator if it's the last line before end marker
+                if separator_count > 0 {
+                    let last_line = lines_to_end_marker.last();
+                    
+                    if separator_count > 1 || (last_line.map_or(false, |line| line.trim_end() != "=======")) {
+                        return Err(ToolError::ParseError(
+                            "Malformed diff: Multiple separator markers (=======) found in the content. This is not allowed as it would make it impossible to edit files containing separators.".to_string(),
+                        ));
+                    }
+                }
+            }
+
+            // Now actually process the replace content
             while let Some(current_line) = lines.next() {
                 // Check for end marker
                 if current_line.trim_end() == end_marker {
@@ -230,15 +271,19 @@ pub(crate) fn parse_search_replace_blocks(
                     break;
                 }
 
-                // Check if the next line is the end marker and the current line is a separator
-                // This handles the case when LLM accidentally adds a separator right before the end marker
+                // Check if this is a separator right before end marker
                 if current_line.trim_end() == "=======" {
                     if let Some(next_line) = lines.peek() {
                         if next_line.trim_end() == end_marker {
-                            // Skip this separator - it's a mistake before the end marker
+                            // Skip this separator if it's right before the end marker
                             continue;
                         }
                     }
+                    
+                    // This should never happen due to our check above, but just in case
+                    return Err(ToolError::ParseError(
+                        "Malformed diff: Found separator marker (=======) in replace content. This is not allowed as it would make subsequent edits impossible.".to_string(),
+                    ));
                 }
 
                 // Regular content line - add to replace content
@@ -250,7 +295,7 @@ pub(crate) fn parse_search_replace_blocks(
 
             if !found_end_marker {
                 return Err(ToolError::ParseError(
-                    "Malformed diff: Missing closing marker".to_string(),
+                    "Malformed diff: Missing closing marker (>>>>>>> REPLACE)".to_string(),
                 ));
             }
 
@@ -734,16 +779,16 @@ mod tests {
             ">>>>>>> REPLACE\n",
         );
 
-        // The diff is malformed (no closing >>>>>>> marker), so the function should return an error
+        // The diff is malformed (it has multiple separators), so the function should return an error
         let result = parse_search_replace_blocks(content);
-        assert!(result.is_err(), "Expected an error for malformed diff");
+        assert!(result.is_err(), "Expected an error for malformed diff with multiple separators");
         let error_message = result.unwrap_err().to_string();
-        println!("Error: {}", error_message);
-        // assert!(
-        //     error_message.contains("Missing closing marker"),
-        //     "Error should mention the missing closing marker: {}",
-        //     error_message
-        // );
+        
+        assert!(
+            error_message.contains("Multiple separator markers"),
+            "Error should mention the problem with multiple separator markers: {}",
+            error_message
+        );
     }
 
     #[test]
