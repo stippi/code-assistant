@@ -702,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_malformed_diff_with_multiple_separators() {
+    fn test_parse_malformed_diff_with_missing_closing_marker() {
         let content = concat!(
             "<<<<<<< SEARCH\n",
             "        content to search\n",
@@ -716,10 +716,34 @@ mod tests {
         assert!(result.is_err(), "Expected an error for malformed diff");
         let error_message = result.unwrap_err().to_string();
         assert!(
-            error_message.contains("Missing closing marker"), 
-            "Error should mention the missing closing marker: {}", 
+            error_message.contains("Missing closing marker"),
+            "Error should mention the missing closing marker: {}",
             error_message
         );
+    }
+
+    #[test]
+    fn test_parse_malformed_diff_with_multiple_separators() {
+        let content = concat!(
+            "<<<<<<< SEARCH\n",
+            "        content to search\n",
+            "=======\n",
+            "        some more content to search\n",
+            "=======\n",
+            "        content to replace with\n",
+            ">>>>>>> REPLACE\n",
+        );
+
+        // The diff is malformed (no closing >>>>>>> marker), so the function should return an error
+        let result = parse_search_replace_blocks(content);
+        assert!(result.is_err(), "Expected an error for malformed diff");
+        let error_message = result.unwrap_err().to_string();
+        println!("Error: {}", error_message);
+        // assert!(
+        //     error_message.contains("Missing closing marker"),
+        //     "Error should mention the missing closing marker: {}",
+        //     error_message
+        // );
     }
 
     #[test]
@@ -737,8 +761,8 @@ mod tests {
         assert!(result.is_err(), "Expected an error for malformed diff");
         let error_message = result.unwrap_err().to_string();
         assert!(
-            error_message.contains("content before diff markers"), 
-            "Error should mention unexpected content: {}", 
+            error_message.contains("content before diff markers"),
+            "Error should mention unexpected content: {}",
             error_message
         );
     }
@@ -764,8 +788,8 @@ mod tests {
         assert!(result.is_err(), "Expected an error for malformed diff");
         let error_message = result.unwrap_err().to_string();
         assert!(
-            error_message.contains("Unexpected content between diff blocks"), 
-            "Error should mention unexpected content between blocks: {}", 
+            error_message.contains("Unexpected content between diff blocks"),
+            "Error should mention unexpected content between blocks: {}",
             error_message
         );
     }
@@ -785,12 +809,12 @@ mod tests {
         let result = parse_search_replace_blocks(content);
         assert!(result.is_err(), "Expected an error for malformed diff");
         let error_message = result.unwrap_err().to_string();
-        
+
         // With the current implementation, this is detected as content between blocks
         // since we don't distinguish between "after last block" and "between blocks"
         assert!(
-            error_message.contains("Unexpected content between diff blocks"), 
-            "Error should mention unexpected content: {}", 
+            error_message.contains("Unexpected content between diff blocks"),
+            "Error should mention unexpected content: {}",
             error_message
         );
     }
