@@ -223,14 +223,14 @@ pub(crate) fn parse_search_replace_blocks(
             };
             let mut found_end_marker = false;
 
-            // Before collecting the replace content, we'll check if there are 
+            // Before collecting the replace content, we'll check if there are
             // additional separator markers in the remaining content
             {
                 // Clone the iterator to peek ahead without consuming it
                 let mut preview_iter = lines.clone();
                 let mut lines_to_end_marker = Vec::new();
                 let mut reached_end_marker = false;
-                
+
                 // Collect all lines until end marker
                 while let Some(line) = preview_iter.next() {
                     if line.trim_end() == end_marker {
@@ -239,23 +239,26 @@ pub(crate) fn parse_search_replace_blocks(
                     }
                     lines_to_end_marker.push(line);
                 }
-                
+
                 if !reached_end_marker {
                     return Err(ToolError::ParseError(
                         "Malformed diff: Missing closing marker".to_string(),
                     ));
                 }
-                
+
                 // Check for invalid separators
-                let separator_count = lines_to_end_marker.iter()
+                let separator_count = lines_to_end_marker
+                    .iter()
                     .filter(|line| line.trim_end() == "=======")
                     .count();
-                
+
                 // Special case: allow one separator if it's the last line before end marker
                 if separator_count > 0 {
                     let last_line = lines_to_end_marker.last();
-                    
-                    if separator_count > 1 || (last_line.map_or(false, |line| line.trim_end() != "=======")) {
+
+                    if separator_count > 1
+                        || (last_line.map_or(false, |line| line.trim_end() != "======="))
+                    {
                         return Err(ToolError::ParseError(
                             "Malformed diff: Multiple separator markers (=======) found in the content. This is not allowed as it would make it impossible to edit files containing separators.".to_string(),
                         ));
@@ -279,7 +282,7 @@ pub(crate) fn parse_search_replace_blocks(
                             continue;
                         }
                     }
-                    
+
                     // This should never happen due to our check above, but just in case
                     return Err(ToolError::ParseError(
                         "Malformed diff: Found separator marker (=======) in replace content. This is not allowed as it would make subsequent edits impossible.".to_string(),
@@ -747,6 +750,34 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_multiple_search_replace_blocks_whitespace() {
+        let content = concat!(
+            "\n",
+            "<<<<<<< SEARCH\n",
+            "function test() {\n",
+            "=======\n",
+            "function renamed() {\n",
+            ">>>>>>> REPLACE\n",
+            "\n",
+            "<<<<<<< SEARCH\n",
+            "console.log(\n",
+            "=======\n",
+            "logger.debug(\n",
+            ">>>>>>> REPLACE",
+            "\n",
+        );
+
+        let result = parse_search_replace_blocks(content).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].search, "function test() {");
+        assert_eq!(result[0].replace, "function renamed() {");
+        assert_eq!(result[0].replace_all, false);
+        assert_eq!(result[1].search, "console.log(");
+        assert_eq!(result[1].replace, "logger.debug(");
+        assert_eq!(result[1].replace_all, false);
+    }
+
+    #[test]
     fn test_parse_malformed_diff_with_missing_closing_marker() {
         let content = concat!(
             "<<<<<<< SEARCH\n",
@@ -781,9 +812,12 @@ mod tests {
 
         // The diff is malformed (it has multiple separators), so the function should return an error
         let result = parse_search_replace_blocks(content);
-        assert!(result.is_err(), "Expected an error for malformed diff with multiple separators");
+        assert!(
+            result.is_err(),
+            "Expected an error for malformed diff with multiple separators"
+        );
         let error_message = result.unwrap_err().to_string();
-        
+
         assert!(
             error_message.contains("Multiple separator markers"),
             "Error should mention the problem with multiple separator markers: {}",
