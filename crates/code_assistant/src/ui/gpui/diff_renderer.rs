@@ -51,10 +51,22 @@ fn parse_diff_sections(diff_text: &str) -> Vec<DiffSection> {
 
     // Normalize diff text to ensure markers are on their own lines
     let normalized_diff = diff_text
-        .replace(">>>>>>> REPLACE<<<<<<< SEARCH", ">>>>>>> REPLACE\n<<<<<<< SEARCH")
-        .replace(">>>>>>> REPLACE_ALL<<<<<<< SEARCH", ">>>>>>> REPLACE_ALL\n<<<<<<< SEARCH")
-        .replace(">>>>>>> REPLACE<<<<<<< SEARCH_ALL", ">>>>>>> REPLACE\n<<<<<<< SEARCH_ALL")
-        .replace(">>>>>>> REPLACE_ALL<<<<<<< SEARCH_ALL", ">>>>>>> REPLACE_ALL\n<<<<<<< SEARCH_ALL");
+        .replace(
+            ">>>>>>> REPLACE<<<<<<< SEARCH",
+            ">>>>>>> REPLACE\n<<<<<<< SEARCH",
+        )
+        .replace(
+            ">>>>>>> REPLACE_ALL<<<<<<< SEARCH",
+            ">>>>>>> REPLACE_ALL\n<<<<<<< SEARCH",
+        )
+        .replace(
+            ">>>>>>> REPLACE<<<<<<< SEARCH_ALL",
+            ">>>>>>> REPLACE\n<<<<<<< SEARCH_ALL",
+        )
+        .replace(
+            ">>>>>>> REPLACE_ALL<<<<<<< SEARCH_ALL",
+            ">>>>>>> REPLACE_ALL\n<<<<<<< SEARCH_ALL",
+        );
 
     for line in normalized_diff.lines() {
         if line == "<<<<<<< SEARCH" || line == "<<<<<<< SEARCH_ALL" {

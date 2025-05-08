@@ -174,53 +174,60 @@ impl MemoryView {
             .flex_col()
             .p_1()
             .gap_1()
-            .children(memory.loaded_resources.iter().map(|((project, path), resource)| {
-                // Get appropriate icon for resource type
-                let icon = match resource {
-                    LoadedResource::File(_) => file_icons::get().get_icon(path),
-                    LoadedResource::WebSearch { .. } => {
-                        file_icons::get().get_type_icon(file_icons::MAGNIFYING_GLASS)
-                    }
-                    LoadedResource::WebPage(_) => file_icons::get().get_type_icon(file_icons::HTML),
-                };
+            .children(
+                memory
+                    .loaded_resources
+                    .iter()
+                    .map(|((project, path), resource)| {
+                        // Get appropriate icon for resource type
+                        let icon = match resource {
+                            LoadedResource::File(_) => file_icons::get().get_icon(path),
+                            LoadedResource::WebSearch { .. } => {
+                                file_icons::get().get_type_icon(file_icons::MAGNIFYING_GLASS)
+                            }
+                            LoadedResource::WebPage(_) => {
+                                file_icons::get().get_type_icon(file_icons::HTML)
+                            }
+                        };
 
-                div()
-                    .rounded_sm()
-                    .py_1()
-                    .px_2()
-                    .w_full()
-                    .flex()
-                    .bg(rgb(0x303030))
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .w_full()
-                    .child(file_icons::render_icon_container(
-                        &icon,
-                        16.0,
-                        hsla(0., 0., 0.7, 1.0),
-                        "📄",
-                    ))
-                    .child(
                         div()
-                            .text_color(hsla(0., 0., 0.8, 1.0))
-                            .text_sm()
-                            .truncate()
-                            .flex_grow()
-                            .child(format!("[{}] {}", project, path.to_string_lossy())),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(hsla(0., 0., 0.5, 1.0))
-                            .flex_none()
-                            .child(match resource {
-                                LoadedResource::File(_) => "File",
-                                LoadedResource::WebSearch { .. } => "Web Search",
-                                LoadedResource::WebPage(_) => "Web Page",
-                            }),
-                    )
-            }));
+                            .rounded_sm()
+                            .py_1()
+                            .px_2()
+                            .w_full()
+                            .flex()
+                            .bg(rgb(0x303030))
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .w_full()
+                            .child(file_icons::render_icon_container(
+                                &icon,
+                                16.0,
+                                hsla(0., 0., 0.7, 1.0),
+                                "📄",
+                            ))
+                            .child(
+                                div()
+                                    .text_color(hsla(0., 0., 0.8, 1.0))
+                                    .text_sm()
+                                    .truncate()
+                                    .flex_grow()
+                                    .child(format!("[{}] {}", project, path.to_string_lossy())),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(hsla(0., 0., 0.5, 1.0))
+                                    .flex_none()
+                                    .child(match resource {
+                                        LoadedResource::File(_) => "File",
+                                        LoadedResource::WebSearch { .. } => "Web Search",
+                                        LoadedResource::WebPage(_) => "Web Page",
+                                    }),
+                            )
+                    }),
+            );
 
         // Container with scrollable area and scrollbar
         let resources_container = div()
@@ -307,9 +314,9 @@ impl MemoryView {
                         .py_1()
                         .bg(rgb(0x353535))
                         .text_color(hsla(0., 0., 0.9, 1.0))
-                        .child(format!("Project: {}", project_name))
+                        .child(format!("Project: {}", project_name)),
                 );
-                
+
                 // Generate flat list of all entries for this project
                 let entries = self.generate_file_tree(root_entry, 0, cx);
                 all_entries.extend(entries);

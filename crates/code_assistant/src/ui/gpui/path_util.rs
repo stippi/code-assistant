@@ -2,7 +2,7 @@ use std::path::Path;
 
 /// Helper trait to extend Path with icon-related functionality.
 pub trait PathExt {
-    /// Returns either the suffix if available, or the file stem otherwise to determine 
+    /// Returns either the suffix if available, or the file stem otherwise to determine
     /// which file icon to use.
     fn icon_stem_or_suffix(&self) -> Option<&str>;
 }
@@ -11,7 +11,7 @@ impl<T: AsRef<Path>> PathExt for T {
     fn icon_stem_or_suffix(&self) -> Option<&str> {
         let path = self.as_ref();
         let file_name = path.file_name()?.to_str()?;
-        
+
         // For hidden files (Unix style), return the name without the leading dot
         if file_name.starts_with('.') {
             return file_name.strip_prefix('.');
@@ -27,7 +27,7 @@ impl<T: AsRef<Path>> PathExt for T {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_icon_stem_or_suffix() {
         // No dots in name

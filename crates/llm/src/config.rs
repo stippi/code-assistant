@@ -18,8 +18,9 @@ impl DeploymentConfig {
         let keyring = Entry::new(Self::SERVICE_NAME, Self::USERNAME)?;
 
         match keyring.get_password() {
-            Ok(config_json) => serde_json::from_str(&config_json)
-                .with_context(|| "Failed to parse config"),
+            Ok(config_json) => {
+                serde_json::from_str(&config_json).with_context(|| "Failed to parse config")
+            }
             Err(keyring::Error::NoEntry) => {
                 // If no config exists, create it interactively
                 let config = Self::create_interactive()?;
@@ -32,9 +33,10 @@ impl DeploymentConfig {
 
     pub fn save(&self) -> Result<()> {
         let keyring = Entry::new(Self::SERVICE_NAME, Self::USERNAME)?;
-        let config_json = serde_json::to_string(self)
-            .with_context(|| "Failed to serialize config")?;
-        keyring.set_password(&config_json)
+        let config_json =
+            serde_json::to_string(self).with_context(|| "Failed to serialize config")?;
+        keyring
+            .set_password(&config_json)
             .with_context(|| "Failed to save config to keyring")
     }
 

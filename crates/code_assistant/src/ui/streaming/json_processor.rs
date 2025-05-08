@@ -487,7 +487,7 @@ impl JsonStreamProcessor {
             if let Some(tag_start_offset) = text_to_scan.find('<') {
                 let absolute_tag_pos = current_pos + tag_start_offset;
                 let pre_tag_slice = &processing_text[current_pos..absolute_tag_pos];
-                
+
                 let after_lt_slice = &processing_text[absolute_tag_pos..];
                 let (tag_type, tag_len) = self.detect_thinking_tag(after_lt_slice);
 
@@ -502,36 +502,43 @@ impl JsonStreamProcessor {
                             processed_pre_text = processed_pre_text.trim_start().to_string();
                         }
                     }
-                    
+
                     if !processed_pre_text.is_empty() {
                         if self.state.in_thinking {
-                            self.ui.display_fragment(&DisplayFragment::ThinkingText(processed_pre_text))?;
+                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                processed_pre_text,
+                            ))?;
                         } else {
                             let mut final_pre_text = processed_pre_text; // Is a String
-                            
+
                             // If a real thinking tag follows, trim ALL trailing spaces.
                             // Otherwise (not a thinking tag), final_pre_text is not trimmed of trailing spaces here.
-                            if tag_type == ThinkingTagType::Start || tag_type == ThinkingTagType::End {
+                            if tag_type == ThinkingTagType::Start
+                                || tag_type == ThinkingTagType::End
+                            {
                                 while final_pre_text.ends_with(' ') {
                                     final_pre_text.pop();
                                 }
                             }
-                            
+
                             if !final_pre_text.is_empty() {
-                                self.ui.display_fragment(&DisplayFragment::PlainText(final_pre_text))?;
+                                self.ui.display_fragment(&DisplayFragment::PlainText(
+                                    final_pre_text,
+                                ))?;
                             }
                         }
                     }
-                    self.state.at_block_start = false; 
+                    self.state.at_block_start = false;
                 }
 
                 // Handle the tag itself or incomplete tags
                 let is_incomplete_definition = tag_type != ThinkingTagType::None && tag_len == 0;
-                let is_incomplete_stream = tag_len > 0 && (absolute_tag_pos + tag_len > processing_text.len());
+                let is_incomplete_stream =
+                    tag_len > 0 && (absolute_tag_pos + tag_len > processing_text.len());
 
                 if is_incomplete_definition || is_incomplete_stream {
                     self.state.buffer = processing_text[absolute_tag_pos..].to_string();
-                    break; 
+                    break;
                 }
 
                 match tag_type {
@@ -545,25 +552,31 @@ impl JsonStreamProcessor {
                         self.state.at_block_start = true;
                         current_pos = absolute_tag_pos + tag_len;
                     }
-                    _ => { 
+                    _ => {
                         let char_len = after_lt_slice.chars().next().map_or(1, |c| c.len_utf8());
                         let end_char_pos = (absolute_tag_pos + char_len).min(processing_text.len());
-                        let single_char_slice_str = &processing_text[absolute_tag_pos..end_char_pos];
-                        
+                        let single_char_slice_str =
+                            &processing_text[absolute_tag_pos..end_char_pos];
+
                         if !single_char_slice_str.is_empty() {
                             if self.state.in_thinking {
-                                self.ui.display_fragment(&DisplayFragment::ThinkingText(single_char_slice_str.to_string()))?;
+                                self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                    single_char_slice_str.to_string(),
+                                ))?;
                             } else {
-                                self.ui.display_fragment(&DisplayFragment::PlainText(single_char_slice_str.to_string()))?;
+                                self.ui.display_fragment(&DisplayFragment::PlainText(
+                                    single_char_slice_str.to_string(),
+                                ))?;
                             }
                         }
                         current_pos = end_char_pos;
-                        if !single_char_slice_str.is_empty() { // If any char (e.g. '<') emitted
-                             self.state.at_block_start = false;
+                        if !single_char_slice_str.is_empty() {
+                            // If any char (e.g. '<') emitted
+                            self.state.at_block_start = false;
                         }
                     }
                 }
-            } else { 
+            } else {
                 let remaining = &processing_text[current_pos..];
                 if !remaining.is_empty() {
                     let mut processed_remaining_text = remaining.to_string();
@@ -572,23 +585,29 @@ impl JsonStreamProcessor {
                     }
                     if self.state.at_block_start {
                         if !processed_remaining_text.is_empty() {
-                            processed_remaining_text = processed_remaining_text.trim_start().to_string();
+                            processed_remaining_text =
+                                processed_remaining_text.trim_start().to_string();
                         }
                     }
-                    
-                    if !processed_remaining_text.is_empty() { // Only set at_block_start if non-empty text was processed
+
+                    if !processed_remaining_text.is_empty() {
+                        // Only set at_block_start if non-empty text was processed
                         self.state.at_block_start = false;
                     }
 
                     if !processed_remaining_text.is_empty() {
                         if self.state.in_thinking {
-                            self.ui.display_fragment(&DisplayFragment::ThinkingText(processed_remaining_text))?;
+                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                processed_remaining_text,
+                            ))?;
                         } else {
-                             self.ui.display_fragment(&DisplayFragment::PlainText(processed_remaining_text))?;
+                            self.ui.display_fragment(&DisplayFragment::PlainText(
+                                processed_remaining_text,
+                            ))?;
                         }
                     }
                 }
-                current_pos = processing_text.len(); 
+                current_pos = processing_text.len();
             }
         }
         Ok(())
