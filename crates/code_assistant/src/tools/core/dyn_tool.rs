@@ -17,6 +17,7 @@ pub trait AnyOutput: Send + Sync {
     fn is_success(&self) -> bool;
 
     /// Serialize this output to a JSON value
+    #[allow(dead_code)]
     fn to_json(&self) -> Result<serde_json::Value>;
 }
 
@@ -49,6 +50,7 @@ pub trait DynTool: Send + Sync + 'static {
     ) -> Result<Box<dyn AnyOutput>>;
 
     /// Deserialize a JSON value into this tool's output type
+    #[allow(dead_code)]
     fn deserialize_output(&self, json: Value) -> Result<Box<dyn AnyOutput>>;
 }
 
