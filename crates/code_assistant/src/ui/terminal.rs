@@ -75,7 +75,7 @@ impl TerminalUI {
         if let Some(t) = title {
             result.push_str(&format!(
                 "{}─{}",
-                "─".repeat(1).with(border_color),
+                "─".to_string().with(border_color),
                 format!(" {} ", t).bold().with(border_color)
             ));
             let remaining = frame_width.saturating_sub(t.len() + 6);
@@ -87,7 +87,7 @@ impl TerminalUI {
             ));
         }
 
-        result.push_str(&format!("{}╮\n", "─".repeat(1).with(border_color)));
+        result.push_str(&format!("{}╮\n", "─".to_string().with(border_color)));
 
         // Content lines
         for line in lines {
@@ -221,7 +221,7 @@ impl UserInterface for TerminalUI {
             }
             DisplayFragment::ToolName { name, .. } => {
                 // Format tool name in bold blue with bullet point
-                write!(writer, "\n• {}", format!("{}", name).bold().blue())?;
+                write!(writer, "\n• {}", name.to_string().bold().blue())?;
             }
             DisplayFragment::ToolParameter { name, value, .. } => {
                 // Format parameter name in cyan with indentation

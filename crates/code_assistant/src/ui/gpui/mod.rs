@@ -29,7 +29,7 @@ use elements::MessageContainer;
 actions!(code_assistant, [CloseWindow]);
 
 // Our main UI struct that implements the UserInterface trait
-pub struct GPUI {
+pub struct Gpui {
     message_queue: Arc<Mutex<Vec<MessageContainer>>>,
     input_value: Arc<Mutex<Option<String>>>,
     input_requested: Arc<Mutex<bool>>,
@@ -41,7 +41,7 @@ pub struct GPUI {
     parameter_renderers: Arc<ParameterRendererRegistry>,
 }
 
-impl GPUI {
+impl Gpui {
     pub fn new() -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let input_value = Arc::new(Mutex::new(None));
@@ -135,6 +135,7 @@ impl GPUI {
                 },
                 |_window, cx| {
                     // Create TextInput
+                    #[allow(clippy::redundant_closure)]
                     let text_input = cx.new(|cx| TextInput::new(cx));
 
                     // Create MessageView with our TextInput
@@ -268,7 +269,7 @@ impl GPUI {
 }
 
 #[async_trait]
-impl UserInterface for GPUI {
+impl UserInterface for Gpui {
     async fn display(&self, message: UIMessage) -> Result<(), UIError> {
         let mut queue = self.message_queue.lock().unwrap();
         match message {
@@ -460,7 +461,7 @@ impl UserInterface for GPUI {
     }
 }
 
-impl Clone for GPUI {
+impl Clone for Gpui {
     fn clone(&self) -> Self {
         Self {
             message_queue: self.message_queue.clone(),

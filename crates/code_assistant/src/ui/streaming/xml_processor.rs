@@ -5,6 +5,7 @@ use llm::StreamingChunk;
 use std::sync::Arc;
 
 /// State for processing streaming text that may contain tags
+#[derive(Default)]
 struct ProcessorState {
     // Buffer for collecting partial text
     buffer: String,
@@ -23,21 +24,6 @@ struct ProcessorState {
     // Track if we're at the beginning of a block (thinking/param/tool)
     // Used to determine when to trim leading newlines
     at_block_start: bool,
-}
-
-impl Default for ProcessorState {
-    fn default() -> Self {
-        Self {
-            buffer: String::new(),
-            in_thinking: false,
-            in_tool: false,
-            in_param: false,
-            tool_name: String::new(),
-            tool_id: String::new(),
-            param_name: String::new(),
-            at_block_start: false,
-        }
-    }
 }
 
 /// Manages the conversion of LLM streaming chunks to display fragments using XML-style tags

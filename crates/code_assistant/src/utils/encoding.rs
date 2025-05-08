@@ -76,7 +76,7 @@ pub fn read_file_with_encoding(path: &Path) -> Result<(String, FileEncoding)> {
     let (encoding, confidence) = encoding_rs::Encoding::for_bom(&bytes)
         .or_else(|| {
             // Try direct UTF-8 validation first (most common case)
-            if let Ok(_) = std::str::from_utf8(&bytes) {
+            if std::str::from_utf8(&bytes).is_ok() {
                 return Some((UTF_8, 100));
             }
 

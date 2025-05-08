@@ -155,7 +155,7 @@ impl JsonStreamProcessor {
 
         // Process each character
         let mut chars = text.chars().peekable();
-        while let Some(c) = chars.next() {
+        for c in chars.by_ref() {
             match c {
                 // Handle escape character (backslash)
                 '\\' => {

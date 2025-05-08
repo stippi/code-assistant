@@ -330,7 +330,7 @@ fn run_agent_gpui(
     fast_playback: bool,
 ) -> Result<()> {
     // Create shared state between GUI and Agent thread
-    let gui = ui::gpui::GPUI::new();
+    let gui = ui::gpui::Gpui::new();
 
     // Setup dynamic types
     let root_path = path.canonicalize()?;
