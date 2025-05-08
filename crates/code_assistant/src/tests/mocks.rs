@@ -21,7 +21,7 @@ pub struct MockLLMProvider {
 impl MockLLMProvider {
     pub fn new(mut responses: Vec<Result<LLMResponse, anyhow::Error>>) -> Self {
         // Add CompleteTask response at the beginning if the first response is ok
-        if responses.first().map_or(false, |r| r.is_ok()) {
+        if responses.first().is_some_and(|r| r.is_ok()) {
             responses.insert(
                 0,
                 Ok(create_test_response(
@@ -304,7 +304,7 @@ impl CodeExplorer for MockExplorer {
         // Check parent directories
         for component in path.parent().unwrap_or(path).components() {
             let current = PathBuf::from(component.as_os_str());
-            if let Some(_) = self.files.lock().unwrap().get(&current) {
+            if self.files.lock().unwrap().get(&current).is_some() {
                 // If any parent is a file (has content), that's an error
                 return Err(anyhow::anyhow!(
                     "Cannot create file: {} is a file",
@@ -367,7 +367,7 @@ impl CodeExplorer for MockExplorer {
         }
 
         // Handle relative paths from root
-        if let Some(rel_path) = path.strip_prefix("./root/").ok() {
+        if let Ok(rel_path) = path.strip_prefix("./root/") {
             let mut current = root;
             for component in rel_path.components() {
                 if let Some(name) = component.as_os_str().to_str() {
@@ -530,7 +530,7 @@ fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
             ..Default::default()
         },
     )?;
-    assert!(results.len() > 0); // Should find matches
+    assert!(!results.is_empty()); // Should find matches
 
     // Test whole word search
     let results = explorer.search(

@@ -1,66 +1,64 @@
+use crate::ui::streaming::test_utils::{
+    assert_fragments_match, chunk_str, print_fragments, TestUI,
+};
+use crate::ui::streaming::{JsonStreamProcessor, StreamProcessorTrait};
+use crate::ui::DisplayFragment;
+use llm::StreamingChunk;
+use std::sync::Arc;
+
+// Helper function to process regular text chunks using the JSON processor
+fn process_text_chunks(text: &str, chunk_size: usize) -> Vec<DisplayFragment> {
+    let test_ui = TestUI::new();
+    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+    let mut processor = JsonStreamProcessor::new(ui_arc);
+
+    // Split text into small chunks and process each one
+    for chunk in chunk_str(text, chunk_size) {
+        processor.process(&StreamingChunk::Text(chunk)).unwrap();
+    }
+
+    test_ui.get_fragments()
+}
+
+// Test helper to process JSON chunks with the JSON processor
+fn process_json_chunks(chunks: &[String], tool_name: &str, tool_id: &str) -> Vec<DisplayFragment> {
+    let test_ui = TestUI::new();
+    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+    let mut processor = JsonStreamProcessor::new(ui_arc);
+
+    // Process each chunk
+    for (i, chunk) in chunks.iter().enumerate() {
+        let name = if i == 0 {
+            Some(tool_name.to_string())
+        } else {
+            None
+        };
+        let id = if i == 0 {
+            Some(tool_id.to_string())
+        } else {
+            None
+        };
+
+        processor
+            .process(&StreamingChunk::InputJson {
+                content: chunk.to_string(),
+                tool_name: name,
+                tool_id: id,
+            })
+            .unwrap();
+    }
+
+    test_ui.get_fragments()
+}
+
 #[cfg(test)]
-mod json_processor_tests {
-    use crate::ui::streaming::test_utils::{
-        assert_fragments_match, chunk_str, print_fragments, TestUI,
-    };
-    use crate::ui::streaming::{JsonStreamProcessor, StreamProcessorTrait};
-    use crate::ui::DisplayFragment;
-    use llm::StreamingChunk;
-    use std::sync::Arc;
-
-    // Helper function to process regular text chunks using the JSON processor
-    fn process_text_chunks(text: &str, chunk_size: usize) -> Vec<DisplayFragment> {
-        let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
-        let mut processor = JsonStreamProcessor::new(ui_arc);
-
-        // Split text into small chunks and process each one
-        for chunk in chunk_str(text, chunk_size) {
-            processor.process(&StreamingChunk::Text(chunk)).unwrap();
-        }
-
-        test_ui.get_fragments()
-    }
-
-    // Test helper to process JSON chunks with the JSON processor
-    fn process_json_chunks(
-        chunks: &[String],
-        tool_name: &str,
-        tool_id: &str,
-    ) -> Vec<DisplayFragment> {
-        let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
-        let mut processor = JsonStreamProcessor::new(ui_arc);
-
-        // Process each chunk
-        for (i, chunk) in chunks.iter().enumerate() {
-            let name = if i == 0 {
-                Some(tool_name.to_string())
-            } else {
-                None
-            };
-            let id = if i == 0 {
-                Some(tool_id.to_string())
-            } else {
-                None
-            };
-
-            processor
-                .process(&StreamingChunk::InputJson {
-                    content: chunk.to_string(),
-                    tool_name: name,
-                    tool_id: id,
-                })
-                .unwrap();
-        }
-
-        test_ui.get_fragments()
-    }
+mod tests {
+    use super::*;
 
     #[test]
     fn test_basic_json_param_parsing() {
         let json = r#"{"path": "src/main.rs"}"#;
-        let chunks = chunk_str(&json, 5);
+        let chunks = chunk_str(json, 5);
 
         let expected_fragments = vec![
             DisplayFragment::ToolName {
@@ -81,7 +79,7 @@ mod json_processor_tests {
     #[test]
     fn test_array_param_json_parsing() {
         let json = r#"{"regex": "fn main", "paths": ["src", "lib"]}"#;
-        let chunks = chunk_str(&json, 6);
+        let chunks = chunk_str(json, 6);
 
         // Due to the streaming nature, the array parameter might be split into multiple fragments
         // that get merged by the TestUI. We just check that the fragments contain what we need.
@@ -169,7 +167,7 @@ mod json_processor_tests {
     #[test]
     fn test_escaped_quotes_in_json() {
         let json = r#"{"content": "Line with \"quoted\" text inside."}"#;
-        let chunks = chunk_str(&json, 5);
+        let chunks = chunk_str(json, 5);
 
         let expected_fragments = vec![
             DisplayFragment::ToolName {
@@ -190,7 +188,7 @@ mod json_processor_tests {
     #[test]
     fn test_nested_json_objects() {
         let json = r#"{"options": {"recursive": true, "followSymlinks": false}}"#;
-        let chunks = chunk_str(&json, 3);
+        let chunks = chunk_str(json, 3);
 
         let expected_fragments = vec![
             DisplayFragment::ToolName {
