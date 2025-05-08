@@ -24,6 +24,14 @@ enum JsonParseState {
     InComplexValue,
 }
 
+/// Tag types for thinking text processing
+#[derive(PartialEq)]
+enum ThinkingTagType {
+    None,
+    Start,
+    End,
+}
+
 /// State tracking for JSON processor
 struct JsonProcessorState {
     /// Current parse state in the state machine
@@ -46,6 +54,9 @@ struct JsonProcessorState {
     nesting_level: i32,
     /// Track if we're inside thinking tags for text chunks
     in_thinking: bool,
+    /// Track if we're at the beginning of a block (thinking/content)
+    /// Used to determine when to trim leading newlines
+    at_block_start: bool,
 }
 
 impl Default for JsonProcessorState {
@@ -61,6 +72,7 @@ impl Default for JsonProcessorState {
             buffer: String::new(),
             nesting_level: 0,
             in_thinking: false,
+            at_block_start: false,
         }
     }
 }
@@ -457,8 +469,13 @@ impl JsonStreamProcessor {
 
             let suffix = &processing_text[processing_text.len() - j..];
 
-            // Check for potential thinking tag starts
-            if suffix.contains("<thinking") || suffix.contains("</thinking") {
+            // Special case for newlines at the end that might be followed by a tag in the next chunk
+            if suffix.ends_with('\n') && j == 1 {
+                // Only hold back the newline if it's the very last character
+                safe_length = processing_text.len() - 1;
+                self.state.buffer = "\n".to_string();
+                break;
+            } else if self.is_potential_thinking_tag_start(suffix) {
                 // We found a potential tag start, buffer this part
                 safe_length = processing_text.len() - j;
                 self.state.buffer = suffix.to_string();
@@ -468,6 +485,10 @@ impl JsonStreamProcessor {
 
         // Only process text up to safe_length
         if safe_length < processing_text.len() {
+            // Ensure safe_length is at a char boundary
+            while safe_length > 0 && !processing_text.is_char_boundary(safe_length) {
+                safe_length -= 1;
+            }
             processing_text = processing_text[..safe_length].to_string();
         } else {
             // No potential tag at end, clear buffer
@@ -479,7 +500,7 @@ impl JsonStreamProcessor {
 
         // Process the text
         while current_pos < processing_text.len() {
-            // Look for next tag or marker
+            // Look for next tag marker
             if let Some(tag_pos) = processing_text[current_pos..].find('<') {
                 let absolute_tag_pos = current_pos + tag_pos;
 
@@ -487,16 +508,42 @@ impl JsonStreamProcessor {
                 if tag_pos > 0 {
                     let pre_tag_text = &processing_text[current_pos..absolute_tag_pos];
 
-                    if !pre_tag_text.trim().is_empty() {
+                    // Skip if the text is just whitespace and we're about to process a tag
+                    // This prevents creating unnecessary whitespace fragments between tags
+                    let is_only_whitespace = pre_tag_text.trim().is_empty();
+
+                    if !is_only_whitespace {
+                        // Get text and handle whitespace around tag boundaries
+                        let mut processed_text = pre_tag_text.to_string();
+
+                        // Trim one newline at the end
+                        if processed_text.ends_with('\n') {
+                            processed_text.pop();
+                        }
+
+                        // Trim one newline at the start if we're at a block start
+                        if self.state.at_block_start && processed_text.starts_with('\n') {
+                            processed_text = processed_text[1..].to_string();
+                        }
+
+                        // We are no longer at the start of a block after processing content
+                        self.state.at_block_start = false;
+
+                        if processed_text.is_empty() {
+                            // Skip empty text after trimming
+                            current_pos = absolute_tag_pos;
+                            continue;
+                        }
+
                         if self.state.in_thinking {
                             // Send as thinking text if we're inside thinking tags
                             self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                                pre_tag_text.to_string(),
+                                processed_text.to_string(),
                             ))?;
                         } else {
                             // Otherwise send as plain text
                             self.ui.display_fragment(&DisplayFragment::PlainText(
-                                pre_tag_text.to_string(),
+                                processed_text.to_string(),
                             ))?;
                         }
                     }
@@ -504,56 +551,87 @@ impl JsonStreamProcessor {
 
                 // Check what kind of tag we're looking at
                 let tag_slice = &processing_text[absolute_tag_pos..];
+                let (tag_type, tag_len) = self.detect_thinking_tag(tag_slice);
 
-                // Check for thinking start tag
-                if tag_slice.starts_with("<thinking>") {
-                    // Mark that we're in thinking mode
-                    self.state.in_thinking = true;
-                    // Skip past this tag (10 is the length of "<thinking>")
-                    current_pos = absolute_tag_pos + 10;
-                    continue;
+                // Check if we have a complete tag
+                if tag_type != ThinkingTagType::None
+                    && tag_len > 0
+                    && absolute_tag_pos + tag_len > processing_text.len()
+                {
+                    // Incomplete tag found, buffer the rest and stop processing
+                    self.state.buffer = processing_text[absolute_tag_pos..].to_string();
+                    break;
                 }
 
-                // Check for thinking end tag
-                if tag_slice.starts_with("</thinking>") {
-                    // Exit thinking mode
-                    self.state.in_thinking = false;
-                    // Skip past this tag (11 is the length of "</thinking>")
-                    current_pos = absolute_tag_pos + 11;
-                    continue;
+                match tag_type {
+                    ThinkingTagType::Start if tag_len > 0 => {
+                        // Mark that we're in thinking mode
+                        self.state.in_thinking = true;
+                        // Set that we're at the start of a thinking block
+                        self.state.at_block_start = true;
+                        // Skip past this tag
+                        current_pos = absolute_tag_pos + tag_len;
+                    }
+                    ThinkingTagType::End if tag_len > 0 => {
+                        // Exit thinking mode
+                        self.state.in_thinking = false;
+                        // Set to true for next block to ensure newline trimming
+                        self.state.at_block_start = true;
+                        // Skip past this tag
+                        current_pos = absolute_tag_pos + tag_len;
+                    }
+                    _ => {
+                        // When encountering an incomplete tag, we need to handle it more carefully
+                        if tag_type != ThinkingTagType::None && tag_len == 0 {
+                            // We have an incomplete tag - buffer from here to the end
+                            self.state.buffer = processing_text[absolute_tag_pos..].to_string();
+                            break;
+                        } else {
+                            // It's not a recognized tag, treat as regular character
+                            let char_len = tag_slice.chars().next().map_or(1, |c| c.len_utf8());
+
+                            let single_char = &tag_slice[..char_len];
+
+                            if self.state.in_thinking {
+                                self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                    single_char.to_string(),
+                                ))?;
+                            } else {
+                                self.ui.display_fragment(&DisplayFragment::PlainText(
+                                    single_char.to_string(),
+                                ))?;
+                            }
+
+                            // Move forward by the character length
+                            current_pos = absolute_tag_pos + char_len;
+                        }
+                    }
                 }
-
-                // It's not a recognized tag, treat as regular character
-                let char_len = processing_text[absolute_tag_pos..]
-                    .chars()
-                    .next()
-                    .map_or(1, |c| c.len_utf8());
-
-                let single_char = &processing_text[absolute_tag_pos..absolute_tag_pos + char_len];
-
-                if self.state.in_thinking {
-                    self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                        single_char.to_string(),
-                    ))?;
-                } else {
-                    self.ui
-                        .display_fragment(&DisplayFragment::PlainText(single_char.to_string()))?;
-                }
-
-                // Move forward by the character length
-                current_pos = absolute_tag_pos + char_len;
             } else {
                 // No more tags, output the rest of the text
                 let remaining = &processing_text[current_pos..];
 
                 if !remaining.is_empty() {
-                    if self.state.in_thinking {
-                        self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                            remaining.to_string(),
-                        ))?;
-                    } else {
-                        self.ui
-                            .display_fragment(&DisplayFragment::PlainText(remaining.to_string()))?;
+                    let mut processed_text = remaining.to_string();
+
+                    // Only trim one newline at the start if we're at a block start
+                    if self.state.at_block_start && processed_text.starts_with('\n') {
+                        processed_text = processed_text[1..].to_string();
+                    }
+
+                    // We are no longer at the start of a block after processing content
+                    self.state.at_block_start = false;
+
+                    if !processed_text.is_empty() {
+                        if self.state.in_thinking {
+                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                processed_text.to_string(),
+                            ))?;
+                        } else {
+                            self.ui.display_fragment(&DisplayFragment::PlainText(
+                                processed_text.to_string(),
+                            ))?;
+                        }
                     }
                 }
 
@@ -562,5 +640,50 @@ impl JsonStreamProcessor {
         }
 
         Ok(())
+    }
+
+    /// Detect if the given text starts with a thinking tag
+    fn detect_thinking_tag(&self, text: &str) -> (ThinkingTagType, usize) {
+        if text.starts_with("<thinking>") {
+            (ThinkingTagType::Start, 10) // Length of "<thinking>"
+        } else if text.starts_with("</thinking>") {
+            (ThinkingTagType::End, 11) // Length of "</thinking>"
+        } else if text.starts_with("<thinking") {
+            // Incomplete opening tag
+            (ThinkingTagType::Start, 0)
+        } else if text.starts_with("</thinking") {
+            // Incomplete closing tag
+            (ThinkingTagType::End, 0)
+        } else {
+            (ThinkingTagType::None, 0)
+        }
+    }
+
+    /// Check if a string is a potential beginning of a thinking tag
+    /// This method closely mirrors the XML processor's is_potential_tag_start method
+    fn is_potential_thinking_tag_start(&self, text: &str) -> bool {
+        // Tag prefixes to check for
+        const TAG_PREFIXES: [&str; 2] = ["<thinking>", "</thinking>"];
+
+        // Check if the text could be the start of any tag
+        for prefix in &TAG_PREFIXES {
+            let text_chars: Vec<char> = text.chars().collect(); // Convert text to Vec<char>
+            let prefix_chars: Vec<char> = prefix.chars().collect(); // Convert prefix to Vec<char>
+
+            // Loop through all possible partial matches
+            for i in 1..=prefix_chars.len().min(text_chars.len()) {
+                // Check if the last `i` characters of text match the first `i` characters of prefix
+                if text_chars[text_chars.len() - i..] == prefix_chars[..i] {
+                    return true;
+                }
+            }
+        }
+
+        // Also check for incomplete tags that already started
+        if text.contains('<') && !text.contains('>') {
+            return true;
+        }
+
+        false
     }
 }

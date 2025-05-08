@@ -215,7 +215,7 @@ mod json_processor_tests {
 
     #[test]
     fn test_simple_thinking_tag_handling() {
-        let input = "Let me think about this.\n<thinking>This is a complex problem.</thinking>\nI've decided.";
+        let input = "Let me think about this.\n<thinking>\nThis is a complex problem.\n</thinking>\nI've decided.";
 
         let expected_fragments = vec![
             DisplayFragment::PlainText("Let me think about this.".to_string()),
@@ -232,12 +232,12 @@ mod json_processor_tests {
 
     #[test]
     fn test_multiple_thinking_blocks() {
-        let input = "Working on it.<thinking>First consideration.</thinking> Progress.\n<thinking>Second consideration with\nmultiple lines.</thinking>Result.";
+        let input = "Working on it. <thinking>First consideration.</thinking> Progress.\n<thinking>Second consideration with\nmultiple lines.</thinking>Result.";
 
         let expected_fragments = vec![
             DisplayFragment::PlainText("Working on it.".to_string()),
             DisplayFragment::ThinkingText("First consideration.".to_string()),
-            DisplayFragment::PlainText(" Progress.\n".to_string()),
+            DisplayFragment::PlainText("Progress.".to_string()),
             DisplayFragment::ThinkingText("Second consideration with\nmultiple lines.".to_string()),
             DisplayFragment::PlainText("Result.".to_string()),
         ];
@@ -255,7 +255,7 @@ mod json_processor_tests {
         let input = "Let me analyze: <thinking>This requires careful analysis of the problem.</thinking> Done.";
 
         let expected_fragments = vec![
-            DisplayFragment::PlainText("Let me analyze: ".to_string()),
+            DisplayFragment::PlainText("Let me analyze:".to_string()),
             DisplayFragment::ThinkingText(
                 "This requires careful analysis of the problem.".to_string(),
             ),
