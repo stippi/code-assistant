@@ -57,18 +57,14 @@ impl DeploymentConfig {
         io::stdout().flush().unwrap();
         io::stdin().read_line(&mut input).unwrap();
         // Remove whitespace but preserve special characters
-        config.client_id = input
-            .trim_end_matches(|c| c == '\n' || c == '\r')
-            .to_string();
+        config.client_id = input.trim_end_matches(['\n', '\r']).to_string();
         input.clear();
 
         print!("Client Secret: ");
         io::stdout().flush().unwrap();
         io::stdin().read_line(&mut input).unwrap();
         // Same for secret
-        config.client_secret = input
-            .trim_end_matches(|c| c == '\n' || c == '\r')
-            .to_string();
+        config.client_secret = input.trim_end_matches(['\n', '\r']).to_string();
         input.clear();
 
         print!("Token URL: ");
