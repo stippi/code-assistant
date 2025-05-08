@@ -133,6 +133,7 @@ pub struct VertexClient {
     api_key: String,
     model: String,
     base_url: String,
+    tool_id_counter: std::sync::atomic::AtomicU64,
 }
 
 impl VertexClient {
@@ -146,6 +147,7 @@ impl VertexClient {
             api_key,
             model,
             base_url,
+            tool_id_counter: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -303,10 +305,13 @@ impl VertexClient {
                         .parts
                         .into_iter()
                         .enumerate()
-                        .map(|(index, part)| {
+                        .map(|(_, part)| {
                             if let Some(function_call) = part.function_call {
+                                let tool_id = self
+                                    .tool_id_counter
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 ContentBlock::ToolUse {
-                                    id: format!("tool-{}-{}", function_call.name, index), // Generate a unique ID with name
+                                    id: format!("tool-{}-{}", function_call.name, tool_id), // Generate a unique ID with counter
                                     name: function_call.name,
                                     input: function_call.args,
                                 }
@@ -390,10 +395,12 @@ impl VertexClient {
                                             }
 
                                             // Generate a tool ID that includes the function name for later extraction
+                                            let tool_counter = self
+                                                .tool_id_counter
+                                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                             let tool_id = format!(
                                                 "tool-{}-{}",
-                                                function_call.name,
-                                                content_blocks.len()
+                                                function_call.name, tool_counter
                                             );
 
                                             // Stream the JSON input for tools
