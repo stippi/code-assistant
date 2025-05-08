@@ -523,7 +523,9 @@ impl JsonStreamProcessor {
 
                         // Trim one newline at the start if we're at a block start
                         if self.state.at_block_start && processed_text.starts_with('\n') {
-                            processed_text = processed_text[1..].to_string();
+                            if !processed_text.is_empty() { // Ensure not empty before remove
+                                processed_text.remove(0);
+                            }
                         }
 
                         // We are no longer at the start of a block after processing content
@@ -614,9 +616,11 @@ impl JsonStreamProcessor {
                 if !remaining.is_empty() {
                     let mut processed_text = remaining.to_string();
 
-                    // Only trim one newline at the start if we're at a block start
+                    // Trim one newline at the start if we're at a block start
                     if self.state.at_block_start && processed_text.starts_with('\n') {
-                        processed_text = processed_text[1..].to_string();
+                        if !processed_text.is_empty() { // Ensure not empty before remove
+                            processed_text.remove(0);
+                        }
                     }
 
                     // We are no longer at the start of a block after processing content

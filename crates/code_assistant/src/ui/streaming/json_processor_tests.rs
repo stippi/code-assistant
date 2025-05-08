@@ -259,7 +259,7 @@ mod json_processor_tests {
             DisplayFragment::ThinkingText(
                 "This requires careful analysis of the problem.".to_string(),
             ),
-            DisplayFragment::PlainText(" Done.".to_string()),
+            DisplayFragment::PlainText("Done.".to_string()),
         ];
 
         // Use a very small chunk size (3) to ensure tags get split
@@ -320,9 +320,9 @@ mod json_processor_tests {
             .unwrap();
 
         let expected_fragments = vec![
-            DisplayFragment::PlainText("Let me think ".to_string()),
+            DisplayFragment::PlainText("Let me think".to_string()),
             DisplayFragment::ThinkingText("Analysis goes here.".to_string()),
-            DisplayFragment::PlainText(" Done.".to_string()),
+            DisplayFragment::PlainText("Done.".to_string()),
         ];
 
         let fragments = test_ui.get_fragments();
