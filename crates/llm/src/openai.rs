@@ -162,34 +162,31 @@ impl RateLimitHandler for OpenAIRateLimitInfo {
         }
 
         fn parse_duration(headers: &reqwest::header::HeaderMap, name: &str) -> Option<Duration> {
-            headers
-                .get(name)
-                .and_then(|h| h.to_str().ok())
-                .and_then(|s| {
-                    // Parse OpenAI's duration format (e.g., "1s", "6m0s")
-                    let mut seconds = 0u64;
-                    let mut current_num = String::new();
+            headers.get(name).and_then(|h| h.to_str().ok()).map(|s| {
+                // Parse OpenAI's duration format (e.g., "1s", "6m0s")
+                let mut seconds = 0u64;
+                let mut current_num = String::new();
 
-                    for c in s.chars() {
-                        match c {
-                            '0'..='9' => current_num.push(c),
-                            'm' => {
-                                if let Ok(mins) = current_num.parse::<u64>() {
-                                    seconds += mins * 60;
-                                }
-                                current_num.clear();
+                for c in s.chars() {
+                    match c {
+                        '0'..='9' => current_num.push(c),
+                        'm' => {
+                            if let Ok(mins) = current_num.parse::<u64>() {
+                                seconds += mins * 60;
                             }
-                            's' => {
-                                if let Ok(secs) = current_num.parse::<u64>() {
-                                    seconds += secs;
-                                }
-                                current_num.clear();
-                            }
-                            _ => current_num.clear(),
+                            current_num.clear();
                         }
+                        's' => {
+                            if let Ok(secs) = current_num.parse::<u64>() {
+                                seconds += secs;
+                            }
+                            current_num.clear();
+                        }
+                        _ => current_num.clear(),
                     }
-                    Some(Duration::from_secs(seconds))
-                })
+                }
+                Duration::from_secs(seconds)
+            })
         }
 
         Self {
@@ -423,7 +420,7 @@ impl OpenAIClient {
         let request = request.clone().into_non_streaming();
         let response = self
             .client
-            .post(&self.get_url())
+            .post(self.get_url())
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&request)
@@ -497,7 +494,7 @@ impl OpenAIClient {
         let request = request.clone().into_streaming();
         let response = self
             .client
-            .post(&self.get_url())
+            .post(self.get_url())
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&request)
@@ -560,7 +557,7 @@ impl OpenAIClient {
                 }
 
                 if let Ok(chunk_response) = serde_json::from_str::<OpenAIStreamResponse>(data) {
-                    if let Some(delta) = chunk_response.choices.get(0) {
+                    if let Some(delta) = chunk_response.choices.first() {
                         // Handle content streaming
                         if let Some(content) = &delta.delta.content {
                             callback(&StreamingChunk::Text(content.clone()))?;

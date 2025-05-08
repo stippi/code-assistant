@@ -304,8 +304,7 @@ impl VertexClient {
                         .content
                         .parts
                         .into_iter()
-                        .enumerate()
-                        .map(|(_, part)| {
+                        .map(|part| {
                             if let Some(function_call) = part.function_call {
                                 let tool_id = self
                                     .tool_id_counter
@@ -354,7 +353,7 @@ impl VertexClient {
     ) -> Result<(LLMResponse, VertexRateLimitInfo)> {
         let response = self
             .client
-            .post(&self.get_url(true))
+            .post(self.get_url(true))
             .query(&[("key", &self.api_key), ("alt", &"sse".to_string())])
             .header("Content-Type", "application/json")
             .json(request)
@@ -404,8 +403,8 @@ impl VertexClient {
                                             );
 
                                             // Stream the JSON input for tools
-                                            if let Some(args_str) =
-                                                serde_json::to_string(&function_call.args).ok()
+                                            if let Ok(args_str) =
+                                                serde_json::to_string(&function_call.args)
                                             {
                                                 streaming_callback(&StreamingChunk::InputJson {
                                                     content: args_str,

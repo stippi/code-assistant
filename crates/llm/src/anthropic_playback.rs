@@ -443,30 +443,21 @@ fn build_content_blocks(session: &RecordingSession) -> Result<Vec<ContentBlock>>
                             match delta_type {
                                 Some("text_delta") => {
                                     if let Some(text) = delta.get("text").and_then(Value::as_str) {
-                                        current_texts
-                                            .entry(index)
-                                            .or_insert_with(String::new)
-                                            .push_str(text);
+                                        current_texts.entry(index).or_default().push_str(text);
                                     }
                                 }
                                 Some("thinking_delta") => {
                                     if let Some(thinking) =
                                         delta.get("thinking").and_then(Value::as_str)
                                     {
-                                        current_texts
-                                            .entry(index)
-                                            .or_insert_with(String::new)
-                                            .push_str(thinking);
+                                        current_texts.entry(index).or_default().push_str(thinking);
                                     }
                                 }
                                 Some("input_json_delta") => {
                                     if let Some(json_part) =
                                         delta.get("partial_json").and_then(Value::as_str)
                                     {
-                                        current_texts
-                                            .entry(index)
-                                            .or_insert_with(String::new)
-                                            .push_str(json_part);
+                                        current_texts.entry(index).or_default().push_str(json_part);
                                     }
                                 }
                                 _ => {}

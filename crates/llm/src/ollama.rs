@@ -125,7 +125,7 @@ impl OllamaClient {
     async fn try_send_request(&self, request: &OllamaRequest) -> Result<LLMResponse> {
         let response = self
             .client
-            .post(&self.get_url())
+            .post(self.get_url())
             .json(request)
             .send()
             .await
@@ -188,7 +188,7 @@ impl OllamaClient {
     ) -> Result<LLMResponse> {
         let response = self
             .client
-            .post(&self.get_url())
+            .post(self.get_url())
             .json(request)
             .send()
             .await
@@ -233,8 +233,8 @@ impl OllamaClient {
                             if let Some(chunk_tool_calls) = chunk_response.message.tool_calls {
                                 for tool_call in &chunk_tool_calls {
                                     // Stream the JSON input to the callback
-                                    if let Some(arguments_str) =
-                                        serde_json::to_string(&tool_call.function.arguments).ok()
+                                    if let Ok(arguments_str) =
+                                        serde_json::to_string(&tool_call.function.arguments)
                                     {
                                         streaming_callback(&StreamingChunk::InputJson {
                                             content: arguments_str,

@@ -24,7 +24,7 @@ impl WebClient {
         let (browser, mut handler) = Browser::launch(
             BrowserConfig::builder()
                 //.with_head()
-                .user_data_dir(user_data_dir.path().to_path_buf())
+                .user_data_dir(user_data_dir.path())
                 .build()
                 .map_err(|e| anyhow::anyhow!("{}", e))?,
         )
@@ -165,21 +165,11 @@ pub struct WebSearchResult {
     pub metadata: PageMetadata,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebPage {
     pub url: String,
     pub content: String,
     pub metadata: PageMetadata,
-}
-
-impl Default for WebPage {
-    fn default() -> Self {
-        Self {
-            url: String::default(),
-            content: String::default(),
-            metadata: PageMetadata::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

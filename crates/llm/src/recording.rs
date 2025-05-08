@@ -90,7 +90,6 @@ impl APIRecorder {
         if let (Some(file_path), Some(session)) = (file_path_guard.as_ref(), session_guard.take()) {
             // Create/open the file
             let mut file = OpenOptions::new()
-                .write(true)
                 .create(true)
                 .append(true)
                 .open(file_path)
@@ -116,7 +115,6 @@ impl APIRecorder {
 
             // Write the session
             let mut file = OpenOptions::new()
-                .write(true)
                 .append(true)
                 .open(file_path)
                 .context("Failed to open recording file")?;

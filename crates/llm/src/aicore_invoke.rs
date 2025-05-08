@@ -280,13 +280,13 @@ struct StreamContentBlock {
 #[serde(tag = "type")]
 enum ContentDelta {
     #[serde(rename = "thinking_delta")]
-    ThinkingDelta { thinking: String },
+    Thinking { thinking: String },
     #[serde(rename = "signature_delta")]
-    SignatureDelta { signature: String },
+    Signature { signature: String },
     #[serde(rename = "text_delta")]
-    TextDelta { text: String },
+    Text { text: String },
     #[serde(rename = "input_json_delta")]
-    InputJsonDelta { partial_json: String },
+    InputJson { partial_json: String },
 }
 
 pub struct AiCoreClient {
@@ -369,7 +369,7 @@ impl AiCoreClient {
 
         let request_builder = self
             .client
-            .post(&self.get_url(streaming_callback.is_some()))
+            .post(self.get_url(streaming_callback.is_some()))
             .header("AI-Resource-Group", "default")
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", token))
@@ -538,28 +538,27 @@ impl AiCoreClient {
                             }
                             StreamEvent::ContentBlockDelta { delta, .. } => {
                                 match &delta {
-                                    ContentDelta::ThinkingDelta {
+                                    ContentDelta::Thinking {
                                         thinking: delta_text,
                                     } => {
                                         callback(&StreamingChunk::Thinking(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
                                     }
-                                    ContentDelta::SignatureDelta {
+                                    ContentDelta::Signature {
                                         signature: signature_delta,
                                     } => {
                                         // Update the signature in the last block if it's a thinking block
-                                        match blocks.last_mut().unwrap() {
-                                            ContentBlock::Thinking { signature, .. } => {
-                                                *signature = signature_delta.clone();
-                                            }
-                                            _ => {}
+                                        if let ContentBlock::Thinking { signature, .. } =
+                                            blocks.last_mut().unwrap()
+                                        {
+                                            *signature = signature_delta.clone();
                                         }
                                     }
-                                    ContentDelta::TextDelta { text: delta_text } => {
+                                    ContentDelta::Text { text: delta_text } => {
                                         callback(&StreamingChunk::Text(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
                                     }
-                                    ContentDelta::InputJsonDelta { partial_json } => {
+                                    ContentDelta::InputJson { partial_json } => {
                                         // Accumulate JSON parts as string and send as specific type
                                         /*
                                         // TODO: Keep this here, but disable it. For now, the other providers don't send parameter chunks.
@@ -709,7 +708,7 @@ impl LLMProvider for AiCoreClient {
 
         // Create tools array with cache control on the last tool if present
         let tools = request.tools.map(|tools| {
-            let tools_json = tools
+            tools
                 .into_iter()
                 .map(|tool| {
                     serde_json::json!({
@@ -718,9 +717,7 @@ impl LLMProvider for AiCoreClient {
                         "input_schema": tool.parameters
                     })
                 })
-                .collect::<Vec<serde_json::Value>>();
-
-            tools_json
+                .collect::<Vec<serde_json::Value>>()
         });
 
         let anthropic_request = AnthropicRequest {

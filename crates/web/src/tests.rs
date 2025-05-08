@@ -15,9 +15,9 @@ mod tests {
         }
 
         assert!(!results.is_empty());
-        assert!(results[0].url.len() > 0);
-        assert!(results[0].title.len() > 0);
-        assert!(results[0].snippet.len() > 0);
+        assert!(!results[0].url.is_empty());
+        assert!(!results[0].title.is_empty());
+        assert!(!results[0].snippet.is_empty());
     }
 
     #[tokio::test]
@@ -27,7 +27,7 @@ mod tests {
 
         println!("\nContent: {}", page.content);
 
-        assert!(page.content.len() > 0);
+        assert!(!page.content.is_empty());
         assert!(page.content.contains("Rust"));
     }
 }

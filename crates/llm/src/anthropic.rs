@@ -279,13 +279,13 @@ struct StreamContentBlock {
 #[serde(tag = "type")]
 enum ContentDelta {
     #[serde(rename = "thinking_delta")]
-    ThinkingDelta { thinking: String },
+    Thinking { thinking: String },
     #[serde(rename = "signature_delta")]
-    SignatureDelta { signature: String },
+    Signature { signature: String },
     #[serde(rename = "text_delta")]
-    TextDelta { text: String },
+    Text { text: String },
     #[serde(rename = "input_json_delta")]
-    InputJsonDelta { partial_json: String },
+    InputJson { partial_json: String },
 }
 
 pub struct AnthropicClient {
@@ -368,7 +368,7 @@ impl AnthropicClient {
         request: &AnthropicRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
-        let accept_value = if let Some(_) = streaming_callback {
+        let accept_value = if streaming_callback.is_some() {
             "text/event-stream"
         } else {
             "application/json"
@@ -376,7 +376,7 @@ impl AnthropicClient {
 
         let mut request_builder = self
             .client
-            .post(&self.get_url())
+            .post(self.get_url())
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("accept", accept_value);
@@ -558,28 +558,27 @@ impl AnthropicClient {
                             }
                             StreamEvent::ContentBlockDelta { delta, .. } => {
                                 match &delta {
-                                    ContentDelta::ThinkingDelta {
+                                    ContentDelta::Thinking {
                                         thinking: delta_text,
                                     } => {
                                         callback(&StreamingChunk::Thinking(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
                                     }
-                                    ContentDelta::SignatureDelta {
+                                    ContentDelta::Signature {
                                         signature: signature_delta,
                                     } => {
                                         // Update the signature in the last block if it's a thinking block
-                                        match blocks.last_mut().unwrap() {
-                                            ContentBlock::Thinking { signature, .. } => {
-                                                *signature = signature_delta.clone();
-                                            }
-                                            _ => {}
+                                        if let ContentBlock::Thinking { signature, .. } =
+                                            blocks.last_mut().unwrap()
+                                        {
+                                            *signature = signature_delta.clone();
                                         }
                                     }
-                                    ContentDelta::TextDelta { text: delta_text } => {
+                                    ContentDelta::Text { text: delta_text } => {
                                         callback(&StreamingChunk::Text(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
                                     }
-                                    ContentDelta::InputJsonDelta { partial_json } => {
+                                    ContentDelta::InputJson { partial_json } => {
                                         let (tool_name, tool_id) =
                                             blocks.last().map_or((None, None), |block| {
                                                 if let ContentBlock::ToolUse { name, id, .. } =
