@@ -46,8 +46,6 @@ struct JsonProcessorState {
     nesting_level: i32,
     /// Track if we're inside thinking tags for text chunks
     in_thinking: bool,
-    /// Text buffer for accumulating thinking text
-    thinking_buffer: String,
 }
 
 impl Default for JsonProcessorState {
@@ -63,7 +61,6 @@ impl Default for JsonProcessorState {
             buffer: String::new(),
             nesting_level: 0,
             in_thinking: false,
-            thinking_buffer: String::new(),
         }
     }
 }
@@ -539,14 +536,12 @@ impl JsonStreamProcessor {
                         single_char.to_string(),
                     ))?;
                 } else {
-                    self.ui.display_fragment(&DisplayFragment::PlainText(
-                        single_char.to_string(),
-                    ))?;
+                    self.ui
+                        .display_fragment(&DisplayFragment::PlainText(single_char.to_string()))?;
                 }
 
                 // Move forward by the character length
                 current_pos = absolute_tag_pos + char_len;
-
             } else {
                 // No more tags, output the rest of the text
                 let remaining = &processing_text[current_pos..];
@@ -557,9 +552,8 @@ impl JsonStreamProcessor {
                             remaining.to_string(),
                         ))?;
                     } else {
-                        self.ui.display_fragment(&DisplayFragment::PlainText(
-                            remaining.to_string(),
-                        ))?;
+                        self.ui
+                            .display_fragment(&DisplayFragment::PlainText(remaining.to_string()))?;
                     }
                 }
 
