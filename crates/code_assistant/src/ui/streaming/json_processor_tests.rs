@@ -8,6 +8,20 @@ mod json_processor_tests {
     use llm::StreamingChunk;
     use std::sync::Arc;
 
+    // Helper function to process regular text chunks using the JSON processor
+    fn process_text_chunks(text: &str, chunk_size: usize) -> Vec<DisplayFragment> {
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let mut processor = JsonStreamProcessor::new(ui_arc);
+
+        // Split text into small chunks and process each one
+        for chunk in chunk_str(text, chunk_size) {
+            processor.process(&StreamingChunk::Text(chunk)).unwrap();
+        }
+
+        test_ui.get_fragments()
+    }
+
     // Test helper to process JSON chunks with the JSON processor
     fn process_json_chunks(
         chunks: &[String],
@@ -192,6 +206,126 @@ mod json_processor_tests {
 
         // Due to streaming, nested objects might be split into multiple fragments
         let fragments = process_json_chunks(&chunks, "list_files", "list-123");
+        print_fragments(&fragments);
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    // Tests for the text processing functionality with thinking tags
+
+    #[test]
+    fn test_simple_thinking_tag_handling() {
+        let input = "Let me think about this.\n<thinking>This is a complex problem.</thinking>\nI've decided.";
+
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("Let me think about this.".to_string()),
+            DisplayFragment::ThinkingText("This is a complex problem.".to_string()),
+            DisplayFragment::PlainText("I've decided.".to_string()),
+        ];
+
+        // Process with small chunks to test tag handling across chunks
+        let fragments = process_text_chunks(input, 5);
+        print_fragments(&fragments);
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_multiple_thinking_blocks() {
+        let input = "Working on it.<thinking>First consideration.</thinking> Progress.\n<thinking>Second consideration with\nmultiple lines.</thinking>Result.";
+
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("Working on it.".to_string()),
+            DisplayFragment::ThinkingText("First consideration.".to_string()),
+            DisplayFragment::PlainText(" Progress.\n".to_string()),
+            DisplayFragment::ThinkingText("Second consideration with\nmultiple lines.".to_string()),
+            DisplayFragment::PlainText("Result.".to_string()),
+        ];
+
+        // Use a larger chunk size
+        let fragments = process_text_chunks(input, 10);
+        print_fragments(&fragments);
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_thinking_tag_with_partial_chunks() {
+        // Test with thinking tags split across chunk boundaries
+        let input = "Let me analyze: <thinking>This requires careful analysis of the problem.</thinking> Done.";
+
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("Let me analyze: ".to_string()),
+            DisplayFragment::ThinkingText(
+                "This requires careful analysis of the problem.".to_string(),
+            ),
+            DisplayFragment::PlainText(" Done.".to_string()),
+        ];
+
+        // Use a very small chunk size (3) to ensure tags get split
+        let fragments = process_text_chunks(input, 3);
+        print_fragments(&fragments);
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_normal_text_without_thinking_tags() {
+        let input = "This is just regular text without any special tags.";
+
+        let expected_fragments = vec![DisplayFragment::PlainText(
+            "This is just regular text without any special tags.".to_string(),
+        )];
+
+        let fragments = process_text_chunks(input, 8);
+        print_fragments(&fragments);
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_text_with_angle_brackets_but_not_thinking_tags() {
+        let input = "This text has <angle brackets> but they're not thinking tags.";
+
+        let expected_fragments = vec![DisplayFragment::PlainText(
+            "This text has <angle brackets> but they're not thinking tags.".to_string(),
+        )];
+
+        let fragments = process_text_chunks(input, 10);
+        print_fragments(&fragments);
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_incomplete_thinking_tag_at_chunk_boundary() {
+        // This test ensures proper handling of partially complete tags
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let mut processor = JsonStreamProcessor::new(ui_arc);
+
+        // First chunk ends with incomplete tag
+        processor
+            .process(&StreamingChunk::Text("Let me think <thin".to_string()))
+            .unwrap();
+        // Second chunk continues the tag
+        processor
+            .process(&StreamingChunk::Text(
+                "king>Analysis goes here.</thinkin".to_string(),
+            ))
+            .unwrap();
+        // Third chunk completes the end tag
+        processor
+            .process(&StreamingChunk::Text("g> Done.".to_string()))
+            .unwrap();
+
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("Let me think ".to_string()),
+            DisplayFragment::ThinkingText("Analysis goes here.".to_string()),
+            DisplayFragment::PlainText(" Done.".to_string()),
+        ];
+
+        let fragments = test_ui.get_fragments();
         print_fragments(&fragments);
 
         assert_fragments_match(&expected_fragments, &fragments);
