@@ -638,16 +638,20 @@ mod tests {
         assert_eq!(provider.current_index(), 2);
 
         // Check collected chunks from first request
-        let first_collected = first_chunks.lock().unwrap();
-        assert_eq!(first_collected.len(), 2);
-        assert_eq!(first_collected[0], "Hi");
-        assert_eq!(first_collected[1], "! How are you?");
+        {
+            let first_collected = first_chunks.lock().unwrap();
+            assert_eq!(first_collected.len(), 2);
+            assert_eq!(first_collected[0], "Hi");
+            assert_eq!(first_collected[1], "! How are you?");
+        } // MutexGuard is dropped here
 
         // Check collected chunks from second request
-        let second_collected = second_chunks.lock().unwrap();
-        assert_eq!(second_collected.len(), 2);
-        assert_eq!(second_collected[0], "I can help");
-        assert_eq!(second_collected[1], " with many tasks!");
+        {
+            let second_collected = second_chunks.lock().unwrap();
+            assert_eq!(second_collected.len(), 2);
+            assert_eq!(second_collected[0], "I can help");
+            assert_eq!(second_collected[1], " with many tasks!");
+        } // MutexGuard is dropped here
 
         // A third request should fail since we only have 2 sessions
         let result = provider.send_message(LLMRequest::default(), None).await;
