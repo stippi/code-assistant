@@ -94,11 +94,21 @@ impl TestCase {
     }
 }
 
+// Define a structure for tool chunks
+#[derive(Clone, Debug)]
+struct ToolChunk {
+    content: String,
+    #[allow(dead_code)]
+    tool_name: Option<String>,
+    #[allow(dead_code)]
+    tool_id: Option<String>,
+}
+
 // Chunk collector for streaming tests
 #[derive(Clone)]
 struct ChunkCollector {
     chunks: Arc<Mutex<Vec<String>>>,
-    tool_chunks: Arc<Mutex<Vec<(String, Option<String>, Option<String>)>>>, // (content, tool_name, tool_id)
+    tool_chunks: Arc<Mutex<Vec<ToolChunk>>>,
 }
 
 impl ChunkCollector {
@@ -130,11 +140,11 @@ impl ChunkCollector {
                     tool_id,
                 } => {
                     // Store tool chunks separately with metadata
-                    tool_chunks.lock().unwrap().push((
-                        content.clone(),
-                        tool_name.clone(),
-                        tool_id.clone(),
-                    ));
+                    tool_chunks.lock().unwrap().push(ToolChunk {
+                        content: content.clone(),
+                        tool_name: tool_name.clone(),
+                        tool_id: tool_id.clone(),
+                    });
                 }
             };
             Ok(())
@@ -146,7 +156,7 @@ impl ChunkCollector {
     }
 
     // Get all tool JSON chunks with their metadata
-    fn get_tool_chunks(&self) -> Vec<(String, Option<String>, Option<String>)> {
+    fn get_tool_chunks(&self) -> Vec<ToolChunk> {
         self.tool_chunks.lock().unwrap().clone()
     }
 
@@ -160,7 +170,7 @@ impl ChunkCollector {
         // Concatenate all JSON fragments
         let combined_json = tool_chunks
             .iter()
-            .map(|(content, _, _)| content.clone())
+            .map(|chunk| chunk.content.clone())
             .collect::<Vec<_>>()
             .join("");
 
