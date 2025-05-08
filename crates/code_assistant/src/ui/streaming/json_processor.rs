@@ -44,6 +44,10 @@ struct JsonProcessorState {
     buffer: String,
     /// Nesting level for complex values (objects/arrays)
     nesting_level: i32,
+    /// Track if we're inside thinking tags for text chunks
+    in_thinking: bool,
+    /// Text buffer for accumulating thinking text
+    thinking_buffer: String,
 }
 
 impl Default for JsonProcessorState {
@@ -58,6 +62,8 @@ impl Default for JsonProcessorState {
             escaped: false,
             buffer: String::new(),
             nesting_level: 0,
+            in_thinking: false,
+            thinking_buffer: String::new(),
         }
     }
 }
@@ -125,10 +131,8 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                 self.process_json(content)
             }
 
-            // For plain text chunks, display as-is
-            StreamingChunk::Text(text) => self
-                .ui
-                .display_fragment(&DisplayFragment::PlainText(text.clone())),
+            // For plain text chunks, process for thinking tags and then display
+            StreamingChunk::Text(text) => self.process_text_with_thinking_tags(text),
         }
     }
 }
@@ -432,6 +436,137 @@ impl JsonStreamProcessor {
             // in case there are multiple values with the same parameter
             self.state.current_value.clear();
         }
+        Ok(())
+    }
+
+    /// Process text chunks and extract <thinking> blocks
+    /// Similar to XML processor's functionality but only focused on <thinking> tags
+    fn process_text_with_thinking_tags(&mut self, text: &str) -> Result<(), UIError> {
+        // Combine buffer with new text
+        let current_text = format!("{}{}", self.state.buffer, text);
+
+        // Check if the end of text could be a partial tag
+        // If so, save it to buffer and only process the rest
+        let mut processing_text = current_text.clone();
+        let mut safe_length = processing_text.len();
+
+        // Check backwards for potential tag starts
+        for j in (1..=processing_text.len().min(20)).rev() {
+            // Check at most last 20 chars
+            // Make sure we're at a valid char boundary
+            if !processing_text.is_char_boundary(processing_text.len() - j) {
+                continue;
+            }
+
+            let suffix = &processing_text[processing_text.len() - j..];
+
+            // Check for potential thinking tag starts
+            if suffix.contains("<thinking") || suffix.contains("</thinking") {
+                // We found a potential tag start, buffer this part
+                safe_length = processing_text.len() - j;
+                self.state.buffer = suffix.to_string();
+                break;
+            }
+        }
+
+        // Only process text up to safe_length
+        if safe_length < processing_text.len() {
+            processing_text = processing_text[..safe_length].to_string();
+        } else {
+            // No potential tag at end, clear buffer
+            self.state.buffer.clear();
+        }
+
+        // Current position in the text we're processing
+        let mut current_pos = 0;
+
+        // Process the text
+        while current_pos < processing_text.len() {
+            // Look for next tag or marker
+            if let Some(tag_pos) = processing_text[current_pos..].find('<') {
+                let absolute_tag_pos = current_pos + tag_pos;
+
+                // Process text before the tag if there is any
+                if tag_pos > 0 {
+                    let pre_tag_text = &processing_text[current_pos..absolute_tag_pos];
+
+                    if !pre_tag_text.trim().is_empty() {
+                        if self.state.in_thinking {
+                            // Send as thinking text if we're inside thinking tags
+                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                pre_tag_text.to_string(),
+                            ))?;
+                        } else {
+                            // Otherwise send as plain text
+                            self.ui.display_fragment(&DisplayFragment::PlainText(
+                                pre_tag_text.to_string(),
+                            ))?;
+                        }
+                    }
+                }
+
+                // Check what kind of tag we're looking at
+                let tag_slice = &processing_text[absolute_tag_pos..];
+
+                // Check for thinking start tag
+                if tag_slice.starts_with("<thinking>") {
+                    // Mark that we're in thinking mode
+                    self.state.in_thinking = true;
+                    // Skip past this tag (10 is the length of "<thinking>")
+                    current_pos = absolute_tag_pos + 10;
+                    continue;
+                }
+
+                // Check for thinking end tag
+                if tag_slice.starts_with("</thinking>") {
+                    // Exit thinking mode
+                    self.state.in_thinking = false;
+                    // Skip past this tag (11 is the length of "</thinking>")
+                    current_pos = absolute_tag_pos + 11;
+                    continue;
+                }
+
+                // It's not a recognized tag, treat as regular character
+                let char_len = processing_text[absolute_tag_pos..]
+                    .chars()
+                    .next()
+                    .map_or(1, |c| c.len_utf8());
+
+                let single_char = &processing_text[absolute_tag_pos..absolute_tag_pos + char_len];
+
+                if self.state.in_thinking {
+                    self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                        single_char.to_string(),
+                    ))?;
+                } else {
+                    self.ui.display_fragment(&DisplayFragment::PlainText(
+                        single_char.to_string(),
+                    ))?;
+                }
+
+                // Move forward by the character length
+                current_pos = absolute_tag_pos + char_len;
+
+            } else {
+                // No more tags, output the rest of the text
+                let remaining = &processing_text[current_pos..];
+
+                if !remaining.is_empty() {
+                    if self.state.in_thinking {
+                        self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                            remaining.to_string(),
+                        ))?;
+                    } else {
+                        self.ui.display_fragment(&DisplayFragment::PlainText(
+                            remaining.to_string(),
+                        ))?;
+                    }
+                }
+
+                current_pos = processing_text.len();
+            }
+        }
+
         Ok(())
     }
 }
