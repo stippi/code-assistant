@@ -449,41 +449,28 @@ impl JsonStreamProcessor {
     }
 
     /// Process text chunks and extract <thinking> blocks
-    /// Similar to XML processor's functionality but only focused on <thinking> tags
     fn process_text_with_thinking_tags(&mut self, text: &str) -> Result<(), UIError> {
         // Combine buffer with new text
         let current_text = format!("{}{}", self.state.buffer, text);
 
-        // Check if the end of text could be a partial tag
-        // If so, save it to buffer and only process the rest
+        // Buffer truncating logic
         let mut processing_text = current_text.clone();
         let mut safe_length = processing_text.len();
-
-        // Check backwards for potential tag starts
         for j in (1..=processing_text.len().min(20)).rev() {
-            // Check at most last 20 chars
-            // Make sure we're at a valid char boundary
             if !processing_text.is_char_boundary(processing_text.len() - j) {
                 continue;
             }
-
             let suffix = &processing_text[processing_text.len() - j..];
-
-            // Special case for newlines at the end that might be followed by a tag in the next chunk
             if suffix.ends_with('\n') && j == 1 {
-                // Only hold back the newline if it's the very last character
                 safe_length = processing_text.len() - 1;
                 self.state.buffer = "\n".to_string();
                 break;
             } else if self.is_potential_thinking_tag_start(suffix) {
-                // We found a potential tag start, buffer this part
                 safe_length = processing_text.len() - j;
                 self.state.buffer = suffix.to_string();
                 break;
             }
         }
-
-        // Only process text up to safe_length
         if safe_length < processing_text.len() {
             // Ensure safe_length is at a char boundary
             while safe_length > 0 && !processing_text.is_char_boundary(safe_length) {
@@ -491,158 +478,119 @@ impl JsonStreamProcessor {
             }
             processing_text = processing_text[..safe_length].to_string();
         } else {
-            // No potential tag at end, clear buffer
             self.state.buffer.clear();
         }
 
-        // Current position in the text we're processing
         let mut current_pos = 0;
-
-        // Process the text
         while current_pos < processing_text.len() {
-            // Look for next tag marker
-            if let Some(tag_pos) = processing_text[current_pos..].find('<') {
-                let absolute_tag_pos = current_pos + tag_pos;
+            let text_to_scan = &processing_text[current_pos..];
+            if let Some(tag_start_offset) = text_to_scan.find('<') {
+                let absolute_tag_pos = current_pos + tag_start_offset;
+                let pre_tag_slice = &processing_text[current_pos..absolute_tag_pos];
+                
+                let after_lt_slice = &processing_text[absolute_tag_pos..];
+                let (tag_type, tag_len) = self.detect_thinking_tag(after_lt_slice);
 
-                // Process text before the tag if there is any
-                if tag_pos > 0 {
-                    let pre_tag_text = &processing_text[current_pos..absolute_tag_pos];
-
-                    // Skip if the text is just whitespace and we're about to process a tag
-                    // This prevents creating unnecessary whitespace fragments between tags
-                    let is_only_whitespace = pre_tag_text.trim().is_empty();
-
-                    if !is_only_whitespace {
-                        // Get text and handle whitespace around tag boundaries
-                        let mut processed_text = pre_tag_text.to_string();
-
-                        // Trim one newline at the end
-                        if processed_text.ends_with('\n') {
-                            processed_text.pop();
-                        }
-
-                        // Trim one newline at the start if we're at a block start
-                        if self.state.at_block_start && processed_text.starts_with('\n') {
-                            if !processed_text.is_empty() { // Ensure not empty before remove
-                                processed_text.remove(0);
-                            }
-                        }
-
-                        // We are no longer at the start of a block after processing content
-                        self.state.at_block_start = false;
-
-                        if processed_text.is_empty() {
-                            // Skip empty text after trimming
-                            current_pos = absolute_tag_pos;
-                            continue;
-                        }
-
-                        if self.state.in_thinking {
-                            // Send as thinking text if we're inside thinking tags
-                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                                processed_text.to_string(),
-                            ))?;
-                        } else {
-                            // Otherwise send as plain text
-                            self.ui.display_fragment(&DisplayFragment::PlainText(
-                                processed_text.to_string(),
-                            ))?;
+                // Process pre_tag_slice
+                if !pre_tag_slice.is_empty() {
+                    let mut processed_pre_text = pre_tag_slice.to_string();
+                    if processed_pre_text.ends_with('\n') {
+                        processed_pre_text.pop();
+                    }
+                    if self.state.at_block_start {
+                        if !processed_pre_text.is_empty() {
+                            processed_pre_text = processed_pre_text.trim_start().to_string();
                         }
                     }
+                    
+                    if !processed_pre_text.is_empty() {
+                        if self.state.in_thinking {
+                            self.ui.display_fragment(&DisplayFragment::ThinkingText(processed_pre_text))?;
+                        } else {
+                            let mut final_pre_text = processed_pre_text; // Is a String
+                            
+                            // If a real thinking tag follows, trim ALL trailing spaces.
+                            // Otherwise (not a thinking tag), final_pre_text is not trimmed of trailing spaces here.
+                            if tag_type == ThinkingTagType::Start || tag_type == ThinkingTagType::End {
+                                while final_pre_text.ends_with(' ') {
+                                    final_pre_text.pop();
+                                }
+                            }
+                            
+                            if !final_pre_text.is_empty() {
+                                self.ui.display_fragment(&DisplayFragment::PlainText(final_pre_text))?;
+                            }
+                        }
+                    }
+                    self.state.at_block_start = false; 
                 }
 
-                // Check what kind of tag we're looking at
-                let tag_slice = &processing_text[absolute_tag_pos..];
-                let (tag_type, tag_len) = self.detect_thinking_tag(tag_slice);
+                // Handle the tag itself or incomplete tags
+                let is_incomplete_definition = tag_type != ThinkingTagType::None && tag_len == 0;
+                let is_incomplete_stream = tag_len > 0 && (absolute_tag_pos + tag_len > processing_text.len());
 
-                // Check if we have a complete tag
-                if tag_type != ThinkingTagType::None
-                    && tag_len > 0
-                    && absolute_tag_pos + tag_len > processing_text.len()
-                {
-                    // Incomplete tag found, buffer the rest and stop processing
+                if is_incomplete_definition || is_incomplete_stream {
                     self.state.buffer = processing_text[absolute_tag_pos..].to_string();
-                    break;
+                    break; 
                 }
 
                 match tag_type {
                     ThinkingTagType::Start if tag_len > 0 => {
-                        // Mark that we're in thinking mode
                         self.state.in_thinking = true;
-                        // Set that we're at the start of a thinking block
                         self.state.at_block_start = true;
-                        // Skip past this tag
                         current_pos = absolute_tag_pos + tag_len;
                     }
                     ThinkingTagType::End if tag_len > 0 => {
-                        // Exit thinking mode
                         self.state.in_thinking = false;
-                        // Set to true for next block to ensure newline trimming
                         self.state.at_block_start = true;
-                        // Skip past this tag
                         current_pos = absolute_tag_pos + tag_len;
                     }
-                    _ => {
-                        // When encountering an incomplete tag, we need to handle it more carefully
-                        if tag_type != ThinkingTagType::None && tag_len == 0 {
-                            // We have an incomplete tag - buffer from here to the end
-                            self.state.buffer = processing_text[absolute_tag_pos..].to_string();
-                            break;
-                        } else {
-                            // It's not a recognized tag, treat as regular character
-                            let char_len = tag_slice.chars().next().map_or(1, |c| c.len_utf8());
-
-                            let single_char = &tag_slice[..char_len];
-
+                    _ => { 
+                        let char_len = after_lt_slice.chars().next().map_or(1, |c| c.len_utf8());
+                        let end_char_pos = (absolute_tag_pos + char_len).min(processing_text.len());
+                        let single_char_slice_str = &processing_text[absolute_tag_pos..end_char_pos];
+                        
+                        if !single_char_slice_str.is_empty() {
                             if self.state.in_thinking {
-                                self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                                    single_char.to_string(),
-                                ))?;
+                                self.ui.display_fragment(&DisplayFragment::ThinkingText(single_char_slice_str.to_string()))?;
                             } else {
-                                self.ui.display_fragment(&DisplayFragment::PlainText(
-                                    single_char.to_string(),
-                                ))?;
+                                self.ui.display_fragment(&DisplayFragment::PlainText(single_char_slice_str.to_string()))?;
                             }
-
-                            // Move forward by the character length
-                            current_pos = absolute_tag_pos + char_len;
+                        }
+                        current_pos = end_char_pos;
+                        if !single_char_slice_str.is_empty() { // If any char (e.g. '<') emitted
+                             self.state.at_block_start = false;
                         }
                     }
                 }
-            } else {
-                // No more tags, output the rest of the text
+            } else { 
                 let remaining = &processing_text[current_pos..];
-
                 if !remaining.is_empty() {
-                    let mut processed_text = remaining.to_string();
-
-                    // Trim one newline at the start if we're at a block start
-                    if self.state.at_block_start && processed_text.starts_with('\n') {
-                        if !processed_text.is_empty() { // Ensure not empty before remove
-                            processed_text.remove(0);
+                    let mut processed_remaining_text = remaining.to_string();
+                    if processed_remaining_text.ends_with('\n') {
+                        processed_remaining_text.pop();
+                    }
+                    if self.state.at_block_start {
+                        if !processed_remaining_text.is_empty() {
+                            processed_remaining_text = processed_remaining_text.trim_start().to_string();
                         }
                     }
+                    
+                    if !processed_remaining_text.is_empty() { // Only set at_block_start if non-empty text was processed
+                        self.state.at_block_start = false;
+                    }
 
-                    // We are no longer at the start of a block after processing content
-                    self.state.at_block_start = false;
-
-                    if !processed_text.is_empty() {
+                    if !processed_remaining_text.is_empty() {
                         if self.state.in_thinking {
-                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                                processed_text.to_string(),
-                            ))?;
+                            self.ui.display_fragment(&DisplayFragment::ThinkingText(processed_remaining_text))?;
                         } else {
-                            self.ui.display_fragment(&DisplayFragment::PlainText(
-                                processed_text.to_string(),
-                            ))?;
+                             self.ui.display_fragment(&DisplayFragment::PlainText(processed_remaining_text))?;
                         }
                     }
                 }
-
-                current_pos = processing_text.len();
+                current_pos = processing_text.len(); 
             }
         }
-
         Ok(())
     }
 
