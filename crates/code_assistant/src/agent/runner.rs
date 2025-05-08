@@ -487,7 +487,7 @@ impl Agent {
                                 }
                                 ContentBlock::Text { text } => {
                                     // For existing Text blocks, keep as is
-                                    text_content.push_str(&text);
+                                    text_content.push_str(text);
                                     text_content.push_str("\n\n");
                                 }
                                 _ => {} // Ignore other block types

@@ -1,8 +1,6 @@
 use crate::explorer::Explorer;
 use crate::types::{CodeExplorer, Project};
 use anyhow::Result;
-use dirs;
-use serde_json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 

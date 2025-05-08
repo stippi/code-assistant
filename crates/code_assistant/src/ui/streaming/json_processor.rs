@@ -497,10 +497,8 @@ impl JsonStreamProcessor {
                     if processed_pre_text.ends_with('\n') {
                         processed_pre_text.pop();
                     }
-                    if self.state.at_block_start {
-                        if !processed_pre_text.is_empty() {
-                            processed_pre_text = processed_pre_text.trim_start().to_string();
-                        }
+                    if self.state.at_block_start && !processed_pre_text.is_empty() {
+                        processed_pre_text = processed_pre_text.trim_start().to_string();
                     }
 
                     if !processed_pre_text.is_empty() {
@@ -583,11 +581,9 @@ impl JsonStreamProcessor {
                     if processed_remaining_text.ends_with('\n') {
                         processed_remaining_text.pop();
                     }
-                    if self.state.at_block_start {
-                        if !processed_remaining_text.is_empty() {
-                            processed_remaining_text =
-                                processed_remaining_text.trim_start().to_string();
-                        }
+                    if self.state.at_block_start && !processed_remaining_text.is_empty() {
+                        processed_remaining_text =
+                            processed_remaining_text.trim_start().to_string();
                     }
 
                     if !processed_remaining_text.is_empty() {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::agent::agent::parse_llm_response;
+use crate::agent::runner::parse_llm_response;
 use crate::persistence::MockStatePersistence;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{

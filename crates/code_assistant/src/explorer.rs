@@ -96,12 +96,10 @@ impl FileTreeEntry {
                     } else {
                         format!("├─ ")
                     }
+                } else if is_last {
+                    format!("{}└─ ", prefix.replace("├─ ", "│  ").replace("└─ ", "   "))
                 } else {
-                    if is_last {
-                        format!("{}└─ ", prefix.replace("├─ ", "│  ").replace("└─ ", "   "))
-                    } else {
-                        format!("{}├─ ", prefix.replace("├─ ", "│  ").replace("└─ ", "   "))
-                    }
+                    format!("{}├─ ", prefix.replace("├─ ", "│  ").replace("└─ ", "   "))
                 };
 
                 result.push_str(&child.to_string_with_indent(level + 1, &child_prefix));
