@@ -249,29 +249,15 @@ impl MockResponseGenerator for OpenAIMockGenerator {
             ],
             Some(_) => vec![
                 // Initial delta with function declaration
-                format!(
-                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{{\"index\":0,\"id\":\"tool-get_weather-0\",\"type\":\"function\",\"function\":{{\"name\":\"get_weather\",\"arguments\":\"\"}}}}]}}}}]}}\n\n"
-                ).into_bytes(),
+                b"data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"tool-get_weather-0\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]}}]}\n\n".to_vec(),
                 // Arguments streaming in chunks
-                format!(
-                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"{{\\\"\"}}}}]}}}}]}}\n\n"
-                ).into_bytes(),
-                format!(
-                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"location\\\"\"}}}}]}}}}]}}\n\n"
-                ).into_bytes(),
-                format!(
-                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\":\\\"\"}}}}]}}}}]}}\n\n"
-                ).into_bytes(),
-                format!(
-                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"current\"}}}}]}}}}]}}\n\n"
-                ).into_bytes(),
-                format!(
-                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"\\\"}}\"}}}}]}}}}]}}\n\n"
-                ).into_bytes(),
+                b"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"\"}}]}}]}\n\n".to_vec(),
+                b"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"location\\\"\"}}]}}]}\n\n".to_vec(),
+                b"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"\"}}]}}]}\n\n".to_vec(),
+                b"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"current\"}}]}}]}\n\n".to_vec(),
+                b"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"}\"}}]}}]}\n\n".to_vec(),
                 // Empty delta with finish reason
-                format!(
-                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n"
-                ).into_bytes(),
+                b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n".to_vec(),
                 b"data: [DONE]\n\n".to_vec(),
             ],
         }
