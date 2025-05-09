@@ -23,6 +23,16 @@ use super::ToolMode;
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
 const SYSTEM_MESSAGE_TOOLS: &str = include_str!("../../resources/system_message_tools.md");
 
+/// Defines control flow for the agent loop.
+enum LoopFlow {
+    /// Continue to the next iteration of the loop.
+    Continue,
+    /// Break out of the loop, typically indicating task completion or critical error.
+    Break,
+    /// Get user input and then continue the loop.
+    GetUserInput,
+}
+
 pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
@@ -106,127 +116,162 @@ impl Agent {
         self.ui.get_input(prompt).await.map_err(|e| e.into())
     }
 
-    async fn run_agent_loop(&mut self) -> Result<()> {
-        // Counter for request IDs
-        let mut request_counter: u64 = 0;
+    /// Handles the interaction with the LLM to get the next assistant message.
+    /// Appends the assistant's message to the history.
+    async fn obtain_llm_response(&mut self, messages: Vec<Message>) -> Result<llm::LLMResponse> {
+        let llm_response = self.get_next_assistant_message(messages).await?;
+        self.append_message(Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Structured(llm_response.content.clone()),
+        })?;
+        Ok(llm_response)
+    }
 
-        // Main agent loop
-        loop {
-            // Prepare messages with dynamically rendered tool outputs
-            let messages = self.prepare_messages();
-
-            // If message history is empty (first run), initialize it
-            if self.message_history.is_empty() {
-                self.message_history = messages.clone();
-            }
-
-            // Increment request counter
-            request_counter += 1;
-
-            // Get next assistant message from LLM
-            let llm_response = match self.get_next_assistant_message(messages).await {
-                Ok(response) => response,
-                Err(e) => return Err(e), // Critical errors terminate loop
-            };
-
-            // Add assistant message to history
-            self.append_message(Message {
-                role: MessageRole::Assistant,
-                content: MessageContent::Structured(llm_response.content.clone()),
-            })?;
-
-            // Parse tool requests from the assistant message
-            let tool_requests = match parse_llm_response(&llm_response, request_counter) {
-                Ok(requests) => requests,
-                Err(e) => {
-                    // Create error message with formatted error text
-                    let error_text = Self::format_error_for_user(&e);
-                    let error_msg = Message {
-                        role: MessageRole::User,
-                        content: MessageContent::Text(error_text),
-                    };
-
-                    // Add error message to history
-                    self.append_message(error_msg)?;
-
-                    // Continue the loop to get new actions
-                    continue;
+    /// Parses tool requests from the LLM response.
+    /// Returns a tuple of tool requests and a LoopFlow indicating what action should be taken next.
+    /// - If parsing succeeds and requests are empty: returns (empty vec, GetUserInput)
+    /// - If parsing succeeds and requests exist: returns (requests, Continue)
+    /// - If parsing fails: adds an error message to history and returns (empty vec, Continue)
+    async fn extract_tool_requests_from_response(
+        &mut self,
+        llm_response: &llm::LLMResponse,
+        request_counter: u64,
+    ) -> Result<(Vec<ToolRequest>, LoopFlow)> {
+        match parse_llm_response(llm_response, request_counter) {
+            Ok(requests) => {
+                if requests.is_empty() {
+                    Ok((requests, LoopFlow::GetUserInput))
+                } else {
+                    Ok((requests, LoopFlow::Continue))
                 }
-            };
-
-            // If no tools were requested, get user input
-            if tool_requests.is_empty() {
-                // Get input from UI
-                let user_input = self.get_input_from_ui("").await?;
-
-                // Display the user input as a user message in the UI
-                self.ui
-                    .display(UIMessage::UserInput(user_input.clone()))
-                    .await?;
-
-                // Add user input as a new message
-                let user_msg = Message {
+            }
+            Err(e) => {
+                let error_text = Self::format_error_for_user(&e);
+                let error_msg = Message {
                     role: MessageRole::User,
-                    content: MessageContent::Text(user_input.clone()),
+                    content: MessageContent::Text(error_text),
                 };
+                self.append_message(error_msg)?;
+                Ok((Vec::new(), LoopFlow::Continue)) // Continue without user input on parsing errors
+            }
+        }
+    }
 
-                // Add the message to history
-                self.append_message(user_msg)?;
+    /// Handles the case where no tool requests are made by the LLM.
+    /// Prompts the user for input and adds it to the message history.
+    async fn solicit_user_input(&mut self) -> Result<()> {
+        let user_input = self.get_input_from_ui("").await?;
+        self.ui
+            .display(UIMessage::UserInput(user_input.clone()))
+            .await?;
+        let user_msg = Message {
+            role: MessageRole::User,
+            content: MessageContent::Text(user_input.clone()),
+        };
+        self.append_message(user_msg)?;
+        Ok(())
+    }
 
-                // Continue to next iteration
-                continue;
+    /// Executes a list of tool requests.
+    /// Handles the "complete_task" action and appends tool results to message history.
+    async fn manage_tool_execution(&mut self, tool_requests: &[ToolRequest]) -> Result<LoopFlow> {
+        let mut content_blocks = Vec::new();
+
+        for tool_request in tool_requests {
+            if tool_request.name == "complete_task" {
+                self.state_persistence.cleanup()?;
+                debug!("Task completed");
+                return Ok(LoopFlow::Break);
             }
 
-            // Content blocks for the new user message
-            let mut content_blocks = Vec::new();
-
-            // Process each tool request
-            for tool_request in &tool_requests {
-                // Check if this was a CompleteTask action
-                if tool_request.name == "complete_task" {
-                    // Clean up state file on successful completion
-                    self.state_persistence.cleanup()?;
-                    debug!("Task completed");
-                    return Ok(());
+            let result_block = match self.execute_tool(tool_request).await {
+                Ok(success) => ContentBlock::ToolResult {
+                    tool_use_id: tool_request.id.clone(),
+                    content: String::new(), // Will be filled dynamically in prepare_messages
+                    is_error: if success { None } else { Some(true) },
+                },
+                Err(e) => {
+                    let error_text = Self::format_error_for_user(&e);
+                    ContentBlock::ToolResult {
+                        tool_use_id: tool_request.id.clone(),
+                        content: error_text,
+                        is_error: Some(true),
+                    }
                 }
+            };
+            content_blocks.push(result_block);
+        }
 
-                // Try to execute the tool
-                let result_block = match self.execute_tool(tool_request).await {
-                    Ok(success) => {
-                        // Success case - normal tool result
-                        ContentBlock::ToolResult {
-                            tool_use_id: tool_request.id.clone(),
-                            content: String::new(), // Will be filled dynamically in prepare_messages
-                            is_error: if success { None } else { Some(true) },
-                        }
-                    }
-                    Err(e) => {
-                        // Error case - use the helper to create formatted error message
-                        let error_text = Self::format_error_for_user(&e);
-
-                        // Create a tool result with error
-                        ContentBlock::ToolResult {
-                            tool_use_id: tool_request.id.clone(),
-                            content: error_text,
-                            is_error: Some(true),
-                        }
-                    }
-                };
-
-                // Add content block to the list
-                content_blocks.push(result_block);
-            }
-
-            // Create a user message with all tool results
+        // Only add message if there were actual tool executions (not just complete_task)
+        if !content_blocks.is_empty() {
             let result_message = Message {
                 role: MessageRole::User,
                 content: MessageContent::Structured(content_blocks),
             };
-
-            // Add the message to history
             self.append_message(result_message)?;
+        }
+        Ok(LoopFlow::Continue)
+    }
 
-            // Notify UI of working memory change
+    async fn run_agent_loop(&mut self) -> Result<()> {
+        let mut request_counter: u64 = 0;
+
+        loop {
+            let messages = self.prepare_messages();
+            if self.message_history.is_empty() {
+                // This ensures that on the very first run, the initial task (user message)
+                // is correctly set up in message_history if `prepare_messages` returns it.
+                // `prepare_messages` is designed to return the current task if history is empty.
+                self.message_history = messages.clone();
+            }
+            request_counter += 1;
+
+            // 1. Obtain LLM response (includes adding assistant message to history)
+            let llm_response = match self.obtain_llm_response(messages).await {
+                Ok(response) => response,
+                Err(e) => {
+                    // Log critical error and break loop
+                    tracing::error!("Critical error obtaining LLM response: {}", e);
+                    return Err(e);
+                }
+            };
+
+            // 2. Extract tool requests from LLM response and determine the next flow action
+            let (tool_requests, flow) = self
+                .extract_tool_requests_from_response(&llm_response, request_counter)
+                .await?;
+
+            // 3. Act based on the flow instruction
+            match flow {
+                LoopFlow::GetUserInput => {
+                    // LLM explicitly requested user input (no tools requested)
+                    self.solicit_user_input().await?;
+                }
+                LoopFlow::Continue => {
+                    if !tool_requests.is_empty() {
+                        // Tools were requested, manage their execution
+                        match self.manage_tool_execution(&tool_requests).await? {
+                            LoopFlow::Continue => { /* Continue to the next iteration */ }
+                            LoopFlow::GetUserInput => {
+                                // Handle case where tool execution results in needing user input
+                                self.solicit_user_input().await?;
+                            }
+                            LoopFlow::Break => {
+                                // Task completed (e.g., via complete_task tool)
+                                return Ok(());
+                            }
+                        }
+                    }
+                    // If tool_requests is empty here, it was a parsing error
+                    // and we continue to the next iteration without user input
+                }
+                LoopFlow::Break => {
+                    // Immediately break the loop
+                    return Ok(());
+                }
+            }
+
+            // Notify UI of working memory change at the end of each cycle
             let _ = self.ui.update_memory(&self.working_memory).await;
         }
     }
