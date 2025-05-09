@@ -33,7 +33,7 @@ pub use ollama::OllamaClient;
 pub use openai::OpenAIClient;
 pub use openrouter::OpenRouterClient;
 pub use types::*;
-pub use vertex::VertexClient;
+pub use vertex::{FixedToolIDGenerator, VertexClient};
 
 use anyhow::Result;
 use async_trait::async_trait;

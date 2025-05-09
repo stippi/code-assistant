@@ -755,10 +755,12 @@ async fn test_vertex_provider() -> Result<()> {
     run_provider_tests(
         "Vertex",
         |url| {
-            Box::new(VertexClient::new(
+            let fixed_generator = Box::new(FixedToolIDGenerator::new("0".to_string()));
+            Box::new(VertexClient::new_with_tool_id_generator(
                 "test-key".to_string(),
                 "gemini-pro".to_string(),
                 url.to_string(),
+                fixed_generator,
             ))
         },
         VertexMockGenerator,

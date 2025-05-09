@@ -128,12 +128,56 @@ impl RateLimitHandler for VertexRateLimitInfo {
     }
 }
 
+// Tool ID generation trait and implementations
+pub trait ToolIDGenerator {
+    fn generate_id(&self, name: &str) -> String;
+}
+
+/// Default implementation using an atomic counter
+pub struct DefaultToolIDGenerator {
+    counter: std::sync::atomic::AtomicU64,
+}
+
+impl DefaultToolIDGenerator {
+    pub fn new() -> Self {
+        Self {
+            counter: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+
+impl ToolIDGenerator for DefaultToolIDGenerator {
+    fn generate_id(&self, name: &str) -> String {
+        let counter = self
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        format!("tool-{}-{}", name, counter)
+    }
+}
+
+/// Fixed pattern implementation for testing
+pub struct FixedToolIDGenerator {
+    id_pattern: String,
+}
+
+impl FixedToolIDGenerator {
+    pub fn new(id_pattern: String) -> Self {
+        Self { id_pattern }
+    }
+}
+
+impl ToolIDGenerator for FixedToolIDGenerator {
+    fn generate_id(&self, name: &str) -> String {
+        format!("tool-{}-{}", name, self.id_pattern)
+    }
+}
+
 pub struct VertexClient {
     client: Client,
     api_key: String,
     model: String,
     base_url: String,
-    tool_id_counter: std::sync::atomic::AtomicU64,
+    tool_id_generator: Box<dyn ToolIDGenerator + Send + Sync>,
 }
 
 impl VertexClient {
@@ -142,12 +186,26 @@ impl VertexClient {
     }
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
+        Self::new_with_tool_id_generator(
+            api_key,
+            model,
+            base_url,
+            Box::new(DefaultToolIDGenerator::new()),
+        )
+    }
+
+    pub fn new_with_tool_id_generator(
+        api_key: String,
+        model: String,
+        base_url: String,
+        tool_id_generator: Box<dyn ToolIDGenerator + Send + Sync>,
+    ) -> Self {
         Self {
             client: Client::new(),
             api_key,
             model,
             base_url,
-            tool_id_counter: std::sync::atomic::AtomicU64::new(0),
+            tool_id_generator,
         }
     }
 
@@ -306,11 +364,10 @@ impl VertexClient {
                         .into_iter()
                         .map(|part| {
                             if let Some(function_call) = part.function_call {
-                                let tool_id = self
-                                    .tool_id_counter
-                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                let tool_id =
+                                    self.tool_id_generator.generate_id(&function_call.name);
                                 ContentBlock::ToolUse {
-                                    id: format!("tool-{}-{}", function_call.name, tool_id), // Generate a unique ID with counter
+                                    id: tool_id,
                                     name: function_call.name,
                                     input: function_call.args,
                                 }
@@ -394,13 +451,9 @@ impl VertexClient {
                                             }
 
                                             // Generate a tool ID that includes the function name for later extraction
-                                            let tool_counter = self
-                                                .tool_id_counter
-                                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                            let tool_id = format!(
-                                                "tool-{}-{}",
-                                                function_call.name, tool_counter
-                                            );
+                                            let tool_id = self
+                                                .tool_id_generator
+                                                .generate_id(&function_call.name);
 
                                             // Stream the JSON input for tools
                                             if let Ok(args_str) =
