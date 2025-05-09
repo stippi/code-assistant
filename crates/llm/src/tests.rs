@@ -249,21 +249,21 @@ impl MockResponseGenerator for OpenAIMockGenerator {
             ],
             Some(_) => vec![
                 // Initial delta with function declaration
-                "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{{\"index\":0,\"id\":\"tool-get_weather-0\",\"type\":\"function\",\"function\":{{\"name\":\"get_weather\",\"arguments\":\"\"}}}}]}}}}]}}\n\n"
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"tool-get_weather-0\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]}}}]}\n\n"
                     .to_string().into_bytes(),
                 // Arguments streaming in chunks
-                "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"{{\\\"\"}}}}]}}}}]}}\n\n"
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"\"}}]}}}]}\n\n"
                     .to_string().into_bytes(),
-                "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"location\\\"\"}}}}]}}}}]}}\n\n"
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"location\\\"\"}}]}}}]}\n\n"
                     .to_string().into_bytes(),
-                "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\":\\\"\"}}}}]}}}}]}}\n\n"
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"\"}}]}}}]}\n\n"
                     .to_string().into_bytes(),
-                "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"current\"}}}}]}}}}]}}\n\n"
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"current\"}}]}}}]}\n\n"
                     .to_string().into_bytes(),
-                "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"\\\"}}\"}}}}]}}}}]}}\n\n"
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"}\"}}]}}}]}\n\n"
                     .to_string().into_bytes(),
                 // Empty delta with finish reason
-                "data: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n"
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
                     .to_string().into_bytes(),
                 b"data: [DONE]\n\n".to_vec(),
             ],
