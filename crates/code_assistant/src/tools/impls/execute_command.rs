@@ -155,7 +155,8 @@ impl Tool for ExecuteCommandTool {
 mod tests {
     use super::*;
     use crate::tests::mocks::{
-        create_command_executor_mock, create_explorer_mock, MockProjectManager,
+        create_command_executor_mock, create_explorer_mock, create_failed_command_executor_mock,
+        MockProjectManager,
     };
 
     #[tokio::test]
@@ -175,6 +176,25 @@ mod tests {
         // Verify rendering
         assert!(rendered.contains("Status: Success"));
         assert!(rendered.contains("file1.rs\nfile2.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_command_failure_rendering() {
+        // Create output with failed command data
+        let output = ExecuteCommandOutput {
+            project: "test-project".to_string(),
+            command_line: "rm -rf /tmp/nonexistent".to_string(),
+            working_dir: None,
+            output: "rm: cannot remove '/tmp/nonexistent': No such file or directory".to_string(),
+            success: false,
+        };
+
+        let mut tracker = ResourcesTracker::new();
+        let rendered = output.render(&mut tracker);
+
+        // Verify rendering for failed command
+        assert!(rendered.contains("Status: Failed"));
+        assert!(rendered.contains("cannot remove"));
     }
 
     #[tokio::test]
@@ -219,6 +239,50 @@ mod tests {
         let commands = test_cmd_executor.get_captured_commands();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].0, "ls -la");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_execute_command_failure() -> Result<()> {
+        // Create test project manager with explorer
+        let test_explorer = create_explorer_mock();
+        let mock_project_manager = MockProjectManager::default().with_project(
+            "test-project",
+            PathBuf::from("./root"),
+            test_explorer,
+        );
+
+        // Create test command executor that returns failure
+        let test_cmd_executor = create_failed_command_executor_mock();
+
+        // Create tool context with project manager and failing command executor
+        let mut context = ToolContext {
+            project_manager: &mock_project_manager,
+            command_executor: &test_cmd_executor,
+            working_memory: None,
+        };
+
+        // Create input
+        let input = ExecuteCommandInput {
+            project: "test-project".to_string(),
+            command_line: "rm -rf /tmp/nonexistent".to_string(),
+            working_dir: None,
+        };
+
+        // Execute tool
+        let tool = ExecuteCommandTool;
+        let result = tool.execute(&mut context, input).await?;
+
+        // Verify result shows failure
+        assert_eq!(result.command_line, "rm -rf /tmp/nonexistent");
+        assert_eq!(result.output, "Command failed: permission denied");
+        assert!(!result.success);
+
+        // Verify command was executed
+        let commands = test_cmd_executor.get_captured_commands();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].0, "rm -rf /tmp/nonexistent");
 
         Ok(())
     }
