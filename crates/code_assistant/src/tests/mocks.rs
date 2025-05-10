@@ -143,10 +143,13 @@ impl CommandExecutor for MockCommandExecutor {
         working_dir: Option<&PathBuf>,
     ) -> Result<CommandOutput> {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        self.captured_commands.lock().unwrap().push(CapturedCommand {
-            command_line: command_line.to_string(),
-            working_dir: working_dir.cloned(),
-        });
+        self.captured_commands
+            .lock()
+            .unwrap()
+            .push(CapturedCommand {
+                command_line: command_line.to_string(),
+                working_dir: working_dir.cloned(),
+            });
 
         self.responses
             .lock()
