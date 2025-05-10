@@ -146,6 +146,12 @@ impl DefaultToolIDGenerator {
     }
 }
 
+impl Default for DefaultToolIDGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolIDGenerator for DefaultToolIDGenerator {
     fn generate_id(&self, name: &str) -> String {
         let counter = self

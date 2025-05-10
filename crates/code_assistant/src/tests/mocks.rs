@@ -106,12 +106,19 @@ pub fn create_test_response(
     }
 }
 
+// Struct to represent a captured command
+#[derive(Clone, Debug)]
+pub struct CapturedCommand {
+    pub command_line: String,
+    pub working_dir: Option<PathBuf>,
+}
+
 // Mock CommandExecutor
 #[derive(Clone)]
 pub struct MockCommandExecutor {
     responses: Arc<Mutex<Vec<Result<CommandOutput, anyhow::Error>>>>,
     calls: Arc<AtomicUsize>,
-    captured_commands: Arc<Mutex<Vec<(String, Option<PathBuf>)>>>,
+    captured_commands: Arc<Mutex<Vec<CapturedCommand>>>,
 }
 
 impl MockCommandExecutor {
@@ -123,7 +130,7 @@ impl MockCommandExecutor {
         }
     }
 
-    pub fn get_captured_commands(&self) -> Vec<(String, Option<PathBuf>)> {
+    pub fn get_captured_commands(&self) -> Vec<CapturedCommand> {
         self.captured_commands.lock().unwrap().clone()
     }
 }
@@ -136,10 +143,10 @@ impl CommandExecutor for MockCommandExecutor {
         working_dir: Option<&PathBuf>,
     ) -> Result<CommandOutput> {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        self.captured_commands
-            .lock()
-            .unwrap()
-            .push((command_line.to_string(), working_dir.cloned()));
+        self.captured_commands.lock().unwrap().push(CapturedCommand {
+            command_line: command_line.to_string(),
+            working_dir: working_dir.cloned(),
+        });
 
         self.responses
             .lock()

@@ -223,7 +223,7 @@ mod tests {
         let input = ExecuteCommandInput {
             project: "test-project".to_string(),
             command_line: "ls -la".to_string(),
-            working_dir: None,
+            working_dir: Some("src".to_string()),
         };
 
         // Execute tool
@@ -238,7 +238,8 @@ mod tests {
         // Verify command was executed with correct parameters
         let commands = test_cmd_executor.get_captured_commands();
         assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].0, "ls -la");
+        assert_eq!(commands[0].command_line, "ls -la");
+        assert_eq!(commands[0].working_dir, Some(PathBuf::from("./root/src")));
 
         Ok(())
     }
@@ -282,7 +283,8 @@ mod tests {
         // Verify command was executed
         let commands = test_cmd_executor.get_captured_commands();
         assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].0, "rm -rf /tmp/nonexistent");
+        assert_eq!(commands[0].command_line, "rm -rf /tmp/nonexistent");
+        assert_eq!(commands[0].working_dir, Some(PathBuf::from("./root")));
 
         Ok(())
     }
