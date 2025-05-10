@@ -150,7 +150,6 @@ impl CommandExecutor for MockCommandExecutor {
 }
 
 pub fn create_command_executor_mock() -> MockCommandExecutor {
-    // Use the new mock from the mocks module
     MockCommandExecutor::new(vec![Ok(CommandOutput {
         success: true,
         output: "Command output".to_string(),

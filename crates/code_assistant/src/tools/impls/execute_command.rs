@@ -154,42 +154,9 @@ impl Tool for ExecuteCommandTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::{create_explorer_mock, MockProjectManager};
-    use crate::utils::CommandOutput;
-    use std::sync::{Arc, Mutex};
-
-    // Simple command executor for testing
-    struct TestCommandExecutor {
-        response: CommandOutput,
-        executed_commands: Arc<Mutex<Vec<(String, Option<PathBuf>)>>>,
-    }
-
-    impl TestCommandExecutor {
-        fn new(response: CommandOutput) -> Self {
-            Self {
-                response,
-                executed_commands: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl crate::utils::CommandExecutor for TestCommandExecutor {
-        async fn execute(
-            &self,
-            command_line: &str,
-            working_dir: Option<&PathBuf>,
-        ) -> Result<CommandOutput> {
-            // Record the command execution
-            self.executed_commands
-                .lock()
-                .unwrap()
-                .push((command_line.to_string(), working_dir.cloned()));
-
-            // Return the predefined response
-            Ok(self.response.clone())
-        }
-    }
+    use crate::tests::mocks::{
+        create_command_executor_mock, create_explorer_mock, MockProjectManager,
+    };
 
     #[tokio::test]
     async fn test_execute_command_output_rendering() {
@@ -216,12 +183,7 @@ mod tests {
         let test_explorer = create_explorer_mock();
 
         // Create test command executor with predefined response
-        let test_cmd_executor = TestCommandExecutor::new(CommandOutput {
-            success: true,
-            output: "file1.rs\nfile2.rs".to_string(),
-        });
-
-        let executed_commands = test_cmd_executor.executed_commands.clone();
+        let test_cmd_executor = create_command_executor_mock();
 
         // Setup the project manager with test explorer
         let mock_project_manager = MockProjectManager::default().with_project(
@@ -250,11 +212,11 @@ mod tests {
 
         // Verify result
         assert_eq!(result.command_line, "ls -la");
-        assert_eq!(result.output, "file1.rs\nfile2.rs");
+        assert_eq!(result.output, "Command output"); // Match expected output from mock
         assert!(result.success);
 
         // Verify command was executed with correct parameters
-        let commands = executed_commands.lock().unwrap();
+        let commands = test_cmd_executor.get_captured_commands();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].0, "ls -la");
 
