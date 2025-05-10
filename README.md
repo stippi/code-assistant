@@ -80,7 +80,7 @@ An example configuration is given below:
       ],
       "env": {
         "PERPLEXITY_API_KEY": "pplx-...", // optional, enables perplexity_ask tool
-        "SHELL": "/bin/zsh"               // your login shell, required if you configure the "env" block
+        "SHELL": "/bin/zsh" // your login shell, required when configuring "env" here
       }
     }
   }
