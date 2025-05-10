@@ -79,7 +79,8 @@ An example configuration is given below:
         "server"
       ],
       "env": {
-        "PERPLEXITY_API_KEY": "pplx-..." // optional, enables perplexity_ask tool
+        "PERPLEXITY_API_KEY": "pplx-...", // optional, enables perplexity_ask tool
+        "SHELL": "/bin/zsh"               // your login shell, required if you configure the "env" block
       }
     }
   }
