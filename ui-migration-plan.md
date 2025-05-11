@@ -481,18 +481,18 @@ fn render_thinking_blocks(blocks: &[ThinkingBlock]) -> impl IntoElement {
 
 ## Code Locations for Reference
 
-1. Current UI implementation:
+1. Current UI implementation (in project `code-assistant`):
    - `crates/code_assistant/src/ui/gpui/mod.rs`: Main UI struct
    - `crates/code_assistant/src/ui/gpui/message.rs`: Message view
    - `crates/code_assistant/src/ui/gpui/input.rs`: Text input
    - `crates/code_assistant/src/ui/gpui/memory_view.rs`: Memory sidebar
    - `crates/code_assistant/src/ui/gpui/elements.rs`: Message elements
 
-2. GPUI-Component reference:
-   - `gpui-component/crates/ui/src/root.rs`: Root component
-   - `gpui-component/crates/ui/src/input/input.rs`: TextInput component
-   - `gpui-component/crates/ui/src/text/markdown.rs`: Markdown component
-   - `gpui-component/crates/ui/src/drawer.rs`: Drawer component
-   - `gpui-component/crates/story/src/main.rs`: Example app structure
+2. GPUI-Component reference (in read-only project `gpui-component`):
+   - `crates/ui/src/root.rs`: Root component
+   - `crates/ui/src/input/input.rs`: TextInput component
+   - `crates/ui/src/text/markdown.rs`: Markdown component
+   - `crates/ui/src/drawer.rs`: Drawer component
+   - `crates/story/src/main.rs`: Example app structure
 
 These files will serve as the primary references for implementing the migration plan.
