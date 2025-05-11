@@ -35,10 +35,10 @@ Create a new implementation that wraps our main view in GPUI-Component's `Root` 
 
 pub fn run_app(&self) {
     // ...existing setup...
-    
+
     app.run(move |cx| {
         // Setup and initialization...
-        
+
         // Create memory view with our shared working memory
         let memory_view = cx.new(|cx| MemoryView::new(working_memory.clone(), cx));
 
@@ -73,12 +73,12 @@ pub fn run_app(&self) {
                         input_requested.clone(),
                     )
                 });
-                
+
                 // Wrap everything in a Root component
                 cx.new(|cx| gpui_component::Root::new(message_view.into(), window, cx))
             },
         );
-        
+
         // ...existing focus and refresh setup...
     });
 }
@@ -169,7 +169,7 @@ match element {
             // If expanded, show the full content
             Markdown::new(ElementId::new("thinking-content"), block.content.clone())
         };
-        
+
         // Wrap in a styled container with toggle functionality
         div()
             .bg(rgb(0x303040))
@@ -222,7 +222,7 @@ impl MessageView {
             .flex_col()
             // ...existing message and input rendering...
     }
-    
+
     pub fn toggle_memory_drawer(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
         if window.has_active_drawer(cx) {
             window.close_drawer(cx);
@@ -249,7 +249,7 @@ impl Render for MemoryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // We don't need the toggle logic anymore since the drawer handles that
         let has_memory = self.memory.lock().unwrap().is_some();
-        
+
         div()
             .id("memory-sidebar")
             .track_focus(&self.focus_handle(cx))
@@ -275,9 +275,13 @@ impl Render for MemoryView {
 }
 ```
 
-### 5. Modify the State Management
+### 5. Optional: Experiment with Entity-Based Event System (Separate Phase)
 
-While keeping the current polling-based update mechanism, we can enhance it with entity events to be more efficient:
+As an optional, clearly separated phase, we can experiment with enhancing the current polling-based mechanism with entity events to improve UI responsiveness. This would be implemented only after the other migration steps are complete and stable.
+
+**Note:** This phase is optional and can be skipped if it introduces too much complexity. It is kept separate from the other migration steps to avoid complicating the core migration.
+
+#### Event System Implementation
 
 1. Add event types:
 
@@ -293,56 +297,59 @@ pub enum UiEvent {
 }
 ```
 
-2. Modify the MessageView to handle events:
+2. Create an event dispatcher that works with or without context access:
 
 ```rust
-// In src/ui/gpui/message.rs
+// In src/ui/gpui/mod.rs
 
-impl MessageView {
-    pub fn handle_event(&mut self, event: &UiEvent, cx: &mut Context<Self>) {
-        match event {
-            UiEvent::MessageAdded | UiEvent::MessageUpdated => {
-                // Just trigger a re-render
-                cx.notify();
-            },
-            UiEvent::InputRequested(requested) => {
-                // Update input request state
-                *self.input_requested.lock().unwrap() = *requested;
-                cx.notify();
-            },
-            UiEvent::MemoryUpdated => {
-                // Memory view will handle this event separately
+pub struct UiEventDispatcher {
+    // Keep the original update flag for polling
+    ui_update_needed: Arc<Mutex<bool>>,
+    // Store a weak reference to window for emitting events when possible
+    window_ref: Arc<Mutex<Option<WeakWindowHandle<MessageView>>>>,
+}
+
+impl UiEventDispatcher {
+    pub fn new(ui_update_needed: Arc<Mutex<bool>>) -> Self {
+        Self {
+            ui_update_needed,
+            window_ref: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    // Called from GPUI thread to register window
+    pub fn register_window(&self, window: &WindowHandle<MessageView>) {
+        if let Ok(mut window_ref) = self.window_ref.lock() {
+            *window_ref = Some(window.downgrade());
+        }
+    }
+
+    // Can be called from any thread, including agent thread
+    pub fn emit_event(&self, event: UiEvent) {
+        // Always update the polling flag
+        if let Ok(mut flag) = self.ui_update_needed.lock() {
+            *flag = true;
+        }
+
+        // Try to emit an entity event if we have access to a window
+        if let Ok(window_ref) = self.window_ref.lock() {
+            if let Some(weak_handle) = window_ref.as_ref() {
+                if let Some(window) = weak_handle.upgrade() {
+                    // We're lucky - we can emit an entity event directly
+                    let event_clone = event.clone();
+                    window.update(move |view, _, cx| {
+                        view.handle_event(&event_clone, cx);
+                    }).ok();
+                }
             }
         }
     }
 }
 ```
 
-3. While maintaining the polling mechanism for compatibility, we can also emit events:
+3. This approach allows us to maintain the polling mechanism while opportunistically using entity events when possible, without requiring `cx` access in the agent thread.
 
-```rust
-// In src/ui/gpui/mod.rs - inside the Gpui impl
-
-fn emit_ui_event(&self, event: UiEvent) {
-    // Set the update flag for polling-based updates
-    if let Ok(mut flag) = self.ui_update_needed.lock() {
-        *flag = true;
-    }
-    
-    // Also broadcast the event through GPUI's entity system
-    if let Some(window) = gpui::WindowHandle::<MessageView>::try_current() {
-        window.update_all_windows(move |view, _, cx| {
-            view.handle_event(&event, cx);
-        });
-    }
-}
-
-// Then replace calls to set the update flag with:
-self.emit_ui_event(UiEvent::MessageAdded);
-// or
-self.emit_ui_event(UiEvent::MessageUpdated);
-// etc.
-```
+**Implementation note:** This experiment should be conducted separately and should not affect the other migration steps. The current polling mechanism must remain fully functional even if this experiment is attempted.
 
 ## UI Component Improvements
 
@@ -371,7 +378,7 @@ fn render_tool_block(&self, tool_block: &ToolBlock) -> impl IntoElement {
                     // ...
                 })
         );
-        
+
     div()
         .bg(rgb(0x303535))
         .p_2()
@@ -400,7 +407,7 @@ For thinking blocks, we can replace our custom collapsible implementation with t
 fn render_thinking_blocks(blocks: &[ThinkingBlock]) -> impl IntoElement {
     let accordion = gpui_component::Accordion::new(ElementId::new("thinking-blocks"))
         .multiple(true);
-        
+
     // Add each thinking block as an accordion item
     let accordion_with_items = blocks.iter().enumerate().fold(
         accordion,
@@ -418,40 +425,12 @@ fn render_thinking_blocks(blocks: &[ThinkingBlock]) -> impl IntoElement {
             )
         }
     );
-    
+
     accordion_with_items
 }
 ```
 
-### Use Form for Tool Parameters
 
-For structured tool parameters, we can use the Form component:
-
-```rust
-fn render_tool_parameters(parameters: &HashMap<String, String>) -> impl IntoElement {
-    let form = gpui_component::Form::new();
-    
-    // Add each parameter as a form field
-    let form_with_fields = parameters.iter().fold(
-        form,
-        |acc, (key, value)| {
-            acc.child(
-                gpui_component::FormField::new()
-                    .label(key.clone())
-                    .content(|| {
-                        div()
-                            .p_2()
-                            .bg(rgb(0x252525))
-                            .rounded_sm()
-                            .child(value.clone())
-                    })
-            )
-        }
-    );
-    
-    form_with_fields
-}
-```
 
 ## Implementation Strategy
 
@@ -477,14 +456,14 @@ fn render_tool_parameters(parameters: &HashMap<String, String>) -> impl IntoElem
 5. **Phase 5: Enhanced Components**
    - Add TabBar for tool outputs
    - Add Accordion for thinking blocks
-   - Add Form for tool parameters
+   - Maintain custom rendering for tool parameters to keep flexibility
 
 ## Considerations and Challenges
 
 1. **State Management**
-   - The current shared state pattern with Arc<Mutex<>> works well
-   - Adding entity events will enhance responsiveness
-   - Both mechanisms can coexist during and after migration
+   - The current shared state pattern with Arc<Mutex<>> works well and should be maintained
+   - The optional entity events experiment would be implemented separately
+   - The core functionality must continue to work with the polling mechanism
 
 2. **Markdown Rendering**
    - Using individual Markdown components per block is the right approach
