@@ -2,11 +2,11 @@ pub mod assets;
 pub mod diff_renderer;
 mod elements;
 pub mod file_icons;
-mod input;
 mod memory_view;
 mod message;
 pub mod parameter_renderers;
 mod path_util;
+mod root_renderer;
 mod scrollbar;
 pub mod simple_renderers;
 
@@ -14,11 +14,11 @@ use crate::types::WorkingMemory;
 use crate::ui::gpui::{
     diff_renderer::DiffParameterRenderer,
     parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
+    root_renderer::RootRenderer,
     simple_renderers::SimpleParameterRenderer,
 };
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use gpui::{actions, AppContext};
-use gpui_component::theme;
 pub use memory_view::MemoryView;
 use message::MessageView;
 use std::sync::{Arc, Mutex};
@@ -114,10 +114,10 @@ impl Gpui {
             // Initialize file icons
             file_icons::init(cx);
 
-            // Register key bindings and initialize gpui-component
-            input::register_key_bindings(cx);
-            theme::init(cx);
+            // Initialize gpui-component modules
+            gpui_component::theme::init(cx);
             gpui_component::input::init(cx);
+            gpui_component::drawer::init(cx);
 
             // Create memory view with our shared working memory
             let memory_view = cx.new(|cx| MemoryView::new(working_memory.clone(), cx));
@@ -157,7 +157,11 @@ impl Gpui {
                     });
 
                     // Wrap everything in a Root component
-                    cx.new(|cx| gpui_component::Root::new(message_view.into(), window, cx))
+                    let root =
+                        cx.new(|cx| gpui_component::Root::new(message_view.into(), window, cx));
+
+                    // Create view that will render the Root and all its layers
+                    cx.new(|cx| RootRenderer::new(root, window, cx))
                 },
             );
 

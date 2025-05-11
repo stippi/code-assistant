@@ -1,8 +1,6 @@
 use super::elements::MessageContainer;
 use super::file_icons;
 // Using new TextInput from gpui-component
-use gpui_component::input::TextInput;
-use gpui_component::ContextModal;
 use super::memory_view::MemoryView;
 use super::scrollbar::{Scrollbar, ScrollbarState};
 use super::CloseWindow;
@@ -10,6 +8,8 @@ use gpui::{
     div, prelude::*, px, rgb, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
     MouseButton, MouseUpEvent, ScrollHandle,
 };
+use gpui_component::input::TextInput;
+use gpui_component::ContextModal;
 use std::sync::{Arc, Mutex};
 
 // Message View - combines input area and message display
@@ -109,7 +109,12 @@ impl MessageView {
     }
 
     // Toggle the memory drawer
-    fn toggle_memory_drawer(&mut self, _: &MouseUpEvent, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    fn toggle_memory_drawer(
+        &mut self,
+        _: &MouseUpEvent,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
         // Check if drawer is already open and close it if necessary
         if window.has_active_drawer(cx) {
             window.close_drawer(cx);

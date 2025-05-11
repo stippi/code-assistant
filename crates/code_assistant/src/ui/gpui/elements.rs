@@ -313,10 +313,15 @@ impl IntoElement for MessageElement {
         match self {
             MessageElement::TextBlock(block) => {
                 // Use TextView with Markdown for rendering text
-                gpui_component::text::TextView::markdown(
-                    "md-block",
-                    block.content,
-                ).into_any_element()
+                div()
+                    .text_color(white()) // Explizit weiße Textfarbe setzen
+                    .child(
+                        gpui_component::text::TextView::markdown(
+                            "md-block",
+                            block.content,
+                        )
+                    )
+                    .into_any_element()
             }
             MessageElement::ThinkingBlock(block) => {
                 // Get the appropriate icon based on completed state
@@ -441,10 +446,14 @@ impl IntoElement for MessageElement {
                                 .border_t_1()
                                 .border_color(rgba(0x5BC1FEA0))
                                 .child(
-                                    gpui_component::text::TextView::markdown(
-                                        "thinking-content",
-                                        block.content.clone()
-                                    )
+                                    div()
+                                        .text_color(rgba(0x93B8CEFF)) // Text Farbe für Thinking-Block
+                                        .child(
+                                            gpui_component::text::TextView::markdown(
+                                                "thinking-content",
+                                                block.content.clone()
+                                            )
+                                        )
                                 )
                                 .into_any()
                         } else {
@@ -459,10 +468,14 @@ impl IntoElement for MessageElement {
                                 .opacity(0.7)
                                 .text_ellipsis()
                                 .child(
-                                    gpui_component::text::TextView::markdown(
-                                        "thinking-preview",
-                                        first_line + "..."
-                                    )
+                                    div()
+                                        .text_color(rgba(0x93B8CEFF)) // Text Farbe für Thinking-Block Vorschau
+                                        .child(
+                                            gpui_component::text::TextView::markdown(
+                                                "thinking-preview",
+                                                first_line + "..."
+                                            )
+                                        )
                                 )
                                 .into_any()
                         },

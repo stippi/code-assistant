@@ -467,6 +467,11 @@ fn render_thinking_blocks(blocks: &[ThinkingBlock]) -> impl IntoElement {
    - Add Accordion for thinking blocks
    - Maintain custom rendering for tool parameters to keep flexibility
 
+6. **Phase 6: Theme Integration**
+   - Migrate from hard-coded colors to gpui-component's theme system
+   - Create a consistent dark theme based on current UI colors
+   - Update all UI components to use themed colors instead of hard-coded values
+
 ## Considerations and Challenges
 
 1. **State Management**
