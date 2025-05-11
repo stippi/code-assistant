@@ -26,6 +26,15 @@ We'll migrate to a more component-based architecture using GPUI-Component, focus
 
 ## Detailed Migration Steps
 
+### 0. Switch Project Dependencies
+
+In the `code_assistant` crate, replace the `gpui` dependency with the following:
+
+```toml
+gpui = { git = "https://github.com/huacnlee/zed.git", branch = "webview" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component.git" }
+```
+
 ### 1. Setup Foundation with Root Component
 
 Create a new implementation that wraps our main view in GPUI-Component's `Root` structure:
