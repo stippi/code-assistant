@@ -6,7 +6,6 @@ mod memory_view;
 mod message;
 pub mod parameter_renderers;
 mod path_util;
-mod root_renderer;
 mod scrollbar;
 pub mod simple_renderers;
 
@@ -14,7 +13,6 @@ use crate::types::WorkingMemory;
 use crate::ui::gpui::{
     diff_renderer::DiffParameterRenderer,
     parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
-    root_renderer::RootRenderer,
     simple_renderers::SimpleParameterRenderer,
 };
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
@@ -156,12 +154,8 @@ impl Gpui {
                         )
                     });
 
-                    // Wrap everything in a Root component
-                    let root =
-                        cx.new(|cx| gpui_component::Root::new(message_view.into(), window, cx));
-
-                    // Create view that will render the Root and all its layers
-                    cx.new(|cx| RootRenderer::new(root, window, cx))
+                    // Wrap everything in a Root component, which MUST be the root view
+                    cx.new(|cx| gpui_component::Root::new(message_view.into(), window, cx))
                 },
             );
 
