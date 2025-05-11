@@ -17,8 +17,8 @@ use crate::ui::gpui::{
     simple_renderers::SimpleParameterRenderer,
 };
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
-use gpui::{actions, AppContext, Focusable};
-use input::TextInput;
+use gpui::{actions, AppContext};
+use gpui_component::theme;
 pub use memory_view::MemoryView;
 use message::MessageView;
 use std::sync::{Arc, Mutex};
@@ -114,8 +114,10 @@ impl Gpui {
             // Initialize file icons
             file_icons::init(cx);
 
-            // Register key bindings
+            // Register key bindings and initialize gpui-component
             input::register_key_bindings(cx);
+            theme::init(cx);
+            gpui_component::input::init(cx);
 
             // Create memory view with our shared working memory
             let memory_view = cx.new(|cx| MemoryView::new(working_memory.clone(), cx));
@@ -133,13 +135,17 @@ impl Gpui {
                     }),
                     ..Default::default()
                 },
-                |_window, cx| {
-                    // Create TextInput
-                    #[allow(clippy::redundant_closure)]
-                    let text_input = cx.new(|cx| TextInput::new(cx));
+                |window, cx| {
+                    // Create TextInput with multi-line support
+                    let text_input = cx.new(|cx| {
+                        gpui_component::input::TextInput::new(window, cx)
+                            .multi_line()
+                            .rows(1)
+                            .placeholder("Type your message...")
+                    });
 
                     // Create MessageView with our TextInput
-                    cx.new(|cx| {
+                    let message_view = cx.new(|cx| {
                         MessageView::new(
                             text_input,
                             memory_view.clone(),
@@ -148,19 +154,25 @@ impl Gpui {
                             message_queue.clone(),
                             input_requested.clone(),
                         )
-                    })
+                    });
+
+                    // Wrap everything in a Root component
+                    cx.new(|cx| gpui_component::Root::new(message_view.into(), window, cx))
                 },
             );
 
             // Focus the TextInput if window was created successfully
             if let Ok(window_handle) = window_result {
                 window_handle
-                    .update(cx, |view, window, cx| {
-                        window.focus(&view.text_input.focus_handle(cx));
-                        cx.activate(true);
-
-                        // Set up the frame refresh cycle
-                        Self::setup_frame_refresh_cycle(window, ui_update_needed.clone());
+                    .update(cx, |_root, window, cx| {
+                        // Get the MessageView from the Root
+                        if let Some(view) =
+                            window.root::<gpui_component::Root>().and_then(|root| root)
+                        {
+                            // Aktiviere das Fenster und richte den Refresh-Cycle ein
+                            cx.activate(true);
+                            Self::setup_frame_refresh_cycle(window, ui_update_needed.clone());
+                        }
                     })
                     .ok();
             }

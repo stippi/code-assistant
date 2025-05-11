@@ -1,6 +1,8 @@
 use super::elements::MessageContainer;
 use super::file_icons;
-use super::input::TextInput;
+// Using new TextInput from gpui-component
+use gpui_component::input::TextInput;
+use gpui_component::ContextModal;
 use super::memory_view::MemoryView;
 use super::scrollbar::{Scrollbar, ScrollbarState};
 use super::CloseWindow;
@@ -51,30 +53,30 @@ impl MessageView {
     fn on_reset_click(
         &mut self,
         _: &MouseUpEvent,
-        _window: &mut gpui::Window,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
         self.recent_keystrokes.clear();
         self.text_input
-            .update(cx, |text_input, _cx| text_input.reset());
+            .update(cx, |text_input, cx| text_input.set_text("", window, cx));
         cx.notify();
     }
 
     fn on_submit_click(
         &mut self,
         _: &MouseUpEvent,
-        _window: &mut gpui::Window,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        self.text_input.update(cx, |text_input, _cx| {
-            let content = text_input.get_content();
+        self.text_input.update(cx, |text_input, cx| {
+            let content = text_input.text().to_string();
             if !content.is_empty() {
                 // Store input in the shared value
                 let mut input_value = self.input_value.lock().unwrap();
                 *input_value = Some(content);
 
                 // Clear the input field
-                text_input.reset();
+                text_input.set_text("", window, cx);
             }
         });
         cx.notify();
@@ -103,6 +105,25 @@ impl MessageView {
         // Notify the UI to update if needed
         if updated {
             cx.notify();
+        }
+    }
+
+    // Toggle the memory drawer
+    fn toggle_memory_drawer(&mut self, _: &MouseUpEvent, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        // Check if drawer is already open and close it if necessary
+        if window.has_active_drawer(cx) {
+            window.close_drawer(cx);
+        } else {
+            // Klone das memory_view vor der Closure
+            let memory_view = self.memory_view.clone();
+
+            // Open a new drawer with the memory view
+            window.open_drawer(cx, move |drawer, _window, _cx| {
+                drawer
+                    .size(px(300.0))
+                    .title("Working Memory")
+                    .child(memory_view.clone())
+            });
         }
     }
 }
@@ -318,11 +339,35 @@ impl Render for MessageView {
                     ),
             )
             .child(
-                // Right side with memory view - now using flex_none to ensure it takes its natural width
+                // Right side control for memory view drawer
                 div()
                     .h_full()
                     .flex_none() // Don't flex, use exact width
-                    .child(self.memory_view.clone()),
+                    .w(px(40.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_start()
+                    .py_4()
+                    .border_l_1()
+                    .border_color(rgb(0x404040))
+                    .child(
+                        div()
+                            .rounded_full()
+                            .size(px(36.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgb(0x353535)))
+                            .child(file_icons::render_icon(
+                                &file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
+                                24.0,
+                                rgb(0xAAAAAA),
+                                "🧠"
+                            ))
+                            .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_memory_drawer))
+                    )
             )
     }
 }

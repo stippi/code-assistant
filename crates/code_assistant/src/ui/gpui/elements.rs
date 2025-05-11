@@ -312,7 +312,11 @@ impl IntoElement for MessageElement {
     fn into_element(self) -> Self::Element {
         match self {
             MessageElement::TextBlock(block) => {
-                div().text_color(white()).child(block.content).into_any()
+                // Use TextView with Markdown for rendering text
+                gpui_component::text::TextView::markdown(
+                    "md-block",
+                    block.content,
+                ).into_any_element()
             }
             MessageElement::ThinkingBlock(block) => {
                 // Get the appropriate icon based on completed state
@@ -432,15 +436,35 @@ impl IntoElement for MessageElement {
                         if !block.is_collapsed {
                             div()
                                 .pt_2()
-                                .italic()
                                 .text_size(px(16.))
                                 .text_color(rgba(0x93B8CEFF))
                                 .border_t_1()
                                 .border_color(rgba(0x5BC1FEA0))
-                                .child(block.content.clone())
+                                .child(
+                                    gpui_component::text::TextView::markdown(
+                                        "thinking-content",
+                                        block.content.clone()
+                                    )
+                                )
                                 .into_any()
                         } else {
-                            div().into_any() // Empty div when collapsed
+                            // If collapsed, show a preview of the first line using Markdown
+                            let first_line = block.content.lines().next().unwrap_or("").to_string();
+                            div()
+                                .pt_1()
+                                .px_2()
+                                .text_size(px(14.))
+                                .italic()
+                                .text_color(rgba(0x93B8CEFF))
+                                .opacity(0.7)
+                                .text_ellipsis()
+                                .child(
+                                    gpui_component::text::TextView::markdown(
+                                        "thinking-preview",
+                                        first_line + "..."
+                                    )
+                                )
+                                .into_any()
                         },
                     ])
                     .into_any()

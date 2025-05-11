@@ -443,24 +443,24 @@ fn render_thinking_blocks(blocks: &[ThinkingBlock]) -> impl IntoElement {
 
 ## Implementation Strategy
 
-1. **Phase 1: Foundation Setup**
-   - Add GPUI-Component dependency
-   - Implement Root component integration
+1. **Phase 1: Foundation Setup** ✅
+   - ✅ Add GPUI-Component dependency
+   - ✅ Implement Root component integration
    - Set up event system alongside existing polling
 
-2. **Phase 2: Input Component Migration**
-   - Replace TextInput with GPUI-Component TextInput
-   - Update message submission logic
+2. **Phase 2: Input Component Migration** ✅
+   - ✅ Replace TextInput with GPUI-Component TextInput
+   - ✅ Update message submission logic
 
-3. **Phase 3: Markdown Rendering**
-   - Implement Markdown rendering for text blocks
-   - Implement Markdown rendering for thinking blocks
-   - Update styling for these blocks
+3. **Phase 3: Markdown Rendering** ✅
+   - ✅ Implement Markdown rendering for text blocks
+   - ✅ Implement Markdown rendering for thinking blocks
+   - ✅ Update styling for these blocks
 
-4. **Phase 4: Drawer Implementation**
-   - Implement MemoryView as a Drawer
-   - Update toggle functionality
-   - Ensure proper state management
+4. **Phase 4: Drawer Implementation** ✅
+   - ✅ Implement MemoryView as a Drawer
+   - ✅ Update toggle functionality
+   - ✅ Ensure proper state management
 
 5. **Phase 5: Enhanced Components**
    - Add TabBar for tool outputs
