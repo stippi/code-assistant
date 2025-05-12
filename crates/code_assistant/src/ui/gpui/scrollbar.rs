@@ -288,7 +288,7 @@ impl Element for Scrollbar {
                 thumb_background,
                 Edges::default(),
                 Hsla::transparent_black(),
-                gpui::BorderStyle::default(),  // Add the required BorderStyle parameter with default value
+                gpui::BorderStyle::default(), // Add the required BorderStyle parameter with default value
             ));
 
             let scroll = self.state.scroll_handle.clone();
