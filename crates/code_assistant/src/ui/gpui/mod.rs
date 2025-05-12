@@ -16,6 +16,7 @@ use crate::ui::gpui::{
     simple_renderers::SimpleParameterRenderer,
 };
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
+use assets::Assets;
 use gpui::{actions, AppContext};
 pub use memory_view::MemoryView;
 use message::MessageView;
@@ -94,10 +95,8 @@ impl Gpui {
         let ui_update_needed = self.ui_update_needed.clone();
         let working_memory = self.working_memory.clone();
 
-        // Create asset source
-        let asset_source = crate::ui::gpui::assets::Assets {};
         // Initialize app with assets
-        let app = gpui::Application::new().with_assets(asset_source);
+        let app = gpui::Application::new().with_assets(Assets {});
 
         app.run(move |cx| {
             // Setup window close listener
