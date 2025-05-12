@@ -2,14 +2,13 @@ use super::elements::MessageContainer;
 use super::file_icons;
 // Using new TextInput from gpui-component
 use super::memory_view::MemoryView;
-use super::scrollbar::{Scrollbar, ScrollbarState};
+//use super::scrollbar::{Scrollbar, ScrollbarState};
 use super::CloseWindow;
 use gpui::{
     div, prelude::*, px, rgb, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    MouseButton, MouseUpEvent, ScrollHandle,
+    MouseButton, MouseUpEvent,
 };
-use gpui_component::input::TextInput;
-use gpui_component::ContextModal;
+use gpui_component::{input::TextInput, scroll::ScrollbarAxis, v_flex, ContextModal, StyledExt};
 use std::sync::{Arc, Mutex};
 
 // Message View - combines input area and message display
@@ -21,8 +20,6 @@ pub struct MessageView {
     input_value: Arc<Mutex<Option<String>>>,
     message_queue: Arc<Mutex<Vec<MessageContainer>>>,
     input_requested: Arc<Mutex<bool>>,
-    // Scroll handle for messages
-    messages_scroll_handle: ScrollHandle,
     // Track the number of thinking blocks for click handling
     thinking_block_count: usize,
 }
@@ -44,8 +41,6 @@ impl MessageView {
             input_value,
             message_queue,
             input_requested,
-            // Initialize scroll handle
-            messages_scroll_handle: ScrollHandle::new(),
             thinking_block_count: 0,
         }
     }
@@ -150,10 +145,6 @@ impl Render for MessageView {
         // Check if input is requested
         let is_input_requested = *self.input_requested.lock().unwrap();
 
-        // Create scrollbar state for messages
-        let messages_scrollbar_state =
-            ScrollbarState::new(self.messages_scroll_handle.clone()).parent_entity(&cx.entity());
-
         div()
             .on_action(|_: &CloseWindow, window, _| {
                 window.remove_window();
@@ -178,18 +169,19 @@ impl Render for MessageView {
                         div()
                             .id("messages-container")
                             .flex_1() // Take remaining space in the parent container
-                            .min_h(px(100.)) // Minimum height to ensure scrolling works
+                            .min_h_0() // Minimum height to ensure scrolling works
                             .relative() // For absolute positioning of scrollbar
                             .child(
-                                div()
+                                v_flex()
                                     .id("messages")
-                                    .size_full() // Fill the parent container
+                                    .flex_1()
                                     .p_2()
-                                    .overflow_y_scroll() // Enable vertical scrolling
-                                    .track_scroll(&self.messages_scroll_handle) // Track scrolling
+                                    // .overflow_y_scroll() // Enable vertical scrolling
+                                    // .track_scroll(&self.scroll_handle) // Track scrolling
+                                    .scrollable(cx.entity().entity_id(), ScrollbarAxis::Vertical)
                                     .bg(rgb(0x202020))
-                                    .flex()
-                                    .flex_col()
+                                    // .flex()
+                                    // .flex_col()
                                     .gap_2()
                                     .text_size(px(18.))
                                     .children(messages.into_iter().map(|msg| {
@@ -268,18 +260,6 @@ impl Render for MessageView {
                                         message_container.children(elements_with_handlers)
                                     })),
                             )
-                            // Add scrollbar
-                            .child(match Scrollbar::vertical(messages_scrollbar_state) {
-                                Some(scrollbar) => div()
-                                    .absolute()
-                                    .right(px(0.))
-                                    .top(px(0.))
-                                    .h_full()
-                                    .w(px(12.))
-                                    .child(scrollbar)
-                                    .into_any_element(),
-                                None => div().w(px(0.)).h(px(0.)).into_any_element(),
-                            }),
                     )
                     .child(
                         // Input area - ensure this doesn't get pushed out
