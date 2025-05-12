@@ -46,7 +46,6 @@ impl MessageView {
         }
     }
 
-    // Toggle the memory sidebar collapsed state
     pub fn on_toggle_memory(
         &mut self,
         _: &MouseUpEvent,
@@ -228,9 +227,9 @@ impl Render for MessageView {
                                             .flex_1()
                                             .p_2()
                                             .scrollable(cx.entity().entity_id(), ScrollbarAxis::Vertical)
-                                            .bg(rgb(0x202020))
+                                            .bg(rgb(0x303030))
                                             .gap_2()
-                                            .text_size(px(18.))
+                                            .text_size(px(16.))
                                             .children(messages.into_iter().map(|msg| {
                                                 // Count thinking blocks for click handlers
                                                 let elements = msg.elements();
@@ -241,14 +240,19 @@ impl Render for MessageView {
                                                 self.thinking_block_count = thinking_blocks;
 
                                                 // Create message container with appropriate styling based on role
-                                                let message_container = div()
-                                                    .bg(rgb(0x303030))
+                                                let mut message_container = div()
                                                     .p_3()
-                                                    .rounded_md()
-                                                    .shadow_sm()
                                                     .flex()
                                                     .flex_col()
                                                     .gap_2();
+
+                                                if msg.is_user_message() {
+                                                    message_container = message_container
+                                                        .m_3()
+                                                        .bg(rgb(0x202020))
+                                                        .rounded_md()
+                                                        .shadow_sm();
+                                                }
 
                                                 // Create message container with user badge if needed
                                                 let message_container = if msg.is_user_message() {

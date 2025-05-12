@@ -393,8 +393,6 @@ impl Render for MemoryView {
             .w(px(260.))
             .h_full()
             .bg(rgb(0x252525))
-            .border_l_1()
-            .border_color(rgb(0x404040))
             .overflow_hidden() // Prevent content from overflowing
             .flex()
             .flex_col()
