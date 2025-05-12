@@ -123,12 +123,13 @@ impl Gpui {
             // Create window with larger size to accommodate both views
             let bounds =
                 gpui::Bounds::centered(None, gpui::size(gpui::px(1000.0), gpui::px(650.0)), cx);
+            // Open window with titlebar
             let window_result = cx.open_window(
                 gpui::WindowOptions {
                     window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some(gpui::SharedString::from("Code Assistant")),
-                        appears_transparent: true, // Make titlebar transparent
+                        appears_transparent: true,
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -154,7 +155,7 @@ impl Gpui {
                         )
                     });
 
-                    // Wrap everything in a Root component, which MUST be the root view
+                    // Wrap in Root component
                     cx.new(|cx| gpui_component::Root::new(message_view.into(), window, cx))
                 },
             );
@@ -164,7 +165,7 @@ impl Gpui {
                 window_handle
                     .update(cx, |_root, window, cx| {
                         // Get the MessageView from the Root
-                        if let Some(view) =
+                        if let Some(_view) =
                             window.root::<gpui_component::Root>().and_then(|root| root)
                         {
                             // Aktiviere das Fenster und richte den Refresh-Cycle ein
