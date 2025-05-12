@@ -182,40 +182,25 @@ impl MemoryView {
                         };
 
                         div()
-                            .rounded_sm()
-                            .py_1()
                             .px_2()
                             .w_full()
                             .flex()
-                            .bg(rgb(0x303030))
                             .items_center()
                             .justify_between()
                             .gap_2()
-                            .w_full()
                             .child(file_icons::render_icon_container(
                                 &icon,
-                                16.0,
+                                14.0,
                                 hsla(0., 0., 0.7, 1.0),
                                 "📄",
                             ))
                             .child(
                                 div()
                                     .text_color(hsla(0., 0., 0.8, 1.0))
-                                    .text_sm()
+                                    .text_xs()
                                     .truncate()
                                     .flex_grow()
-                                    .child(format!("[{}] {}", project, path.to_string_lossy())),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(hsla(0., 0., 0.5, 1.0))
-                                    .flex_none()
-                                    .child(match resource {
-                                        LoadedResource::File(_) => "File",
-                                        LoadedResource::WebSearch { .. } => "Web Search",
-                                        LoadedResource::WebPage(_) => "Web Page",
-                                    }),
+                                    .child(format!("{}/{}", project, path.to_string_lossy())),
                             )
                     }),
             );
