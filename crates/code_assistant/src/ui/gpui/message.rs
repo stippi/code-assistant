@@ -203,7 +203,8 @@ impl Render for MessageView {
             // Main content area with messages, input, and sidebar
             .child(
                 div()
-                    .flex_1()
+                    .size_full()
+                    .min_h_0()
                     .flex()
                     .flex_row() // Content as row layout for main + sidebar
                     .child(
@@ -382,11 +383,9 @@ impl Render for MessageView {
                             .overflow_hidden()
                             .flex()
                             .flex_col()
-                            // Direkt den Inhalt anzeigen ohne zusätzlichen Header
                             .child(
-                                // Memory Inhalt - verwendet conditional rendering
                                 if self.memory_collapsed {
-                                    // Im eingeklappten Zustand: nur Icon anzeigen
+                                    // Show only an icon when the memory view is collapsed
                                     div()
                                         .flex_1()
                                         .flex()
@@ -410,7 +409,7 @@ impl Render for MessageView {
                                         )
                                         .into_any_element()
                                 } else {
-                                    // Im ausgeklappten Zustand: vollständigen Inhalt anzeigen
+                                    // Show the memory view when not collapsed
                                     self.memory_view.clone().into_any_element()
                                 }
                             )
