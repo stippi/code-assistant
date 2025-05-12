@@ -279,21 +279,9 @@ impl MemoryView {
         // File tree content - generate a flat list of items
         let file_tree_content = if !memory.file_trees.is_empty() {
             let mut all_entries = Vec::new();
-            for (project_name, root_entry) in &memory.file_trees {
-                // Add project header
-                all_entries.push(
-                    div()
-                        .flex_none()
-                        .text_sm()
-                        .w_full()
-                        .px_2()
-                        .py_1()
-                        .bg(rgb(0x353535))
-                        .text_color(hsla(0., 0., 0.9, 1.0))
-                        .child(format!("Project: {}", project_name)),
-                );
-
+            for (_project_name, root_entry) in &memory.file_trees {
                 // Generate flat list of all entries for this project
+                // The root entry is already the project name
                 let entries = self.generate_file_tree(root_entry, 0, cx);
                 all_entries.extend(entries);
             }
