@@ -169,7 +169,7 @@ impl Gpui {
                         if let Some(_view) =
                             window.root::<gpui_component::Root>().and_then(|root| root)
                         {
-                            // Aktiviere das Fenster und richte den Refresh-Cycle ein
+                            // Activate window and set up the frame refresh cycle
                             cx.activate(true);
                             Self::setup_frame_refresh_cycle(window, ui_update_needed.clone());
                         }
