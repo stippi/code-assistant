@@ -21,7 +21,7 @@ We'll migrate to a more component-based architecture using GPUI-Component, focus
 1. Using `Root` as the base component for better styling and container management
 2. Replacing custom TextInput with GPUI-Component's more advanced MultiLine TextInput
 3. Using Markdown component for rendering text blocks and thinking blocks
-4. Using Drawer component for the MemoryView (right sidebar)
+4. Using the Sidebar component for the MemoryView (right sidebar)
 5. Maintaining the current state management approach with shared Arc<Mutex<>> objects
 
 ## Detailed Migration Steps
@@ -205,63 +205,184 @@ match element {
 }
 ```
 
-### 4. Convert MemoryView to a Drawer Component
+### 4. Implement MemoryView as a Sidebar Component with TitleBar Control
 
-Replace the custom sidebar implementation with GPUI-Component's Drawer:
+Replace the current memory view toggle implementation with GPUI-Component's Sidebar component, with toggle controls in the TitleBar. This approach allows for a clean UI where:
+1. The sidebar takes up its own space next to the message area (rather than overlaying it)
+2. The toggle button is placed in the window's title bar for better visibility and consistency
 
-1. Update imports:
+Wir werden die Sidebar-Implementierung aus dem `gpui-component`-Projekt (`crates/ui/src/sidebar/mod.rs`) verwenden, die ein sauberes, zusammenklappbares Sidebar-Muster bietet.
+
+1. Update der Imports:
 
 ```rust
 // In src/ui/gpui/mod.rs
-
-use gpui_component::{ContextModal, Drawer};
+use gpui_component::{
+    ContextModal,
+    sidebar::{Sidebar, SidebarToggleButton, Side},
+    h_flex, v_flex
+};
 ```
 
-2. Modify the MessageView to use Drawer for MemoryView:
+2. Hinzufügen von Statusvariablen zur MessageView-Struktur:
 
 ```rust
 // In src/ui/gpui/message.rs
+pub struct MessageView {
+    // Bestehende Felder...
+
+    // Neue Felder für die Sidebar-Steuerung
+    memory_view_visible: bool,
+    memory_collapsed: bool,
+}
 
 impl MessageView {
-    pub fn render_with_memory(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Main content layout
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            // ...existing message and input rendering...
+    pub fn new(
+        // Bestehende Parameter...
+    ) -> Self {
+        Self {
+            // Bestehende Felder-Initialisierungen...
+
+            // Initialisiere die neuen Felder
+            memory_view_visible: true,
+            memory_collapsed: false,
+        }
     }
 
-    pub fn toggle_memory_drawer(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
-        if window.has_active_drawer(cx) {
-            window.close_drawer(cx);
-        } else {
-            window.open_drawer(cx, |drawer, window, cx| {
-                drawer
-                    .size(px(300.))
-                    .content(|window, cx| {
-                        // Create the MemoryView inside the drawer
-                        self.memory_view.clone()
-                    })
-            });
-        }
+    // Toggle-Methode für die Sidebar
+    fn toggle_memory_collapsed(&mut self, _: &MouseUpEvent, _window: &mut gpui::Window, cx: &mut Context<Self>) {
+        self.memory_collapsed = !self.memory_collapsed;
+        cx.notify();
+    }
+
+    // Toggle-Methode für die Sidebar-Sichtbarkeit
+    fn toggle_memory_visibility(&mut self, _: &MouseUpEvent, _window: &mut gpui::Window, cx: &mut Context<Self>) {
+        self.memory_view_visible = !self.memory_view_visible;
+        cx.notify();
     }
 }
 ```
 
-3. Simplify the MemoryView structure since it will be contained in a Drawer:
+3. Modifizieren des MessageView-Renderings für die Sidebar:
+
+```rust
+// In src/ui/gpui/message.rs
+
+impl Render for MessageView {
+    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Get current messages and check if input is requested
+        let messages = { self.message_queue.lock().unwrap().clone() };
+        let is_input_requested = *self.input_requested.lock().unwrap();
+
+        // Main container is now a horizontal layout with a sidebar
+        div()
+            .on_action(|_: &CloseWindow, window, _| {
+                window.remove_window();
+            })
+            .bg(rgb(0x2c2c2c))
+            .track_focus(&self.focus_handle(cx))
+            .size_full()
+            .pt_8() // Leave room for the window title bar
+            .flex()
+            .flex_row() // Main container as row layout
+            .child(
+                // Left side with messages and input (content area)
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_grow() // Grow to take available space
+                    .flex_shrink() // Allow shrinking if needed
+                    .overflow_hidden() // Prevent overflow
+                    .child(
+                        // Messages display area with scrollbar
+                        div()
+                            .id("messages-container")
+                            .flex_1() // Take remaining space
+                            .relative() // For absolute positioning of scrollbar
+                            .child(
+                                div()
+                                    .id("messages")
+                                    .size_full() // Fill parent
+                                    .p_2()
+                                    .scrollable(window.current_view(), ScrollbarAxis::Vertical)
+                                    .bg(rgb(0x202020))
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .text_size(px(18.))
+                                    .children(messages.into_iter().map(|msg| {
+                                        // Message rendering (unchanged)
+                                        // ...
+                                    })),
+                            )
+                    )
+                    .child(
+                        // Input area (unchanged)
+                        // ...
+                    ),
+            )
+            .when(self.memory_view_visible, |this| {
+                this.child(
+                    // Right sidebar with MemoryView
+                    Sidebar::right()
+                        .width(px(300.0))
+                        .collapsible(true)
+                        .collapsed(self.memory_collapsed)
+                        .header(
+                            // Header with title and collapse button
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child("Working Memory")
+                                .child(
+                                    SidebarToggleButton::right()
+                                        .collapsed(self.memory_collapsed)
+                                        .on_click(cx.listener(Self::toggle_memory_collapsed))
+                                )
+                        )
+                        .child(self.memory_view.clone())
+                )
+            })
+    }
+}
+```
+
+4. Update der MemoryView, um Collapsible zu implementieren:
 
 ```rust
 // In src/ui/gpui/memory_view.rs
 
-impl Render for MemoryView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // We don't need the toggle logic anymore since the drawer handles that
+// Import the Collapsible trait
+use gpui_component::Collapsible;
+
+impl MemoryView {
+    // Bestehende Methoden...
+
+    // Füge eine Methode hinzu, um auf den Collapsed-Status zu reagieren
+    fn render_collapsed_state(&mut self, window: &mut Window, cx: &mut Context<Self>, is_collapsed: bool) -> impl IntoElement {
+        // Wenn zusammengeklappt, zeige nur Symbole an
+        if is_collapsed {
+            v_flex()
+                .items_center()
+                .p_2()
+                .gap_4()
+                .child(file_icons::render_icon(
+                    &file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
+                    24.0,
+                    rgb(0xAAAAAA),
+                    "🧠"
+                ))
+        } else {
+            // Normaler Inhalt, wenn ausgeklappt
+            self.render_memory_content(window, cx)
+        }
+    }
+
+    // Methode für den normalen Inhalt
+    fn render_memory_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_memory = self.memory.lock().unwrap().is_some();
 
         div()
-            .id("memory-sidebar")
-            .track_focus(&self.focus_handle(cx))
             .size_full()
             .flex()
             .flex_col()
@@ -284,7 +405,183 @@ impl Render for MemoryView {
 }
 ```
 
-### 5. Optional: Experiment with Entity-Based Event System (Separate Phase)
+### 5. TitleBar Integration
+
+Um die Sidebar über die Titelleiste zu steuern, musst Du eine neue TitleBar-Komponente implementieren. Im Folgenden wird beschrieben, wie diese Integration funktioniert:
+
+```rust
+// Neue Datei: crates/code_assistant/src/ui/gpui/title_bar.rs
+
+use gpui::{
+    div, prelude::*, px, AnyElement, App, Context, Entity, MouseButton, Window,
+};
+use gpui_component::{
+    button::Button,
+    IconName,
+    TitleBar as GpuiTitleBar,
+};
+use std::rc::Rc;
+
+pub struct TitleBar {
+    title: String,
+    memory_collapsed: bool,
+    memory_visible: bool,
+    on_toggle_memory: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+}
+
+impl TitleBar {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            memory_collapsed: false,
+            memory_visible: true,
+            on_toggle_memory: None,
+        }
+    }
+
+    pub fn memory_collapsed(mut self, collapsed: bool) -> Self {
+        self.memory_collapsed = collapsed;
+        self
+    }
+
+    pub fn memory_visible(mut self, visible: bool) -> Self {
+        self.memory_visible = visible;
+        self
+    }
+
+    pub fn on_toggle_memory(
+        mut self,
+        callback: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_toggle_memory = Some(Rc::new(callback));
+        self
+    }
+}
+
+impl RenderOnce for TitleBar {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Verwende die TitleBar-Komponente aus gpui-component
+        GpuiTitleBar::new()
+            // Linke Seite: Titel
+            .child(div().flex().items_center().child(self.title))
+            // Rechte Seite: Buttons
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .px_2()
+                    .gap_2()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        // Memory Toggle Button
+                        Button::new(\"memory-toggle\")
+                            .small()
+                            .ghost()
+                            .icon(if self.memory_collapsed {
+                                IconName::PanelRightOpen
+                            } else {
+                                IconName::PanelRightClose
+                            })
+                            .when_some(self.on_toggle_memory.clone(), |btn, callback| {
+                                btn.on_click(move |_, window, cx| {
+                                    callback(window, cx);
+                                })
+                            })
+                    )
+            )
+    }
+}
+```
+
+Dann integriere diese TitleBar in die Hauptanwendung:
+
+```rust
+// In src/ui/gpui/mod.rs
+
+// Füge den Import hinzu
+use crate::ui::gpui::title_bar::TitleBar;
+
+pub fn run_app(&self) {
+    // ...
+
+    // Erstelle ein MessageView als Hauptkomponente
+    let message_view = cx.new(|cx| {
+        MessageView::new(
+            text_input,
+            memory_view.clone(),
+            cx,
+            input_value.clone(),
+            message_queue.clone(),
+            input_requested.clone(),
+        )
+    });
+
+    // Erstelle ein Window mit einer TitleBar
+    let window_result = cx.open_window(
+        gpui::WindowOptions {
+            // ... (bestehende Optionen)
+            // Wichtig: `custom_titlebar` auf true setzen
+            custom_titlebar: true,
+            // ... (weitere Optionen)
+        },
+        |window, cx| {
+            // Erstelle eine Root-Komponente, die TitleBar und Content kombiniert
+            cx.new(|cx| {
+                let title_bar = TitleBar::new(\"Code Assistant\")
+                    .memory_collapsed(message_view.update(cx, |view, _| view.memory_collapsed).unwrap())
+                    .on_toggle_memory(move |window, cx| {
+                        message_view.update(window, |view, cx| {
+                            view.toggle_memory_collapsed(cx);
+                        });
+                    });
+
+                gpui_component::Root::new(
+                    // Vertikales Layout mit TitleBar oben und Content darunter
+                    div()
+                        .flex()
+                        .flex_col()
+                        .size_full()
+                        .child(title_bar)
+                        .child(message_view.clone())
+                        .into_any_element(),
+                    window,
+                    cx
+                )
+            })
+        },
+    );
+
+    // ...
+}
+```
+
+In der MessageView-Komponente musst Du dann eine Methode zum Umschalten des Sidebar-Status hinzufügen:
+
+```rust
+// In src/ui/gpui/message.rs
+
+impl MessageView {
+    // ...
+
+    pub fn toggle_memory_collapsed(&mut self, cx: &mut Context<Self>) {
+        self.memory_collapsed = !self.memory_collapsed;
+        cx.notify();
+    }
+
+    // Getter-Methode für den Status
+    pub fn memory_collapsed(&self) -> bool {
+        self.memory_collapsed
+    }
+}
+```
+
+**Referenzen:**
+- Die TitleBar ist an `crates/story/src/title_bar.rs` angelehnt
+- Die Implementierung des Toggle-Buttons ist inspiriert von `crates/story/src/sidebar_story.rs`
+
+
+### 6. Optional: Experiment with Entity-Based Event System (Separate Phase)
 
 As an optional, clearly separated phase, we can experiment with enhancing the current polling-based mechanism with entity events to improve UI responsiveness. This would be implemented only after the other migration steps are complete and stable.
 
