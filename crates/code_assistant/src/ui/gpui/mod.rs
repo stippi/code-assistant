@@ -140,6 +140,7 @@ impl Gpui {
                         gpui_component::input::TextInput::new(window, cx)
                             .multi_line()
                             .rows(1)
+                            .max_rows(8)
                             .placeholder("Type your message...")
                     });
 
