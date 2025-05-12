@@ -21,7 +21,6 @@ pub struct MessageView {
     // Track the number of thinking blocks for click handling
     thinking_block_count: usize,
     // Memory view state
-    memory_view_visible: bool,
     memory_collapsed: bool,
 }
 
@@ -43,14 +42,12 @@ impl MessageView {
             message_queue,
             input_requested,
             thinking_block_count: 0,
-            memory_view_visible: true,
             memory_collapsed: false,
         }
     }
 
     // Toggle the memory sidebar collapsed state
-    // Format angepasst für Listener-Kompatibilität (view, event, window, cx)
-    pub fn toggle_memory_collapsed(
+    pub fn on_toggle_memory(
         &mut self,
         _: &MouseUpEvent,
         _window: &mut gpui::Window,
@@ -58,27 +55,6 @@ impl MessageView {
     ) {
         self.memory_collapsed = !self.memory_collapsed;
         cx.notify();
-    }
-
-    // Toggle the memory sidebar visibility
-    pub fn toggle_memory_visibility(
-        &mut self,
-        _: &MouseUpEvent,
-        _window: &mut gpui::Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.memory_view_visible = !self.memory_view_visible;
-        cx.notify();
-    }
-
-    // Getter for memory_collapsed state
-    pub fn memory_collapsed(&self) -> bool {
-        self.memory_collapsed
-    }
-
-    // Getter for memory_visible state
-    pub fn memory_visible(&self) -> bool {
-        self.memory_view_visible
     }
 
     fn on_reset_click(
@@ -138,8 +114,6 @@ impl MessageView {
             cx.notify();
         }
     }
-
-    // No longer needed as we're using a proper sidebar
 }
 
 impl Focusable for MessageView {
@@ -168,8 +142,7 @@ impl Render for MessageView {
             .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col() // Main container as column layout
-            .w_full() // Constrain to window width
-            .h_full() // Take full height
+            .size_full() // Constrain to window size
             // Custom titlebar
             .child(
                 div()
@@ -190,7 +163,9 @@ impl Render for MessageView {
                         div()
                             .flex()
                             .items_center()
+                            .text_color(rgb(0xAAAAAA))
                             .gap_2()
+                            .pl_16()
                             .child("Code Assistant")
                     )
                     // Right side - controls
@@ -221,7 +196,7 @@ impl Render for MessageView {
                                         rgb(0xAAAAAA),
                                         "<>",
                                     ))
-                                    .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_memory_collapsed))
+                                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_memory))
                             )
                     )
             )
@@ -394,106 +369,52 @@ impl Render for MessageView {
                                     ),
                             ),
                     )
-                    .when(self.memory_view_visible, |this| {
-                        // Right sidebar with memory view (only if visible)
-                        this.child(
-                            div()
-                                .id("memory-sidebar")
-                                .flex_none()
-                                .w(if self.memory_collapsed { px(40.) } else { px(260.) })
-                                .h_full()
-                                .bg(rgb(0x252525))
-                                .border_l_1()
-                                .border_color(rgb(0x404040))
-                                .overflow_hidden()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    // Header for memory view
+                    // Right sidebar with memory view
+                    .child(
+                        div()
+                            .id("memory-sidebar")
+                            .flex_none()
+                            .w(if self.memory_collapsed { px(40.) } else { px(260.) })
+                            .h_full()
+                            .bg(rgb(0x252525))
+                            .border_l_1()
+                            .border_color(rgb(0x404040))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            // Direkt den Inhalt anzeigen ohne zusätzlichen Header
+                            .child(
+                                // Memory Inhalt - verwendet conditional rendering
+                                if self.memory_collapsed {
+                                    // Im eingeklappten Zustand: nur Icon anzeigen
                                     div()
-                                        .flex_none()
-                                        .h(px(36.))
-                                        .w_full()
-                                        .bg(rgb(0x303030))
-                                        .border_b_1()
-                                        .border_color(rgb(0x404040))
-                                        .px_2()
+                                        .flex_1()
                                         .flex()
+                                        .flex_col()
                                         .items_center()
-                                        .justify_between()
-                                        .when(!self.memory_collapsed, |this_div| {
-                                            this_div.child(
-                                                div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap_2()
-                                                    .child(file_icons::render_icon(
-                                                        &file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
-                                                        16.0,
-                                                        rgb(0xAAAAAA),
-                                                        "🧠",
-                                                    ))
-                                                    .child("Working Memory")
-                                            )
-                                        })
-                                        // Toggle button
+                                        .gap_2()
+                                        .py_2()
                                         .child(
                                             div()
                                                 .size(px(24.))
-                                                .rounded_sm()
+                                                .rounded_full()
                                                 .flex()
                                                 .items_center()
                                                 .justify_center()
-                                                .cursor_pointer()
-                                                .hover(|s| s.bg(rgb(0x404040)))
                                                 .child(file_icons::render_icon(
-                                                    &file_icons::get().get_type_icon(
-                                                        if self.memory_collapsed {
-                                                            file_icons::CHEVRON_LEFT
-                                                        } else {
-                                                            file_icons::CHEVRON_RIGHT
-                                                        }
-                                                    ),
+                                                    &file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
                                                     16.0,
                                                     rgb(0xAAAAAA),
-                                                    "<>",
+                                                    "🧠",
                                                 ))
-                                                .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_memory_collapsed))
                                         )
-                                )
-                                .child(
-                                    // Use conditional rendering for memory sidebar content
-                                    if self.memory_collapsed {
-                                        // When collapsed: show only icons in column
-                                        div()
-                                            .flex_1()
-                                            .flex()
-                                            .flex_col()
-                                            .items_center()
-                                            .gap_2()
-                                            .py_2()
-                                            .child(
-                                                div()
-                                                    .size(px(24.))
-                                                    .rounded_full()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .child(file_icons::render_icon(
-                                                        &file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
-                                                        16.0,
-                                                        rgb(0xAAAAAA),
-                                                        "🧠",
-                                                    ))
-                                            )
-                                            .into_any_element()
-                                    } else {
-                                        // When expanded: show full content
-                                        self.memory_view.clone().into_any_element()
-                                    }
-                                )
-                        )
-                    })
+                                        .into_any_element()
+                                } else {
+                                    // Im ausgeklappten Zustand: vollständigen Inhalt anzeigen
+                                    self.memory_view.clone().into_any_element()
+                                }
+                            )
+                    )
             )
     }
 }

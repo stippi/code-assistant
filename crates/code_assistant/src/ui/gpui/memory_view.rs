@@ -2,8 +2,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    div, hsla, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent, ScrollHandle, Window,
+    div, hsla, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, ScrollHandle, Window,
 };
 
 use super::scrollbar::{Scrollbar, ScrollbarState};
@@ -12,7 +11,6 @@ use crate::ui::gpui::file_icons;
 
 // Memory sidebar component
 pub struct MemoryView {
-    is_expanded: bool,
     memory: Arc<Mutex<Option<WorkingMemory>>>,
     focus_handle: FocusHandle,
     resources_scroll_handle: ScrollHandle,
@@ -22,19 +20,12 @@ pub struct MemoryView {
 impl MemoryView {
     pub fn new(memory: Arc<Mutex<Option<WorkingMemory>>>, cx: &mut Context<Self>) -> Self {
         Self {
-            is_expanded: true,
             memory,
             focus_handle: cx.focus_handle(),
             // Initialize scroll handles
             resources_scroll_handle: ScrollHandle::new(),
             file_tree_scroll_handle: ScrollHandle::new(),
         }
-    }
-
-    // Toggle the expanded state of the sidebar
-    fn toggle_sidebar(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        self.is_expanded = !self.is_expanded;
-        cx.notify();
     }
 
     // Render a single file tree entry item
@@ -387,7 +378,7 @@ impl Render for MemoryView {
         // Use expanded state to control content visibility, not width
 
         // Create components that will be used in when blocks
-        let memory_content = if self.is_expanded && has_memory {
+        let memory_content = if has_memory {
             let memory = self.memory.lock().unwrap().clone().unwrap();
             let resources_section = self.generate_resource_section(&memory, cx);
             let file_tree_section = self.generate_file_tree_section(&memory, cx);
@@ -396,9 +387,8 @@ impl Render for MemoryView {
             None
         };
 
-        // Toggle button with SVG icon for expansion indicator
-        let toggle_button = div()
-            .id("sidebar-toggle")
+        let title_view = div()
+            .id("title-view")
             .flex_none()
             .h(px(36.))
             .w_full()
@@ -413,40 +403,13 @@ impl Render for MemoryView {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(if self.is_expanded {
-                        file_icons::render_icon(
-                            &file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
-                            16.0,
-                            hsla(0., 0., 0.7, 1.0),
-                            "🧠",
-                        )
-                    } else {
-                        div().into_any_element()
-                    })
-                    .child(if self.is_expanded {
-                        "Working Memory"
-                    } else {
-                        ""
-                    }),
-            )
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_color(hsla(0., 0., 0.7, 1.0))
-                    .cursor_pointer()
-                    .hover(|s| s.text_color(hsla(0., 0., 1.0, 1.0)))
                     .child(file_icons::render_icon(
-                        &file_icons::get().get_type_icon(if self.is_expanded {
-                            file_icons::CHEVRON_RIGHT
-                        } else {
-                            file_icons::CHEVRON_LEFT
-                        }),
+                        &file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
                         16.0,
                         hsla(0., 0., 0.7, 1.0),
-                        "<",
+                        "🧠",
                     ))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle_sidebar)),
+                    .child("Working Memory"),
             );
 
         // Build main container
@@ -454,7 +417,7 @@ impl Render for MemoryView {
             .id("memory-sidebar")
             .track_focus(&self.focus_handle(cx))
             .flex_none()
-            .w(if self.is_expanded { px(260.) } else { px(40.) })
+            .w(px(260.))
             .h_full()
             .bg(rgb(0x252525))
             .border_l_1()
@@ -462,7 +425,7 @@ impl Render for MemoryView {
             .overflow_hidden() // Prevent content from overflowing
             .flex()
             .flex_col()
-            .child(toggle_button);
+            .child(title_view);
 
         // Add memory content if available
         if let Some((resources_section, file_tree_section)) = memory_content {
