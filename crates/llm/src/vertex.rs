@@ -7,7 +7,7 @@ use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 #[derive(Debug, Serialize)]
 struct VertexRequest {
@@ -71,6 +71,8 @@ struct VertexUsageMetadata {
     #[allow(dead_code)]
     #[serde(rename = "totalTokenCount")]
     total_token_count: u32,
+    #[serde(rename = "cachedContentTokenCount")]
+    cached_content_token_count: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -389,20 +391,21 @@ impl VertexClient {
                         .collect::<Vec<_>>()
                 })
                 .collect(),
-            usage: Usage {
-                input_tokens: vertex_response
-                    .usage_metadata
-                    .as_ref()
-                    .map(|u| u.prompt_token_count)
-                    .unwrap_or(0),
-                output_tokens: vertex_response
-                    .usage_metadata
-                    .as_ref()
-                    .map(|u| u.candidates_token_count)
-                    .unwrap_or(0),
-                // Vertex doesn't support our caching markers, so these fields are 0
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: 0,
+            usage: if let Some(usage_metadata) = vertex_response.usage_metadata {
+                Usage {
+                    input_tokens: usage_metadata.prompt_token_count,
+                    output_tokens: usage_metadata.candidates_token_count,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: if let Some(cached_content_token_count) =
+                        usage_metadata.cached_content_token_count
+                    {
+                        cached_content_token_count
+                    } else {
+                        0
+                    },
+                }
+            } else {
+                Usage::default()
             },
         };
 
@@ -439,6 +442,7 @@ impl VertexClient {
                 if c == '\n' {
                     if !line_buffer.is_empty() {
                         if let Some(data) = line_buffer.strip_prefix("data: ") {
+                            debug!("Received data line: {}", data);
                             if let Ok(response) = serde_json::from_str::<VertexResponse>(data) {
                                 if let Some(candidate) = response.candidates.first() {
                                     for part in &candidate.content.parts {
@@ -483,6 +487,12 @@ impl VertexClient {
                                 if let Some(usage) = response.usage_metadata {
                                     last_usage = Some(usage);
                                 }
+                            } else {
+                                warn!("Failed to parse Vertex response from data: {}", data);
+                            }
+                        } else {
+                            if line_buffer.len() > 1 {
+                                warn!("Received line without 'data' prefix: {}", line_buffer);
                             }
                         }
                         line_buffer.clear();
@@ -496,10 +506,17 @@ impl VertexClient {
         // Process any remaining data in the buffer
         if !line_buffer.is_empty() {
             if let Some(data) = line_buffer.strip_prefix("data: ") {
+                debug!("Received last data line: {}", data);
                 if let Ok(response) = serde_json::from_str::<VertexResponse>(data) {
                     if let Some(usage) = response.usage_metadata {
                         last_usage = Some(usage);
                     }
+                } else {
+                    warn!("Failed to parse Vertex response from data: {}", data);
+                }
+            } else {
+                if line_buffer.len() > 1 {
+                    warn!("Received line without 'data' prefix: {}", line_buffer);
                 }
             }
         }
@@ -512,18 +529,21 @@ impl VertexClient {
         Ok((
             LLMResponse {
                 content: content_blocks,
-                usage: Usage {
-                    input_tokens: last_usage
-                        .as_ref()
-                        .map(|u| u.prompt_token_count)
-                        .unwrap_or(0),
-                    output_tokens: last_usage
-                        .as_ref()
-                        .map(|u| u.candidates_token_count)
-                        .unwrap_or(0),
-                    // Vertex doesn't support our caching markers, so these fields are 0
-                    cache_creation_input_tokens: 0,
-                    cache_read_input_tokens: 0,
+                usage: if let Some(usage_metadata) = last_usage {
+                    Usage {
+                        input_tokens: usage_metadata.prompt_token_count,
+                        output_tokens: usage_metadata.candidates_token_count,
+                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: if let Some(cached_content_token_count) =
+                            usage_metadata.cached_content_token_count
+                        {
+                            cached_content_token_count
+                        } else {
+                            0
+                        },
+                    }
+                } else {
+                    Usage::default()
                 },
             },
             rate_limits,
