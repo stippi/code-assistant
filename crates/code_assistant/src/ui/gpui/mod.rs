@@ -8,6 +8,7 @@ pub mod parameter_renderers;
 mod path_util;
 mod root;
 pub mod simple_renderers;
+pub mod theme;
 
 use crate::types::WorkingMemory;
 use crate::ui::gpui::{
@@ -113,7 +114,7 @@ impl Gpui {
             file_icons::init(cx);
 
             // Initialize gpui-component modules
-            gpui_component::theme::init(cx);
+            theme::init_themes(cx);
             gpui_component::input::init(cx);
             gpui_component::drawer::init(cx);
 

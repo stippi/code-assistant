@@ -764,10 +764,12 @@ fn render_thinking_blocks(blocks: &[ThinkingBlock]) -> impl IntoElement {
    - Add Accordion for thinking blocks
    - Maintain custom rendering for tool parameters to keep flexibility
 
-6. **Phase 6: Theme Integration**
-   - Migrate from hard-coded colors to gpui-component's theme system
-   - Create a consistent dark theme based on current UI colors
-   - Update all UI components to use themed colors instead of hard-coded values
+6. **Phase 6: Theme Integration** ✅
+   - ✅ Migrate from hard-coded colors to gpui-component's theme system
+   - ✅ Create a custom dark theme that preserves current UI colors
+   - ✅ Create a balanced light theme with good contrast
+   - ✅ Add theme toggle button in the title bar
+   - ✅ Update all UI components to use themed colors instead of hard-coded values
 
 ## Considerations and Challenges
 
@@ -789,6 +791,13 @@ fn render_thinking_blocks(blocks: &[ThinkingBlock]) -> impl IntoElement {
 4. **Component Initialization**
    - GPUI-Component needs proper initialization in the app setup
    - Theme initialization is particularly important for consistent styling
+
+5. **Theme Implementation**
+   - Custom theme implementation in `theme.rs` extends GPUI-Component's theme system
+   - Dark theme preserves existing color scheme for consistency
+   - Light theme provides good contrast and readability
+   - Theme toggle button in title bar allows users to switch modes
+   - Theme colors are applied contextually based on the current theme mode
 
 ## Code Locations for Reference
 

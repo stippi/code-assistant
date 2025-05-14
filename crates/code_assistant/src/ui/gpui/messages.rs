@@ -1,9 +1,9 @@
 use super::elements::MessageContainer;
 use gpui::{
-    div, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, 
+    div, prelude::*, px, rgb, App, Context, FocusHandle, Focusable,
     MouseButton, MouseUpEvent, Window,
 };
-use gpui_component::{scroll::ScrollbarAxis, v_flex, StyledExt};
+use gpui_component::{scroll::ScrollbarAxis, v_flex, StyledExt, ActiveTheme};
 use std::sync::{Arc, Mutex};
 
 /// MessagesView - Component responsible for displaying the message history
@@ -66,6 +66,13 @@ impl Render for MessagesView {
             lock.clone()
         };
 
+        // Get the theme colors for user messages
+        let user_accent = if cx.theme().is_dark() {
+            rgb(0x6BD9A8) // Dark mode user accent
+        } else {
+            rgb(0x0A8A55) // Light mode user accent
+        };
+
         // Messages display area with scrollbar
         div()
             .id("messages-container")
@@ -78,7 +85,7 @@ impl Render for MessagesView {
                     .flex_1()
                     .p_2()
                     .scrollable(cx.entity().entity_id(), ScrollbarAxis::Vertical)
-                    .bg(rgb(0x303030))
+                    .bg(cx.theme().card)
                     .gap_2()
                     .text_size(px(16.))
                     .children(messages.into_iter().map(|msg| {
@@ -100,7 +107,7 @@ impl Render for MessagesView {
                         if msg.is_user_message() {
                             message_container = message_container
                                 .m_3()
-                                .bg(rgb(0x202020))
+                                .bg(cx.theme().muted.opacity(0.3)) // Use theme muted color with opacity
                                 .rounded_md()
                                 .shadow_sm();
                         }
@@ -117,13 +124,13 @@ impl Render for MessagesView {
                                         super::file_icons::render_icon_container(
                                             &super::file_icons::get().get_type_icon(super::file_icons::TOOL_USER_INPUT),
                                             16.0,
-                                            rgb(0x6BD9A8), // Greenish color for user icon
+                                            user_accent, // Use themed user accent color
                                             "👤",
                                         )
                                         .into_any_element(),
                                         div()
                                             .font_weight(gpui::FontWeight(600.0))
-                                            .text_color(rgb(0x6BD9A8))
+                                            .text_color(user_accent) // Use themed user accent color
                                             .child("You")
                                             .into_any_element(),
                                     ])

@@ -1,12 +1,13 @@
 use super::file_icons;
 use super::memory::MemoryView;
 use super::messages::MessagesView;
+use super::theme;
 use super::CloseWindow;
 use gpui::{
-    div, prelude::*, px, rgb, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
+    div, prelude::*, px, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
     MouseButton, MouseUpEvent,
 };
-use gpui_component::input::TextInput;
+use gpui_component::{input::TextInput, ActiveTheme, Icon, IconName};
 use std::sync::{Arc, Mutex};
 
 // Root View - handles overall layout and coordination
@@ -50,6 +51,16 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         self.memory_collapsed = !self.memory_collapsed;
+        cx.notify();
+    }
+
+    fn on_toggle_theme(
+        &mut self,
+        _: &MouseUpEvent,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        theme::toggle_theme(Some(window), cx);
         cx.notify();
     }
 
@@ -102,7 +113,7 @@ impl Render for RootView {
             .on_action(|_: &CloseWindow, window, _| {
                 window.remove_window();
             })
-            .bg(rgb(0x2c2c2c))
+            .bg(cx.theme().background)
             .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col() // Main container as column layout
@@ -114,9 +125,9 @@ impl Render for RootView {
                     .flex_none()
                     .h(px(30.))
                     .w_full()
-                    .bg(rgb(0x303030))
+                    .bg(cx.theme().title_bar)
                     .border_b_1()
-                    .border_color(rgb(0x404040))
+                    .border_color(cx.theme().title_bar_border)
                     .flex()
                     .flex_row()
                     .items_center()
@@ -127,7 +138,7 @@ impl Render for RootView {
                         div()
                             .flex()
                             .items_center()
-                            .text_color(rgb(0xAAAAAA))
+                            .text_color(cx.theme().muted_foreground)
                             .gap_2()
                             .pl_16()
                             .child("Code Assistant"),
@@ -138,6 +149,32 @@ impl Render for RootView {
                             .flex()
                             .items_center()
                             .gap_2()
+                            // Theme toggle button
+                            .child(
+                                div()
+                                    .size(px(24.))
+                                    .rounded_sm()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(cx.theme().muted))
+                                    .child(
+                                        // Show sun icon for dark mode (to switch to light)
+                                        // Show moon icon for light mode (to switch to dark)
+                                        if cx.theme().is_dark() {
+                                            Icon::new(IconName::Sun)
+                                                .text_color(cx.theme().muted_foreground)
+                                        } else {
+                                            Icon::new(IconName::Moon)
+                                                .text_color(cx.theme().muted_foreground)
+                                        },
+                                    )
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(Self::on_toggle_theme),
+                                    ),
+                            )
                             // Memory toggle button
                             .child(
                                 div()
@@ -147,7 +184,7 @@ impl Render for RootView {
                                     .items_center()
                                     .justify_center()
                                     .cursor_pointer()
-                                    .hover(|s| s.bg(rgb(0x404040)))
+                                    .hover(|s| s.bg(cx.theme().muted))
                                     .child(file_icons::render_icon(
                                         &file_icons::get().get_type_icon(
                                             if self.memory_collapsed {
@@ -157,7 +194,7 @@ impl Render for RootView {
                                             },
                                         ),
                                         16.0,
-                                        rgb(0xAAAAAA),
+                                        cx.theme().muted_foreground,
                                         "<>",
                                     ))
                                     .on_mouse_up(
@@ -191,9 +228,9 @@ impl Render for RootView {
                                 div()
                                     .id("input-area")
                                     .flex_none() // Important: don't grow or shrink
-                                    .bg(rgb(0x303030))
+                                    .bg(cx.theme().card)
                                     .border_t_1()
-                                    .border_color(rgb(0x404040))
+                                    .border_color(cx.theme().border)
                                     .flex()
                                     .flex_row()
                                     .justify_between()
@@ -204,14 +241,14 @@ impl Render for RootView {
                                     .child(
                                         div()
                                             .border_1()
-                                            .border_color(rgb(0x505050))
+                                            .border_color(cx.theme().border)
                                             .rounded_md()
                                             .px_3()
                                             .py_1()
                                             .bg(if is_input_requested {
-                                                rgb(0x3355bb)
+                                                cx.theme().primary
                                             } else {
-                                                rgb(0xc0c0c0)
+                                                cx.theme().muted
                                             })
                                             .cursor(if is_input_requested {
                                                 CursorStyle::PointingHand
@@ -222,25 +259,27 @@ impl Render for RootView {
                                             .font_weight(gpui::FontWeight(600.0))
                                             .child("Submit")
                                             .when(is_input_requested, |style| {
-                                                style.hover(|s| s.bg(rgb(0x4466cc))).on_mouse_up(
-                                                    MouseButton::Left,
-                                                    cx.listener(Self::on_submit_click),
-                                                )
+                                                style
+                                                    .hover(|s| s.bg(cx.theme().primary_hover))
+                                                    .on_mouse_up(
+                                                        MouseButton::Left,
+                                                        cx.listener(Self::on_submit_click),
+                                                    )
                                             }),
                                     )
                                     .child(
                                         div()
                                             .border_1()
-                                            .border_color(rgb(0x505050))
+                                            .border_color(cx.theme().border)
                                             .rounded_md()
                                             .px_3()
                                             .py_1()
-                                            .bg(rgb(0x553333))
+                                            .bg(cx.theme().danger)
                                             .text_color(white())
                                             .cursor_pointer()
                                             .font_weight(gpui::FontWeight(600.0))
                                             .child("Clear")
-                                            .hover(|style| style.bg(rgb(0x664444)))
+                                            .hover(|style| style.bg(cx.theme().danger_hover))
                                             .on_mouse_up(
                                                 MouseButton::Left,
                                                 cx.listener(Self::on_reset_click),
@@ -256,9 +295,9 @@ impl Render for RootView {
                                 .flex_none()
                                 .w(px(260.))
                                 .h_full()
-                                .bg(rgb(0x252525))
+                                .bg(cx.theme().sidebar)
                                 .border_l_1()
-                                .border_color(rgb(0x404040))
+                                .border_color(cx.theme().sidebar_border)
                                 .overflow_hidden()
                                 .flex()
                                 .flex_col()
@@ -273,9 +312,9 @@ impl Render for RootView {
                                 .flex_none()
                                 .w(px(40.))
                                 .h_full()
-                                .bg(rgb(0x252525))
+                                .bg(cx.theme().sidebar)
                                 .border_l_1()
-                                .border_color(rgb(0x404040))
+                                .border_color(cx.theme().sidebar_border)
                                 .flex()
                                 .flex_col()
                                 .items_center()
@@ -292,7 +331,7 @@ impl Render for RootView {
                                             &file_icons::get()
                                                 .get_type_icon(file_icons::WORKING_MEMORY),
                                             16.0,
-                                            rgb(0xAAAAAA),
+                                            cx.theme().muted_foreground,
                                             "🧠",
                                         )),
                                 ),
