@@ -1,5 +1,5 @@
 use super::file_icons;
-use super::memory_view::MemoryView;
+use super::memory::MemoryView;
 use super::messages::MessagesView;
 use super::CloseWindow;
 use gpui::{

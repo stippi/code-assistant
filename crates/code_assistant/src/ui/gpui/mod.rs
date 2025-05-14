@@ -2,12 +2,11 @@ pub mod assets;
 pub mod diff_renderer;
 mod elements;
 pub mod file_icons;
-mod memory_view;
+mod memory;
 mod messages;
 pub mod parameter_renderers;
 mod path_util;
 mod root;
-mod scrollbar;
 pub mod simple_renderers;
 
 use crate::types::WorkingMemory;
@@ -19,7 +18,7 @@ use crate::ui::gpui::{
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use assets::Assets;
 use gpui::{actions, AppContext};
-pub use memory_view::MemoryView;
+pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
 use std::sync::{Arc, Mutex};
