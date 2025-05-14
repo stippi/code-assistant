@@ -3,9 +3,10 @@ pub mod diff_renderer;
 mod elements;
 pub mod file_icons;
 mod memory_view;
-mod message;
+mod messages;
 pub mod parameter_renderers;
 mod path_util;
+mod root;
 mod scrollbar;
 pub mod simple_renderers;
 
@@ -19,7 +20,8 @@ use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, Us
 use assets::Assets;
 use gpui::{actions, AppContext};
 pub use memory_view::MemoryView;
-use message::MessageView;
+pub use messages::MessagesView;
+pub use root::RootView;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -143,20 +145,23 @@ impl Gpui {
                             .placeholder("Type your message...")
                     });
 
-                    // Create MessageView with our TextInput
-                    let message_view = cx.new(|cx| {
-                        MessageView::new(
+                    // Create MessagesView
+                    let messages_view = cx.new(|cx| MessagesView::new(message_queue.clone(), cx));
+
+                    // Create RootView
+                    let root_view = cx.new(|cx| {
+                        RootView::new(
                             text_input,
                             memory_view.clone(),
+                            messages_view,
                             cx,
                             input_value.clone(),
-                            message_queue.clone(),
                             input_requested.clone(),
                         )
                     });
 
                     // Wrap in Root component
-                    cx.new(|cx| gpui_component::Root::new(message_view.into(), window, cx))
+                    cx.new(|cx| gpui_component::Root::new(root_view.into(), window, cx))
                 },
             );
 
