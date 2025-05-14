@@ -1,9 +1,8 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use gpui::{div, hsla, prelude::*, px, rgb, App, Context, Entity, FocusHandle, Focusable, Window};
-use gpui_component::scroll::ScrollbarAxis;
-use gpui_component::StyledExt;
+use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, Window};
+use gpui_component::{scroll::ScrollbarAxis, ActiveTheme, StyledExt};
 
 use crate::types::{FileSystemEntryType, FileTreeEntry, LoadedResource, WorkingMemory};
 use crate::ui::gpui::file_icons;
@@ -40,11 +39,11 @@ impl Render for LoadedResourcesView {
             .text_sm()
             .w_full()
             .px_2()
-            .bg(rgb(0x303030))
+            .bg(cx.theme().card)
             .flex()
             .items_center()
             .justify_between()
-            .text_color(hsla(0., 0., 0.9, 1.0))
+            .text_color(cx.theme().foreground)
             .child(
                 div()
                     .flex()
@@ -53,7 +52,7 @@ impl Render for LoadedResourcesView {
                     .child(file_icons::render_icon(
                         &file_icons::get().get_type_icon(file_icons::LIBRARY),
                         16.0,
-                        hsla(0., 0., 0.7, 1.0),
+                        cx.theme().muted_foreground,
                         "📚",
                     ))
                     .child("Loaded Resources"),
@@ -63,9 +62,9 @@ impl Render for LoadedResourcesView {
         let mut container = div()
             .id("resources-section")
             .flex_none()
-            .bg(rgb(0x252525))
+            .bg(cx.theme().sidebar)
             .border_b_1()
-            .border_color(rgb(0x404040))
+            .border_color(cx.theme().sidebar_border)
             .flex()
             .flex_col();
 
@@ -74,7 +73,7 @@ impl Render for LoadedResourcesView {
             let header_with_count = header.child(
                 div()
                     .text_xs()
-                    .text_color(hsla(0., 0., 0.6, 1.0))
+                    .text_color(cx.theme().muted_foreground)
                     .child(format!("({})", memory.loaded_resources.len())),
             );
 
@@ -112,12 +111,12 @@ impl Render for LoadedResourcesView {
                                 .child(file_icons::render_icon_container(
                                     &icon,
                                     14.0,
-                                    hsla(0., 0., 0.7, 1.0),
+                                    cx.theme().muted_foreground,
                                     "📄",
                                 ))
                                 .child(
                                     div()
-                                        .text_color(hsla(0., 0., 0.8, 1.0))
+                                        .text_color(cx.theme().foreground)
                                         .text_xs()
                                         .truncate()
                                         .flex_grow()
@@ -140,7 +139,7 @@ impl Render for LoadedResourcesView {
                 div()
                     .p_2()
                     .text_center()
-                    .text_color(hsla(0., 0., 0.5, 1.0))
+                    .text_color(cx.theme().muted_foreground)
                     .child("No resources available"),
             );
         }
@@ -168,7 +167,7 @@ impl FileTreeView {
         &self,
         entry: &FileTreeEntry,
         indent_level: usize,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
     ) -> gpui::Div {
         // Get appropriate icon based on type and name
         let icon = match entry.entry_type {
@@ -188,7 +187,7 @@ impl FileTreeView {
             }
         };
 
-        let icon_color = hsla(0., 0., 0.5, 1.0);
+        let icon_color = cx.theme().muted_foreground;
 
         // Create the single item row
         div()
@@ -212,7 +211,7 @@ impl FileTreeView {
                 div()
                     .text_xs()
                     .font_weight(gpui::FontWeight(400.))
-                    .text_color(hsla(0., 0., 0.8, 1.0))
+                    .text_color(cx.theme().foreground)
                     .child(entry.name.clone()),
             )
     }
@@ -271,11 +270,11 @@ impl Render for FileTreeView {
             .text_sm()
             .w_full()
             .px_2()
-            .bg(rgb(0x303030))
+            .bg(cx.theme().card)
             .flex()
             .items_center()
             .justify_between()
-            .text_color(hsla(0., 0., 0.9, 1.0))
+            .text_color(cx.theme().foreground)
             .child(
                 div()
                     .flex()
@@ -284,7 +283,7 @@ impl Render for FileTreeView {
                     .child(file_icons::render_icon(
                         &file_icons::get().get_type_icon(file_icons::FILE_TREE),
                         16.0,
-                        hsla(0., 0., 0.7, 1.0),
+                        cx.theme().muted_foreground,
                         "🌲",
                     ))
                     .child("File Tree"),
@@ -331,7 +330,7 @@ impl Render for FileTreeView {
                 container = container.child(header).child(
                     div()
                         .p_2()
-                        .text_color(hsla(0., 0., 0.5, 1.0))
+                        .text_color(cx.theme().muted_foreground)
                         .text_center()
                         .child("No file trees available"),
                 );
@@ -342,7 +341,7 @@ impl Render for FileTreeView {
                 div()
                     .p_2()
                     .text_center()
-                    .text_color(hsla(0., 0., 0.5, 1.0))
+                    .text_color(cx.theme().muted_foreground)
                     .child("No file tree available"),
             );
         }
@@ -389,8 +388,8 @@ impl Render for MemoryView {
             .items_center()
             .px_2()
             .justify_between()
-            .bg(rgb(0x303030))
-            .text_color(hsla(0., 0., 0.8, 1.0))
+            .bg(cx.theme().card)
+            .text_color(cx.theme().foreground)
             .child(
                 div()
                     .flex()
@@ -399,7 +398,7 @@ impl Render for MemoryView {
                     .child(file_icons::render_icon(
                         &file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
                         16.0,
-                        hsla(0., 0., 0.7, 1.0),
+                        cx.theme().muted_foreground,
                         "🧠",
                     ))
                     .child("Working Memory"),
@@ -412,7 +411,7 @@ impl Render for MemoryView {
             .flex_none()
             .w(px(260.))
             .h_full()
-            .bg(rgb(0x252525))
+            .bg(cx.theme().sidebar)
             .overflow_hidden() // Prevent content from overflowing
             .flex()
             .flex_col()
