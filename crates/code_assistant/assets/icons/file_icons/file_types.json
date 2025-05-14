@@ -371,6 +371,18 @@
     },
     "settings": {
       "icon": "icons/settings.svg"
+    },
+    "panel_right_open": {
+      "icon": "icons/panel_right_open.svg"
+    },
+    "panel_right_close": {
+      "icon": "icons/panel_right_close.svg"
+    },
+    "theme_dark": {
+      "icon": "icons/theme_dark.svg"
+    },
+    "theme_light": {
+      "icon": "icons/theme_light.svg"
     }
   }
 }

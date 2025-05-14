@@ -35,8 +35,8 @@ pub struct FileIcons {
 // Public icon type constants that already exist in file_types.json
 pub const DIRECTORY_COLLAPSED: &str = "collapsed_folder"; // folder.svg
 pub const DIRECTORY_EXPANDED: &str = "expanded_folder"; // folder_open.svg
-pub const CHEVRON_LEFT: &str = "chevron_left"; // chevron_left.svg
-pub const CHEVRON_RIGHT: &str = "chevron_right"; // chevron_right.svg
+                                                        // pub const CHEVRON_LEFT: &str = "chevron_left"; // chevron_left.svg
+                                                        // pub const CHEVRON_RIGHT: &str = "chevron_right"; // chevron_right.svg
 pub const CHEVRON_DOWN: &str = "chevron_down"; // chevron_down.svg
 pub const CHEVRON_UP: &str = "chevron_up"; // chevron_up.svg
 pub const WORKING_MEMORY: &str = "brain"; // brain.svg
@@ -45,6 +45,11 @@ pub const FILE_TREE: &str = "file_tree"; // file_tree.svg
 pub const MAGNIFYING_GLASS: &str = "magnifying_glass"; // magnifying_glass.svg
 pub const HTML: &str = "template"; // html.svg
 pub const DEFAULT: &str = "default"; // file.svg
+
+pub const PANEL_RIGHT_CLOSE: &str = "panel_right_close"; // panel_right_close.svg
+pub const PANEL_RIGHT_OPEN: &str = "panel_right_open"; // panel_right_open.svg
+pub const THEME_DARK: &str = "theme_dark"; // theme_dark.svg
+pub const THEME_LIGHT: &str = "theme_light"; // theme_light.svg
 
 // Tool-specific icon mappings to actual SVG files
 // These are direct constants defining the paths to SVG icons or existing types

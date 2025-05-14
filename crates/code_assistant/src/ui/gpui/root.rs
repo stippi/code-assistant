@@ -7,7 +7,7 @@ use gpui::{
     div, prelude::*, px, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
     MouseButton, MouseUpEvent,
 };
-use gpui_component::{input::TextInput, ActiveTheme, Icon, IconName};
+use gpui_component::{input::TextInput, ActiveTheme};
 use std::sync::{Arc, Mutex};
 
 // Root View - handles overall layout and coordination
@@ -159,17 +159,16 @@ impl Render for RootView {
                                     .justify_center()
                                     .cursor_pointer()
                                     .hover(|s| s.bg(cx.theme().muted))
-                                    .child(
-                                        // Show sun icon for dark mode (to switch to light)
-                                        // Show moon icon for light mode (to switch to dark)
-                                        if cx.theme().is_dark() {
-                                            Icon::new(IconName::Sun)
-                                                .text_color(cx.theme().muted_foreground)
+                                    .child(file_icons::render_icon(
+                                        &file_icons::get().get_type_icon(if cx.theme().is_dark() {
+                                            file_icons::THEME_LIGHT
                                         } else {
-                                            Icon::new(IconName::Moon)
-                                                .text_color(cx.theme().muted_foreground)
-                                        },
-                                    )
+                                            file_icons::THEME_DARK
+                                        }),
+                                        16.0,
+                                        cx.theme().muted_foreground,
+                                        if cx.theme().is_dark() { "*" } else { "c" },
+                                    ))
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(Self::on_toggle_theme),
@@ -188,9 +187,9 @@ impl Render for RootView {
                                     .child(file_icons::render_icon(
                                         &file_icons::get().get_type_icon(
                                             if self.memory_collapsed {
-                                                file_icons::CHEVRON_LEFT
+                                                file_icons::PANEL_RIGHT_OPEN
                                             } else {
-                                                file_icons::CHEVRON_RIGHT
+                                                file_icons::PANEL_RIGHT_CLOSE
                                             },
                                         ),
                                         16.0,
