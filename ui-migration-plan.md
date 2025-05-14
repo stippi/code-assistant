@@ -794,9 +794,10 @@ fn render_thinking_blocks(blocks: &[ThinkingBlock]) -> impl IntoElement {
 
 1. Current UI implementation (in project `code-assistant`):
    - `crates/code_assistant/src/ui/gpui/mod.rs`: Main UI struct
-   - `crates/code_assistant/src/ui/gpui/message.rs`: Message view
+   - `crates/code_assistant/src/ui/gpui/root.rs`: Root view
+   - `crates/code_assistant/src/ui/gpui/messages.rs`: Messages view
    - `crates/code_assistant/src/ui/gpui/input.rs`: Text input
-   - `crates/code_assistant/src/ui/gpui/memory_view.rs`: Memory sidebar
+   - `crates/code_assistant/src/ui/gpui/memory.rs`: Memory sidebar
    - `crates/code_assistant/src/ui/gpui/elements.rs`: Message elements
 
 2. GPUI-Component reference (in read-only project `gpui-component`):
