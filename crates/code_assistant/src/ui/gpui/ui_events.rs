@@ -1,0 +1,33 @@
+use crate::ui::gpui::elements::MessageRole;
+use crate::ui::ToolStatus;
+
+/// Events for UI updates from the agent thread
+#[derive(Debug, Clone)]
+pub enum UiEvent {
+    /// Display a new message or append to an existing one
+    DisplayMessage { content: String, role: MessageRole },
+    /// Add a text block to the last message
+    AddTextBlock { content: String },
+    /// Add a thinking block to the last message
+    AddThinkingBlock { content: String },
+    /// Append to the last text block
+    AppendToTextBlock { content: String },
+    /// Append to the last thinking block
+    AppendToThinkingBlock { content: String },
+    /// Start a tool invocation
+    StartTool { name: String, id: String },
+    /// Add or update a tool parameter
+    UpdateToolParameter {
+        tool_id: String,
+        name: String,
+        value: String,
+    },
+    /// Update a tool status
+    UpdateToolStatus {
+        tool_id: String,
+        status: ToolStatus,
+        message: Option<String>,
+    },
+    /// Set the input request state
+    RequestInput { requested: bool },
+}
