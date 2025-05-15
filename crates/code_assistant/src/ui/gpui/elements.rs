@@ -2,10 +2,11 @@ use crate::ui::gpui::file_icons;
 use crate::ui::gpui::parameter_renderers::ParameterRendererRegistry;
 use crate::ui::ToolStatus;
 use gpui::{
-    bounce, div, ease_in_out, hsla, percentage, px, rgba, svg, white, Animation, AnimationExt,
-    IntoElement, SharedString, Styled, Transformation,
+    black, bounce, div, ease_in_out, percentage, px, rgba, svg, white, Animation, AnimationExt,
+    Context, Entity, IntoElement, MouseButton, SharedString, Styled, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
+use gpui_component::ActiveTheme;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,12 +20,12 @@ pub enum MessageRole {
 /// Container for all elements within a message
 #[derive(Clone)]
 pub struct MessageContainer {
-    elements: Arc<Mutex<Vec<MessageElement>>>,
+    elements: Arc<Mutex<Vec<Entity<BlockView>>>>,
     role: MessageRole,
 }
 
 impl MessageContainer {
-    pub fn with_role(role: MessageRole) -> Self {
+    pub fn with_role(role: MessageRole, _cx: &mut Context<Self>) -> Self {
         Self {
             elements: Arc::new(Mutex::new(Vec::new())),
             role,
@@ -41,41 +42,50 @@ impl MessageContainer {
         self.role == MessageRole::User
     }
 
-    pub fn elements(&self) -> Vec<MessageElement> {
+    pub fn elements(&self) -> Vec<Entity<BlockView>> {
         let elements = self.elements.lock().unwrap();
         elements.clone()
     }
 
     // Add a new text block
-    pub fn add_text_block(&self, content: impl Into<String>) {
-        self.finish_any_thinking_blocks();
+    pub fn add_text_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
+        self.finish_any_thinking_blocks(cx);
         let mut elements = self.elements.lock().unwrap();
-        elements.push(MessageElement::TextBlock(TextBlock {
+        let block = BlockData::TextBlock(TextBlock {
             content: content.into(),
-        }));
+        });
+        let view = cx.new(|cx| BlockView::new(block, cx));
+        elements.push(view);
     }
 
     // Add a new thinking block
     #[allow(dead_code)]
-    pub fn add_thinking_block(&self, content: impl Into<String>) {
-        self.finish_any_thinking_blocks();
+    pub fn add_thinking_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
+        self.finish_any_thinking_blocks(cx);
         let mut elements = self.elements.lock().unwrap();
-        elements.push(MessageElement::ThinkingBlock(ThinkingBlock::new(
-            content.into(),
-        )));
+        let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.into()));
+        let view = cx.new(|cx| BlockView::new(block, cx));
+        elements.push(view);
     }
 
     // Add a new tool use block
-    pub fn add_tool_use_block(&self, name: impl Into<String>, id: impl Into<String>) {
-        self.finish_any_thinking_blocks();
+    pub fn add_tool_use_block(
+        &self,
+        name: impl Into<String>,
+        id: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_any_thinking_blocks(cx);
         let mut elements = self.elements.lock().unwrap();
-        elements.push(MessageElement::ToolUse(ToolUseBlock {
+        let block = BlockData::ToolUse(ToolUseBlock {
             name: name.into(),
             id: id.into(),
             parameters: Vec::new(),
             status: ToolStatus::Pending,
             status_message: None,
-        }));
+        });
+        let view = cx.new(|cx| BlockView::new(block, cx));
+        elements.push(view);
     }
 
     // Update the status of a tool block
@@ -84,66 +94,87 @@ impl MessageContainer {
         tool_id: &str,
         status: ToolStatus,
         message: Option<String>,
+        cx: &mut Context<Self>,
     ) -> bool {
-        let mut elements = self.elements.lock().unwrap();
+        let elements = self.elements.lock().unwrap();
+        let mut updated = false;
 
-        for element in elements.iter_mut() {
-            if let MessageElement::ToolUse(tool) = element {
-                if tool.id == tool_id {
-                    tool.status = status;
-                    tool.status_message = message;
-                    return true;
+        for element in elements.iter() {
+            element.update(cx, |view, cx| {
+                if let Some(tool) = view.block.as_tool_mut() {
+                    if tool.id == tool_id {
+                        tool.status = status;
+                        tool.status_message = message.clone();
+                        updated = true;
+                        cx.notify();
+                    }
                 }
-            }
+            });
         }
 
-        false // No matching tool found
+        updated
     }
 
     // Add or append to text block
-    pub fn add_or_append_to_text_block(&self, content: impl Into<String>) {
-        self.finish_any_thinking_blocks();
+    pub fn add_or_append_to_text_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
+        self.finish_any_thinking_blocks(cx);
 
         let content = content.into();
         let mut elements = self.elements.lock().unwrap();
 
-        if let Some(last) = elements.last_mut() {
-            match last {
-                MessageElement::TextBlock(block) => {
-                    // Append to existing text block
-                    block.content.push_str(&content);
-                    return;
+        if let Some(last) = elements.last() {
+            let mut was_appended = false;
+
+            last.update(cx, |view, cx| {
+                if let Some(text_block) = view.block.as_text_mut() {
+                    text_block.content.push_str(&content);
+                    was_appended = true;
+                    cx.notify();
                 }
-                _ => {}
+            });
+
+            if was_appended {
+                return;
             }
         }
 
         // If we reach here, we need to add a new text block
-        elements.push(MessageElement::TextBlock(TextBlock {
+        let block = BlockData::TextBlock(TextBlock {
             content: content.to_string(),
-        }));
+        });
+        let view = cx.new(|cx| BlockView::new(block, cx));
+        elements.push(view);
     }
 
     // Add or append to thinking block
-    pub fn add_or_append_to_thinking_block(&self, content: impl Into<String>) {
+    pub fn add_or_append_to_thinking_block(
+        &self,
+        content: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
         let content = content.into();
         let mut elements = self.elements.lock().unwrap();
 
-        if let Some(last) = elements.last_mut() {
-            match last {
-                MessageElement::ThinkingBlock(block) => {
-                    // Append to existing thinking block
-                    block.content.push_str(&content);
-                    return;
+        if let Some(last) = elements.last() {
+            let mut was_appended = false;
+
+            last.update(cx, |view, cx| {
+                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                    thinking_block.content.push_str(&content);
+                    was_appended = true;
+                    cx.notify();
                 }
-                _ => {}
+            });
+
+            if was_appended {
+                return;
             }
         }
 
         // If we reach here, we need to add a new thinking block
-        elements.push(MessageElement::ThinkingBlock(ThinkingBlock::new(
-            content.to_string(),
-        )));
+        let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.to_string()));
+        let view = cx.new(|cx| BlockView::new(block, cx));
+        elements.push(view);
     }
 
     // Add or update tool parameter
@@ -152,51 +183,71 @@ impl MessageContainer {
         tool_id: impl Into<String>,
         name: impl Into<String>,
         value: impl Into<String>,
+        cx: &mut Context<Self>,
     ) {
         let tool_id = tool_id.into();
         let name = name.into();
         let value = value.into();
-
         let mut elements = self.elements.lock().unwrap();
+        let mut tool_found = false;
 
         // Find the tool block with matching ID
-        for element in elements.iter_mut().rev() {
-            if let MessageElement::ToolUse(tool) = element {
-                if tool.id == tool_id {
-                    // Check if parameter with this name already exists
-                    for param in tool.parameters.iter_mut() {
-                        if param.name == name {
-                            // Update existing parameter
-                            param.value.push_str(&value);
-                            return;
-                        }
-                    }
+        for element in elements.iter().rev() {
+            let mut param_added = false;
 
-                    // Add new parameter
-                    tool.parameters.push(ParameterBlock {
-                        name,
-                        value: value.to_string(),
-                    });
-                    return;
+            element.update(cx, |view, cx| {
+                if let Some(tool) = view.block.as_tool_mut() {
+                    if tool.id == tool_id {
+                        tool_found = true;
+
+                        // Check if parameter with this name already exists
+                        for param in tool.parameters.iter_mut() {
+                            if param.name == name {
+                                // Update existing parameter
+                                param.value.push_str(&value);
+                                param_added = true;
+                                break;
+                            }
+                        }
+
+                        // Add new parameter if not found
+                        if !param_added {
+                            tool.parameters.push(ParameterBlock {
+                                name: name.clone(),
+                                value: value.clone(),
+                            });
+                            param_added = true;
+                        }
+
+                        cx.notify();
+                    }
                 }
+            });
+
+            if param_added {
+                return;
             }
         }
 
         // If we didn't find a matching tool, create a new one with this parameter
-        let mut tool = ToolUseBlock {
-            name: "unknown".to_string(), // Default name since we only have ID
-            id: tool_id,
-            parameters: Vec::new(),
-            status: ToolStatus::Pending,
-            status_message: None,
-        };
+        if !tool_found {
+            let mut tool = ToolUseBlock {
+                name: "unknown".to_string(), // Default name since we only have ID
+                id: tool_id.clone(),
+                parameters: Vec::new(),
+                status: ToolStatus::Pending,
+                status_message: None,
+            };
 
-        tool.parameters.push(ParameterBlock {
-            name,
-            value: value.to_string(),
-        });
+            tool.parameters.push(ParameterBlock {
+                name: name.clone(),
+                value: value.clone(),
+            });
 
-        elements.push(MessageElement::ToolUse(tool));
+            let block = BlockData::ToolUse(tool);
+            let view = cx.new(|cx| BlockView::new(block, cx));
+            elements.push(view);
+        }
     }
 
     // Mark a tool as ended (could add visual indicator)
@@ -206,35 +257,43 @@ impl MessageContainer {
         let _id = id.into();
     }
 
-    fn finish_any_thinking_blocks(&self) {
-        let mut elements = self.elements.lock().unwrap();
+    fn finish_any_thinking_blocks(&self, cx: &mut Context<Self>) {
+        let elements = self.elements.lock().unwrap();
+
         // Mark any previous thinking blocks as completed
-        for element in elements.iter_mut() {
-            if let MessageElement::ThinkingBlock(thinking_block) = element {
-                if !thinking_block.is_completed {
-                    thinking_block.is_completed = true;
-                    thinking_block.end_time = std::time::Instant::now();
+        for element in elements.iter() {
+            element.update(cx, |view, cx| {
+                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                    if !thinking_block.is_completed {
+                        thinking_block.is_completed = true;
+                        thinking_block.end_time = std::time::Instant::now();
+                        cx.notify();
+                    }
                 }
-            }
+            });
         }
     }
 
     // Toggle a thinking block's collapsed state by its index
-    pub fn toggle_thinking_collapsed(&self, index: usize) -> bool {
-        let mut elements = self.elements.lock().unwrap();
+    pub fn toggle_thinking_collapsed(&self, cx: &mut Context<Self>, index: usize) -> bool {
+        let elements = self.elements.lock().unwrap();
+        let mut thinking_index = 0;
         let mut changed = false;
 
-        // Get a count of thinking blocks to find the correct one
-        let mut thinking_index = 0;
-
-        for element in elements.iter_mut() {
-            if let MessageElement::ThinkingBlock(block) = element {
-                if thinking_index == index {
-                    block.is_collapsed = !block.is_collapsed;
-                    changed = true;
-                    break;
+        for element in elements.iter() {
+            element.update(cx, |view, cx| {
+                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                    if thinking_index == index {
+                        thinking_block.is_collapsed = !thinking_block.is_collapsed;
+                        changed = true;
+                        cx.notify();
+                    }
+                    thinking_index += 1;
                 }
-                thinking_index += 1;
+            });
+
+            if changed {
+                break;
             }
         }
 
@@ -242,96 +301,69 @@ impl MessageContainer {
     }
 }
 
-/// Different types of elements that can appear in a message
+/// Different types of blocks that can appear in a message
 #[derive(Debug, Clone)]
-pub enum MessageElement {
+pub enum BlockData {
     TextBlock(TextBlock),
     ThinkingBlock(ThinkingBlock),
     ToolUse(ToolUseBlock),
 }
 
-/// Regular text block
-#[derive(Debug, Clone)]
-pub struct TextBlock {
-    pub content: String,
-}
-
-/// Thinking text block with collapsible content
-#[derive(Debug, Clone)]
-pub struct ThinkingBlock {
-    pub content: String,
-    pub is_collapsed: bool,
-    pub is_completed: bool,
-    pub start_time: std::time::Instant,
-    pub end_time: std::time::Instant,
-}
-
-impl ThinkingBlock {
-    pub fn new(content: String) -> Self {
-        let now = std::time::Instant::now();
-        Self {
-            content,
-            is_collapsed: true,  // Default is collapsed
-            is_completed: false, // Default is not completed
-            start_time: now,
-            end_time: now, // Initially same as start_time
-        }
-    }
-
-    pub fn formatted_duration(&self) -> String {
-        // Calculate duration based on status
-        let duration = if self.is_completed {
-            // For completed blocks, use the stored end_time
-            self.end_time.duration_since(self.start_time)
-        } else {
-            // For ongoing blocks, show elapsed time
-            self.start_time.elapsed()
-        };
-
-        if duration.as_secs() < 60 {
-            format!("{}s", duration.as_secs())
-        } else {
-            let minutes = duration.as_secs() / 60;
-            let seconds = duration.as_secs() % 60;
-            format!("{}m{}s", minutes, seconds)
-        }
-    }
-}
-
-/// Tool use block with name and parameters
-#[derive(Debug, Clone)]
-pub struct ToolUseBlock {
-    pub name: String,
-    pub id: String,
-    pub parameters: Vec<ParameterBlock>,
-    pub status: ToolStatus,
-    pub status_message: Option<String>,
-}
-
-/// Parameter for a tool
-#[derive(Debug, Clone)]
-pub struct ParameterBlock {
-    pub name: String,
-    pub value: String,
-}
-
-// Renderer implementation for MessageElement
-impl IntoElement for MessageElement {
-    type Element = gpui::AnyElement;
-
-    fn into_element(self) -> Self::Element {
+impl BlockData {
+    fn as_text_mut(&mut self) -> Option<&mut TextBlock> {
         match self {
-            MessageElement::TextBlock(block) => {
+            BlockData::TextBlock(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    fn as_thinking_mut(&mut self) -> Option<&mut ThinkingBlock> {
+        match self {
+            BlockData::ThinkingBlock(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    fn as_tool_mut(&mut self) -> Option<&mut ToolUseBlock> {
+        match self {
+            BlockData::ToolUse(b) => Some(b),
+            _ => None,
+        }
+    }
+}
+
+/// Entity view for a block
+pub struct BlockView {
+    block: BlockData,
+}
+
+impl BlockView {
+    pub fn new(block: BlockData, _cx: &mut Context<Self>) -> Self {
+        Self { block }
+    }
+
+    fn toggle_thinking_collapsed(&mut self, cx: &mut Context<Self>) {
+        if let Some(thinking) = self.block.as_thinking_mut() {
+            thinking.is_collapsed = !thinking.is_collapsed;
+            cx.notify();
+        }
+    }
+}
+
+impl Render for BlockView {
+    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        match &self.block {
+            BlockData::TextBlock(block) => {
                 // Use TextView with Markdown for rendering text
                 div()
-                    .text_color(rgba(0xFAFAFAFF))
+                    .text_color(cx.theme().foreground)
                     .child(gpui_component::text::TextView::markdown(
                         "md-block",
-                        block.content,
+                        block.content.clone(),
                     ))
                     .into_any_element()
             }
-            MessageElement::ThinkingBlock(block) => {
+            BlockData::ThinkingBlock(block) => {
                 // Get the appropriate icon based on completed state
                 let (icon, icon_text) = if block.is_completed {
                     (
@@ -359,18 +391,25 @@ impl IntoElement for MessageElement {
                     "Thinking...".to_string()
                 };
 
-                // Create the thinking block container
-                // Use the specific blue color 5BC1FE and its variants with rgba
-                let blue_base = rgba(0x5BC1FEFF); // 5BC1FE base color
-                let blue_light_bg = rgba(0x00142060); // Very light blue background
+                // Create the thinking block container with theme-aware styling
+                let blue_base = cx.theme().info; // Theme color for thinking block
+                let blue_light_bg = if cx.theme().is_dark() {
+                    rgba(0x00142060) // Dark mode bg
+                } else {
+                    rgba(0x00142020) // Light mode bg
+                };
+                let chevron_color = if cx.theme().is_dark() {
+                    rgba(0x0099EEFF)
+                } else {
+                    rgba(0x0077CCFF)
+                };
+                let text_color = cx.theme().info_foreground;
 
                 div()
                     .rounded_md()
                     .p_2()
                     .mb_2()
                     .bg(blue_light_bg)
-                    //.border_1()
-                    //.border_color(blue_border)
                     .flex()
                     .flex_col()
                     .children(vec![
@@ -433,15 +472,19 @@ impl IntoElement for MessageElement {
                                     .cursor_pointer()
                                     .size(px(24.))
                                     .rounded_full()
-                                    .hover(|s| s.bg(rgba(0x5BC1FE20)))
+                                    .hover(|s| s.bg(blue_base.opacity(0.1)))
                                     .child(file_icons::render_icon(
                                         &chevron_icon,
                                         16.0,
-                                        rgba(0x0099EEFF),
+                                        chevron_color,
                                         chevron_text,
                                     ))
-                                    // GPUI has limited custom attribute support
-                                    // We'll identify it by position in the message instead
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(move |view, _event, _window, cx| {
+                                            view.toggle_thinking_collapsed(cx);
+                                        }),
+                                    )
                                     .into_any(),
                             ])
                             .into_any(),
@@ -451,7 +494,7 @@ impl IntoElement for MessageElement {
                                 .pt_1()
                                 .text_size(px(14.))
                                 .italic()
-                                .text_color(rgba(0x93B8CEFF))
+                                .text_color(text_color)
                                 .child(gpui_component::text::TextView::markdown(
                                     "thinking-content",
                                     block.content.clone(),
@@ -464,7 +507,7 @@ impl IntoElement for MessageElement {
                                 .pt_1()
                                 .text_size(px(14.))
                                 .italic()
-                                .text_color(rgba(0x93B8CEFF))
+                                .text_color(text_color)
                                 .opacity(0.7)
                                 .text_ellipsis()
                                 .child(gpui_component::text::TextView::markdown(
@@ -474,24 +517,37 @@ impl IntoElement for MessageElement {
                                 .into_any()
                         },
                     ])
-                    .into_any()
+                    .into_any_element()
             }
-            MessageElement::ToolUse(block) => {
+            BlockData::ToolUse(block) => {
                 // Get the appropriate icon for this tool type
                 let icon = file_icons::get().get_tool_icon(&block.name);
 
-                // Get color based on status
+                // Get color based on status with theming support
                 let icon_color = match block.status {
-                    crate::ui::ToolStatus::Error => rgba(0xFD8E3FE0),
-                    _ => rgba(0xFFFFFFAA),
+                    crate::ui::ToolStatus::Error => cx.theme().warning,
+                    _ => {
+                        if cx.theme().is_dark() {
+                            white()
+                        } else {
+                            black()
+                        }
+                    }
                 };
 
                 // Border color based on status (more subtle indication)
                 let border_color = match block.status {
-                    crate::ui::ToolStatus::Pending => rgba(0x666666FF),
-                    crate::ui::ToolStatus::Running => rgba(0x56BBF6FF),
-                    crate::ui::ToolStatus::Success => rgba(0x47D136FF),
-                    crate::ui::ToolStatus::Error => rgba(0xFD8E3FFF),
+                    crate::ui::ToolStatus::Pending => cx.theme().border,
+                    crate::ui::ToolStatus::Running => cx.theme().info,
+                    crate::ui::ToolStatus::Success => cx.theme().success,
+                    crate::ui::ToolStatus::Error => cx.theme().warning,
+                };
+
+                // Tool background color
+                let tool_bg = if cx.theme().is_dark() {
+                    rgba(0x161616FF)
+                } else {
+                    rgba(0xF0F0F0FF)
                 };
 
                 // Parameter rendering function that uses the global registry if available
@@ -510,16 +566,16 @@ impl IntoElement for MessageElement {
                                 .mr_1()
                                 .mb_1() // Add margin to allow wrapping
                                 .text_size(px(16.))
-                                .bg(hsla(210., 0.1, 0.3, 0.3))
+                                .bg(cx.theme().muted.opacity(0.3))
                                 .child(div().flex().flex_row().items_center().gap_1().children(
                                     vec![
                                         div()
                                             .font_weight(FontWeight(500.0))
-                                            .text_color(hsla(210., 0.5, 0.8, 1.0))
+                                            .text_color(cx.theme().info)
                                             .child(format!("{}:", param.name))
                                             .into_any(),
                                         div()
-                                            .text_color(white())
+                                            .text_color(cx.theme().foreground)
                                             .child(param.value.clone())
                                             .into_any(),
                                     ],
@@ -544,7 +600,7 @@ impl IntoElement for MessageElement {
                 div()
                     .rounded(px(3.))
                     .mb_2()
-                    .bg(rgba(0x161616FF))
+                    .bg(tool_bg)
                     .flex()
                     .flex_row()
                     .overflow_hidden()
@@ -632,10 +688,10 @@ impl IntoElement for MessageElement {
                                                 .items_center()
                                                 .p_2()
                                                 .rounded_md()
-                                                .bg(hsla(0., 0.15, 0.2, 0.2)) // Light red background for errors
+                                                .bg(cx.theme().danger.opacity(0.2))
                                                 .border_l_2()
-                                                .border_color(hsla(0., 0.5, 0.5, 0.5))
-                                                .text_color(hsla(0., 0.3, 0.9, 1.0))
+                                                .border_color(cx.theme().danger.opacity(0.5))
+                                                .text_color(cx.theme().danger.opacity(0.9))
                                                 .text_size(px(14.))
                                                 .child(msg.clone())
                                                 .into_any(),
@@ -648,8 +704,73 @@ impl IntoElement for MessageElement {
                         ),
                     ])
                     .shadow_md()
-                    .into_any()
+                    .into_any_element()
             }
         }
     }
+}
+
+/// Regular text block
+#[derive(Debug, Clone)]
+pub struct TextBlock {
+    pub content: String,
+}
+
+/// Thinking text block with collapsible content
+#[derive(Debug, Clone)]
+pub struct ThinkingBlock {
+    pub content: String,
+    pub is_collapsed: bool,
+    pub is_completed: bool,
+    pub start_time: std::time::Instant,
+    pub end_time: std::time::Instant,
+}
+
+impl ThinkingBlock {
+    pub fn new(content: String) -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            content,
+            is_collapsed: true,  // Default is collapsed
+            is_completed: false, // Default is not completed
+            start_time: now,
+            end_time: now, // Initially same as start_time
+        }
+    }
+
+    pub fn formatted_duration(&self) -> String {
+        // Calculate duration based on status
+        let duration = if self.is_completed {
+            // For completed blocks, use the stored end_time
+            self.end_time.duration_since(self.start_time)
+        } else {
+            // For ongoing blocks, show elapsed time
+            self.start_time.elapsed()
+        };
+
+        if duration.as_secs() < 60 {
+            format!("{}s", duration.as_secs())
+        } else {
+            let minutes = duration.as_secs() / 60;
+            let seconds = duration.as_secs() % 60;
+            format!("{}m{}s", minutes, seconds)
+        }
+    }
+}
+
+/// Tool use block with name and parameters
+#[derive(Debug, Clone)]
+pub struct ToolUseBlock {
+    pub name: String,
+    pub id: String,
+    pub parameters: Vec<ParameterBlock>,
+    pub status: ToolStatus,
+    pub status_message: Option<String>,
+}
+
+/// Parameter for a tool
+#[derive(Debug, Clone)]
+pub struct ParameterBlock {
+    pub name: String,
+    pub value: String,
 }
