@@ -51,6 +51,8 @@ pub const PANEL_RIGHT_OPEN: &str = "panel_right_open"; // panel_right_open.svg
 pub const THEME_DARK: &str = "theme_dark"; // theme_dark.svg
 pub const THEME_LIGHT: &str = "theme_light"; // theme_light.svg
 
+pub const SEND: &str = "send"; // send.svg
+
 // Tool-specific icon mappings to actual SVG files
 // These are direct constants defining the paths to SVG icons or existing types
 pub const TOOL_READ_FILES: &str = "search_code"; // search_code.svg

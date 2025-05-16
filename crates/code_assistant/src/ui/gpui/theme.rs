@@ -24,7 +24,7 @@ pub fn custom_dark_theme() -> gpui_component::theme::ThemeColor {
     colors.info_foreground = rgba(0x93B8CEFF).into(); // Thinking block text
 
     // Buttons
-    colors.primary = rgb(0x3355bb).into(); // Primary button (submit)
+    colors.primary = rgb(0x0099EE).into(); // Primary button (submit)
     colors.primary_hover = rgb(0x4466cc).into();
     colors.danger = rgb(0x553333).into(); // Danger button (clear)
     colors.danger_hover = rgb(0x664444).into();
@@ -59,7 +59,7 @@ pub fn custom_light_theme() -> gpui_component::theme::ThemeColor {
     colors.info_foreground = rgb(0x0060A0).into(); // Thinking block text
 
     // Buttons
-    colors.primary = rgb(0x2244AA).into(); // Primary button (submit)
+    colors.primary = rgb(0x0077CC).into(); // Primary button (submit)
     colors.primary_hover = rgb(0x3355BB).into();
     colors.danger = rgb(0xBB3333).into(); // Danger button (clear)
     colors.danger_hover = rgb(0xCC4444).into();

@@ -4,8 +4,8 @@ use super::messages::MessagesView;
 use super::theme;
 use super::CloseWindow;
 use gpui::{
-    div, prelude::*, px, white, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    MouseButton, MouseUpEvent,
+    div, prelude::*, px, App, Context, CursorStyle, Entity, FocusHandle, Focusable, MouseButton,
+    MouseUpEvent,
 };
 use gpui_component::{input::TextInput, ActiveTheme};
 use std::sync::{Arc, Mutex};
@@ -64,6 +64,7 @@ impl RootView {
         cx.notify();
     }
 
+    #[allow(dead_code)]
     fn on_reset_click(
         &mut self,
         _: &MouseUpEvent,
@@ -239,50 +240,32 @@ impl Render for RootView {
                                     .child(div().flex_1().child(self.text_input.clone()))
                                     .child(
                                         div()
-                                            .border_1()
-                                            .border_color(cx.theme().border)
-                                            .rounded_md()
-                                            .px_3()
-                                            .py_1()
-                                            .bg(if is_input_requested {
-                                                cx.theme().primary
-                                            } else {
-                                                cx.theme().muted
-                                            })
+                                            .size(px(40.))
+                                            .rounded_sm()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
                                             .cursor(if is_input_requested {
                                                 CursorStyle::PointingHand
                                             } else {
                                                 CursorStyle::OperationNotAllowed
                                             })
-                                            .text_color(white())
-                                            .font_weight(gpui::FontWeight(600.0))
-                                            .child("Submit")
+                                            .child(file_icons::render_icon(
+                                                &file_icons::get().get_type_icon(file_icons::SEND),
+                                                22.0,
+                                                if is_input_requested {
+                                                    cx.theme().primary
+                                                } else {
+                                                    cx.theme().muted_foreground
+                                                },
+                                                ">",
+                                            ))
                                             .when(is_input_requested, |style| {
-                                                style
-                                                    .hover(|s| s.bg(cx.theme().primary_hover))
-                                                    .on_mouse_up(
-                                                        MouseButton::Left,
-                                                        cx.listener(Self::on_submit_click),
-                                                    )
+                                                style.hover(|s| s.bg(cx.theme().muted)).on_mouse_up(
+                                                    MouseButton::Left,
+                                                    cx.listener(Self::on_submit_click),
+                                                )
                                             }),
-                                    )
-                                    .child(
-                                        div()
-                                            .border_1()
-                                            .border_color(cx.theme().border)
-                                            .rounded_md()
-                                            .px_3()
-                                            .py_1()
-                                            .bg(cx.theme().danger)
-                                            .text_color(white())
-                                            .cursor_pointer()
-                                            .font_weight(gpui::FontWeight(600.0))
-                                            .child("Clear")
-                                            .hover(|style| style.bg(cx.theme().danger_hover))
-                                            .on_mouse_up(
-                                                MouseButton::Left,
-                                                cx.listener(Self::on_reset_click),
-                                            ),
                                     ),
                             ),
                     )

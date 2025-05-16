@@ -383,6 +383,9 @@
     },
     "theme_light": {
       "icon": "icons/theme_light.svg"
+    },
+    "send": {
+      "icon": "icons/send.svg"
     }
   }
 }
