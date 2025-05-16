@@ -24,9 +24,13 @@ impl ParameterRenderer for SimpleParameterRenderer {
         self.supported_combinations.clone()
     }
 
-    fn render(&self, _tool_name: &str, _param_name: &str, param_value: &str) -> gpui::AnyElement {
-        use gpui_component::ActiveTheme;
-
+    fn render(
+        &self,
+        _tool_name: &str,
+        _param_name: &str,
+        param_value: &str,
+        theme: &gpui_component::theme::Theme,
+    ) -> gpui::AnyElement {
         div()
             .rounded_md()
             .px_2()
@@ -34,12 +38,8 @@ impl ParameterRenderer for SimpleParameterRenderer {
             .mr_1()
             .mb_1() // Add margin to allow wrapping
             .text_size(px(15.))
-            .bg(crate::ui::gpui::theme::colors::tool_parameter_bg(
-                &gpui::AppContext::global_context().theme(),
-            ))
-            .text_color(crate::ui::gpui::theme::colors::tool_parameter_value(
-                &gpui::AppContext::global_context().theme(),
-            ))
+            .bg(crate::ui::gpui::theme::colors::tool_parameter_bg(theme))
+            .text_color(crate::ui::gpui::theme::colors::tool_parameter_value(theme))
             .child(param_value.to_string())
             .into_any_element()
     }
