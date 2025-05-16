@@ -19,32 +19,6 @@ impl MessagesView {
             focus_handle: cx.focus_handle(),
         }
     }
-
-    // fn on_thinking_toggle(
-    //     &mut self,
-    //     index: usize,
-    //     _: &MouseUpEvent,
-    //     _window: &mut gpui::Window,
-    //     cx: &mut Context<Self>,
-    // ) {
-    //     // Get access to the message queue
-    //     let mut updated = false;
-    //     let mut queue = self.message_queue.lock().unwrap();
-
-    //     // Only update if we have messages
-    //     if !queue.is_empty() {
-    //         // Get the last message container
-    //         let last_message = queue.last_mut().unwrap();
-
-    //         // Toggle the specified thinking block
-    //         updated = last_message.toggle_thinking_collapsed(cx, index);
-    //     }
-
-    //     // Notify the UI to update if needed
-    //     if updated {
-    //         cx.notify();
-    //     }
-    // }
 }
 
 impl Focusable for MessagesView {

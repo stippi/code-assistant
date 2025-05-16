@@ -246,8 +246,7 @@ impl MessageContainer {
     }
 
     // Mark a tool as ended (could add visual indicator)
-    #[allow(dead_code)]
-    pub fn end_tool_use(&self, id: impl Into<String>) {
+    pub fn end_tool_use(&self, id: impl Into<String>, _cx: &mut Context<Self>) {
         // Currently no specific action needed, but could add visual indicator
         // that the tool execution is complete
         let _id = id.into();
@@ -528,7 +527,12 @@ impl Render for BlockView {
                         // Try to get the global registry
                         if let Some(registry) = ParameterRendererRegistry::global() {
                             // Use the registry to render the parameter with theme
-                            registry.render_parameter(&block.name, &param.name, &param.value, &cx.theme())
+                            registry.render_parameter(
+                                &block.name,
+                                &param.name,
+                                &param.value,
+                                &cx.theme(),
+                            )
                         } else {
                             // Fallback to default rendering if no registry is available
                             div()

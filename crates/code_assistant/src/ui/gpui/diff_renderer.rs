@@ -10,7 +10,13 @@ impl ParameterRenderer for DiffParameterRenderer {
         vec![("replace_in_file".to_string(), "diff".to_string())]
     }
 
-    fn render(&self, _tool_name: &str, _param_name: &str, param_value: &str, theme: &gpui_component::theme::Theme) -> gpui::AnyElement {
+    fn render(
+        &self,
+        _tool_name: &str,
+        _param_name: &str,
+        param_value: &str,
+        theme: &gpui_component::theme::Theme,
+    ) -> gpui::AnyElement {
         // Container for the diff content - no parameter name shown
         div()
             .rounded_md()

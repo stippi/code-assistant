@@ -280,46 +280,6 @@ impl Gpui {
         window.on_next_frame(new_handler);
     }
 
-    // Helper method to get or create a message container
-    // fn get_or_create_message(&self, cx: &mut gpui::App) -> MessageContainer {
-    //     // Streaming fragments always go to an Assistant message
-    //     self.get_or_create_message_with_role(elements::MessageRole::Assistant, cx)
-    // }
-
-    // // Helper method to get or create a message container with specific role
-    // fn get_or_create_message_with_role(
-    //     &self,
-    //     role: elements::MessageRole,
-    //     cx: &mut gpui::App,
-    // ) -> MessageContainer {
-    //     let mut queue = self.message_queue.lock().unwrap();
-    //     if queue.is_empty() || queue.last().unwrap().role() != role {
-    //         // If queue is empty or last message has different role, create new message
-    //         let new_message = MessageContainer::with_role(role, cx);
-    //         queue.push(new_message.clone());
-    //         new_message
-    //     } else {
-    //         // Return the existing message with matching role
-    //         queue.last().unwrap().clone()
-    //     }
-    // }
-
-    // // Update a message container in the queue and flag UI for refresh
-    // fn update_message(&self, message: MessageContainer) {
-    //     // Update the message in the queue
-    //     let mut queue = self.message_queue.lock().unwrap();
-    //     if !queue.is_empty() {
-    //         *queue.last_mut().unwrap() = message;
-    //     } else {
-    //         queue.push(message);
-    //     }
-
-    //     // Set the flag to indicate that UI refresh is needed
-    //     if let Ok(mut flag) = self.ui_update_needed.lock() {
-    //         *flag = true;
-    //     }
-    // }
-
     // Process a UI event in the UI thread context
     fn process_ui_event(&self, event: UiEvent, _window: &mut gpui::Window, cx: &mut gpui::App) {
         match event {
@@ -415,6 +375,14 @@ impl Gpui {
                 for message_container in queue.iter() {
                     cx.update_entity(&message_container, |message_container, cx| {
                         message_container.update_tool_status(&tool_id, status, message.clone(), cx);
+                    });
+                }
+            }
+            UiEvent::EndTool { id } => {
+                let queue = self.message_queue.lock().unwrap();
+                for message_container in queue.iter() {
+                    cx.update_entity(&message_container, |message_container, cx| {
+                        message_container.end_tool_use(&id, cx);
                     });
                 }
             }
@@ -537,9 +505,15 @@ impl UserInterface for Gpui {
                     value: value.clone(),
                 });
             }
-            DisplayFragment::ToolEnd { id: _ } => {
-                // Currently no specific action needed for tool end
-                // but we could add a visual indicator or event
+            DisplayFragment::ToolEnd { id } => {
+                // Use last_xml_tool_id if id is empty
+                let tool_id = if id.is_empty() {
+                    self.last_xml_tool_id.lock().unwrap().clone()
+                } else {
+                    id.clone()
+                };
+
+                self.push_event(UiEvent::EndTool { id: tool_id });
             }
         }
 

@@ -1,14 +1,7 @@
 use gpui::{px, Element, IntoElement, ParentElement, Styled};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-
-// Define a simple logging macro if log isn't available
-#[macro_export]
-macro_rules! log_warn {
-    ($($arg:tt)*) => {
-        eprintln!("WARN: {}", format!($($arg)*));
-    };
-}
+use tracing::warn;
 
 /// A unique key for tool+parameter combinations
 pub type ParameterKey = String;
@@ -24,7 +17,13 @@ pub trait ParameterRenderer: Send + Sync {
     fn supported_parameters(&self) -> Vec<(String, String)>;
 
     /// Render the parameter as a UI element
-    fn render(&self, tool_name: &str, param_name: &str, param_value: &str, theme: &gpui_component::theme::Theme) -> gpui::AnyElement;
+    fn render(
+        &self,
+        tool_name: &str,
+        param_name: &str,
+        param_value: &str,
+        theme: &gpui_component::theme::Theme,
+    ) -> gpui::AnyElement;
 
     /// Indicates if this parameter should be rendered with full width
     /// Default is false (normal inline parameter)
@@ -54,7 +53,7 @@ impl ParameterRendererRegistry {
         if let Ok(mut guard) = global_mutex.lock() {
             *guard = Some(registry);
         } else {
-            crate::log_warn!("Failed to acquire lock for setting global registry");
+            warn!("Failed to acquire lock for setting global registry");
         }
     }
 
@@ -83,7 +82,7 @@ impl ParameterRendererRegistry {
         for (tool_name, param_name) in renderer_arc.supported_parameters() {
             let key = create_parameter_key(&tool_name, &param_name);
             if self.renderers.contains_key(&key) {
-                crate::log_warn!("Overriding existing renderer for {}", key);
+                warn!("Overriding existing renderer for {}", key);
             }
             self.renderers.insert(key, renderer_arc.clone());
         }
@@ -125,7 +124,13 @@ impl ParameterRenderer for DefaultParameterRenderer {
         Vec::new()
     }
 
-    fn render(&self, _tool_name: &str, param_name: &str, param_value: &str, theme: &gpui_component::theme::Theme) -> gpui::AnyElement {
+    fn render(
+        &self,
+        _tool_name: &str,
+        param_name: &str,
+        param_value: &str,
+        theme: &gpui_component::theme::Theme,
+    ) -> gpui::AnyElement {
         use gpui::{div, FontWeight};
 
         div()

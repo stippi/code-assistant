@@ -28,6 +28,8 @@ pub enum UiEvent {
         status: ToolStatus,
         message: Option<String>,
     },
+    /// End a tool invocation
+    EndTool { id: String },
     /// Set the input request state
     RequestInput { requested: bool },
 }

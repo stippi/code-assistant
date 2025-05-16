@@ -76,6 +76,9 @@ pub fn init_themes(cx: &mut App) {
     // Register the theme
     gpui_component::theme::init(cx);
 
+    // Explizit in den Dark Mode wechseln
+    Theme::change(ThemeMode::Dark, None, cx);
+
     // Set our custom dark theme colors
     let theme = cx.global_mut::<Theme>();
     theme.colors = custom_dark_theme();
@@ -112,14 +115,6 @@ pub mod colors {
             rgba(0x00142060).into() // Dark mode blue background
         } else {
             rgba(0x00142020).into() // Light mode blue background
-        }
-    }
-
-    pub fn thinking_block_border(theme: &Theme) -> Hsla {
-        if theme.is_dark() {
-            rgba(0x0099EEFF).into() // Dark mode blue border
-        } else {
-            rgba(0x0077CCFF).into() // Light mode blue border
         }
     }
 
