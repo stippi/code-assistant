@@ -21,7 +21,7 @@ use crate::ui::gpui::{
 };
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use assets::Assets;
-use gpui::{actions, AppContext, Entity, Global};
+use gpui::{actions, px, AppContext, Entity, Global, Point};
 pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
@@ -72,6 +72,7 @@ impl Gpui {
             vec![
                 ("execute_command".to_string(), "command_line".to_string()),
                 ("read_files".to_string(), "paths".to_string()),
+                ("list_files".to_string(), "paths".to_string()),
                 ("replace_in_file".to_string(), "path".to_string()),
                 ("search_files".to_string(), "regex".to_string()),
             ],
@@ -144,7 +145,10 @@ impl Gpui {
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some(gpui::SharedString::from("Code Assistant")),
                         appears_transparent: true,
-                        ..Default::default()
+                        traffic_light_position: Some(Point {
+                            x: px(16.),
+                            y: px(16.),
+                        }),
                     }),
                     ..Default::default()
                 },

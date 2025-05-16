@@ -123,7 +123,7 @@ impl Render for RootView {
                 div()
                     .id("custom-titlebar")
                     .flex_none()
-                    .h(px(30.))
+                    .h(px(48.))
                     .w_full()
                     .bg(cx.theme().title_bar)
                     .border_b_1()
@@ -132,7 +132,7 @@ impl Render for RootView {
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .px_2()
+                    .px_4()
                     // Left side - title
                     .child(
                         div()
@@ -140,7 +140,7 @@ impl Render for RootView {
                             .items_center()
                             .text_color(cx.theme().muted_foreground)
                             .gap_2()
-                            .pl_16()
+                            .pl(px(80.))
                             .child("Code Assistant"),
                     )
                     // Right side - controls
@@ -152,7 +152,7 @@ impl Render for RootView {
                             // Theme toggle button
                             .child(
                                 div()
-                                    .size(px(24.))
+                                    .size(px(32.))
                                     .rounded_sm()
                                     .flex()
                                     .items_center()
@@ -165,7 +165,7 @@ impl Render for RootView {
                                         } else {
                                             file_icons::THEME_DARK
                                         }),
-                                        16.0,
+                                        18.0,
                                         cx.theme().muted_foreground,
                                         if cx.theme().is_dark() { "*" } else { "c" },
                                     ))
@@ -177,7 +177,7 @@ impl Render for RootView {
                             // Memory toggle button
                             .child(
                                 div()
-                                    .size(px(24.))
+                                    .size(px(32.))
                                     .rounded_sm()
                                     .flex()
                                     .items_center()
@@ -192,7 +192,7 @@ impl Render for RootView {
                                                 file_icons::PANEL_RIGHT_CLOSE
                                             },
                                         ),
-                                        16.0,
+                                        18.0,
                                         cx.theme().muted_foreground,
                                         "<>",
                                     ))
