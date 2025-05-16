@@ -59,7 +59,7 @@ pub fn custom_light_theme() -> gpui_component::theme::ThemeColor {
     colors.info_foreground = rgb(0x0060A0).into(); // Thinking block text
 
     // Buttons
-    colors.primary = rgb(0x0077CC).into(); // Primary button (submit)
+    colors.primary = rgb(0x53AEFF).into(); // Primary button (submit)
     colors.primary_hover = rgb(0x3355BB).into();
     colors.danger = rgb(0xBB3333).into(); // Danger button (clear)
     colors.danger_hover = rgb(0xCC4444).into();
