@@ -527,8 +527,8 @@ impl Render for BlockView {
                     |param: &ParameterBlock| {
                         // Try to get the global registry
                         if let Some(registry) = ParameterRendererRegistry::global() {
-                            // Use the registry to render the parameter
-                            registry.render_parameter(&block.name, &param.name, &param.value)
+                            // Use the registry to render the parameter with theme
+                            registry.render_parameter(&block.name, &param.name, &param.value, &cx.theme())
                         } else {
                             // Fallback to default rendering if no registry is available
                             div()

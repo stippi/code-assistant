@@ -24,7 +24,7 @@ pub trait ParameterRenderer: Send + Sync {
     fn supported_parameters(&self) -> Vec<(String, String)>;
 
     /// Render the parameter as a UI element
-    fn render(&self, tool_name: &str, param_name: &str, param_value: &str) -> gpui::AnyElement;
+    fn render(&self, tool_name: &str, param_name: &str, param_value: &str, theme: &gpui_component::theme::Theme) -> gpui::AnyElement;
 
     /// Indicates if this parameter should be rendered with full width
     /// Default is false (normal inline parameter)
@@ -109,9 +109,10 @@ impl ParameterRendererRegistry {
         tool_name: &str,
         param_name: &str,
         param_value: &str,
+        theme: &gpui_component::theme::Theme,
     ) -> gpui::AnyElement {
         let renderer = self.get_renderer(tool_name, param_name);
-        renderer.render(tool_name, param_name, param_value)
+        renderer.render(tool_name, param_name, param_value, theme)
     }
 }
 
@@ -124,8 +125,8 @@ impl ParameterRenderer for DefaultParameterRenderer {
         Vec::new()
     }
 
-    fn render(&self, _tool_name: &str, param_name: &str, param_value: &str) -> gpui::AnyElement {
-        use gpui::{div, hsla, white, FontWeight};
+    fn render(&self, _tool_name: &str, param_name: &str, param_value: &str, theme: &gpui_component::theme::Theme) -> gpui::AnyElement {
+        use gpui::{div, FontWeight};
 
         div()
             .rounded_md()
@@ -134,7 +135,7 @@ impl ParameterRenderer for DefaultParameterRenderer {
             .mr_1()
             .mb_1() // Add margin to allow wrapping
             .text_size(px(15.))
-            .bg(hsla(210., 0.1, 0.3, 0.3))
+            .bg(crate::ui::gpui::theme::colors::tool_parameter_bg(theme))
             .child(
                 div()
                     .flex()
@@ -144,11 +145,11 @@ impl ParameterRenderer for DefaultParameterRenderer {
                     .children(vec![
                         div()
                             .font_weight(FontWeight(500.0))
-                            .text_color(hsla(210., 0.5, 0.8, 1.0))
+                            .text_color(crate::ui::gpui::theme::colors::tool_parameter_label(theme))
                             .child(format!("{}:", param_name))
                             .into_any(),
                         div()
-                            .text_color(white())
+                            .text_color(crate::ui::gpui::theme::colors::tool_parameter_value(theme))
                             .child(param_value.to_string())
                             .into_any(),
                     ]),
