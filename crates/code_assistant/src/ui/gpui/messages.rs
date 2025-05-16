@@ -1,16 +1,19 @@
-use super::elements::{BlockView, MessageContainer};
-use gpui::{div, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, MouseUpEvent, Window};
+use super::elements::MessageContainer;
+use gpui::{div, prelude::*, px, rgb, App, Context, Entity, FocusHandle, Focusable, Window};
 use gpui_component::{scroll::ScrollbarAxis, v_flex, ActiveTheme, StyledExt};
 use std::sync::{Arc, Mutex};
 
 /// MessagesView - Component responsible for displaying the message history
 pub struct MessagesView {
-    message_queue: Arc<Mutex<Vec<MessageContainer>>>,
+    message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
     focus_handle: FocusHandle,
 }
 
 impl MessagesView {
-    pub fn new(message_queue: Arc<Mutex<Vec<MessageContainer>>>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             message_queue,
             focus_handle: cx.focus_handle(),
@@ -84,7 +87,7 @@ impl Render for MessagesView {
                         // Create message container with appropriate styling based on role
                         let mut message_container = div().p_3().flex().flex_col().gap_2();
 
-                        if msg.is_user_message() {
+                        if msg.read(cx).is_user_message() {
                             message_container = message_container
                                 .m_3()
                                 .bg(cx.theme().muted.opacity(0.3)) // Use theme muted color with opacity
@@ -93,7 +96,7 @@ impl Render for MessagesView {
                         }
 
                         // Create message container with user badge if needed
-                        let message_container = if msg.is_user_message() {
+                        let message_container = if msg.read(cx).is_user_message() {
                             message_container.child(
                                 div()
                                     .flex()
@@ -121,7 +124,7 @@ impl Render for MessagesView {
                         };
 
                         // Simply render each block entity
-                        let elements = msg.elements();
+                        let elements = msg.read(cx).elements();
                         message_container.children(elements)
                     })),
             )

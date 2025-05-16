@@ -21,7 +21,7 @@ use crate::ui::gpui::{
 };
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use assets::Assets;
-use gpui::{actions, AppContext};
+use gpui::{actions, AppContext, Entity};
 pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
@@ -34,7 +34,7 @@ actions!(code_assistant, [CloseWindow]);
 
 // Our main UI struct that implements the UserInterface trait
 pub struct Gpui {
-    message_queue: Arc<Mutex<Vec<MessageContainer>>>,
+    message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
     input_value: Arc<Mutex<Option<String>>>,
     input_requested: Arc<Mutex<bool>>,
     ui_update_needed: Arc<Mutex<bool>>,
@@ -298,78 +298,93 @@ impl Gpui {
     //     }
     // }
 
-    // Update a message container in the queue and flag UI for refresh
-    fn update_message(&self, message: MessageContainer) {
-        // Update the message in the queue
-        let mut queue = self.message_queue.lock().unwrap();
-        if !queue.is_empty() {
-            *queue.last_mut().unwrap() = message;
-        } else {
-            queue.push(message);
-        }
+    // // Update a message container in the queue and flag UI for refresh
+    // fn update_message(&self, message: MessageContainer) {
+    //     // Update the message in the queue
+    //     let mut queue = self.message_queue.lock().unwrap();
+    //     if !queue.is_empty() {
+    //         *queue.last_mut().unwrap() = message;
+    //     } else {
+    //         queue.push(message);
+    //     }
 
-        // Set the flag to indicate that UI refresh is needed
-        if let Ok(mut flag) = self.ui_update_needed.lock() {
-            *flag = true;
-        }
-    }
+    //     // Set the flag to indicate that UI refresh is needed
+    //     if let Ok(mut flag) = self.ui_update_needed.lock() {
+    //         *flag = true;
+    //     }
+    // }
 
     // Process a UI event in the UI thread context
     fn process_ui_event(&self, event: UiEvent, window: &mut gpui::Window, cx: &mut gpui::App) {
         match event {
             UiEvent::DisplayMessage { content, role } => {
                 let mut queue = self.message_queue.lock().unwrap();
-                let new_message = MessageContainer::with_role(role, cx);
-                new_message.add_text_block(&content, cx);
+                let new_message = cx.new(|cx| {
+                    let new_message = MessageContainer::with_role(role, cx);
+                    new_message.add_text_block(&content, cx);
+                    new_message
+                });
                 queue.push(new_message);
             }
             UiEvent::AddTextBlock { content } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    let last = last.clone();
-                    last.add_text_block(&content, cx);
+                    cx.update_entity(&last, |message, cx| message.add_text_block(&content, cx));
                 } else {
                     // Create a new assistant message if none exists
-                    let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
-                    new_message.add_text_block(&content, cx);
+                    let new_message = cx.new(|cx| {
+                        let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
+                        new_message.add_text_block(&content, cx);
+                        new_message
+                    });
                     queue.push(new_message);
                 }
             }
             UiEvent::AddThinkingBlock { content } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    let last = last.clone();
-                    last.add_thinking_block(&content, cx);
+                    cx.update_entity(&last, |message, cx| {
+                        message.add_thinking_block(&content, cx)
+                    });
                 } else {
                     // Create a new assistant message if none exists
-                    let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
-                    new_message.add_thinking_block(&content, cx);
+                    let new_message = cx.new(|cx| {
+                        let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
+                        new_message.add_thinking_block(&content, cx);
+                        new_message
+                    });
                     queue.push(new_message);
                 }
             }
             UiEvent::AppendToTextBlock { content } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    let last = last.clone();
-                    last.add_or_append_to_text_block(&content, cx);
+                    cx.update_entity(&last, |message, cx| {
+                        message.add_or_append_to_text_block(&content, cx)
+                    });
                 }
             }
             UiEvent::AppendToThinkingBlock { content } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    let last = last.clone();
-                    last.add_or_append_to_thinking_block(&content, cx);
+                    cx.update_entity(&last, |message, cx| {
+                        message.add_or_append_to_thinking_block(&content, cx)
+                    });
                 }
             }
             UiEvent::StartTool { name, id } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    let last = last.clone();
-                    last.add_tool_use_block(&name, &id, cx);
+                    cx.update_entity(&last, |message, cx| {
+                        message.add_tool_use_block(&name, &id, cx);
+                    });
                 } else {
                     // Create a new assistant message if none exists
-                    let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
-                    new_message.add_tool_use_block(&name, &id, cx);
+                    let new_message = cx.new(|cx| {
+                        let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
+                        new_message.add_tool_use_block(&name, &id, cx);
+                        new_message
+                    });
                     queue.push(new_message);
                 }
             }
@@ -380,8 +395,9 @@ impl Gpui {
             } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    let last = last.clone();
-                    last.add_or_update_tool_parameter(&tool_id, &name, &value, cx);
+                    cx.update_entity(&last, |message, cx| {
+                        message.add_or_update_tool_parameter(&tool_id, &name, &value, cx);
+                    });
                 }
             }
             UiEvent::UpdateToolStatus {
@@ -391,7 +407,9 @@ impl Gpui {
             } => {
                 let queue = self.message_queue.lock().unwrap();
                 for message_container in queue.iter() {
-                    message_container.update_tool_status(&tool_id, status, message.clone(), cx);
+                    cx.update_entity(&message_container, |message_container, cx| {
+                        message_container.update_tool_status(&tool_id, status, message.clone(), cx);
+                    });
                 }
             }
             UiEvent::RequestInput { requested } => {
@@ -399,9 +417,6 @@ impl Gpui {
                 *input_requested = requested;
             }
         }
-
-        // Make sure UI updates
-        cx.refresh();
     }
 
     // Helper to add an event to the queue
@@ -421,25 +436,11 @@ impl UserInterface for Gpui {
     async fn display(&self, message: UIMessage) -> Result<(), UIError> {
         match message {
             UIMessage::Action(msg) | UIMessage::Question(msg) => {
-                // For agent actions/questions: Try to append to the last message if possible
-                let mut queue = self.message_queue.lock().unwrap();
-                let should_append = if let Some(last) = queue.last() {
-                    !last.is_user_message()
-                } else {
-                    false
-                };
-                drop(queue);
-
-                if should_append {
-                    // Append to existing assistant message
-                    self.push_event(UiEvent::AddTextBlock { content: msg });
-                } else {
-                    // Create a new assistant message
-                    self.push_event(UiEvent::DisplayMessage {
-                        content: msg,
-                        role: MessageRole::Assistant,
-                    });
-                }
+                // Create a new assistant message
+                self.push_event(UiEvent::DisplayMessage {
+                    content: msg,
+                    role: MessageRole::Assistant,
+                });
             }
             UIMessage::UserInput(msg) => {
                 // Always create a new container for user input
