@@ -6,10 +6,6 @@ use crate::ui::ToolStatus;
 pub enum UiEvent {
     /// Display a new message or append to an existing one
     DisplayMessage { content: String, role: MessageRole },
-    /// Add a text block to the last message
-    AddTextBlock { content: String },
-    /// Add a thinking block to the last message
-    AddThinkingBlock { content: String },
     /// Append to the last text block
     AppendToTextBlock { content: String },
     /// Append to the last thinking block
@@ -30,6 +26,4 @@ pub enum UiEvent {
     },
     /// End a tool invocation
     EndTool { id: String },
-    /// Set the input request state
-    RequestInput { requested: bool },
 }

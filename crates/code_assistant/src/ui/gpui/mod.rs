@@ -292,12 +292,30 @@ impl Gpui {
                 });
                 queue.push(new_message);
             }
-            UiEvent::AddTextBlock { content } => {
+            UiEvent::AppendToTextBlock { content } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    cx.update_entity(&last, |message, cx| message.add_text_block(&content, cx));
+                    // Check if the last message is from the assistant, otherwise create a new one
+                    let is_user_message =
+                        cx.update_entity(&last, |message, _cx| message.is_user_message());
+
+                    if is_user_message {
+                        // Create a new assistant message
+                        let new_message = cx.new(|cx| {
+                            let new_message =
+                                MessageContainer::with_role(MessageRole::Assistant, cx);
+                            new_message.add_text_block(&content, cx);
+                            new_message
+                        });
+                        queue.push(new_message);
+                    } else {
+                        // Update the existing assistant message
+                        cx.update_entity(&last, |message, cx| {
+                            message.add_or_append_to_text_block(&content, cx)
+                        });
+                    }
                 } else {
-                    // Create a new assistant message if none exists
+                    // If there are no messages, create a new assistant message
                     let new_message = cx.new(|cx| {
                         let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
                         new_message.add_text_block(&content, cx);
@@ -306,36 +324,36 @@ impl Gpui {
                     queue.push(new_message);
                 }
             }
-            UiEvent::AddThinkingBlock { content } => {
+            UiEvent::AppendToThinkingBlock { content } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    cx.update_entity(&last, |message, cx| {
-                        message.add_thinking_block(&content, cx)
-                    });
+                    // Check if the last message is from the assistant, otherwise create a new one
+                    let is_user_message =
+                        cx.update_entity(&last, |message, _cx| message.is_user_message());
+
+                    if is_user_message {
+                        // Create a new assistant message
+                        let new_message = cx.new(|cx| {
+                            let new_message =
+                                MessageContainer::with_role(MessageRole::Assistant, cx);
+                            new_message.add_thinking_block(&content, cx);
+                            new_message
+                        });
+                        queue.push(new_message);
+                    } else {
+                        // Update the existing assistant message
+                        cx.update_entity(&last, |message, cx| {
+                            message.add_or_append_to_thinking_block(&content, cx)
+                        });
+                    }
                 } else {
-                    // Create a new assistant message if none exists
+                    // If there are no messages, create a new assistant message
                     let new_message = cx.new(|cx| {
                         let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
                         new_message.add_thinking_block(&content, cx);
                         new_message
                     });
                     queue.push(new_message);
-                }
-            }
-            UiEvent::AppendToTextBlock { content } => {
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    cx.update_entity(&last, |message, cx| {
-                        message.add_or_append_to_text_block(&content, cx)
-                    });
-                }
-            }
-            UiEvent::AppendToThinkingBlock { content } => {
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    cx.update_entity(&last, |message, cx| {
-                        message.add_or_append_to_thinking_block(&content, cx)
-                    });
                 }
             }
             UiEvent::StartTool { name, id } => {
@@ -385,10 +403,6 @@ impl Gpui {
                         message_container.end_tool_use(&id, cx);
                     });
                 }
-            }
-            UiEvent::RequestInput { requested } => {
-                let mut input_requested = self.input_requested.lock().unwrap();
-                *input_requested = requested;
             }
         }
     }
