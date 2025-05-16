@@ -2,8 +2,8 @@ use crate::ui::gpui::file_icons;
 use crate::ui::gpui::parameter_renderers::ParameterRendererRegistry;
 use crate::ui::ToolStatus;
 use gpui::{
-    black, bounce, div, ease_in_out, percentage, px, rgba, svg, white, Animation, AnimationExt,
-    Context, Entity, IntoElement, MouseButton, SharedString, Styled, Transformation,
+    bounce, div, ease_in_out, percentage, px, svg, Animation, AnimationExt, Context, Entity,
+    IntoElement, MouseButton, SharedString, Styled, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
 use gpui_component::ActiveTheme;
@@ -246,6 +246,7 @@ impl MessageContainer {
     }
 
     // Mark a tool as ended (could add visual indicator)
+    #[allow(dead_code)]
     pub fn end_tool_use(&self, id: impl Into<String>) {
         // Currently no specific action needed, but could add visual indicator
         // that the tool execution is complete
@@ -270,6 +271,7 @@ impl MessageContainer {
     }
 
     // Toggle a thinking block's collapsed state by its index
+    #[allow(dead_code)]
     pub fn toggle_thinking_collapsed(&self, cx: &mut Context<Self>, index: usize) -> bool {
         let elements = self.elements.lock().unwrap();
         let mut thinking_index = 0;
@@ -386,25 +388,18 @@ impl Render for BlockView {
                     "Thinking...".to_string()
                 };
 
-                // Create the thinking block container with theme-aware styling
+                // Use theme utilities for colors
                 let blue_base = cx.theme().info; // Theme color for thinking block
-                let blue_light_bg = if cx.theme().is_dark() {
-                    rgba(0x00142060) // Dark mode bg
-                } else {
-                    rgba(0x00142020) // Light mode bg
-                };
-                let chevron_color = if cx.theme().is_dark() {
-                    rgba(0x0099EEFF)
-                } else {
-                    rgba(0x0077CCFF)
-                };
+                let thinking_bg = crate::ui::gpui::theme::colors::thinking_block_bg(&cx.theme());
+                let chevron_color =
+                    crate::ui::gpui::theme::colors::thinking_block_chevron(&cx.theme());
                 let text_color = cx.theme().info_foreground;
 
                 div()
                     .rounded_md()
                     .p_2()
                     .mb_2()
-                    .bg(blue_light_bg)
+                    .bg(thinking_bg)
                     .flex()
                     .flex_col()
                     .children(vec![
@@ -518,32 +513,14 @@ impl Render for BlockView {
                 // Get the appropriate icon for this tool type
                 let icon = file_icons::get().get_tool_icon(&block.name);
 
-                // Get color based on status with theming support
-                let icon_color = match block.status {
-                    crate::ui::ToolStatus::Error => cx.theme().warning,
-                    _ => {
-                        if cx.theme().is_dark() {
-                            white()
-                        } else {
-                            black()
-                        }
-                    }
-                };
-
-                // Border color based on status (more subtle indication)
-                let border_color = match block.status {
-                    crate::ui::ToolStatus::Pending => cx.theme().border,
-                    crate::ui::ToolStatus::Running => cx.theme().info,
-                    crate::ui::ToolStatus::Success => cx.theme().success,
-                    crate::ui::ToolStatus::Error => cx.theme().warning,
-                };
-
-                // Tool background color
-                let tool_bg = if cx.theme().is_dark() {
-                    rgba(0x161616FF)
-                } else {
-                    rgba(0xF0F0F0FF)
-                };
+                // Use theme utilities for colors
+                let icon_color =
+                    crate::ui::gpui::theme::colors::tool_block_icon(&cx.theme(), &block.status);
+                let border_color = crate::ui::gpui::theme::colors::tool_border_by_status(
+                    &cx.theme(),
+                    &block.status,
+                );
+                let tool_bg = crate::ui::gpui::theme::colors::tool_block_bg(&cx.theme());
 
                 // Parameter rendering function that uses the global registry if available
                 let render_parameter =
@@ -561,19 +538,29 @@ impl Render for BlockView {
                                 .mr_1()
                                 .mb_1() // Add margin to allow wrapping
                                 .text_size(px(16.))
-                                .bg(cx.theme().muted.opacity(0.3))
+                                .bg(crate::ui::gpui::theme::colors::tool_parameter_bg(
+                                    &cx.theme(),
+                                ))
                                 .child(div().flex().flex_row().items_center().gap_1().children(
                                     vec![
-                                        div()
-                                            .font_weight(FontWeight(500.0))
-                                            .text_color(cx.theme().info)
-                                            .child(format!("{}:", param.name))
-                                            .into_any(),
-                                        div()
-                                            .text_color(cx.theme().foreground)
-                                            .child(param.value.clone())
-                                            .into_any(),
-                                    ],
+                                    div()
+                                        .font_weight(FontWeight(500.0))
+                                        .text_color(
+                                            crate::ui::gpui::theme::colors::tool_parameter_label(
+                                                &cx.theme(),
+                                            ),
+                                        )
+                                        .child(format!("{}:", param.name))
+                                        .into_any(),
+                                    div()
+                                        .text_color(
+                                            crate::ui::gpui::theme::colors::tool_parameter_value(
+                                                &cx.theme(),
+                                            ),
+                                        )
+                                        .child(param.value.clone())
+                                        .into_any(),
+                                ],
                                 ))
                                 .into_any_element()
                         }
