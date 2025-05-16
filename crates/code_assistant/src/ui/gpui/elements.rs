@@ -32,11 +32,6 @@ impl MessageContainer {
         }
     }
 
-    /// Get the role of this message container
-    pub fn role(&self) -> MessageRole {
-        self.role.clone()
-    }
-
     /// Check if this is a user message
     pub fn is_user_message(&self) -> bool {
         self.role == MessageRole::User

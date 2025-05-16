@@ -21,7 +21,7 @@ use crate::ui::gpui::{
 };
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use assets::Assets;
-use gpui::{actions, AppContext, Entity};
+use gpui::{actions, AppContext, Entity, Global};
 pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
@@ -45,6 +45,9 @@ pub struct Gpui {
     last_xml_tool_id: Arc<Mutex<String>>,
     parameter_renderers: Arc<ParameterRendererRegistry>,
 }
+
+// Implement Global trait for Gpui
+impl Global for Gpui {}
 
 impl Gpui {
     pub fn new() -> Self {
@@ -102,11 +105,15 @@ impl Gpui {
         let input_requested = self.input_requested.clone();
         let ui_update_needed = self.ui_update_needed.clone();
         let working_memory = self.working_memory.clone();
+        let gpui_clone = self.clone();
 
         // Initialize app with assets
         let app = gpui::Application::new().with_assets(Assets {});
 
         app.run(move |cx| {
+            // Register our Gpui instance as a global
+            cx.set_global(gpui_clone.clone());
+
             // Setup window close listener
             cx.bind_keys([gpui::KeyBinding::new("cmd-w", CloseWindow, None)]);
             cx.on_window_closed(|cx| {
@@ -196,12 +203,11 @@ impl Gpui {
         let frame_handler = move |window: &mut gpui::Window, cx: &mut gpui::App| {
             // Check if UI update is needed
             let mut updated = false;
-            if let Ok(mut flag) = update_flag_ref.lock() {
-                if *flag {
-                    // Reset the flag
-                    *flag = false;
-                    updated = true;
-                }
+            let mut flag = update_flag_ref.lock().unwrap();
+            if *flag {
+                // Reset the flag
+                *flag = false;
+                updated = true;
             }
 
             // If updates were requested, refresh the window
@@ -227,18 +233,18 @@ impl Gpui {
 
     // Helper method for the recurring frame handler
     fn handle_frame(window: &mut gpui::Window, cx: &mut gpui::App, update_flag: Arc<Mutex<bool>>) {
-        // Get instance of self (Gpui) to access ui_events
-        let gpui = cx.global::<Gpui>();
         let mut updated = false;
 
         // Check update flag
-        if let Ok(mut flag) = update_flag.lock() {
-            if *flag {
-                // Reset the flag
-                *flag = false;
-                updated = true;
-            }
+        let mut flag = update_flag.lock().unwrap();
+        if *flag {
+            // Reset the flag
+            *flag = false;
+            updated = true;
         }
+
+        // Get a clone of the global Gpui
+        let gpui = cx.global::<Gpui>().clone();
 
         // Process any pending UI events in the queue
         let events = {
@@ -425,9 +431,8 @@ impl Gpui {
         events.push(event);
 
         // Set the update flag to trigger a refresh
-        if let Ok(mut flag) = self.ui_update_needed.lock().unwrap() {
-            *flag = true;
-        }
+        let mut flag = self.ui_update_needed.lock().unwrap();
+        *flag = true;
     }
 }
 
@@ -564,9 +569,8 @@ impl UserInterface for Gpui {
         }
 
         // Set the update flag to trigger a UI refresh
-        if let Ok(mut flag) = self.ui_update_needed.lock() {
-            *flag = true;
-        }
+        let mut flag = self.ui_update_needed.lock().unwrap();
+        *flag = true;
 
         Ok(())
     }
