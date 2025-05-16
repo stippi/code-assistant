@@ -10,15 +10,25 @@ impl ParameterRenderer for DiffParameterRenderer {
         vec![("replace_in_file".to_string(), "diff".to_string())]
     }
 
-    fn render(&self, _tool_name: &str, _param_name: &str, param_value: &str) -> gpui::AnyElement {
+    fn render(
+        &self,
+        _tool_name: &str,
+        _param_name: &str,
+        param_value: &str,
+        theme: &gpui_component::theme::Theme,
+    ) -> gpui::AnyElement {
         // Container for the diff content - no parameter name shown
         div()
             .rounded_md()
-            .bg(rgba(0x0A0A0AFF))
+            .bg(if theme.is_dark() {
+                rgba(0x0A0A0AFF) // Dunklerer Hintergrund im Dark Mode
+            } else {
+                rgba(0xEAEAEAFF) // Hellerer Hintergrund im Light Mode
+            })
             .p_2()
             .text_size(px(15.))
             .font_weight(FontWeight(500.0))
-            .child(parse_and_render_diff(param_value))
+            .child(parse_and_render_diff(param_value, theme))
             .into_any()
     }
 
@@ -28,15 +38,18 @@ impl ParameterRenderer for DiffParameterRenderer {
 }
 
 /// Helper function to parse and render a diff content
-fn parse_and_render_diff(diff_text: &str) -> impl IntoElement {
+fn parse_and_render_diff(
+    diff_text: &str,
+    theme: &gpui_component::theme::Theme,
+) -> impl IntoElement {
     // Split the diff text into sections based on the markers
     let sections = parse_diff_sections(diff_text);
 
-    div()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .children(sections.into_iter().map(render_enhanced_diff_section))
+    div().flex().flex_col().gap_2().children(
+        sections
+            .into_iter()
+            .map(move |section| render_enhanced_diff_section(section, theme)),
+    )
 }
 
 /// Parse the diff text into sections based on the diff markers
@@ -150,10 +163,13 @@ struct DiffLine {
 }
 
 /// Render a diff section with enhanced visualization
-fn render_enhanced_diff_section(section: DiffSection) -> gpui::AnyElement {
+fn render_enhanced_diff_section(
+    section: DiffSection,
+    theme: &gpui_component::theme::Theme,
+) -> gpui::AnyElement {
     if section.in_search || section.in_replace {
         // For streaming blocks we use the simple rendering - a function that returns AnyElement directly
-        return render_streaming_diff_section(section);
+        return render_streaming_diff_section(section, theme);
     }
 
     // Create the refined diff using similar
@@ -171,32 +187,53 @@ fn render_enhanced_diff_section(section: DiffSection) -> gpui::AnyElement {
 
             match change_type {
                 LineChangeType::Unchanged => {
+                    // Angepasste Farben fürs Theme
+                    let (border_color, text_color) = if theme.is_dark() {
+                        (rgba(0x444444FF), rgba(0xFFFFFFAA))
+                    } else {
+                        (rgba(0x777777FF), rgba(0x333333AA))
+                    };
+
                     // Unchanged lines group
                     div()
                         .px_2()
                         .border_l_2()
-                        .border_color(rgba(0x444444FF))
-                        .text_color(rgba(0xFFFFFFAA))
+                        .border_color(border_color)
+                        .text_color(text_color)
                         .child(content)
                         .into_any()
                 }
                 LineChangeType::Deleted => {
+                    // Angepasste Farben fürs Theme
+                    let (border_color, text_color) = if theme.is_dark() {
+                        (rgb(0xCC5555), rgb(0xFFBBBB))
+                    } else {
+                        (rgb(0xCC3333), rgb(0xAA0000))
+                    };
+
                     // Deleted lines group
                     div()
                         .px_2()
                         .border_l_2()
-                        .border_color(rgb(0xCC5555))
-                        .text_color(rgb(0xFFBBBB))
+                        .border_color(border_color)
+                        .text_color(text_color)
                         .child(content)
                         .into_any()
                 }
                 LineChangeType::Added => {
+                    // Angepasste Farben fürs Theme
+                    let (border_color, text_color) = if theme.is_dark() {
+                        (rgb(0x55CC55), rgb(0xBBFFBB))
+                    } else {
+                        (rgb(0x33AA33), rgb(0x007700))
+                    };
+
                     // Added lines group
                     div()
                         .px_2()
                         .border_l_2()
-                        .border_color(rgb(0x55CC55))
-                        .text_color(rgb(0xBBFFBB))
+                        .border_color(border_color)
+                        .text_color(text_color)
                         .child(content)
                         .into_any()
                 }
@@ -281,7 +318,17 @@ fn create_diff_lines(old_text: &str, new_text: &str) -> Vec<DiffLine> {
 }
 
 /// Helper function specifically for rendering streaming diff blocks, returns AnyElement directly
-fn render_streaming_diff_section(section: DiffSection) -> gpui::AnyElement {
+fn render_streaming_diff_section(
+    section: DiffSection,
+    theme: &gpui_component::theme::Theme,
+) -> gpui::AnyElement {
+    // Angepasste Farben für das jeweilige Theme
+    let (deleted_border, deleted_text, added_border, added_text) = if theme.is_dark() {
+        (rgb(0xCC5555), rgb(0xFFBBBB), rgb(0x55CC55), rgb(0xBBFFBB))
+    } else {
+        (rgb(0xCC3333), rgb(0xAA0000), rgb(0x33AA33), rgb(0x007700))
+    };
+
     div()
         .flex()
         .flex_col()
@@ -293,8 +340,8 @@ fn render_streaming_diff_section(section: DiffSection) -> gpui::AnyElement {
                 .px_2()
                 .py_1()
                 .border_l_2()
-                .border_color(rgb(0xCC5555))
-                .text_color(rgb(0xFFBBBB))
+                .border_color(deleted_border)
+                .text_color(deleted_text)
                 .child(section.search_content.clone())
                 .into_any(),
             // Replace content with green border
@@ -303,8 +350,8 @@ fn render_streaming_diff_section(section: DiffSection) -> gpui::AnyElement {
                 .px_2()
                 .py_1()
                 .border_l_2()
-                .border_color(rgb(0x55CC55))
-                .text_color(rgb(0xBBFFBB))
+                .border_color(added_border)
+                .text_color(added_text)
                 .child(section.replace_content.clone())
                 .into_any(),
         ])

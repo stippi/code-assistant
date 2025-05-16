@@ -230,7 +230,7 @@ async fn create_llm_client(
 fn setup_logging(verbose: bool, use_stdout: bool) {
     let filter = {
         if verbose {
-            "code_assistant=debug,info".to_string()
+            "code_assistant=debug,llm=debug,web=debug,info".to_string()
         } else {
             "code_assistant=info,warn".to_string()
         }

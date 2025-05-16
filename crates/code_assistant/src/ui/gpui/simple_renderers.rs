@@ -1,5 +1,5 @@
 use crate::ui::gpui::parameter_renderers::ParameterRenderer;
-use gpui::{div, hsla, px, white, IntoElement, ParentElement, Styled};
+use gpui::{div, px, IntoElement, ParentElement, Styled};
 
 /// Renderer for parameters that shouldn't show their parameter name
 pub struct SimpleParameterRenderer {
@@ -24,16 +24,20 @@ impl ParameterRenderer for SimpleParameterRenderer {
         self.supported_combinations.clone()
     }
 
-    fn render(&self, _tool_name: &str, _param_name: &str, param_value: &str) -> gpui::AnyElement {
+    fn render(
+        &self,
+        _tool_name: &str,
+        _param_name: &str,
+        param_value: &str,
+        theme: &gpui_component::theme::Theme,
+    ) -> gpui::AnyElement {
         div()
             .rounded_md()
             .px_2()
             .py_1()
-            .mr_1()
-            .mb_1() // Add margin to allow wrapping
-            .text_size(px(15.))
-            .bg(hsla(210., 0.1, 0.3, 0.3))
-            .text_color(white())
+            .text_size(px(13.))
+            .bg(crate::ui::gpui::theme::colors::tool_parameter_bg(theme))
+            .text_color(crate::ui::gpui::theme::colors::tool_parameter_value(theme))
             .child(param_value.to_string())
             .into_any_element()
     }

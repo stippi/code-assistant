@@ -1,14 +1,7 @@
 use gpui::{px, Element, IntoElement, ParentElement, Styled};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-
-// Define a simple logging macro if log isn't available
-#[macro_export]
-macro_rules! log_warn {
-    ($($arg:tt)*) => {
-        eprintln!("WARN: {}", format!($($arg)*));
-    };
-}
+use tracing::warn;
 
 /// A unique key for tool+parameter combinations
 pub type ParameterKey = String;
@@ -24,7 +17,13 @@ pub trait ParameterRenderer: Send + Sync {
     fn supported_parameters(&self) -> Vec<(String, String)>;
 
     /// Render the parameter as a UI element
-    fn render(&self, tool_name: &str, param_name: &str, param_value: &str) -> gpui::AnyElement;
+    fn render(
+        &self,
+        tool_name: &str,
+        param_name: &str,
+        param_value: &str,
+        theme: &gpui_component::theme::Theme,
+    ) -> gpui::AnyElement;
 
     /// Indicates if this parameter should be rendered with full width
     /// Default is false (normal inline parameter)
@@ -54,7 +53,7 @@ impl ParameterRendererRegistry {
         if let Ok(mut guard) = global_mutex.lock() {
             *guard = Some(registry);
         } else {
-            crate::log_warn!("Failed to acquire lock for setting global registry");
+            warn!("Failed to acquire lock for setting global registry");
         }
     }
 
@@ -83,7 +82,7 @@ impl ParameterRendererRegistry {
         for (tool_name, param_name) in renderer_arc.supported_parameters() {
             let key = create_parameter_key(&tool_name, &param_name);
             if self.renderers.contains_key(&key) {
-                crate::log_warn!("Overriding existing renderer for {}", key);
+                warn!("Overriding existing renderer for {}", key);
             }
             self.renderers.insert(key, renderer_arc.clone());
         }
@@ -109,9 +108,10 @@ impl ParameterRendererRegistry {
         tool_name: &str,
         param_name: &str,
         param_value: &str,
+        theme: &gpui_component::theme::Theme,
     ) -> gpui::AnyElement {
         let renderer = self.get_renderer(tool_name, param_name);
-        renderer.render(tool_name, param_name, param_value)
+        renderer.render(tool_name, param_name, param_value, theme)
     }
 }
 
@@ -124,17 +124,21 @@ impl ParameterRenderer for DefaultParameterRenderer {
         Vec::new()
     }
 
-    fn render(&self, _tool_name: &str, param_name: &str, param_value: &str) -> gpui::AnyElement {
-        use gpui::{div, hsla, white, FontWeight};
+    fn render(
+        &self,
+        _tool_name: &str,
+        param_name: &str,
+        param_value: &str,
+        theme: &gpui_component::theme::Theme,
+    ) -> gpui::AnyElement {
+        use gpui::{div, FontWeight};
 
         div()
             .rounded_md()
             .px_2()
             .py_1()
-            .mr_1()
-            .mb_1() // Add margin to allow wrapping
-            .text_size(px(15.))
-            .bg(hsla(210., 0.1, 0.3, 0.3))
+            .text_size(px(13.))
+            .bg(crate::ui::gpui::theme::colors::tool_parameter_bg(theme))
             .child(
                 div()
                     .flex()
@@ -144,11 +148,11 @@ impl ParameterRenderer for DefaultParameterRenderer {
                     .children(vec![
                         div()
                             .font_weight(FontWeight(500.0))
-                            .text_color(hsla(210., 0.5, 0.8, 1.0))
+                            .text_color(crate::ui::gpui::theme::colors::tool_parameter_label(theme))
                             .child(format!("{}:", param_name))
                             .into_any(),
                         div()
-                            .text_color(white())
+                            .text_color(crate::ui::gpui::theme::colors::tool_parameter_value(theme))
                             .child(param_value.to_string())
                             .into_any(),
                     ]),
