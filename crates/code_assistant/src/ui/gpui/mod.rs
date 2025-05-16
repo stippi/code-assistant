@@ -315,7 +315,7 @@ impl Gpui {
     // }
 
     // Process a UI event in the UI thread context
-    fn process_ui_event(&self, event: UiEvent, window: &mut gpui::Window, cx: &mut gpui::App) {
+    fn process_ui_event(&self, event: UiEvent, _window: &mut gpui::Window, cx: &mut gpui::App) {
         match event {
             UiEvent::DisplayMessage { content, role } => {
                 let mut queue = self.message_queue.lock().unwrap();
@@ -357,7 +357,7 @@ impl Gpui {
                 }
             }
             UiEvent::AppendToTextBlock { content } => {
-                let mut queue = self.message_queue.lock().unwrap();
+                let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
                     cx.update_entity(&last, |message, cx| {
                         message.add_or_append_to_text_block(&content, cx)
@@ -365,7 +365,7 @@ impl Gpui {
                 }
             }
             UiEvent::AppendToThinkingBlock { content } => {
-                let mut queue = self.message_queue.lock().unwrap();
+                let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
                     cx.update_entity(&last, |message, cx| {
                         message.add_or_append_to_thinking_block(&content, cx)
@@ -393,7 +393,7 @@ impl Gpui {
                 name,
                 value,
             } => {
-                let mut queue = self.message_queue.lock().unwrap();
+                let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
                     cx.update_entity(&last, |message, cx| {
                         message.add_or_update_tool_parameter(&tool_id, &name, &value, cx);
