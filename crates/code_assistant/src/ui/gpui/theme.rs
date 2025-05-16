@@ -152,7 +152,7 @@ pub mod colors {
         if theme.is_dark() {
             rgba(0x333333FF).into() // Dark parameter background
         } else {
-            rgba(0xDDDDDDFF).into() // Light parameter background
+            rgba(0xE2E2E2FF).into() // Light parameter background
         }
     }
 

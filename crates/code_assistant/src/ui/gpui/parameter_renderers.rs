@@ -137,9 +137,7 @@ impl ParameterRenderer for DefaultParameterRenderer {
             .rounded_md()
             .px_2()
             .py_1()
-            .mr_1()
-            .mb_1() // Add margin to allow wrapping
-            .text_size(px(15.))
+            .text_size(px(13.))
             .bg(crate::ui::gpui::theme::colors::tool_parameter_bg(theme))
             .child(
                 div()

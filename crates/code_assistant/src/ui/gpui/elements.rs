@@ -636,6 +636,7 @@ impl Render for BlockView {
                                             div()
                                                 .flex()
                                                 .flex_wrap()
+                                                .gap_1()
                                                 .flex_grow() // Take remaining space
                                                 .children(
                                                     regular_params
@@ -689,7 +690,7 @@ impl Render for BlockView {
                             }),
                         ),
                     ])
-                    .shadow_md()
+                    .shadow_sm()
                     .into_any_element()
             }
         }
