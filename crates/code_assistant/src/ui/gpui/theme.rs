@@ -106,7 +106,7 @@ pub fn toggle_theme(window: Option<&mut gpui::Window>, cx: &mut App) {
 
 /// Color utility functions for specific components
 pub mod colors {
-    use gpui::{black, rgb, rgba, white, Hsla};
+    use gpui::{black, rgba, white, Hsla};
     use gpui_component::theme::Theme;
 
     // Thinking block colors
@@ -114,7 +114,7 @@ pub mod colors {
         if theme.is_dark() {
             rgba(0x00142060).into() // Dark mode blue background
         } else {
-            rgba(0x00142020).into() // Light mode blue background
+            rgba(0x00142010).into() // Light mode blue background
         }
     }
 
@@ -157,11 +157,7 @@ pub mod colors {
     }
 
     pub fn tool_parameter_label(theme: &Theme) -> Hsla {
-        if theme.is_dark() {
-            theme.info // Use theme's info color for parameter labels
-        } else {
-            rgb(0x0066AA).into() // Slightly darker blue for light mode
-        }
+        theme.info // Use theme's info color for parameter labels
     }
 
     pub fn tool_parameter_value(theme: &Theme) -> Hsla {
@@ -170,7 +166,7 @@ pub mod colors {
 
     pub fn tool_border_by_status(theme: &Theme, status: &crate::ui::ToolStatus) -> Hsla {
         match status {
-            crate::ui::ToolStatus::Pending => theme.border,
+            crate::ui::ToolStatus::Pending => rgba(0x999999FF).into(),
             crate::ui::ToolStatus::Running => theme.info,
             crate::ui::ToolStatus::Success => theme.success,
             crate::ui::ToolStatus::Error => theme.warning,
