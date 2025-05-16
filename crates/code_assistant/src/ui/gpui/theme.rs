@@ -7,12 +7,12 @@ pub fn custom_dark_theme() -> gpui_component::theme::ThemeColor {
 
     // Main backgrounds
     colors.background = rgb(0x2c2c2c).into(); // Primary background
-    colors.card = rgb(0x303030).into();       // Message area background
-    colors.title_bar = rgb(0x303030).into();  // Titlebar background
+    colors.card = rgb(0x303030).into(); // Message area background
+    colors.title_bar = rgb(0x303030).into(); // Titlebar background
     colors.title_bar_border = rgb(0x404040).into(); // Titlebar border
 
     // Sidebar
-    colors.sidebar = rgb(0x252525).into();    // Sidebar background
+    colors.sidebar = rgb(0x252525).into(); // Sidebar background
     colors.sidebar_border = rgb(0x404040).into(); // Sidebar border
 
     // Text colors
@@ -20,13 +20,13 @@ pub fn custom_dark_theme() -> gpui_component::theme::ThemeColor {
     colors.muted_foreground = rgb(0xAAAAAA).into(); // Secondary text
 
     // Thinking blocks - blue theme
-    colors.info = rgba(0x5BC1FEFF).into();    // Thinking block accent
+    colors.info = rgba(0x5BC1FEFF).into(); // Thinking block accent
     colors.info_foreground = rgba(0x93B8CEFF).into(); // Thinking block text
 
     // Buttons
-    colors.primary = rgb(0x3355bb).into();    // Primary button (submit)
+    colors.primary = rgb(0x3355bb).into(); // Primary button (submit)
     colors.primary_hover = rgb(0x4466cc).into();
-    colors.danger = rgb(0x553333).into();     // Danger button (clear)
+    colors.danger = rgb(0x553333).into(); // Danger button (clear)
     colors.danger_hover = rgb(0x664444).into();
 
     // Tool status colors
@@ -42,12 +42,12 @@ pub fn custom_light_theme() -> gpui_component::theme::ThemeColor {
 
     // Main backgrounds
     colors.background = rgb(0xF5F5F5).into(); // Light gray background
-    colors.card = rgb(0xFFFFFF).into();       // White message area
-    colors.title_bar = rgb(0xE5E5E5).into();  // Light gray titlebar
+    colors.card = rgb(0xFFFFFF).into(); // White message area
+    colors.title_bar = rgb(0xE5E5E5).into(); // Light gray titlebar
     colors.title_bar_border = rgb(0xD0D0D0).into(); // Light border
 
     // Sidebar
-    colors.sidebar = rgb(0xEAEAEA).into();    // Light sidebar
+    colors.sidebar = rgb(0xEAEAEA).into(); // Light sidebar
     colors.sidebar_border = rgb(0xD0D0D0).into(); // Light border
 
     // Text colors
@@ -55,13 +55,13 @@ pub fn custom_light_theme() -> gpui_component::theme::ThemeColor {
     colors.muted_foreground = rgb(0x777777).into(); // Medium gray text
 
     // Thinking blocks - blue theme (adjusted for light mode)
-    colors.info = rgb(0x0085D1).into();       // Thinking block accent
+    colors.info = rgb(0x0085D1).into(); // Thinking block accent
     colors.info_foreground = rgb(0x0060A0).into(); // Thinking block text
 
     // Buttons
-    colors.primary = rgb(0x2244AA).into();    // Primary button (submit)
+    colors.primary = rgb(0x2244AA).into(); // Primary button (submit)
     colors.primary_hover = rgb(0x3355BB).into();
-    colors.danger = rgb(0xBB3333).into();     // Danger button (clear)
+    colors.danger = rgb(0xBB3333).into(); // Danger button (clear)
     colors.danger_hover = rgb(0xCC4444).into();
 
     // Tool status colors
@@ -103,7 +103,7 @@ pub fn toggle_theme(window: Option<&mut gpui::Window>, cx: &mut App) {
 
 /// Color utility functions for specific components
 pub mod colors {
-    use gpui::{rgb, rgba, black, white, Hsla};
+    use gpui::{black, rgb, rgba, white, Hsla};
     use gpui_component::theme::Theme;
 
     // Thinking block colors
