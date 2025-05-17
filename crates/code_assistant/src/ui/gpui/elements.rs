@@ -6,7 +6,7 @@ use gpui::{
     IntoElement, MouseButton, SharedString, Styled, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
-use gpui_component::ActiveTheme;
+use gpui_component::{scroll::ScrollbarAxis, ActiveTheme, StyledExt};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -545,7 +545,8 @@ impl Render for BlockView {
                     &block.status,
                 );
                 let tool_bg = crate::ui::gpui::theme::colors::tool_block_bg(&cx.theme());
-                let chevron_color = crate::ui::gpui::theme::colors::thinking_block_chevron(&cx.theme());
+                let chevron_color =
+                    crate::ui::gpui::theme::colors::thinking_block_chevron(&cx.theme());
 
                 // Parameter rendering function that uses the global registry if available
                 let render_parameter =
@@ -671,9 +672,9 @@ impl Render for BlockView {
                                                         .gap_1()
                                                         .flex_grow() // Take remaining space
                                                         .children(
-                                                            regular_params
-                                                                .iter()
-                                                                .map(|param| render_parameter(param)),
+                                                            regular_params.iter().map(|param| {
+                                                                render_parameter(param)
+                                                            }),
                                                         )
                                                         .into_any(),
                                                 ])
@@ -718,7 +719,9 @@ impl Render for BlockView {
 
                                 // Tool output content (only shown when expanded or on error)
                                 // Error message (always shown for error status)
-                                if block.status == crate::ui::ToolStatus::Error && block.status_message.is_some() {
+                                if block.status == crate::ui::ToolStatus::Error
+                                    && block.status_message.is_some()
+                                {
                                     elements.push(
                                         div()
                                             .flex()
@@ -728,7 +731,10 @@ impl Render for BlockView {
                                             .mt_1()
                                             .rounded_md()
                                             .max_h(px(300.)) // Max height
-                                            .overflow_y_auto() // Add vertical scrolling
+                                            .scrollable(
+                                                cx.entity().entity_id(),
+                                                ScrollbarAxis::Vertical,
+                                            ) // Make it scrollable
                                             .bg(cx.theme().danger.opacity(0.2))
                                             .border_l_2()
                                             .border_color(cx.theme().danger.opacity(0.5))
@@ -749,7 +755,10 @@ impl Render for BlockView {
                                             .mt_1()
                                             .rounded_md()
                                             .max_h(px(300.)) // Max height
-                                            .overflow_y_auto() // Add vertical scrolling
+                                            .scrollable(
+                                                cx.entity().entity_id(),
+                                                ScrollbarAxis::Vertical,
+                                            ) // Make it scrollable
                                             .bg(cx.theme().success.opacity(0.1))
                                             .border_l_2()
                                             .border_color(cx.theme().success.opacity(0.3))

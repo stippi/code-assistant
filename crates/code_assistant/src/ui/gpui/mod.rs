@@ -29,7 +29,7 @@ pub use root::RootView;
 use std::any::Any;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::warn;
 
 use elements::MessageContainer;
 
