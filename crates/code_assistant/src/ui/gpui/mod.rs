@@ -156,11 +156,10 @@ impl Gpui {
                 let result = rx.recv().await;
                 match result {
                     Ok(received_event) => {
-                        info!("Task: received event: {:?}", received_event);
                         async_gpui_clone.process_ui_event_async(received_event, cx);
                     }
                     Err(err) => {
-                        warn!("Task: Receive error: {}", err);
+                        warn!("Receive error: {}", err);
                     }
                 }
             });
