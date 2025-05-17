@@ -44,7 +44,8 @@ pub struct Gpui {
     ui_update_needed: Arc<Mutex<bool>>,
     working_memory: Arc<Mutex<Option<WorkingMemory>>>,
     ui_events: Arc<Mutex<Vec<UiEvent>>>,
-    event_sender: Arc<Mutex<Option<async_channel::Sender<UiEvent>>>>,
+    event_sender: Arc<Mutex<async_channel::Sender<UiEvent>>>,
+    event_receiver: Arc<Mutex<async_channel::Receiver<UiEvent>>>,
     event_task: Arc<Mutex<Option<Box<dyn Any + Send + Sync>>>>,
     current_request_id: Arc<Mutex<u64>>,
     current_tool_counter: Arc<Mutex<u64>>,
@@ -64,7 +65,6 @@ impl Gpui {
         let ui_update_needed = Arc::new(Mutex::new(false));
         let working_memory = Arc::new(Mutex::new(None));
         let ui_events = Arc::new(Mutex::new(Vec::new()));
-        let event_sender = Arc::new(Mutex::new(None));
         let event_task = Arc::new(Mutex::new(None));
         let current_request_id = Arc::new(Mutex::new(0));
         let current_tool_counter = Arc::new(Mutex::new(0));
@@ -94,6 +94,11 @@ impl Gpui {
         // Set the global registry
         ParameterRendererRegistry::set_global(parameter_renderers.clone());
 
+        // Create a channel to send and receive UiEvents
+        let (tx, rx) = async_channel::unbounded::<UiEvent>();
+        let event_sender = Arc::new(Mutex::new(tx));
+        let event_receiver = Arc::new(Mutex::new(rx));
+
         Self {
             message_queue,
             input_value,
@@ -102,6 +107,7 @@ impl Gpui {
             working_memory,
             ui_events,
             event_sender,
+            event_receiver,
             event_task,
             current_request_id,
             current_tool_counter,
@@ -143,15 +149,9 @@ impl Gpui {
             gpui_component::input::init(cx);
             gpui_component::drawer::init(cx);
 
-            // Create the EventChannel
+            // Create the entity to receive UiEvents
             let event_entity = cx.new(|_cx| UiEvent::NoEvent);
-            let (tx, rx) = async_channel::unbounded::<UiEvent>();
-
-            // Store the sender in our Gpui instance
-            {
-                let mut sender = gpui_clone.event_sender.lock().unwrap();
-                *sender = Some(tx);
-            }
+            let rx = gpui_clone.event_receiver.lock().unwrap().clone();
 
             let task = cx.spawn(async move |cx: &mut AsyncApp| loop {
                 info!("Task: waiting for event");
@@ -468,15 +468,12 @@ impl Gpui {
         let mut flag = self.ui_update_needed.lock().unwrap();
         *flag = true;
 
-        if let Some(sender) = &*self.event_sender.lock().unwrap() {
-            // Non-blocking send
-            if let Err(err) = sender.try_send(event) {
-                warn!("Failed to send event via channel: {}", err);
-            } else {
-                info!("Event sent via channel");
-            }
+        let sender = self.event_sender.lock().unwrap().clone();
+        // Non-blocking send
+        if let Err(err) = sender.try_send(event) {
+            warn!("Failed to send event via channel: {}", err);
         } else {
-            warn!("Sender not ready. Dropped event: {:?}", event);
+            info!("Event sent via channel");
         }
     }
 }
