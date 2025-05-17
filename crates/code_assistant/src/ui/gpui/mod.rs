@@ -475,6 +475,8 @@ impl Gpui {
             } else {
                 info!("Event sent via channel");
             }
+        } else {
+            warn!("Sender not ready. Dropped event: {:?}", event);
         }
     }
 }
