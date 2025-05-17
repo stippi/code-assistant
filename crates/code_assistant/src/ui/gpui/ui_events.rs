@@ -5,23 +5,13 @@ use crate::ui::ToolStatus;
 #[derive(Debug, Clone)]
 pub enum UiEvent {
     /// Display a new message or append to an existing one
-    DisplayMessage {
-        content: String,
-        role: MessageRole,
-    },
+    DisplayMessage { content: String, role: MessageRole },
     /// Append to the last text block
-    AppendToTextBlock {
-        content: String,
-    },
+    AppendToTextBlock { content: String },
     /// Append to the last thinking block
-    AppendToThinkingBlock {
-        content: String,
-    },
+    AppendToThinkingBlock { content: String },
     /// Start a tool invocation
-    StartTool {
-        name: String,
-        id: String,
-    },
+    StartTool { name: String, id: String },
     /// Add or update a tool parameter
     UpdateToolParameter {
         tool_id: String,
@@ -35,8 +25,5 @@ pub enum UiEvent {
         message: Option<String>,
     },
     /// End a tool invocation
-    EndTool {
-        id: String,
-    },
-    NoEvent,
+    EndTool { id: String },
 }

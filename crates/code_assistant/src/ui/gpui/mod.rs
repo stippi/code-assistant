@@ -149,23 +149,15 @@ impl Gpui {
             gpui_component::input::init(cx);
             gpui_component::drawer::init(cx);
 
-            // Create the entity to receive UiEvents
-            let event_entity = cx.new(|_cx| UiEvent::NoEvent);
+            // Spawn task to receive UiEvents
             let rx = gpui_clone.event_receiver.lock().unwrap().clone();
-
+            let async_gpui_clone = gpui_clone.clone();
             let task = cx.spawn(async move |cx: &mut AsyncApp| loop {
-                info!("Task: waiting for event");
                 let result = rx.recv().await;
                 match result {
                     Ok(received_event) => {
                         info!("Task: received event: {:?}", received_event);
-                        event_entity
-                            .update(cx, |event, cx| {
-                                *event = received_event;
-                                info!("Task: Updated entity");
-                                cx.notify();
-                            })
-                            .expect("model was not updated");
+                        async_gpui_clone.process_ui_event_async(received_event, cx);
                     }
                     Err(err) => {
                         warn!("Task: Receive error: {}", err);
@@ -311,7 +303,7 @@ impl Gpui {
         // Process each event
         if !events.is_empty() {
             for event in events {
-                gpui.process_ui_event(event, window, cx);
+                gpui.process_ui_event(event, cx);
             }
         }
 
@@ -332,9 +324,8 @@ impl Gpui {
     }
 
     // Process a UI event in the UI thread context
-    fn process_ui_event(&self, event: UiEvent, _window: &mut gpui::Window, cx: &mut gpui::App) {
+    fn process_ui_event(&self, event: UiEvent, cx: &mut gpui::App) {
         match event {
-            UiEvent::NoEvent => {}
             UiEvent::DisplayMessage { content, role } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 let new_message = cx.new(|cx| {
@@ -459,21 +450,178 @@ impl Gpui {
         }
     }
 
+    fn process_ui_event_async(&self, event: UiEvent, cx: &mut gpui::AsyncApp) {
+        match event {
+            UiEvent::DisplayMessage { content, role } => {
+                let mut queue = self.message_queue.lock().unwrap();
+                let result = cx.new(|cx| {
+                    let new_message = MessageContainer::with_role(role, cx);
+                    new_message.add_text_block(&content, cx);
+                    new_message
+                });
+                if let Ok(new_message) = result {
+                    queue.push(new_message);
+                } else {
+                    warn!("Failed to create message entity");
+                }
+            }
+            UiEvent::AppendToTextBlock { content } => {
+                let mut queue = self.message_queue.lock().unwrap();
+                if let Some(last) = queue.last() {
+                    // Check if the last message is from the assistant, otherwise create a new one
+
+                    let is_user_message = cx
+                        .update_entity(&last, |message, _cx| message.is_user_message())
+                        .expect("Failed to update entity");
+
+                    if is_user_message {
+                        // Create a new assistant message
+                        let result = cx.new(|cx| {
+                            let new_message =
+                                MessageContainer::with_role(MessageRole::Assistant, cx);
+                            new_message.add_text_block(&content, cx);
+                            new_message
+                        });
+                        if let Ok(new_message) = result {
+                            queue.push(new_message);
+                        } else {
+                            warn!("Failed to create message entity");
+                        }
+                    } else {
+                        // Update the existing assistant message
+                        cx.update_entity(&last, |message, cx| {
+                            message.add_or_append_to_text_block(&content, cx)
+                        })
+                        .expect("Failed to update entity");
+                    }
+                } else {
+                    // If there are no messages, create a new assistant message
+                    let result = cx.new(|cx| {
+                        let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
+                        new_message.add_text_block(&content, cx);
+                        new_message
+                    });
+                    if let Ok(new_message) = result {
+                        queue.push(new_message);
+                    } else {
+                        warn!("Failed to create message entity");
+                    }
+                }
+            }
+            UiEvent::AppendToThinkingBlock { content } => {
+                let mut queue = self.message_queue.lock().unwrap();
+                if let Some(last) = queue.last() {
+                    // Check if the last message is from the assistant, otherwise create a new one
+                    let is_user_message = cx
+                        .update_entity(&last, |message, _cx| message.is_user_message())
+                        .expect("Failed to update entity");
+
+                    if is_user_message {
+                        // Create a new assistant message
+                        let result = cx.new(|cx| {
+                            let new_message =
+                                MessageContainer::with_role(MessageRole::Assistant, cx);
+                            new_message.add_thinking_block(&content, cx);
+                            new_message
+                        });
+                        if let Ok(new_message) = result {
+                            queue.push(new_message);
+                        } else {
+                            warn!("Failed to create message entity");
+                        }
+                    } else {
+                        // Update the existing assistant message
+                        cx.update_entity(&last, |message, cx| {
+                            message.add_or_append_to_thinking_block(&content, cx)
+                        })
+                        .expect("Failed to update entity");
+                    }
+                } else {
+                    // If there are no messages, create a new assistant message
+                    let result = cx.new(|cx| {
+                        let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
+                        new_message.add_thinking_block(&content, cx);
+                        new_message
+                    });
+                    if let Ok(new_message) = result {
+                        queue.push(new_message);
+                    } else {
+                        warn!("Failed to create message entity");
+                    }
+                }
+            }
+            UiEvent::StartTool { name, id } => {
+                let mut queue = self.message_queue.lock().unwrap();
+                if let Some(last) = queue.last() {
+                    cx.update_entity(&last, |message, cx| {
+                        message.add_tool_use_block(&name, &id, cx);
+                    })
+                    .expect("Failed to update entity");
+                } else {
+                    // Create a new assistant message if none exists
+                    let result = cx.new(|cx| {
+                        let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
+                        new_message.add_tool_use_block(&name, &id, cx);
+                        new_message
+                    });
+                    if let Ok(new_message) = result {
+                        queue.push(new_message);
+                    } else {
+                        warn!("Failed to create message entity");
+                    }
+                }
+            }
+            UiEvent::UpdateToolParameter {
+                tool_id,
+                name,
+                value,
+            } => {
+                let queue = self.message_queue.lock().unwrap();
+                if let Some(last) = queue.last() {
+                    cx.update_entity(&last, |message, cx| {
+                        message.add_or_update_tool_parameter(&tool_id, &name, &value, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
+            UiEvent::UpdateToolStatus {
+                tool_id,
+                status,
+                message,
+            } => {
+                let queue = self.message_queue.lock().unwrap();
+                for message_container in queue.iter() {
+                    cx.update_entity(&message_container, |message_container, cx| {
+                        message_container.update_tool_status(&tool_id, status, message.clone(), cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
+            UiEvent::EndTool { id } => {
+                let queue = self.message_queue.lock().unwrap();
+                for message_container in queue.iter() {
+                    cx.update_entity(&message_container, |message_container, cx| {
+                        message_container.end_tool_use(&id, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
+        }
+    }
+
     // Helper to add an event to the queue
     fn push_event(&self, event: UiEvent) {
-        let mut events = self.ui_events.lock().unwrap();
-        events.push(event.clone());
+        // let mut events = self.ui_events.lock().unwrap();
+        // events.push(event.clone());
 
         // Set the update flag to trigger a refresh
-        let mut flag = self.ui_update_needed.lock().unwrap();
-        *flag = true;
+        // let mut flag = self.ui_update_needed.lock().unwrap();
+        // *flag = true;
 
         let sender = self.event_sender.lock().unwrap().clone();
         // Non-blocking send
         if let Err(err) = sender.try_send(event) {
             warn!("Failed to send event via channel: {}", err);
-        } else {
-            info!("Event sent via channel");
         }
     }
 }
