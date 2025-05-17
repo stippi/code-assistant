@@ -78,6 +78,7 @@ impl MessageContainer {
             parameters: Vec::new(),
             status: ToolStatus::Pending,
             status_message: None,
+            is_collapsed: true, // Default to collapsed
         });
         let view = cx.new(|cx| BlockView::new(block, cx));
         elements.push(view);
@@ -100,6 +101,12 @@ impl MessageContainer {
                     if tool.id == tool_id {
                         tool.status = status;
                         tool.status_message = message.clone();
+
+                        // Auto-expand failed tool calls
+                        if status == ToolStatus::Error {
+                            tool.is_collapsed = false;
+                        }
+
                         updated = true;
                         cx.notify();
                     }
@@ -232,6 +239,7 @@ impl MessageContainer {
                 parameters: Vec::new(),
                 status: ToolStatus::Pending,
                 status_message: None,
+                is_collapsed: true, // Default to collapsed
             };
 
             tool.parameters.push(ParameterBlock {
@@ -341,6 +349,13 @@ impl BlockView {
     fn toggle_thinking_collapsed(&mut self, cx: &mut Context<Self>) {
         if let Some(thinking) = self.block.as_thinking_mut() {
             thinking.is_collapsed = !thinking.is_collapsed;
+            cx.notify();
+        }
+    }
+
+    fn toggle_tool_collapsed(&mut self, cx: &mut Context<Self>) {
+        if let Some(tool) = self.block.as_tool_mut() {
+            tool.is_collapsed = !tool.is_collapsed;
             cx.notify();
         }
     }
@@ -512,6 +527,16 @@ impl Render for BlockView {
                 // Get the appropriate icon for this tool type
                 let icon = file_icons::get().get_tool_icon(&block.name);
 
+                // Get the chevron icon based on collapsed state
+                let (chevron_icon, chevron_text) = if block.is_collapsed {
+                    (
+                        file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN),
+                        "▼",
+                    )
+                } else {
+                    (file_icons::get().get_type_icon(file_icons::CHEVRON_UP), "▲")
+                };
+
                 // Use theme utilities for colors
                 let icon_color =
                     crate::ui::gpui::theme::colors::tool_block_icon(&cx.theme(), &block.status);
@@ -520,6 +545,7 @@ impl Render for BlockView {
                     &block.status,
                 );
                 let tool_bg = crate::ui::gpui::theme::colors::tool_block_bg(&cx.theme());
+                let chevron_color = crate::ui::gpui::theme::colors::thinking_block_chevron(&cx.theme());
 
                 // Parameter rendering function that uses the global registry if available
                 let render_parameter =
@@ -606,15 +632,23 @@ impl Render for BlockView {
                                     div()
                                         .flex()
                                         .flex_row()
-                                        .items_start() // Align to top if multiple parameters
+                                        .items_center() // Align all items center
+                                        .justify_between() // Space between header and chevron
+                                        .cursor_pointer() // Make entire header clickable
+                                        .hover(|s| s.bg(border_color.opacity(0.1))) // Hover effect
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(move |view, _event, _window, cx| {
+                                                view.toggle_tool_collapsed(cx);
+                                            }),
+                                        )
                                         .children(vec![
-                                            // Left side: Tool icon and name
+                                            // Left side: Tool icon, name and regular parameters
                                             div()
                                                 .flex()
                                                 .flex_row()
                                                 .items_center()
-                                                .flex_none()
-                                                .pt(px(1.))
+                                                .flex_grow()
                                                 .children(vec![
                                                     // Tool icon
                                                     file_icons::render_icon_container(
@@ -630,19 +664,36 @@ impl Render for BlockView {
                                                         .flex_none() // Prevent shrinking
                                                         .child(block.name.clone())
                                                         .into_any(),
+                                                    // Regular parameters
+                                                    div()
+                                                        .flex()
+                                                        .flex_wrap()
+                                                        .gap_1()
+                                                        .flex_grow() // Take remaining space
+                                                        .children(
+                                                            regular_params
+                                                                .iter()
+                                                                .map(|param| render_parameter(param)),
+                                                        )
+                                                        .into_any(),
                                                 ])
                                                 .into_any(),
-                                            // Right side: Regular parameters
+                                            // Right side: Chevron icon
                                             div()
                                                 .flex()
-                                                .flex_wrap()
-                                                .gap_1()
-                                                .flex_grow() // Take remaining space
-                                                .children(
-                                                    regular_params
-                                                        .iter()
-                                                        .map(|param| render_parameter(param)),
-                                                )
+                                                .items_center()
+                                                .justify_center()
+                                                .flex_none()
+                                                .cursor_pointer()
+                                                .size(px(24.))
+                                                .rounded_full()
+                                                .hover(|s| s.bg(border_color.opacity(0.2)))
+                                                .child(file_icons::render_icon(
+                                                    &chevron_icon,
+                                                    16.0,
+                                                    chevron_color,
+                                                    chevron_text,
+                                                ))
                                                 .into_any(),
                                         ])
                                         .into_any(),
@@ -665,25 +716,48 @@ impl Render for BlockView {
                                     );
                                 }
 
-                                // Error message (only shown for error status)
-                                if block.status == crate::ui::ToolStatus::Error {
-                                    if let Some(msg) = &block.status_message {
-                                        elements.push(
-                                            div()
-                                                .flex()
-                                                .flex_row()
-                                                .items_center()
-                                                .p_2()
-                                                .rounded_md()
-                                                .bg(cx.theme().danger.opacity(0.2))
-                                                .border_l_2()
-                                                .border_color(cx.theme().danger.opacity(0.5))
-                                                .text_color(cx.theme().danger.opacity(0.9))
-                                                .text_size(px(14.))
-                                                .child(msg.clone())
-                                                .into_any(),
-                                        );
-                                    }
+                                // Tool output content (only shown when expanded or on error)
+                                // Error message (always shown for error status)
+                                if block.status == crate::ui::ToolStatus::Error && block.status_message.is_some() {
+                                    elements.push(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .p_2()
+                                            .mt_1()
+                                            .rounded_md()
+                                            .max_h(px(300.)) // Max height
+                                            .overflow_y_auto() // Add vertical scrolling
+                                            .bg(cx.theme().danger.opacity(0.2))
+                                            .border_l_2()
+                                            .border_color(cx.theme().danger.opacity(0.5))
+                                            .text_color(cx.theme().danger.opacity(0.9))
+                                            .text_size(px(14.))
+                                            .child(block.status_message.clone().unwrap_or_default())
+                                            .into_any(),
+                                    );
+                                }
+                                // Success message (only when expanded)
+                                else if !block.is_collapsed && block.status_message.is_some() {
+                                    elements.push(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .p_2()
+                                            .mt_1()
+                                            .rounded_md()
+                                            .max_h(px(300.)) // Max height
+                                            .overflow_y_auto() // Add vertical scrolling
+                                            .bg(cx.theme().success.opacity(0.1))
+                                            .border_l_2()
+                                            .border_color(cx.theme().success.opacity(0.3))
+                                            .text_color(cx.theme().foreground)
+                                            .text_size(px(14.))
+                                            .child(block.status_message.clone().unwrap_or_default())
+                                            .into_any(),
+                                    );
                                 }
 
                                 elements
@@ -753,6 +827,7 @@ pub struct ToolUseBlock {
     pub parameters: Vec<ParameterBlock>,
     pub status: ToolStatus,
     pub status_message: Option<String>,
+    pub is_collapsed: bool,
 }
 
 /// Parameter for a tool
