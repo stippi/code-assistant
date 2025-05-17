@@ -21,12 +21,15 @@ use crate::ui::gpui::{
 };
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use assets::Assets;
-use gpui::{actions, px, AppContext, Entity, Global, Point};
+use async_channel;
+use gpui::{actions, px, AppContext, AsyncApp, Entity, Global, Point};
 pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
+use std::any::Any;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tracing::{info, warn};
 
 use elements::MessageContainer;
 
@@ -40,6 +43,8 @@ pub struct Gpui {
     ui_update_needed: Arc<Mutex<bool>>,
     working_memory: Arc<Mutex<Option<WorkingMemory>>>,
     ui_events: Arc<Mutex<Vec<UiEvent>>>,
+    event_sender: Arc<Mutex<Option<async_channel::Sender<UiEvent>>>>,
+    event_task: Arc<Mutex<Option<Box<dyn Any + Send + Sync>>>>,
     current_request_id: Arc<Mutex<u64>>,
     current_tool_counter: Arc<Mutex<u64>>,
     last_xml_tool_id: Arc<Mutex<String>>,
@@ -57,6 +62,8 @@ impl Gpui {
         let ui_update_needed = Arc::new(Mutex::new(false));
         let working_memory = Arc::new(Mutex::new(None));
         let ui_events = Arc::new(Mutex::new(Vec::new()));
+        let event_sender = Arc::new(Mutex::new(None));
+        let event_task = Arc::new(Mutex::new(None));
         let current_request_id = Arc::new(Mutex::new(0));
         let current_tool_counter = Arc::new(Mutex::new(0));
         let last_xml_tool_id = Arc::new(Mutex::new(String::new()));
@@ -92,6 +99,8 @@ impl Gpui {
             ui_update_needed,
             working_memory,
             ui_events,
+            event_sender,
+            event_task,
             current_request_id,
             current_tool_counter,
             last_xml_tool_id,
@@ -131,6 +140,42 @@ impl Gpui {
             theme::init_themes(cx);
             gpui_component::input::init(cx);
             gpui_component::drawer::init(cx);
+
+            // Create the EventChannel
+            let event_entity = cx.new(|_cx| UiEvent::NoEvent);
+            let (tx, rx) = async_channel::unbounded::<UiEvent>();
+
+            // Store the sender in our Gpui instance
+            {
+                let mut sender = gpui_clone.event_sender.lock().unwrap();
+                *sender = Some(tx);
+            }
+
+            let task = cx.spawn(async move |cx: &mut AsyncApp| loop {
+                info!("Task: waiting for event");
+                let result = rx.recv().await;
+                match result {
+                    Ok(received_event) => {
+                        info!("Task: received event: {:?}", received_event);
+                        event_entity
+                            .update(cx, |event, cx| {
+                                *event = received_event;
+                                info!("Task: Updated entity");
+                                cx.notify();
+                            })
+                            .expect("model was not updated");
+                    }
+                    Err(err) => {
+                        warn!("Task: Receive error: {}", err);
+                    }
+                }
+            });
+
+            // Store the task in our Gpui instance
+            {
+                let mut task_guard = gpui_clone.event_task.lock().unwrap();
+                *task_guard = Some(Box::new(task));
+            }
 
             // Create memory view with our shared working memory
             let memory_view = cx.new(|cx| MemoryView::new(working_memory.clone(), cx));
@@ -287,6 +332,7 @@ impl Gpui {
     // Process a UI event in the UI thread context
     fn process_ui_event(&self, event: UiEvent, _window: &mut gpui::Window, cx: &mut gpui::App) {
         match event {
+            UiEvent::NoEvent => {}
             UiEvent::DisplayMessage { content, role } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 let new_message = cx.new(|cx| {
@@ -414,11 +460,20 @@ impl Gpui {
     // Helper to add an event to the queue
     fn push_event(&self, event: UiEvent) {
         let mut events = self.ui_events.lock().unwrap();
-        events.push(event);
+        events.push(event.clone());
 
         // Set the update flag to trigger a refresh
         let mut flag = self.ui_update_needed.lock().unwrap();
         *flag = true;
+
+        if let Some(sender) = &*self.event_sender.lock().unwrap() {
+            // Non-blocking send
+            if let Err(err) = sender.try_send(event) {
+                warn!("Failed to send event via channel: {}", err);
+            } else {
+                info!("Event sent via channel");
+            }
+        }
     }
 }
 
@@ -594,6 +649,8 @@ impl Clone for Gpui {
             ui_update_needed: self.ui_update_needed.clone(),
             working_memory: self.working_memory.clone(),
             ui_events: self.ui_events.clone(),
+            event_sender: self.event_sender.clone(),
+            event_task: self.event_task.clone(),
             current_request_id: self.current_request_id.clone(),
             current_tool_counter: self.current_tool_counter.clone(),
             last_xml_tool_id: self.last_xml_tool_id.clone(),
