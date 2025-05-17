@@ -36,6 +36,7 @@ use elements::MessageContainer;
 actions!(code_assistant, [CloseWindow]);
 
 // Our main UI struct that implements the UserInterface trait
+#[derive(Clone)]
 pub struct Gpui {
     message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
     input_value: Arc<Mutex<Option<String>>>,
@@ -48,7 +49,8 @@ pub struct Gpui {
     current_request_id: Arc<Mutex<u64>>,
     current_tool_counter: Arc<Mutex<u64>>,
     last_xml_tool_id: Arc<Mutex<String>>,
-    parameter_renderers: Arc<ParameterRendererRegistry>,
+    #[allow(dead_code)]
+    parameter_renderers: Arc<ParameterRendererRegistry>, // TODO: Needed?!
 }
 
 // Implement Global trait for Gpui
@@ -637,24 +639,5 @@ impl UserInterface for Gpui {
     async fn end_llm_request(&self, _request_id: u64) -> Result<(), UIError> {
         // For now, we don't need special handling for request completion
         Ok(())
-    }
-}
-
-impl Clone for Gpui {
-    fn clone(&self) -> Self {
-        Self {
-            message_queue: self.message_queue.clone(),
-            input_value: self.input_value.clone(),
-            input_requested: self.input_requested.clone(),
-            ui_update_needed: self.ui_update_needed.clone(),
-            working_memory: self.working_memory.clone(),
-            ui_events: self.ui_events.clone(),
-            event_sender: self.event_sender.clone(),
-            event_task: self.event_task.clone(),
-            current_request_id: self.current_request_id.clone(),
-            current_tool_counter: self.current_tool_counter.clone(),
-            last_xml_tool_id: self.last_xml_tool_id.clone(),
-            parameter_renderers: self.parameter_renderers.clone(),
-        }
     }
 }
