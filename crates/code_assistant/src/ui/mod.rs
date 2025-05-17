@@ -18,8 +18,6 @@ pub enum ToolStatus {
 pub enum UIMessage {
     // System actions that the agent takes
     Action(String),
-    // Questions to the user that need a response
-    Question(String),
     // User input messages
     UserInput(String),
 }
@@ -40,7 +38,7 @@ pub trait UserInterface: Send + Sync {
     async fn display(&self, message: UIMessage) -> Result<(), UIError>;
 
     /// Get input from the user
-    async fn get_input(&self, prompt: &str) -> Result<String, UIError>;
+    async fn get_input(&self) -> Result<String, UIError>;
 
     /// Display a streaming fragment with specific type information
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError>;

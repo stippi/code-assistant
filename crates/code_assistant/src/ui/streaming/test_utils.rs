@@ -74,7 +74,7 @@ impl UserInterface for TestUI {
         Ok(())
     }
 
-    async fn get_input(&self, _prompt: &str) -> Result<String, UIError> {
+    async fn get_input(&self) -> Result<String, UIError> {
         Ok(String::new())
     }
 

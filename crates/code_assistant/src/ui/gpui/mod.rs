@@ -483,7 +483,7 @@ impl Gpui {
 impl UserInterface for Gpui {
     async fn display(&self, message: UIMessage) -> Result<(), UIError> {
         match message {
-            UIMessage::Action(msg) | UIMessage::Question(msg) => {
+            UIMessage::Action(msg) => {
                 // Create a new assistant message
                 self.push_event(UiEvent::DisplayMessage {
                     content: msg,
@@ -502,11 +502,7 @@ impl UserInterface for Gpui {
         Ok(())
     }
 
-    async fn get_input(&self, prompt: &str) -> Result<String, UIError> {
-        // Display prompt
-        self.display(UIMessage::Question(prompt.to_string()))
-            .await?;
-
+    async fn get_input(&self) -> Result<String, UIError> {
         // Request input
         {
             let mut requested = self.input_requested.lock().unwrap();

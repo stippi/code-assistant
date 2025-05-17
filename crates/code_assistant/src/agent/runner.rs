@@ -112,8 +112,8 @@ impl Agent {
         Ok(())
     }
 
-    pub async fn get_input_from_ui(&self, prompt: &str) -> Result<String> {
-        self.ui.get_input(prompt).await.map_err(|e| e.into())
+    pub async fn get_input_from_ui(&self) -> Result<String> {
+        self.ui.get_input().await.map_err(|e| e.into())
     }
 
     /// Handles the interaction with the LLM to get the next assistant message.
@@ -160,7 +160,7 @@ impl Agent {
     /// Handles the case where no tool requests are made by the LLM.
     /// Prompts the user for input and adds it to the message history.
     async fn solicit_user_input(&mut self) -> Result<()> {
-        let user_input = self.get_input_from_ui("").await?;
+        let user_input = self.get_input_from_ui().await?;
         self.ui
             .display(UIMessage::UserInput(user_input.clone()))
             .await?;
