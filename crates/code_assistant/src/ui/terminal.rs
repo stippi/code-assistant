@@ -172,6 +172,7 @@ impl UserInterface for TerminalUI {
         _tool_id: &str,
         status: ToolStatus,
         message: Option<String>,
+        _output: Option<String>,
     ) -> Result<(), UIError> {
         // For terminal UI, we just print a status message if provided
         if let Some(msg) = message {

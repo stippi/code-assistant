@@ -49,6 +49,7 @@ pub trait UserInterface: Send + Sync {
         tool_id: &str,
         status: ToolStatus,
         message: Option<String>,
+        output: Option<String>,
     ) -> Result<(), UIError>;
 
     /// Update memory view with current working memory

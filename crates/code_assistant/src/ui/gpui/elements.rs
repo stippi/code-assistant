@@ -78,6 +78,7 @@ impl MessageContainer {
             parameters: Vec::new(),
             status: ToolStatus::Pending,
             status_message: None,
+            output: None,
             is_collapsed: true, // Default to collapsed
         });
         let view = cx.new(|cx| BlockView::new(block, cx));
@@ -90,6 +91,7 @@ impl MessageContainer {
         tool_id: &str,
         status: ToolStatus,
         message: Option<String>,
+        output: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
         let elements = self.elements.lock().unwrap();
@@ -101,6 +103,7 @@ impl MessageContainer {
                     if tool.id == tool_id {
                         tool.status = status;
                         tool.status_message = message.clone();
+                        tool.output = output.clone();
 
                         // Auto-expand failed tool calls
                         if status == ToolStatus::Error {
@@ -239,6 +242,7 @@ impl MessageContainer {
                 parameters: Vec::new(),
                 status: ToolStatus::Pending,
                 status_message: None,
+                output: None,
                 is_collapsed: true, // Default to collapsed
             };
 
@@ -545,8 +549,7 @@ impl Render for BlockView {
                     &block.status,
                 );
                 let tool_bg = crate::ui::gpui::theme::colors::tool_block_bg(&cx.theme());
-                let chevron_color =
-                    crate::ui::gpui::theme::colors::thinking_block_chevron(&cx.theme());
+                let chevron_color = cx.theme().muted_foreground;
 
                 // Parameter rendering function that uses the global registry if available
                 let render_parameter =
@@ -618,13 +621,14 @@ impl Render for BlockView {
                     .flex_row()
                     .overflow_hidden()
                     .children(vec![
+                        // Left side: Border with status indication
                         div()
                             .w(px(3.))
                             .flex_none()
                             .h_full()
                             .bg(border_color)
                             .rounded_l(px(3.)),
-                        div().flex_grow().h_full().child(
+                        div().flex_grow().h_full().max_w_full().child(
                             div().size_full().flex().flex_col().p_1().children({
                                 let mut elements = Vec::new();
 
@@ -636,7 +640,7 @@ impl Render for BlockView {
                                         .items_center() // Align all items center
                                         .justify_between() // Space between header and chevron
                                         .cursor_pointer() // Make entire header clickable
-                                        .hover(|s| s.bg(border_color.opacity(0.1))) // Hover effect
+                                        //.hover(|s| s.bg(border_color.opacity(0.1))) // Hover effect
                                         .on_mouse_up(
                                             MouseButton::Left,
                                             cx.listener(move |view, _event, _window, cx| {
@@ -681,6 +685,7 @@ impl Render for BlockView {
                                                 .into_any(),
                                             // Right side: Chevron icon
                                             div()
+                                                .mr_1()
                                                 .flex()
                                                 .items_center()
                                                 .justify_center()
@@ -718,8 +723,35 @@ impl Render for BlockView {
                                 }
 
                                 // Tool output content (only shown when expanded or on error)
+                                // Output (only when expanded)
+                                if !block.is_collapsed && block.output.is_some() {
+                                    elements.push(
+                                        div()
+                                            .id(SharedString::from(block.id.clone()))
+                                            // .flex()
+                                            // .flex_row()
+                                            //.items_center()
+                                            //.flex_1()
+                                            .p_2()
+                                            .mt_1()
+                                            .w_full()
+                                            .max_w_full()
+                                            .min_h_0()
+                                            .max_h(px(300.)) // Max height
+                                            .overflow_scroll()
+                                            //.overflow_hidden()
+                                            // .scrollable(
+                                            //     cx.entity().entity_id(),
+                                            //     ScrollbarAxis::Vertical,
+                                            // ) // Make it scrollable
+                                            .text_color(cx.theme().foreground)
+                                            .text_size(px(13.))
+                                            .child(block.output.clone().unwrap_or_default())
+                                            .into_any(),
+                                    );
+                                }
                                 // Error message (always shown for error status)
-                                if block.status == crate::ui::ToolStatus::Error
+                                else if block.status == crate::ui::ToolStatus::Error
                                     && block.status_message.is_some()
                                 {
                                     elements.push(
@@ -729,41 +761,13 @@ impl Render for BlockView {
                                             .items_center()
                                             .p_2()
                                             .mt_1()
-                                            .rounded_md()
                                             .max_h(px(300.)) // Max height
                                             .scrollable(
                                                 cx.entity().entity_id(),
                                                 ScrollbarAxis::Vertical,
                                             ) // Make it scrollable
-                                            .bg(cx.theme().danger.opacity(0.2))
-                                            .border_l_2()
-                                            .border_color(cx.theme().danger.opacity(0.5))
                                             .text_color(cx.theme().danger.opacity(0.9))
-                                            .text_size(px(14.))
-                                            .child(block.status_message.clone().unwrap_or_default())
-                                            .into_any(),
-                                    );
-                                }
-                                // Success message (only when expanded)
-                                else if !block.is_collapsed && block.status_message.is_some() {
-                                    elements.push(
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .p_2()
-                                            .mt_1()
-                                            .rounded_md()
-                                            .max_h(px(300.)) // Max height
-                                            .scrollable(
-                                                cx.entity().entity_id(),
-                                                ScrollbarAxis::Vertical,
-                                            ) // Make it scrollable
-                                            .bg(cx.theme().success.opacity(0.1))
-                                            .border_l_2()
-                                            .border_color(cx.theme().success.opacity(0.3))
-                                            .text_color(cx.theme().foreground)
-                                            .text_size(px(14.))
+                                            .text_size(px(13.))
                                             .child(block.status_message.clone().unwrap_or_default())
                                             .into_any(),
                                     );
@@ -836,6 +840,7 @@ pub struct ToolUseBlock {
     pub parameters: Vec<ParameterBlock>,
     pub status: ToolStatus,
     pub status_message: Option<String>,
+    pub output: Option<String>,
     pub is_collapsed: bool,
 }
 

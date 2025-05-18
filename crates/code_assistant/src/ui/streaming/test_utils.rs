@@ -104,6 +104,7 @@ impl UserInterface for TestUI {
         _tool_id: &str,
         _status: ToolStatus,
         _message: Option<String>,
+        _output: Option<String>,
     ) -> Result<(), UIError> {
         // Test implementation does nothing with tool status
         Ok(())

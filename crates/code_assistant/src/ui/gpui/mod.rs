@@ -430,11 +430,18 @@ impl Gpui {
                 tool_id,
                 status,
                 message,
+                output,
             } => {
                 let queue = self.message_queue.lock().unwrap();
                 for message_container in queue.iter() {
                     cx.update_entity(&message_container, |message_container, cx| {
-                        message_container.update_tool_status(&tool_id, status, message.clone(), cx);
+                        message_container.update_tool_status(
+                            &tool_id,
+                            status,
+                            message.clone(),
+                            output.clone(),
+                            cx,
+                        );
                     });
                 }
             }
@@ -587,11 +594,18 @@ impl Gpui {
                 tool_id,
                 status,
                 message,
+                output,
             } => {
                 let queue = self.message_queue.lock().unwrap();
                 for message_container in queue.iter() {
                     cx.update_entity(&message_container, |message_container, cx| {
-                        message_container.update_tool_status(&tool_id, status, message.clone(), cx);
+                        message_container.update_tool_status(
+                            &tool_id,
+                            status,
+                            message.clone(),
+                            output.clone(),
+                            cx,
+                        );
                     })
                     .expect("Failed to update entity");
                 }
@@ -742,12 +756,14 @@ impl UserInterface for Gpui {
         tool_id: &str,
         status: ToolStatus,
         message: Option<String>,
+        output: Option<String>,
     ) -> Result<(), UIError> {
         // Push an event to update tool status
         self.push_event(UiEvent::UpdateToolStatus {
             tool_id: tool_id.to_string(),
             status,
             message,
+            output,
         });
 
         Ok(())
