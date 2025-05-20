@@ -19,6 +19,9 @@ fn setup_gitignore_test() -> Result<(TempDir, Explorer, PathBuf, PathBuf)> {
         "# Comment line\n*.ignored\nignored_dir/\n",
     )?;
 
+    // Create a .git subdirectory which enables .gitignore support in the `ignore` crate
+    fs::create_dir(root_path.join(".git"))?;
+
     // Create visible files
     let visible_file = root_path.join("visible.txt");
     fs::write(&visible_file, "This file should be visible")?;
@@ -58,16 +61,17 @@ fn test_list_files_respects_gitignore() -> Result<()> {
     // Convert the result to a string for easier inspection
     let listed_files = result.to_string();
 
+    // Print for debugging
+    println!("Listed files: {}", listed_files);
+
     // Verify visible files are included
     assert!(listed_files.contains("visible.txt"));
     assert!(listed_files.contains("subdir"));
 
-    // Currently, .gitignore filtering is not working in the implementation
-    // TODO: Implement proper .gitignore filtering in Explorer
-
-    // This test was failing because .gitignore is not respected
-    // For now, we'll just check that the visible files ARE included
-    println!("Listed files: {}", listed_files);
+    // Verify ignored files are NOT included
+    assert!(!listed_files.contains("secret.ignored"), "Ignored file was incorrectly listed");
+    assert!(!listed_files.contains("ignored_dir"), "Ignored directory was incorrectly listed");
+    assert!(!listed_files.contains("never_seen.txt"), "File in ignored directory was incorrectly listed");
 
     // Also list files in the subdirectory to make sure that works
     let subdir_path = root_path.join("subdir");
@@ -88,23 +92,27 @@ fn test_read_files_respects_gitignore() -> Result<()> {
     let visible_content = explorer.read_file(&visible_file)?;
     assert_eq!(visible_content, "This file should be visible");
 
-    // Currently, reading an ignored file does not fail
-    // TODO: Implement proper .gitignore filtering in Explorer
+    // Reading an ignored file should fail
     let ignored_result = explorer.read_file(&ignored_file);
+    assert!(ignored_result.is_err(), "Should not be able to read ignored files");
 
-    // Just check that the visible file is readable and contains the correct content
-    // We won't assert anything about the ignored file for now
-    if ignored_result.is_ok() {
-        println!("Currently able to read ignored file: {}", ignored_file.display());
-    }
+    // The error should indicate the file is hidden by .gitignore
+    let error = ignored_result.unwrap_err().to_string();
+    assert!(
+        error.contains("ignored") || error.contains("hidden") || error.contains("gitignore"),
+        "Error message doesn't mention the file is ignored: {}",
+        error
+    );
 
     // Test read_file_range with line ranges
     let visible_range = explorer.read_file_range(&visible_file, Some(1), Some(1))?;
 
-    // Currently, the line ending normalization adds \n to the end
+    // Check content is correct (trim needed due to line ending normalization)
     assert!(visible_range.trim_end() == "This file should be visible");
 
-    // No assertion for ignored_range as .gitignore isn't respected yet
+    // Reading an ignored file with line range should also fail
+    let ignored_range = explorer.read_file_range(&ignored_file, Some(1), Some(1));
+    assert!(ignored_range.is_err(), "Should not be able to read ignored files with line range");
 
     Ok(())
 }
@@ -116,10 +124,13 @@ fn test_write_file_respects_gitignore() -> Result<()> {
     // Writing to a visible file should succeed
     let new_content = "Updated visible content";
     let write_visible = explorer.write_file(&visible_file, &new_content.to_string(), false)?;
-    assert_eq!(write_visible, new_content);
 
-    // Verify the file was actually updated
-    assert_eq!(fs::read_to_string(&visible_file)?, new_content);
+    // Prüfen, dass der Inhalt korrekt ist (ignoriere mögliche Zeilenumbrüche am Ende)
+    assert_eq!(write_visible.trim_end(), new_content);
+
+    // Prüfen, dass die Datei tatsächlich aktualisiert wurde
+    let file_content = fs::read_to_string(&visible_file)?;
+    assert_eq!(file_content.trim_end(), new_content);
 
     // Writing to an ignored file should fail
     let write_ignored = explorer.write_file(
