@@ -7,12 +7,14 @@ use gpui::{
     div, prelude::*, px, App, Context, CursorStyle, Entity, FocusHandle, Focusable, MouseButton,
     MouseUpEvent,
 };
-use gpui_component::{input::TextInput, ActiveTheme};
+use gpui_component::input::InputState;
+use gpui_component::input::TextInput;
+use gpui_component::ActiveTheme;
 use std::sync::{Arc, Mutex};
 
 // Root View - handles overall layout and coordination
 pub struct RootView {
-    pub text_input: Entity<TextInput>,
+    pub text_input: Entity<InputState>,
     memory_view: Entity<MemoryView>,
     messages_view: Entity<MessagesView>,
     recent_keystrokes: Vec<gpui::Keystroke>,
@@ -25,7 +27,7 @@ pub struct RootView {
 
 impl RootView {
     pub fn new(
-        text_input: Entity<TextInput>,
+        text_input: Entity<InputState>,
         memory_view: Entity<MemoryView>,
         messages_view: Entity<MessagesView>,
         cx: &mut Context<Self>,
@@ -73,7 +75,7 @@ impl RootView {
     ) {
         self.recent_keystrokes.clear();
         self.text_input
-            .update(cx, |text_input, cx| text_input.set_text("", window, cx));
+            .update(cx, |text_input, cx| text_input.set_value("", window, cx));
         cx.notify();
     }
 
@@ -84,14 +86,14 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         self.text_input.update(cx, |text_input, cx| {
-            let content = text_input.text().to_string();
+            let content = text_input.value().to_string();
             if !content.is_empty() {
                 // Store input in the shared value
                 let mut input_value = self.input_value.lock().unwrap();
                 *input_value = Some(content);
 
                 // Clear the input field
-                text_input.set_text("", window, cx);
+                text_input.set_value("", window, cx);
             }
         });
         cx.notify();
@@ -237,7 +239,7 @@ impl Render for RootView {
                                     .items_center()
                                     .p_2()
                                     .gap_2()
-                                    .child(div().flex_1().child(self.text_input.clone()))
+                                    .child(div().flex_1().child(TextInput::new(&self.text_input)))
                                     .child(
                                         div()
                                             .size(px(40.))
