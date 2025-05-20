@@ -22,6 +22,8 @@ use crate::ui::gpui::{
 use crate::ui::{async_trait, DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use assets::Assets;
 use gpui::{actions, px, AppContext, Entity, Global, Point};
+use gpui_component::input::InputState;
+use gpui_component::Root;
 pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
@@ -155,10 +157,9 @@ impl Gpui {
                 |window, cx| {
                     // Create TextInput with multi-line support
                     let text_input = cx.new(|cx| {
-                        gpui_component::input::TextInput::new(window, cx)
+                        InputState::new(window, cx)
                             .multi_line()
-                            .rows(1)
-                            .max_rows(8)
+                            .auto_grow(1, 8)
                             .placeholder("Type your message...")
                     });
 
@@ -178,7 +179,7 @@ impl Gpui {
                     });
 
                     // Wrap in Root component
-                    cx.new(|cx| gpui_component::Root::new(root_view.into(), window, cx))
+                    cx.new(|cx| Root::new(root_view.into(), window, cx))
                 },
             );
 
