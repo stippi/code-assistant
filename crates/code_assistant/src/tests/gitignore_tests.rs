@@ -69,9 +69,18 @@ fn test_list_files_respects_gitignore() -> Result<()> {
     assert!(listed_files.contains("subdir"));
 
     // Verify ignored files are NOT included
-    assert!(!listed_files.contains("secret.ignored"), "Ignored file was incorrectly listed");
-    assert!(!listed_files.contains("ignored_dir"), "Ignored directory was incorrectly listed");
-    assert!(!listed_files.contains("never_seen.txt"), "File in ignored directory was incorrectly listed");
+    assert!(
+        !listed_files.contains("secret.ignored"),
+        "Ignored file was incorrectly listed"
+    );
+    assert!(
+        !listed_files.contains("ignored_dir"),
+        "Ignored directory was incorrectly listed"
+    );
+    assert!(
+        !listed_files.contains("never_seen.txt"),
+        "File in ignored directory was incorrectly listed"
+    );
 
     // Also list files in the subdirectory to make sure that works
     let subdir_path = root_path.join("subdir");
@@ -94,7 +103,10 @@ fn test_read_files_respects_gitignore() -> Result<()> {
 
     // Reading an ignored file should fail
     let ignored_result = explorer.read_file(&ignored_file);
-    assert!(ignored_result.is_err(), "Should not be able to read ignored files");
+    assert!(
+        ignored_result.is_err(),
+        "Should not be able to read ignored files"
+    );
 
     // The error should indicate the file is hidden by .gitignore
     let error = ignored_result.unwrap_err().to_string();
@@ -112,7 +124,10 @@ fn test_read_files_respects_gitignore() -> Result<()> {
 
     // Reading an ignored file with line range should also fail
     let ignored_range = explorer.read_file_range(&ignored_file, Some(1), Some(1));
-    assert!(ignored_range.is_err(), "Should not be able to read ignored files with line range");
+    assert!(
+        ignored_range.is_err(),
+        "Should not be able to read ignored files with line range"
+    );
 
     Ok(())
 }
