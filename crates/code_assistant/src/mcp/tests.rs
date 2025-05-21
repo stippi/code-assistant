@@ -152,12 +152,8 @@ async fn test_tools_list() {
 // This test creates a temporary project and tests the read_files tool
 #[tokio::test]
 async fn test_read_files_tool() -> Result<()> {
-    println!("setup_test_environment()");
-
     // Setup-Umgebung mit temporären Dateien und MessageHandler
     let (_temp_dir, writer_messages, mut handler) = setup_test_environment().await?;
-
-    println!("setup_test_environment() - done");
 
     // read_files-Tool aufrufen, um eine Datei zu lesen
     let tool_call_message = r#"{
@@ -173,17 +169,11 @@ async fn test_read_files_tool() -> Result<()> {
         }
     }"#;
 
-    println!("calling handle_message()");
-
     handler.handle_message(tool_call_message).await?;
-
-    println!("calling handle_message() - done");
 
     // Antwort überprüfen
     let messages = writer_messages.lock().await;
     assert_eq!(messages.len(), 1);
-
-    println!("retrieved messages");
 
     // Antwort analysieren
     let response: serde_json::Value = serde_json::from_str(&messages[0])?;
@@ -198,7 +188,8 @@ async fn test_read_files_tool() -> Result<()> {
     assert!(content.contains("Dies ist die Hauptdatei"));
     assert!(content.contains("Sie enthält wichtige Informationen"));
 
-    // Test mit einer nicht existierenden Datei für Fehlerbehandlung
+    // Testen der Fehlerbehandlung mit nicht existierender Datei
+
     let invalid_tool_call = r#"{
         "jsonrpc": "2.0",
         "method": "tools/call",
@@ -212,28 +203,28 @@ async fn test_read_files_tool() -> Result<()> {
         }
     }"#;
 
-    println!("calling handle_message() with non-existing path");
+    // Release lock on messages, otherwise handle_message would block
+    drop(messages);
 
     handler.handle_message(invalid_tool_call).await?;
 
-    println!("calling handle_message() with non-existing path - done");
-
     // Fehlerantwort überprüfen
     let messages = writer_messages.lock().await;
-    assert_eq!(messages.len(), 2);
 
-    println!("retrieved messages");
+    assert_eq!(
+        messages.len(),
+        2,
+        "Es sollten 2 Antworten im writer_messages sein"
+    );
 
     let error_response: serde_json::Value = serde_json::from_str(&messages[1])?;
 
     // Die Antwort sollte einen Fehler anzeigen
     assert!(error_response["result"]["isError"].as_bool().unwrap());
-    assert!(error_response["result"]["content"][0]["text"]
+    let error_text = error_response["result"]["content"][0]["text"]
         .as_str()
-        .unwrap()
-        .contains("Error"));
-
-    println!("asserts done");
+        .unwrap();
+    assert!(error_text.contains("Failed to load 'nonexistent.txt' in project 'test-project'"));
 
     Ok(())
 }
