@@ -284,7 +284,7 @@ mod tests {
             project_manager: &MockProjectManager::default().with_project(
                 "test-project",
                 PathBuf::from("./root"),
-                explorer,
+                Box::new(explorer),
             ),
             command_executor: &crate::utils::DefaultCommandExecutor,
             working_memory: Some(&mut working_memory),

@@ -337,6 +337,15 @@ impl Explorer {
 }
 
 impl CodeExplorer for Explorer {
+    fn clone_box(&self) -> Box<dyn CodeExplorer> {
+        Box::new(Explorer {
+            root_dir: self.root_dir.clone(),
+            expanded_paths: self.expanded_paths.clone(),
+            file_encodings: self.file_encodings.clone(),
+            file_formats: self.file_formats.clone(),
+        })
+    }
+
     fn root_dir(&self) -> PathBuf {
         self.root_dir.clone()
     }

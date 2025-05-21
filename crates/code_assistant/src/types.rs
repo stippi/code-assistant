@@ -232,4 +232,7 @@ pub trait CodeExplorer: Send + Sync {
     fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String>;
     /// Search for text in files with advanced options
     fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>>;
+    /// Create a cloned box of this explorer
+    #[allow(dead_code)]
+    fn clone_box(&self) -> Box<dyn CodeExplorer>;
 }

@@ -267,6 +267,12 @@ impl MockExplorer {
 }
 
 impl CodeExplorer for MockExplorer {
+    fn clone_box(&self) -> Box<dyn CodeExplorer> {
+        let files = self.files.lock().unwrap().clone();
+        let file_tree = self.file_tree.lock().unwrap().clone();
+        Box::new(MockExplorer::new(files, file_tree))
+    }
+
     fn root_dir(&self) -> PathBuf {
         PathBuf::from("./root")
     }
@@ -692,7 +698,7 @@ pub fn create_explorer_mock() -> MockExplorer {
 
 #[derive(Default)]
 pub struct MockProjectManager {
-    explorers: HashMap<String, MockExplorer>,
+    explorers: HashMap<String, Box<dyn CodeExplorer>>,
     projects: HashMap<String, Project>,
 }
 
@@ -703,11 +709,20 @@ impl MockProjectManager {
             projects: HashMap::new(),
         };
         // Add default project
-        empty.with_project("test", PathBuf::from("./root"), create_explorer_mock())
+        empty.with_project(
+            "test",
+            PathBuf::from("./root"),
+            Box::new(create_explorer_mock()),
+        )
     }
 
     // Helper to add a custom project and explorer
-    pub fn with_project(mut self, name: &str, path: PathBuf, explorer: MockExplorer) -> Self {
+    pub fn with_project(
+        mut self,
+        name: &str,
+        path: PathBuf,
+        explorer: Box<dyn CodeExplorer>,
+    ) -> Self {
         self.projects.insert(name.to_string(), Project { path });
         self.explorers.insert(name.to_string(), explorer);
         self
@@ -725,7 +740,7 @@ impl ProjectManager for MockProjectManager {
 
         // Add a default explorer for it
         self.explorers
-            .insert(project_name.clone(), create_explorer_mock());
+            .insert(project_name.clone(), Box::new(create_explorer_mock()));
 
         Ok(project_name)
     }
@@ -740,7 +755,7 @@ impl ProjectManager for MockProjectManager {
 
     fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn CodeExplorer>> {
         match self.explorers.get(name) {
-            Some(explorer) => Ok(Box::new(explorer.clone())),
+            Some(explorer) => Ok(explorer.clone_box()),
             None => Err(anyhow::anyhow!("Project {} not found", name)),
         }
     }
