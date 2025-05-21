@@ -124,6 +124,57 @@ impl Explorer {
         }
     }
 
+    /// Checks if a file or directory should be ignored based on .gitignore rules
+    ///
+    /// # Arguments
+    /// * `path` - Path to check against .gitignore rules
+    ///
+    /// # Returns
+    /// * `true` if the path should be ignored, `false` otherwise
+    fn is_ignored(&self, path: &Path) -> bool {
+        // Simple check: if the path doesn't exist, it can't be ignored
+        if !path.exists() {
+            return false;
+        }
+
+        // Use the ignore crate's specialized matcher to check for ignores
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(&self.root_dir);
+
+        // Try to add the .gitignore file
+        let gitignore_path = self.root_dir.join(".gitignore");
+        if gitignore_path.exists() {
+            match builder.add(gitignore_path) {
+                Some(err) => {
+                    debug!("Error loading .gitignore: {:?}", err);
+                    return false;
+                }
+                None => {} // Successfully added
+            }
+        } else {
+            return false; // No .gitignore file, nothing is ignored
+        }
+
+        // Build the gitignore matcher
+        let gitignore = match builder.build() {
+            Ok(matcher) => matcher,
+            Err(err) => {
+                debug!("Error building gitignore matcher: {:?}", err);
+                return false;
+            }
+        };
+
+        // Get the relative path from the project root
+        let rel_path = match path.strip_prefix(&self.root_dir) {
+            Ok(p) => p,
+            Err(_) => return false, // Path is outside project root
+        };
+
+        // Check if the path matches any ignore pattern
+        gitignore
+            .matched_path_or_any_parents(rel_path, false)
+            .is_ignore()
+    }
+
     fn expand_directory(
         &mut self,
         path: &Path,
@@ -222,6 +273,14 @@ impl Explorer {
             return self.read_file(path);
         }
 
+        // Check if file is ignored by .gitignore
+        if self.is_ignored(path) {
+            return Err(anyhow::anyhow!(
+                "Access to files ignored by .gitignore not allowed: {}",
+                path.display()
+            ));
+        }
+
         // Check if the file is a text file
         if !crate::utils::encoding::is_text_file(path) {
             return Err(anyhow::anyhow!("Not a text file: {}", path.display()));
@@ -302,7 +361,16 @@ impl CodeExplorer for Explorer {
 
     fn read_file(&self, path: &PathBuf) -> Result<String> {
         debug!("Reading entire file: {}", path.display());
-        // Prüfe, ob die Datei ein Textfile ist
+
+        // Check if file is ignored by .gitignore
+        if self.is_ignored(path) {
+            return Err(anyhow::anyhow!(
+                "Access to files ignored by .gitignore not allowed: {}",
+                path.display()
+            ));
+        }
+
+        // Check if file is a text file
         if !crate::utils::encoding::is_text_file(path) {
             return Err(anyhow::anyhow!("Not a text file: {}", path.display()));
         }
@@ -345,6 +413,15 @@ impl CodeExplorer for Explorer {
 
     fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<String> {
         debug!("Writing file: {}, append: {}", path.display(), append);
+
+        // Check if file is ignored by .gitignore
+        if self.is_ignored(path) {
+            return Err(anyhow::anyhow!(
+                "Cannot write to file that is ignored by .gitignore: {}",
+                path.display()
+            ));
+        }
+
         // Ensure the parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
