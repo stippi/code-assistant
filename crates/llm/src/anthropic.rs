@@ -1,6 +1,6 @@
 use crate::{
-    recording::APIRecorder, types::*, utils, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler,
-    StreamingCallback, StreamingChunk,
+    recording::APIRecorder, types::*, utils, ApiError, ApiErrorContext, LLMProvider,
+    RateLimitHandler, StreamingCallback, StreamingChunk,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -473,7 +473,8 @@ impl AnthropicClient {
                                 "overloaded_error" => Err(ApiErrorContext {
                                     error: ApiError::Overloaded(error_msg),
                                     rate_limits: Some(AnthropicRateLimitInfo::default()),
-                                }.into()),
+                                }
+                                .into()),
                                 _ => Err(anyhow::anyhow!("Stream error: {}", error_msg)),
                             };
                         }
