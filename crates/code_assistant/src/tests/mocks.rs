@@ -264,13 +264,24 @@ impl MockExplorer {
             file_tree: Arc::new(Mutex::new(file_tree)),
         }
     }
+
+    #[allow(dead_code)]
+    pub fn print_files(&self) {
+        let files = self.files.lock().unwrap();
+        println!("\nMock files contents:");
+        for (path, contents) in files.iter() {
+            println!("- {}:", path.display());
+            println!("{}", contents);
+        }
+    }
 }
 
 impl CodeExplorer for MockExplorer {
     fn clone_box(&self) -> Box<dyn CodeExplorer> {
-        let files = self.files.lock().unwrap().clone();
-        let file_tree = self.file_tree.lock().unwrap().clone();
-        Box::new(MockExplorer::new(files, file_tree))
+        Box::new(MockExplorer {
+            files: self.files.clone(),
+            file_tree: self.file_tree.clone(),
+        })
     }
 
     fn root_dir(&self) -> PathBuf {
