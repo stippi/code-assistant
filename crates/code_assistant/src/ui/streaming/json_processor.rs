@@ -272,10 +272,22 @@ impl JsonStreamProcessor {
                         }
 
                         // Find the end of this parameter value
-                        let (value_content, new_pos) = if self.state.in_quotes {
-                            self.extract_quoted_content(remaining)?
+                        println!("DEBUG: in_quotes={}, remaining='{}'", self.state.in_quotes, remaining);
+                        let (value_content, new_pos, is_value_complete) = if self.state.in_quotes {
+                            let (content, consumed) = self.extract_quoted_content(remaining)?;
+                            // extract_quoted_content returns pos+1 when it finds a closing quote
+                            // So if we consumed less than the full remaining text, we found the quote
+                            let complete = consumed > 0 && consumed <= remaining.len() &&
+                                          consumed > content.len(); // We consumed more than just the content
+                            println!("DEBUG: quoted - content='{}', consumed={}, remaining_len={}, complete={}",
+                                   content, consumed, remaining.len(), complete);
+                            (content, consumed, complete)
                         } else {
-                            self.extract_simple_value_content(remaining)
+                            let (content, consumed) = self.extract_simple_value_content(remaining);
+                            // For unquoted values, check for structural delimiters
+                            let complete = self.value_is_complete(remaining, consumed);
+                            println!("DEBUG: unquoted - content='{}', consumed={}, complete={}", content, consumed, complete);
+                            (content, consumed, complete)
                         };
 
                         if !value_content.is_empty() {
@@ -291,11 +303,15 @@ impl JsonStreamProcessor {
                         pos += new_pos;
 
                         // Check if we've reached the end of the value
-                        if new_pos < remaining.len() || self.value_is_complete(remaining, new_pos) {
+                        if is_value_complete {
                             println!("DEBUG: Parameter '{}' completed, going back to InObject", self.state.current_param);
                             self.state.state = JsonParseState::InObject;
                             self.state.parameter_started = false;
-                        } else {
+                            // Skip the closing quote for quoted strings
+                            if self.state.in_quotes && pos < chars.len() && chars[pos] == '"' {
+                                pos += 1;
+                            }
+                        } else if new_pos >= remaining.len() {
                             // More content expected, buffer any incomplete part
                             break;
                         }

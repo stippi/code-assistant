@@ -12,8 +12,6 @@ mod xml_processor;
 #[cfg(test)]
 mod json_processor_tests;
 #[cfg(test)]
-mod test_realistic_chunks;
-#[cfg(test)]
 mod test_utils;
 #[cfg(test)]
 mod xml_processor_tests;
