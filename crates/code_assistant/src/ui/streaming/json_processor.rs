@@ -188,6 +188,7 @@ impl JsonStreamProcessor {
                     if let Some(quote_pos) = self.find_next_structural_quote(&text[pos..]) {
                         // Extract parameter name
                         self.state.current_param = text[pos..pos + quote_pos].to_string();
+                        println!("DEBUG: Found parameter name: '{}'", self.state.current_param);
                         pos += quote_pos + 1;
                         self.state.state = JsonParseState::AfterParamName;
                     } else {
@@ -235,8 +236,16 @@ impl JsonStreamProcessor {
                             self.state.nesting_level = 1;
                             self.state.in_quotes = false;
                             self.state.parameter_started = false;
+
+                            // Emit parameter start with the opening brace/bracket
+                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                                name: self.state.current_param.clone(),
+                                value: chars[pos].to_string(),
+                                tool_id: self.state.tool_id.clone(),
+                            })?;
+                            self.state.parameter_started = true;
+
                             pos += 1; // Skip opening brace/bracket
-                                      // Don't emit here, wait for actual content
                         }
                         _ => {
                             // Simple value (number, boolean, null)
@@ -271,6 +280,7 @@ impl JsonStreamProcessor {
 
                         if !value_content.is_empty() {
                             // Emit the value content
+                            println!("DEBUG: Emitting simple param '{}' with value: '{}'", self.state.current_param, value_content);
                             self.ui.display_fragment(&DisplayFragment::ToolParameter {
                                 name: self.state.current_param.clone(),
                                 value: value_content,
@@ -282,6 +292,7 @@ impl JsonStreamProcessor {
 
                         // Check if we've reached the end of the value
                         if new_pos < remaining.len() || self.value_is_complete(remaining, new_pos) {
+                            println!("DEBUG: Parameter '{}' completed, going back to InObject", self.state.current_param);
                             self.state.state = JsonParseState::InObject;
                             self.state.parameter_started = false;
                         } else {
@@ -313,6 +324,7 @@ impl JsonStreamProcessor {
 
                         if !value_content.is_empty() {
                             // Emit the value content
+                            println!("DEBUG: Emitting complex param '{}' with value: '{}'", self.state.current_param, value_content);
                             self.ui.display_fragment(&DisplayFragment::ToolParameter {
                                 name: self.state.current_param.clone(),
                                 value: value_content,
@@ -325,6 +337,7 @@ impl JsonStreamProcessor {
 
                         // Check if we've reached the end of the complex value
                         if self.state.nesting_level == 0 {
+                            println!("DEBUG: Complex parameter '{}' completed, going back to InObject", self.state.current_param);
                             self.state.state = JsonParseState::InObject;
                             self.state.parameter_started = false;
                         } else if new_pos >= remaining.len() {
@@ -366,14 +379,43 @@ impl JsonStreamProcessor {
             match c {
                 '\\' if !escaped => {
                     escaped = true;
-                    content.push(c);
+                    // Don't add the backslash to content, it's just the escape char
                 }
                 '"' if !escaped => {
                     // End of quoted string
                     return Ok((content, pos + 1));
                 }
-                _ => {
+                '"' if escaped => {
+                    // Escaped quote becomes literal quote
+                    content.push(c);
                     escaped = false;
+                }
+                'n' if escaped => {
+                    // Escaped newline
+                    content.push('\n');
+                    escaped = false;
+                }
+                't' if escaped => {
+                    // Escaped tab
+                    content.push('\t');
+                    escaped = false;
+                }
+                'r' if escaped => {
+                    // Escaped carriage return
+                    content.push('\r');
+                    escaped = false;
+                }
+                '\\' if escaped => {
+                    // Escaped backslash
+                    content.push('\\');
+                    escaped = false;
+                }
+                _ => {
+                    if escaped {
+                        // Unknown escape sequence, keep the backslash
+                        content.push('\\');
+                        escaped = false;
+                    }
                     content.push(c);
                 }
             }
