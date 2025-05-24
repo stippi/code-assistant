@@ -2,16 +2,16 @@ use super::resources::ResourceManager;
 use super::types::*;
 use crate::config::{DefaultProjectManager, ProjectManager};
 use crate::tools::core::ToolRegistry;
-use crate::utils::{CommandExecutor, DefaultCommandExecutor};
+use crate::utils::{CommandExecutor, DefaultCommandExecutor, MessageWriter, StdoutWriter};
 use anyhow::Result;
-use tokio::io::{AsyncWriteExt, Stdout};
+use tokio::io::Stdout;
 use tracing::{debug, error, trace};
 
 pub struct MessageHandler {
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     resources: ResourceManager,
-    stdout: Stdout,
+    message_writer: Box<dyn MessageWriter>,
 }
 
 impl MessageHandler {
@@ -20,8 +20,22 @@ impl MessageHandler {
             project_manager: Box::new(DefaultProjectManager::new()),
             command_executor: Box::new(DefaultCommandExecutor),
             resources: ResourceManager::new(),
-            stdout,
+            message_writer: Box::new(StdoutWriter::new(stdout)),
         })
+    }
+
+    #[cfg(test)]
+    pub fn with_dependencies(
+        project_manager: Box<dyn ProjectManager>,
+        command_executor: Box<dyn CommandExecutor>,
+        message_writer: Box<dyn MessageWriter>,
+    ) -> Self {
+        Self {
+            project_manager,
+            command_executor,
+            resources: ResourceManager::new(),
+            message_writer,
+        }
     }
 
     /// Sends a JSON-RPC response
@@ -67,10 +81,7 @@ impl MessageHandler {
             debug!("Sending message: {}", message_str);
         }
 
-        self.stdout.write_all(message_str.as_bytes()).await?;
-        self.stdout.write_all(b"\n").await?;
-        self.stdout.flush().await?;
-        Ok(())
+        self.message_writer.write_message(&message_str).await
     }
 
     /// Sends a notification

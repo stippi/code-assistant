@@ -174,7 +174,7 @@ async fn create_llm_client(
         LLMProviderType::Anthropic => {
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .context("ANTHROPIC_API_KEY environment variable not set")?;
-            let model_name = model.unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string());
+            let model_name = model.unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
             let base_url = base_url.unwrap_or(AnthropicClient::default_base_url());
 
             if let Some(path) = record_path {

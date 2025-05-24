@@ -113,6 +113,9 @@ pub enum ApiError {
     #[error("Service error: {0}")]
     ServiceError(String),
 
+    #[error("Service overloaded: {0}")]
+    Overloaded(String),
+
     #[error("Network error: {0}")]
     NetworkError(String),
 

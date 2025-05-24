@@ -209,7 +209,7 @@ mod tests {
         let mock_project_manager = MockProjectManager::default().with_project(
             "test-project",
             PathBuf::from("./root"),
-            test_explorer,
+            Box::new(test_explorer),
         );
 
         // Create tool context with both project manager and command executor
@@ -251,7 +251,7 @@ mod tests {
         let mock_project_manager = MockProjectManager::default().with_project(
             "test-project",
             PathBuf::from("./root"),
-            test_explorer,
+            Box::new(test_explorer),
         );
 
         // Create test command executor that returns failure

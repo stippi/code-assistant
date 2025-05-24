@@ -211,3 +211,176 @@ pub struct PromptArgument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_request_deserialization_string_id_with_params() {
+        // Request mit String-ID und Parametern
+        let json_str = r#"{
+            "jsonrpc": "2.0",
+            "id": "test-id-1",
+            "method": "test_method",
+            "params": {"key": "value"}
+        }"#;
+
+        let message: JSONRPCMessage = serde_json::from_str(json_str).unwrap();
+
+        match message {
+            JSONRPCMessage::Request {
+                jsonrpc,
+                id,
+                method,
+                params,
+            } => {
+                assert_eq!(jsonrpc, "2.0");
+                assert!(matches!(id, RequestId::String(s) if s == "test-id-1"));
+                assert_eq!(method, "test_method");
+                assert!(params.is_some());
+                if let Some(p) = params {
+                    assert_eq!(p["key"], "value");
+                }
+            }
+            _ => panic!("Deserialized to wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_deserialization_string_id_without_params() {
+        // Request mit String-ID aber ohne Parameter
+        let json_str = r#"{
+            "jsonrpc": "2.0",
+            "id": "test-id-2",
+            "method": "test_method"
+        }"#;
+
+        let message: JSONRPCMessage = serde_json::from_str(json_str).unwrap();
+
+        match message {
+            JSONRPCMessage::Request {
+                jsonrpc,
+                id,
+                method,
+                params,
+            } => {
+                assert_eq!(jsonrpc, "2.0");
+                assert!(matches!(id, RequestId::String(s) if s == "test-id-2"));
+                assert_eq!(method, "test_method");
+                assert!(params.is_none());
+            }
+            _ => panic!("Deserialized to wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_deserialization_number_id_with_params() {
+        // Request mit Number-ID und Parametern
+        let json_str = r#"{
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "test_method",
+            "params": {"key": "value"}
+        }"#;
+
+        let message: JSONRPCMessage = serde_json::from_str(json_str).unwrap();
+
+        match message {
+            JSONRPCMessage::Request {
+                jsonrpc,
+                id,
+                method,
+                params,
+            } => {
+                assert_eq!(jsonrpc, "2.0");
+                assert!(matches!(id, RequestId::Number(n) if n == 42));
+                assert_eq!(method, "test_method");
+                assert!(params.is_some());
+                if let Some(p) = params {
+                    assert_eq!(p["key"], "value");
+                }
+            }
+            _ => panic!("Deserialized to wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_deserialization_number_id_without_params() {
+        // Request mit Number-ID aber ohne Parameter
+        let json_str = r#"{
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "test_method"
+        }"#;
+
+        let message: JSONRPCMessage = serde_json::from_str(json_str).unwrap();
+
+        match message {
+            JSONRPCMessage::Request {
+                jsonrpc,
+                id,
+                method,
+                params,
+            } => {
+                assert_eq!(jsonrpc, "2.0");
+                assert!(matches!(id, RequestId::Number(n) if n == 42));
+                assert_eq!(method, "test_method");
+                assert!(params.is_none());
+            }
+            _ => panic!("Deserialized to wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_notification_deserialization_with_params() {
+        // Notification mit Parametern
+        let json_str = r#"{
+            "jsonrpc": "2.0",
+            "method": "notification_method",
+            "params": {"event": "something_happened"}
+        }"#;
+
+        let message: JSONRPCMessage = serde_json::from_str(json_str).unwrap();
+
+        match message {
+            JSONRPCMessage::Notification {
+                jsonrpc,
+                method,
+                params,
+            } => {
+                assert_eq!(jsonrpc, "2.0");
+                assert_eq!(method, "notification_method");
+                assert!(params.is_some());
+                if let Some(p) = params {
+                    assert_eq!(p["event"], "something_happened");
+                }
+            }
+            _ => panic!("Deserialized to wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_notification_deserialization_without_params() {
+        // Notification ohne Parameter
+        let json_str = r#"{
+            "jsonrpc": "2.0",
+            "method": "notification_method"
+        }"#;
+
+        let message: JSONRPCMessage = serde_json::from_str(json_str).unwrap();
+
+        match message {
+            JSONRPCMessage::Notification {
+                jsonrpc,
+                method,
+                params,
+            } => {
+                assert_eq!(jsonrpc, "2.0");
+                assert_eq!(method, "notification_method");
+                assert!(params.is_none());
+            }
+            _ => panic!("Deserialized to wrong variant"),
+        }
+    }
+}

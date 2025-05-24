@@ -54,7 +54,7 @@ async fn test_read_files_tool() -> Result<()> {
     let project_manager = MockProjectManager::default().with_project(
         "test-project",
         PathBuf::from("./root"),
-        explorer,
+        Box::new(explorer),
     );
 
     // Create a default mock command executor
@@ -168,7 +168,7 @@ async fn test_write_file_tool() -> Result<()> {
     let project_manager = MockProjectManager::default().with_project(
         "test-project",
         PathBuf::from("./root"),
-        explorer,
+        Box::new(explorer),
     );
 
     // Create a default mock command executor
@@ -301,7 +301,7 @@ async fn test_replace_in_file_tool() -> Result<()> {
     let project_manager = MockProjectManager::default().with_project(
         "test-project",
         PathBuf::from("./root"),
-        explorer,
+        Box::new(explorer),
     );
 
     // Create a default mock command executor
@@ -419,7 +419,7 @@ async fn test_execute_command_tool() -> Result<()> {
     let project_manager = MockProjectManager::default().with_project(
         "test-project",
         PathBuf::from("./root"),
-        explorer,
+        Box::new(explorer),
     );
 
     // Create a mock command executor with successful command execution
@@ -547,7 +547,7 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
     let project_manager = MockProjectManager::default().with_project(
         "test-project",
         PathBuf::from("./root"),
-        explorer,
+        Box::new(explorer),
     );
 
     // Create a default mock command executor

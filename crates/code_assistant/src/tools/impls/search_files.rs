@@ -234,7 +234,7 @@ mod tests {
         let project_manager = Box::new(MockProjectManager::default().with_project(
             "test-project",
             PathBuf::from("./root"),
-            explorer,
+            Box::new(explorer),
         ));
 
         // Create a command executor

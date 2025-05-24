@@ -1,6 +1,6 @@
 use crate::{
-    recording::APIRecorder, types::*, utils, ApiError, LLMProvider, RateLimitHandler,
-    StreamingCallback, StreamingChunk,
+    recording::APIRecorder, types::*, utils, ApiError, ApiErrorContext, LLMProvider,
+    RateLimitHandler, StreamingCallback, StreamingChunk,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -27,7 +27,7 @@ struct AnthropicErrorPayload {
 }
 
 /// Rate limit information extracted from response headers
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct AnthropicRateLimitInfo {
     requests_limit: Option<u32>,
     requests_remaining: Option<u32>,
@@ -214,9 +214,17 @@ struct StreamEventCommon {
 }
 
 #[derive(Debug, Deserialize)]
+struct StreamErrorDetails {
+    #[serde(rename = "type")]
+    error_type: String,
+    message: String,
+    #[allow(dead_code)]
+    details: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum StreamEvent {
-    #[allow(dead_code)]
     #[serde(rename = "message_start")]
     MessageStart { message: MessageStart },
     #[serde(rename = "content_block_start")]
@@ -242,6 +250,8 @@ enum StreamEvent {
     MessageStop,
     #[serde(rename = "ping")]
     Ping,
+    #[serde(rename = "error")]
+    Error { error: StreamErrorDetails },
 }
 
 #[derive(Debug, Deserialize)]
@@ -456,6 +466,19 @@ impl AnthropicClient {
                         recorder.record_chunk(data)?;
                     }
                     if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
+                        // Handle error events immediately
+                        if let StreamEvent::Error { error } = &event {
+                            let error_msg = format!("{}: {}", error.error_type, error.message);
+                            return match error.error_type.as_str() {
+                                "overloaded_error" => Err(ApiErrorContext {
+                                    error: ApiError::Overloaded(error_msg),
+                                    rate_limits: Some(AnthropicRateLimitInfo::default()),
+                                }
+                                .into()),
+                                _ => Err(anyhow::anyhow!("Stream error: {}", error_msg)),
+                            };
+                        }
+
                         // Extract and check index for relevant events
                         match &event {
                             StreamEvent::ContentBlockStart { common, .. } => {

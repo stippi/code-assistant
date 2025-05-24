@@ -220,7 +220,7 @@ mod tests {
         let project_manager = MockProjectManager::default().with_project(
             "test-project",
             PathBuf::from("./root"),
-            explorer,
+            Box::new(explorer),
         );
 
         // Create a command executor
@@ -298,7 +298,7 @@ mod tests {
         let project_manager = MockProjectManager::default().with_project(
             "test-project",
             PathBuf::from("./root"),
-            explorer,
+            Box::new(explorer),
         );
 
         // Create a command executor
