@@ -23,6 +23,7 @@ pub enum UiEvent {
         tool_id: String,
         status: ToolStatus,
         message: Option<String>,
+        output: Option<String>,
     },
     /// End a tool invocation
     EndTool { id: String },

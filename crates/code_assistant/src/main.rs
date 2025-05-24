@@ -378,8 +378,7 @@ fn run_agent_gpui(
                 agent.start_with_task(task_str).await.unwrap();
             } else {
                 // In GUI mode with no task, prompt the user for a task
-                let task_prompt = "Please enter the task you want me to perform:";
-                let task_from_ui = agent.get_input_from_ui(task_prompt).await.unwrap();
+                let task_from_ui = agent.get_input_from_ui().await.unwrap();
                 agent.start_with_task(task_from_ui).await.unwrap();
             }
         });

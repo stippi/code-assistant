@@ -74,7 +74,7 @@ impl UserInterface for TestUI {
         Ok(())
     }
 
-    async fn get_input(&self, _prompt: &str) -> Result<String, UIError> {
+    async fn get_input(&self) -> Result<String, UIError> {
         Ok(String::new())
     }
 
@@ -104,6 +104,7 @@ impl UserInterface for TestUI {
         _tool_id: &str,
         _status: ToolStatus,
         _message: Option<String>,
+        _output: Option<String>,
     ) -> Result<(), UIError> {
         // Test implementation does nothing with tool status
         Ok(())
