@@ -17,6 +17,7 @@ impl ParameterRenderer for DiffParameterRenderer {
         param_value: &str,
         theme: &gpui_component::theme::Theme,
     ) -> gpui::AnyElement {
+        //println!("param_value: '{}'", param_value);
         // Container for the diff content - no parameter name shown
         div()
             .rounded_md()

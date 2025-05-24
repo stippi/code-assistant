@@ -552,53 +552,21 @@ impl Render for BlockView {
                 let chevron_color = cx.theme().muted_foreground;
 
                 // Parameter rendering function that uses the global registry if available
-                let render_parameter =
-                    |param: &ParameterBlock| {
-                        // Try to get the global registry
-                        if let Some(registry) = ParameterRendererRegistry::global() {
-                            // Use the registry to render the parameter with theme
-                            registry.render_parameter(
-                                &block.name,
-                                &param.name,
-                                &param.value,
-                                &cx.theme(),
-                            )
-                        } else {
-                            // Fallback to default rendering if no registry is available
-                            div()
-                                .rounded_md()
-                                .px_2()
-                                .py_1()
-                                .mr_1()
-                                .mb_1() // Add margin to allow wrapping
-                                .text_size(px(16.))
-                                .bg(crate::ui::gpui::theme::colors::tool_parameter_bg(
-                                    &cx.theme(),
-                                ))
-                                .child(div().flex().flex_row().items_center().gap_1().children(
-                                    vec![
-                                    div()
-                                        .font_weight(FontWeight(500.0))
-                                        .text_color(
-                                            crate::ui::gpui::theme::colors::tool_parameter_label(
-                                                &cx.theme(),
-                                            ),
-                                        )
-                                        .child(format!("{}:", param.name))
-                                        .into_any(),
-                                    div()
-                                        .text_color(
-                                            crate::ui::gpui::theme::colors::tool_parameter_value(
-                                                &cx.theme(),
-                                            ),
-                                        )
-                                        .child(param.value.clone())
-                                        .into_any(),
-                                ],
-                                ))
-                                .into_any_element()
-                        }
-                    };
+                let render_parameter = |param: &ParameterBlock| {
+                    // Try to get the global registry
+                    if let Some(registry) = ParameterRendererRegistry::global() {
+                        // Use the registry to render the parameter with theme
+                        registry.render_parameter(
+                            &block.name,
+                            &param.name,
+                            &param.value,
+                            &cx.theme(),
+                        )
+                    } else {
+                        // Fallback to empty element
+                        div().into_any_element()
+                    }
+                };
 
                 // Separate parameters into regular and full-width
                 let registry = ParameterRendererRegistry::global();
