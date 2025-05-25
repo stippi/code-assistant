@@ -1,10 +1,7 @@
 use super::{DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
 use crate::types::WorkingMemory;
 use async_trait::async_trait;
-use crossterm::{
-    style::{self, Color, Stylize},
-    terminal::{self},
-};
+use crossterm::style::{self, Color, Stylize};
 use rustyline::{error::ReadlineError, history::DefaultHistory, Config, Editor};
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
@@ -54,61 +51,6 @@ impl TerminalUI {
         Ok(())
     }
 
-    // Create a frame around content
-    fn frame_content(&self, content: &str, title: Option<&str>, color: Color) -> String {
-        // Get terminal width
-        let (width, _) = terminal::size().unwrap_or((80, 24));
-        let frame_width = (width as usize).min(100); // Cap at 100 columns
-
-        // Use the specified color
-        let border_color = color;
-
-        // Split content into lines
-        let lines: Vec<&str> = content.lines().collect();
-
-        // Build the frame
-        let mut result = String::new();
-
-        // Top border with optional title
-        result.push_str(&format!("{}╭", "─".repeat(2).with(border_color)));
-
-        if let Some(t) = title {
-            result.push_str(&format!(
-                "{}─{}",
-                "─".to_string().with(border_color),
-                format!(" {} ", t).bold().with(border_color)
-            ));
-            let remaining = frame_width.saturating_sub(t.len() + 6);
-            result.push_str(&format!("{}", "─".repeat(remaining).with(border_color)));
-        } else {
-            result.push_str(&format!(
-                "{}",
-                "─".repeat(frame_width - 3).with(border_color)
-            ));
-        }
-
-        result.push_str(&format!("{}╮\n", "─".to_string().with(border_color)));
-
-        // Content lines
-        for line in lines {
-            result.push_str(&format!(
-                "{} {} {}\n",
-                "│".with(border_color),
-                line,
-                "│".with(border_color)
-            ));
-        }
-
-        // Bottom border
-        result.push_str(&format!(
-            "{}╰{}╯\n",
-            "─".repeat(2).with(border_color),
-            "─".repeat(frame_width - 3).with(border_color)
-        ));
-
-        result
-    }
-
     fn format_tool_result(&self, text: &str) -> String {
         // Determine result type and choose appropriate color and symbol
         let (status_symbol, status_color) = if text.contains("Failed")
@@ -145,30 +87,17 @@ impl UserInterface for TerminalUI {
                 let formatted_msg = self.format_tool_result(&msg);
                 self.write_line(&formatted_msg).await?
             }
-            UIMessage::Question(msg) => {
-                // Format questions with a frame
-                let formatted_question = self.frame_content(&msg, Some("Question"), Color::Cyan);
-                self.write_line(&formatted_question).await?
-            }
             _ => {}
         }
         Ok(())
     }
 
-    async fn get_input(&self, prompt: &str) -> Result<String, UIError> {
+    async fn get_input(&self) -> Result<String, UIError> {
         // Access the editor
         let mut editor = self.line_editor.lock().unwrap();
 
         // Set a prompt with color
-        let colored_prompt = format!(
-            "{}{} ",
-            if prompt.is_empty() {
-                ">".with(Color::Green)
-            } else {
-                prompt.with(Color::Green)
-            },
-            style::ResetColor
-        );
+        let colored_prompt = format!("{}{} ", ">".with(Color::Green), style::ResetColor);
 
         // Read a line
         match editor.readline(&colored_prompt) {
@@ -243,6 +172,7 @@ impl UserInterface for TerminalUI {
         _tool_id: &str,
         status: ToolStatus,
         message: Option<String>,
+        _output: Option<String>,
     ) -> Result<(), UIError> {
         // For terminal UI, we just print a status message if provided
         if let Some(msg) = message {

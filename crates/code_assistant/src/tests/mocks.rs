@@ -190,7 +190,7 @@ impl UserInterface for MockUI {
         Ok(())
     }
 
-    async fn get_input(&self, _prompt: &str) -> Result<String, UIError> {
+    async fn get_input(&self) -> Result<String, UIError> {
         self.responses
             .lock()
             .unwrap()
@@ -234,6 +234,7 @@ impl UserInterface for MockUI {
         _tool_id: &str,
         _status: ToolStatus,
         _message: Option<String>,
+        _output: Option<String>,
     ) -> Result<(), UIError> {
         // Mock implementation does nothing with the tool status
         Ok(())

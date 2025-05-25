@@ -2,7 +2,7 @@ use crate::agent::tool_description_generator::generate_tool_documentation;
 use crate::agent::types::{ToolExecution, ToolRequest};
 use crate::config::ProjectManager;
 use crate::persistence::StatePersistence;
-use crate::tools::core::{ToolContext, ToolRegistry, ToolScope};
+use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{parse_tool_xml, TOOL_TAG_PREFIX};
 use crate::types::*;
 use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface};
@@ -112,8 +112,8 @@ impl Agent {
         Ok(())
     }
 
-    pub async fn get_input_from_ui(&self, prompt: &str) -> Result<String> {
-        self.ui.get_input(prompt).await.map_err(|e| e.into())
+    pub async fn get_input_from_ui(&self) -> Result<String> {
+        self.ui.get_input().await.map_err(|e| e.into())
     }
 
     /// Handles the interaction with the LLM to get the next assistant message.
@@ -160,7 +160,7 @@ impl Agent {
     /// Handles the case where no tool requests are made by the LLM.
     /// Prompts the user for input and adds it to the message history.
     async fn solicit_user_input(&mut self) -> Result<()> {
-        let user_input = self.get_input_from_ui("").await?;
+        let user_input = self.get_input_from_ui().await?;
         self.ui
             .display(UIMessage::UserInput(user_input.clone()))
             .await?;
@@ -730,7 +730,7 @@ impl Agent {
 
         // Update status to Running before execution
         self.ui
-            .update_tool_status(&tool_request.id, crate::ui::ToolStatus::Running, None)
+            .update_tool_status(&tool_request.id, crate::ui::ToolStatus::Running, None, None)
             .await?;
 
         // Get the tool - could fail with UnknownTool
@@ -764,9 +764,13 @@ impl Agent {
         // Generate status string from result
         let short_output = result.as_render().status();
 
+        // Generate isolated output from result
+        let mut resources_tracker = ResourcesTracker::new();
+        let output = result.as_render().render(&mut resources_tracker);
+
         // Update tool status with result
         self.ui
-            .update_tool_status(&tool_request.id, status, Some(short_output))
+            .update_tool_status(&tool_request.id, status, Some(short_output), Some(output))
             .await?;
 
         // Create and store the ToolExecution record

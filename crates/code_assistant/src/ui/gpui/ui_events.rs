@@ -1,3 +1,4 @@
+use crate::types::WorkingMemory;
 use crate::ui::gpui::elements::MessageRole;
 use crate::ui::ToolStatus;
 
@@ -23,7 +24,10 @@ pub enum UiEvent {
         tool_id: String,
         status: ToolStatus,
         message: Option<String>,
+        output: Option<String>,
     },
     /// End a tool invocation
     EndTool { id: String },
+    /// Update the working memory view
+    UpdateMemory { memory: WorkingMemory },
 }

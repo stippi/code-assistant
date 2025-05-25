@@ -11,8 +11,6 @@ use std::path::PathBuf;
 use crate::tools::impls::{ExecuteCommandTool, ReplaceInFileTool};
 use crate::utils::CommandOutput;
 
-// Make the MockProjectManager public so it can be used by other tests
-
 #[tokio::test]
 async fn test_read_files_tool() -> Result<()> {
     // Create a tool registry

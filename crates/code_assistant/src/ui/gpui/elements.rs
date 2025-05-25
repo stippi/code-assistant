@@ -6,9 +6,10 @@ use gpui::{
     IntoElement, MouseButton, SharedString, Styled, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
-use gpui_component::ActiveTheme;
+use gpui_component::{scroll::ScrollbarAxis, ActiveTheme, StyledExt};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tracing::trace;
 
 /// Role of a message in the conversation
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +52,7 @@ impl MessageContainer {
         });
         let view = cx.new(|cx| BlockView::new(block, cx));
         elements.push(view);
+        cx.notify();
     }
 
     // Add a new thinking block
@@ -61,6 +63,7 @@ impl MessageContainer {
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.into()));
         let view = cx.new(|cx| BlockView::new(block, cx));
         elements.push(view);
+        cx.notify();
     }
 
     // Add a new tool use block
@@ -78,9 +81,12 @@ impl MessageContainer {
             parameters: Vec::new(),
             status: ToolStatus::Pending,
             status_message: None,
+            output: None,
+            is_collapsed: true, // Default to collapsed
         });
         let view = cx.new(|cx| BlockView::new(block, cx));
         elements.push(view);
+        cx.notify();
     }
 
     // Update the status of a tool block
@@ -89,6 +95,7 @@ impl MessageContainer {
         tool_id: &str,
         status: ToolStatus,
         message: Option<String>,
+        output: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
         let elements = self.elements.lock().unwrap();
@@ -100,6 +107,13 @@ impl MessageContainer {
                     if tool.id == tool_id {
                         tool.status = status;
                         tool.status_message = message.clone();
+                        tool.output = output.clone();
+
+                        // Auto-expand failed tool calls
+                        if status == ToolStatus::Error {
+                            tool.is_collapsed = false;
+                        }
+
                         updated = true;
                         cx.notify();
                     }
@@ -139,6 +153,7 @@ impl MessageContainer {
         });
         let view = cx.new(|cx| BlockView::new(block, cx));
         elements.push(view);
+        cx.notify();
     }
 
     // Add or append to thinking block
@@ -170,6 +185,7 @@ impl MessageContainer {
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.to_string()));
         let view = cx.new(|cx| BlockView::new(block, cx));
         elements.push(view);
+        cx.notify();
     }
 
     // Add or update tool parameter
@@ -186,6 +202,13 @@ impl MessageContainer {
         let mut elements = self.elements.lock().unwrap();
         let mut tool_found = false;
 
+        trace!(
+            "Looking for tool_id: {}, param: {}, value len: {}",
+            tool_id,
+            name,
+            value.len()
+        );
+
         // Find the tool block with matching ID
         for element in elements.iter().rev() {
             let mut param_added = false;
@@ -194,12 +217,18 @@ impl MessageContainer {
                 if let Some(tool) = view.block.as_tool_mut() {
                     if tool.id == tool_id {
                         tool_found = true;
+                        trace!(
+                            "Found tool: {}, current params: {}",
+                            tool.name,
+                            tool.parameters.len()
+                        );
 
                         // Check if parameter with this name already exists
                         for param in tool.parameters.iter_mut() {
                             if param.name == name {
                                 // Update existing parameter
                                 param.value.push_str(&value);
+                                trace!("Found param: {}, len now {}", name, param.value.len());
                                 param_added = true;
                                 break;
                             }
@@ -207,6 +236,7 @@ impl MessageContainer {
 
                         // Add new parameter if not found
                         if !param_added {
+                            trace!("Adding param: {}, len {}", name, value.len());
                             tool.parameters.push(ParameterBlock {
                                 name: name.clone(),
                                 value: value.clone(),
@@ -214,6 +244,7 @@ impl MessageContainer {
                             param_added = true;
                         }
 
+                        trace!("After update, params: {}", tool.parameters.len());
                         cx.notify();
                     }
                 }
@@ -232,6 +263,8 @@ impl MessageContainer {
                 parameters: Vec::new(),
                 status: ToolStatus::Pending,
                 status_message: None,
+                output: None,
+                is_collapsed: true, // Default to collapsed
             };
 
             tool.parameters.push(ParameterBlock {
@@ -242,6 +275,7 @@ impl MessageContainer {
             let block = BlockData::ToolUse(tool);
             let view = cx.new(|cx| BlockView::new(block, cx));
             elements.push(view);
+            cx.notify();
         }
     }
 
@@ -341,6 +375,13 @@ impl BlockView {
     fn toggle_thinking_collapsed(&mut self, cx: &mut Context<Self>) {
         if let Some(thinking) = self.block.as_thinking_mut() {
             thinking.is_collapsed = !thinking.is_collapsed;
+            cx.notify();
+        }
+    }
+
+    fn toggle_tool_collapsed(&mut self, cx: &mut Context<Self>) {
+        if let Some(tool) = self.block.as_tool_mut() {
+            tool.is_collapsed = !tool.is_collapsed;
             cx.notify();
         }
     }
@@ -512,6 +553,16 @@ impl Render for BlockView {
                 // Get the appropriate icon for this tool type
                 let icon = file_icons::get().get_tool_icon(&block.name);
 
+                // Get the chevron icon based on collapsed state
+                let (chevron_icon, chevron_text) = if block.is_collapsed {
+                    (
+                        file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN),
+                        "▼",
+                    )
+                } else {
+                    (file_icons::get().get_type_icon(file_icons::CHEVRON_UP), "▲")
+                };
+
                 // Use theme utilities for colors
                 let icon_color =
                     crate::ui::gpui::theme::colors::tool_block_icon(&cx.theme(), &block.status);
@@ -520,55 +571,24 @@ impl Render for BlockView {
                     &block.status,
                 );
                 let tool_bg = crate::ui::gpui::theme::colors::tool_block_bg(&cx.theme());
+                let chevron_color = cx.theme().muted_foreground;
 
                 // Parameter rendering function that uses the global registry if available
-                let render_parameter =
-                    |param: &ParameterBlock| {
-                        // Try to get the global registry
-                        if let Some(registry) = ParameterRendererRegistry::global() {
-                            // Use the registry to render the parameter with theme
-                            registry.render_parameter(
-                                &block.name,
-                                &param.name,
-                                &param.value,
-                                &cx.theme(),
-                            )
-                        } else {
-                            // Fallback to default rendering if no registry is available
-                            div()
-                                .rounded_md()
-                                .px_2()
-                                .py_1()
-                                .mr_1()
-                                .mb_1() // Add margin to allow wrapping
-                                .text_size(px(16.))
-                                .bg(crate::ui::gpui::theme::colors::tool_parameter_bg(
-                                    &cx.theme(),
-                                ))
-                                .child(div().flex().flex_row().items_center().gap_1().children(
-                                    vec![
-                                    div()
-                                        .font_weight(FontWeight(500.0))
-                                        .text_color(
-                                            crate::ui::gpui::theme::colors::tool_parameter_label(
-                                                &cx.theme(),
-                                            ),
-                                        )
-                                        .child(format!("{}:", param.name))
-                                        .into_any(),
-                                    div()
-                                        .text_color(
-                                            crate::ui::gpui::theme::colors::tool_parameter_value(
-                                                &cx.theme(),
-                                            ),
-                                        )
-                                        .child(param.value.clone())
-                                        .into_any(),
-                                ],
-                                ))
-                                .into_any_element()
-                        }
-                    };
+                let render_parameter = |param: &ParameterBlock| {
+                    // Try to get the global registry
+                    if let Some(registry) = ParameterRendererRegistry::global() {
+                        // Use the registry to render the parameter with theme
+                        registry.render_parameter(
+                            &block.name,
+                            &param.name,
+                            &param.value,
+                            &cx.theme(),
+                        )
+                    } else {
+                        // Fallback to empty element
+                        div().into_any_element()
+                    }
+                };
 
                 // Separate parameters into regular and full-width
                 let registry = ParameterRendererRegistry::global();
@@ -591,13 +611,14 @@ impl Render for BlockView {
                     .flex_row()
                     .overflow_hidden()
                     .children(vec![
+                        // Left side: Border with status indication
                         div()
                             .w(px(3.))
                             .flex_none()
                             .h_full()
                             .bg(border_color)
                             .rounded_l(px(3.)),
-                        div().flex_grow().h_full().child(
+                        div().flex_grow().h_full().max_w_full().child(
                             div().size_full().flex().flex_col().p_1().children({
                                 let mut elements = Vec::new();
 
@@ -606,15 +627,23 @@ impl Render for BlockView {
                                     div()
                                         .flex()
                                         .flex_row()
-                                        .items_start() // Align to top if multiple parameters
+                                        .items_center() // Align all items center
+                                        .justify_between() // Space between header and chevron
+                                        .cursor_pointer() // Make entire header clickable
+                                        //.hover(|s| s.bg(border_color.opacity(0.1))) // Hover effect
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(move |view, _event, _window, cx| {
+                                                view.toggle_tool_collapsed(cx);
+                                            }),
+                                        )
                                         .children(vec![
-                                            // Left side: Tool icon and name
+                                            // Left side: Tool icon, name and regular parameters
                                             div()
                                                 .flex()
                                                 .flex_row()
                                                 .items_center()
-                                                .flex_none()
-                                                .pt(px(1.))
+                                                .flex_grow()
                                                 .children(vec![
                                                     // Tool icon
                                                     file_icons::render_icon_container(
@@ -630,19 +659,37 @@ impl Render for BlockView {
                                                         .flex_none() // Prevent shrinking
                                                         .child(block.name.clone())
                                                         .into_any(),
+                                                    // Regular parameters
+                                                    div()
+                                                        .flex()
+                                                        .flex_wrap()
+                                                        .gap_1()
+                                                        .flex_grow() // Take remaining space
+                                                        .children(
+                                                            regular_params.iter().map(|param| {
+                                                                render_parameter(param)
+                                                            }),
+                                                        )
+                                                        .into_any(),
                                                 ])
                                                 .into_any(),
-                                            // Right side: Regular parameters
+                                            // Right side: Chevron icon
                                             div()
+                                                .mr_1()
                                                 .flex()
-                                                .flex_wrap()
-                                                .gap_1()
-                                                .flex_grow() // Take remaining space
-                                                .children(
-                                                    regular_params
-                                                        .iter()
-                                                        .map(|param| render_parameter(param)),
-                                                )
+                                                .items_center()
+                                                .justify_center()
+                                                .flex_none()
+                                                .cursor_pointer()
+                                                .size(px(24.))
+                                                .rounded_full()
+                                                .hover(|s| s.bg(border_color.opacity(0.2)))
+                                                .child(file_icons::render_icon(
+                                                    &chevron_icon,
+                                                    16.0,
+                                                    chevron_color,
+                                                    chevron_text,
+                                                ))
                                                 .into_any(),
                                         ])
                                         .into_any(),
@@ -665,25 +712,55 @@ impl Render for BlockView {
                                     );
                                 }
 
-                                // Error message (only shown for error status)
-                                if block.status == crate::ui::ToolStatus::Error {
-                                    if let Some(msg) = &block.status_message {
-                                        elements.push(
-                                            div()
-                                                .flex()
-                                                .flex_row()
-                                                .items_center()
-                                                .p_2()
-                                                .rounded_md()
-                                                .bg(cx.theme().danger.opacity(0.2))
-                                                .border_l_2()
-                                                .border_color(cx.theme().danger.opacity(0.5))
-                                                .text_color(cx.theme().danger.opacity(0.9))
-                                                .text_size(px(14.))
-                                                .child(msg.clone())
-                                                .into_any(),
-                                        );
-                                    }
+                                // Tool output content (only shown when expanded or on error)
+                                // Output (only when expanded)
+                                if !block.is_collapsed && block.output.is_some() {
+                                    elements.push(
+                                        div()
+                                            .id(SharedString::from(block.id.clone()))
+                                            // .flex()
+                                            // .flex_row()
+                                            //.items_center()
+                                            //.flex_1()
+                                            .p_2()
+                                            .mt_1()
+                                            .w_full()
+                                            .max_w_full()
+                                            .min_h_0()
+                                            .max_h(px(300.)) // Max height
+                                            .overflow_scroll()
+                                            //.overflow_hidden()
+                                            // .scrollable(
+                                            //     cx.entity().entity_id(),
+                                            //     ScrollbarAxis::Vertical,
+                                            // ) // Make it scrollable
+                                            .text_color(cx.theme().foreground)
+                                            .text_size(px(13.))
+                                            .child(block.output.clone().unwrap_or_default())
+                                            .into_any(),
+                                    );
+                                }
+                                // Error message (always shown for error status)
+                                else if block.status == crate::ui::ToolStatus::Error
+                                    && block.status_message.is_some()
+                                {
+                                    elements.push(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .p_2()
+                                            .mt_1()
+                                            .max_h(px(300.)) // Max height
+                                            .scrollable(
+                                                cx.entity().entity_id(),
+                                                ScrollbarAxis::Vertical,
+                                            ) // Make it scrollable
+                                            .text_color(cx.theme().danger.opacity(0.9))
+                                            .text_size(px(13.))
+                                            .child(block.status_message.clone().unwrap_or_default())
+                                            .into_any(),
+                                    );
                                 }
 
                                 elements
@@ -753,6 +830,8 @@ pub struct ToolUseBlock {
     pub parameters: Vec<ParameterBlock>,
     pub status: ToolStatus,
     pub status_message: Option<String>,
+    pub output: Option<String>,
+    pub is_collapsed: bool,
 }
 
 /// Parameter for a tool
