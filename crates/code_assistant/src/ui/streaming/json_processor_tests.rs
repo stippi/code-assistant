@@ -70,9 +70,13 @@ mod tests {
                 value: "src/main.rs".to_string(),
                 tool_id: "test-123".to_string(),
             },
+            DisplayFragment::ToolEnd {
+                id: "test-123".to_string(),
+            },
         ];
 
         let fragments = process_json_chunks(&chunks, "read_files", "test-123");
+        print_fragments(&fragments);
         assert_fragments_match(&expected_fragments, &fragments);
     }
 
@@ -158,9 +162,13 @@ mod tests {
                 value: "test.txt".to_string(),
                 tool_id: "write-123".to_string(),
             },
+            DisplayFragment::ToolEnd {
+                id: "write-123".to_string(),
+            },
         ];
 
         let fragments = process_json_chunks(&chunks, "write_file", "write-123");
+        print_fragments(&fragments);
         assert_fragments_match(&expected_fragments, &fragments);
     }
 
@@ -179,9 +187,13 @@ mod tests {
                 value: r#"Line with "quoted" text inside."#.to_string(),
                 tool_id: "write-123".to_string(),
             },
+            DisplayFragment::ToolEnd {
+                id: "write-123".to_string(),
+            },
         ];
 
         let fragments = process_json_chunks(&chunks, "write_file", "write-123");
+        print_fragments(&fragments);
         assert_fragments_match(&expected_fragments, &fragments);
     }
 
@@ -199,6 +211,9 @@ mod tests {
                 name: "options".to_string(),
                 value: r#"{"recursive": true, "followSymlinks": false}"#.to_string(),
                 tool_id: "list-123".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "list-123".to_string(),
             },
         ];
 
@@ -401,12 +416,12 @@ mod tests {
             },
             DisplayFragment::ToolParameter {
                 name: "project".to_string(),
-                value: "stan".to_string(),      // From chunk: "stan"
+                value: "stan".to_string(), // From chunk: "stan"
                 tool_id: tool_id_str.to_string(),
             },
             DisplayFragment::ToolParameter {
                 name: "project".to_string(),
-                value: "t".to_string(),        // From chunk: "t"" (value part)
+                value: "t".to_string(), // From chunk: "t"" (value part)
                 tool_id: tool_id_str.to_string(),
             },
             DisplayFragment::ToolParameter {
@@ -416,7 +431,7 @@ mod tests {
             },
             DisplayFragment::ToolParameter {
                 name: "path".to_string(),
-                value: "ng.md".to_string(),    // From chunk: "ng.md"" (value part)
+                value: "ng.md".to_string(), // From chunk: "ng.md"" (value part)
                 tool_id: tool_id_str.to_string(),
             },
             DisplayFragment::ToolParameter {
@@ -443,7 +458,6 @@ mod tests {
         println!("Asserting expected_raw_fragments (EXPECTED TO FAIL INITIALLY):");
         assert_fragments_match(&expected_raw_fragments, &raw_fragments);
         // --- End new assertions for raw fragments ---
-
 
         // Existing assertions (should still pass or be adjusted if `get_fragments` behavior changes,
         // but the goal is for `get_fragments` to keep its current merging behavior)
@@ -642,5 +656,329 @@ mod tests {
             param_names.iter().any(|name| name == "path"),
             "Should have path parameter"
         );
+    }
+
+    // --- New tests for specific scenarios ---
+
+    #[test]
+    fn test_empty_string_value() {
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let mut processor = JsonStreamProcessor::new(ui_arc);
+        let tool_id_str = "test-empty-string-123";
+
+        let chunks = vec![
+            (Some("test_tool"), Some(tool_id_str), "{\"key\": \""), // {"key": "
+            (None, None, "\"}"),                                    // "}
+        ];
+
+        for (tool_name, tool_id, content) in chunks {
+            processor
+                .process(&StreamingChunk::InputJson {
+                    content: content.to_string(),
+                    tool_name: tool_name.map(|s| s.to_string()),
+                    tool_id: tool_id.map(|s| s.to_string()),
+                })
+                .unwrap();
+        }
+
+        let raw_fragments = test_ui.get_raw_fragments();
+        print_fragments(&raw_fragments);
+
+        let expected_raw_fragments = vec![
+            DisplayFragment::ToolName {
+                name: "test_tool".to_string(),
+                id: tool_id_str.to_string(),
+            },
+            // For an empty string "", the InValueString state will transition to ExpectCommaOrCloseBrace
+            // upon seeing the closing quote. However, the empty value needs to be emited.
+            DisplayFragment::ToolParameter {
+                name: "key".to_string(),
+                value: "".to_string(),
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: tool_id_str.to_string(),
+            },
+        ];
+        assert_fragments_match(&expected_raw_fragments, &raw_fragments);
+
+        // Check merged fragments for completeness
+        let merged_fragments = test_ui.get_fragments();
+        let expected_merged_fragments = vec![
+            DisplayFragment::ToolName {
+                name: "test_tool".to_string(),
+                id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "key".to_string(),
+                value: "".to_string(),
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: tool_id_str.to_string(),
+            },
+        ];
+        assert_fragments_match(&expected_merged_fragments, &merged_fragments);
+    }
+
+    #[test]
+    fn test_string_value_with_only_escaped_chars() {
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let mut processor = JsonStreamProcessor::new(ui_arc);
+        let tool_id_str = "test-escaped-only-123";
+
+        // JSON: {"esc_key": "\"\\\t\n"}
+        // Value: "\ (quote, backslash, tab, newline)
+        let chunks = vec![
+            (Some("esc_tool"), Some(tool_id_str), "{\"esc_key\": \"\\"), // {"esc_key": "\ (escaped quote start)
+            (None, None, "\""),  // " (the actual quote char)
+            (None, None, "\\"),  // \ (escaped backslash start)
+            (None, None, "\\"),  // \ (the actual backslash char)
+            (None, None, "\\t"), // \t (escaped tab start)
+            (None, None, "\\n"), // \n (escaped newline start)
+            (None, None, "\"}"), // Close string and object
+        ];
+
+        for (tool_name, tool_id, content) in chunks {
+            processor
+                .process(&StreamingChunk::InputJson {
+                    content: content.to_string(),
+                    tool_name: tool_name.map(|s| s.to_string()),
+                    tool_id: tool_id.map(|s| s.to_string()),
+                })
+                .unwrap();
+        }
+
+        let raw_fragments = test_ui.get_raw_fragments();
+        println!("Raw fragments for escaped string test:");
+        print_fragments(&raw_fragments);
+
+        let expected_raw_fragments = vec![
+            DisplayFragment::ToolName {
+                name: "esc_tool".to_string(),
+                id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "esc_key".to_string(),
+                value: "\"".to_string(),
+                tool_id: tool_id_str.to_string(),
+            }, // from \"
+            DisplayFragment::ToolParameter {
+                name: "esc_key".to_string(),
+                value: "\\".to_string(),
+                tool_id: tool_id_str.to_string(),
+            }, // from \\
+            DisplayFragment::ToolParameter {
+                name: "esc_key".to_string(),
+                value: "\t".to_string(),
+                tool_id: tool_id_str.to_string(),
+            }, // from \t
+            DisplayFragment::ToolParameter {
+                name: "esc_key".to_string(),
+                value: "\n".to_string(),
+                tool_id: tool_id_str.to_string(),
+            }, // from \n
+            DisplayFragment::ToolEnd {
+                id: tool_id_str.to_string(),
+            },
+        ];
+        assert_fragments_match(&expected_raw_fragments, &raw_fragments);
+
+        let merged_fragments = test_ui.get_fragments();
+        let expected_merged_fragments = vec![
+            DisplayFragment::ToolName {
+                name: "esc_tool".to_string(),
+                id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "esc_key".to_string(),
+                value: "\"\\\t\n".to_string(),
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: tool_id_str.to_string(),
+            },
+        ];
+        assert_fragments_match(&expected_merged_fragments, &merged_fragments);
+    }
+
+    #[test]
+    fn test_complex_object_value_chunked() {
+        let tool_name = "complex_tool";
+        let tool_id = "complex-obj-001";
+        let json_chunks = vec![
+            format!("{{\"key1\": \"value1\", \"complex_param\": {{\"nested_key\": "),
+            format!("\"nested_value\", \"nested_arr\": [1, "),
+            format!("true, \"str\"]}}}}"),
+        ];
+        let fragments = process_json_chunks(&json_chunks, tool_name, tool_id);
+        print_fragments(&fragments); // Merged fragments by default from process_json_chunks
+
+        let expected_fragments = vec![
+            DisplayFragment::ToolName {
+                name: tool_name.to_string(),
+                id: tool_id.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "key1".to_string(),
+                value: "value1".to_string(),
+                tool_id: tool_id.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "complex_param".to_string(),
+                value: "{\"nested_key\": \"nested_value\", \"nested_arr\": [1, true, \"str\"]}"
+                    .to_string(),
+                tool_id: tool_id.to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: tool_id.to_string(),
+            },
+        ];
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_simple_number_value_chunked() {
+        let tool_name = "simple_num_tool";
+        let tool_id = "simple-num-002";
+        let json_chunks = vec![
+            format!("{{\"count\": 12"),
+            format!("345, \"another\": true}}"),
+        ];
+        let fragments = process_json_chunks(&json_chunks, tool_name, tool_id);
+        print_fragments(&fragments);
+
+        let expected_fragments = vec![
+            DisplayFragment::ToolName {
+                name: tool_name.to_string(),
+                id: tool_id.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "count".to_string(),
+                value: "12345".to_string(),
+                tool_id: tool_id.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "another".to_string(),
+                value: "true".to_string(),
+                tool_id: tool_id.to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: tool_id.to_string(),
+            },
+        ];
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_multiple_top_level_key_value_types_chunked() {
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let mut processor = JsonStreamProcessor::new(ui_arc);
+        let tool_id_str = "multi-type-003";
+
+        let chunks = vec![
+            (
+                Some("multi_tool"),
+                Some(tool_id_str),
+                "{\"str_param\": \"Hello",
+            ), // Start object, string param part 1
+            (None, None, " World\", "), // String param part 2, comma
+            (None, None, "\"num_param\": 42, "), // Number param, comma
+            (None, None, "\"bool_param\": fa"), // Boolean param part 1
+            (None, None, "lse, "),      // Boolean param part 2, comma
+            (None, None, "\"obj_param\": {\"a\":1, "), // Object param part 1
+            (None, None, "\"b\": \"two\"}, "), // Object param part 2, comma
+            (None, None, "\"arr_param\": [null, "), // Array param part 1
+            (None, None, "100]}"),      // Array param part 2, end object
+        ];
+
+        for (tool_name, tool_id, content) in chunks {
+            processor
+                .process(&StreamingChunk::InputJson {
+                    content: content.to_string(),
+                    tool_name: tool_name.map(|s| s.to_string()),
+                    tool_id: tool_id.map(|s| s.to_string()),
+                })
+                .unwrap();
+        }
+
+        // Test raw fragments for string parts
+        let raw_fragments = test_ui.get_raw_fragments();
+        println!("Raw fragments for multi-type test:");
+        print_fragments(&raw_fragments);
+
+        let expected_raw_fragments_subset = vec![
+            DisplayFragment::ToolName {
+                name: "multi_tool".to_string(),
+                id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "str_param".to_string(),
+                value: "Hello".to_string(),
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "str_param".to_string(),
+                value: " World".to_string(),
+                tool_id: tool_id_str.to_string(),
+            },
+            // Other simple/complex params are not checked raw here, they get merged by TestUI
+        ];
+        // Check that the raw fragments contain the expected string parts
+        let mut found_count = 0;
+        for expected_frag in &expected_raw_fragments_subset {
+            if raw_fragments.contains(expected_frag) {
+                found_count += 1;
+            }
+        }
+        assert_eq!(
+            found_count,
+            expected_raw_fragments_subset.len(),
+            "Expected raw string fragments not found"
+        );
+
+        // Test merged fragments for overall correctness
+        let merged_fragments = test_ui.get_fragments();
+        println!("Merged fragments for multi-type test:");
+        print_fragments(&merged_fragments);
+
+        let expected_merged_fragments = vec![
+            DisplayFragment::ToolName {
+                name: "multi_tool".to_string(),
+                id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "str_param".to_string(),
+                value: "Hello World".to_string(),
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "num_param".to_string(),
+                value: "42".to_string(),
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "bool_param".to_string(),
+                value: "false".to_string(),
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "obj_param".to_string(),
+                value: "{\"a\":1, \"b\": \"two\"}".to_string(),
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "arr_param".to_string(),
+                value: "[null, 100]".to_string(),
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: tool_id_str.to_string(),
+            },
+        ];
+        assert_fragments_match(&expected_merged_fragments, &merged_fragments);
     }
 }

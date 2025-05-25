@@ -17,7 +17,7 @@ mod test_utils;
 mod xml_processor_tests;
 
 /// Fragments for display in UI components
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DisplayFragment {
     /// Regular plain text
     PlainText(String),
