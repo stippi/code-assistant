@@ -162,9 +162,11 @@ impl JsonStreamProcessor {
                     // Look for opening brace
                     if let Some(brace_pos) = text[pos..].find('{') {
                         pos += brace_pos + 1;
+                        println!("DEBUG: Outside ->  InObject");
                         self.state.state = JsonParseState::InObject;
                     } else {
                         // No opening brace found, buffer the rest
+                        println!("DEBUG: Outside, buffering");
                         self.state.buffer = text[pos..].to_string();
                         break;
                     }
@@ -174,10 +176,12 @@ impl JsonStreamProcessor {
                     // Look for start of parameter name (quote)
                     if let Some(quote_pos) = self.find_next_structural_quote(&text[pos..]) {
                         pos += quote_pos + 1;
+                        println!("DEBUG: InObject ->  InParamName");
                         self.state.state = JsonParseState::InParamName;
                         self.state.current_param.clear();
                     } else {
                         // No quote found, buffer the rest
+                        println!("DEBUG: InObject, buffering");
                         self.state.buffer = text[pos..].to_string();
                         break;
                     }
@@ -188,11 +192,15 @@ impl JsonStreamProcessor {
                     if let Some(quote_pos) = self.find_next_structural_quote(&text[pos..]) {
                         // Extract parameter name
                         self.state.current_param = text[pos..pos + quote_pos].to_string();
-                        println!("DEBUG: Found parameter name: '{}'", self.state.current_param);
+                        println!(
+                            "DEBUG: Found parameter name: '{}'",
+                            self.state.current_param
+                        );
                         pos += quote_pos + 1;
                         self.state.state = JsonParseState::AfterParamName;
                     } else {
                         // No closing quote found, buffer the rest
+                        println!("DEBUG: InParamName, buffering");
                         self.state.buffer = text[pos..].to_string();
                         break;
                     }
@@ -205,6 +213,7 @@ impl JsonStreamProcessor {
                         self.state.state = JsonParseState::BeforeValue;
                     } else {
                         // No colon found, buffer the rest
+                        println!("DEBUG: AfterParamName, buffering");
                         self.state.buffer = text[pos..].to_string();
                         break;
                     }
@@ -224,6 +233,7 @@ impl JsonStreamProcessor {
                     match chars[pos] {
                         '"' => {
                             // String value
+                            println!("DEBUG: BeforeValue -> InSimpleValue");
                             pos += 1; // Skip opening quote
                             self.state.state = JsonParseState::InSimpleValue;
                             self.state.in_quotes = true;
@@ -232,6 +242,7 @@ impl JsonStreamProcessor {
                         }
                         '{' | '[' => {
                             // Complex value (object or array)
+                            println!("DEBUG: BeforeValue -> InComplexValue");
                             self.state.state = JsonParseState::InComplexValue;
                             self.state.nesting_level = 1;
                             self.state.in_quotes = false;
@@ -249,6 +260,7 @@ impl JsonStreamProcessor {
                         }
                         _ => {
                             // Simple value (number, boolean, null)
+                            println!("DEBUG: BeforeValue -> InSimpleValue");
                             self.state.state = JsonParseState::InSimpleValue;
                             self.state.in_quotes = false;
                             self.state.parameter_started = false;
@@ -272,13 +284,17 @@ impl JsonStreamProcessor {
                         }
 
                         // Find the end of this parameter value
-                        println!("DEBUG: in_quotes={}, remaining='{}'", self.state.in_quotes, remaining);
+                        println!(
+                            "DEBUG: in_quotes={}, remaining='{}'",
+                            self.state.in_quotes, remaining
+                        );
                         let (value_content, new_pos, is_value_complete) = if self.state.in_quotes {
                             let (content, consumed) = self.extract_quoted_content(remaining)?;
                             // extract_quoted_content returns pos+1 when it finds a closing quote
                             // So if we consumed less than the full remaining text, we found the quote
-                            let complete = consumed > 0 && consumed <= remaining.len() &&
-                                          consumed > content.len(); // We consumed more than just the content
+                            let complete = consumed > 0
+                                && consumed <= remaining.len()
+                                && consumed > content.len(); // We consumed more than just the content
                             println!("DEBUG: quoted - content='{}', consumed={}, remaining_len={}, complete={}",
                                    content, consumed, remaining.len(), complete);
                             (content, consumed, complete)
@@ -286,13 +302,19 @@ impl JsonStreamProcessor {
                             let (content, consumed) = self.extract_simple_value_content(remaining);
                             // For unquoted values, check for structural delimiters
                             let complete = self.value_is_complete(remaining, consumed);
-                            println!("DEBUG: unquoted - content='{}', consumed={}, complete={}", content, consumed, complete);
+                            println!(
+                                "DEBUG: unquoted - content='{}', consumed={}, complete={}",
+                                content, consumed, complete
+                            );
                             (content, consumed, complete)
                         };
 
                         if !value_content.is_empty() {
                             // Emit the value content
-                            println!("DEBUG: Emitting simple param '{}' with value: '{}'", self.state.current_param, value_content);
+                            println!(
+                                "DEBUG: Emitting simple param '{}' with value: '{}'",
+                                self.state.current_param, value_content
+                            );
                             self.ui.display_fragment(&DisplayFragment::ToolParameter {
                                 name: self.state.current_param.clone(),
                                 value: value_content,
@@ -304,7 +326,10 @@ impl JsonStreamProcessor {
 
                         // Check if we've reached the end of the value
                         if is_value_complete {
-                            println!("DEBUG: Parameter '{}' completed, going back to InObject", self.state.current_param);
+                            println!(
+                                "DEBUG: Parameter '{}' completed, going back to InObject",
+                                self.state.current_param
+                            );
                             self.state.state = JsonParseState::InObject;
                             self.state.parameter_started = false;
                             // Skip the closing quote for quoted strings
@@ -313,6 +338,7 @@ impl JsonStreamProcessor {
                             }
                         } else if new_pos >= remaining.len() {
                             // More content expected, buffer any incomplete part
+                            println!("DEBUG: InSimpleValue, more content expected");
                             break;
                         }
                     } else {
@@ -340,7 +366,10 @@ impl JsonStreamProcessor {
 
                         if !value_content.is_empty() {
                             // Emit the value content
-                            println!("DEBUG: Emitting complex param '{}' with value: '{}'", self.state.current_param, value_content);
+                            println!(
+                                "DEBUG: Emitting complex param '{}' with value: '{}'",
+                                self.state.current_param, value_content
+                            );
                             self.ui.display_fragment(&DisplayFragment::ToolParameter {
                                 name: self.state.current_param.clone(),
                                 value: value_content,
@@ -353,11 +382,15 @@ impl JsonStreamProcessor {
 
                         // Check if we've reached the end of the complex value
                         if self.state.nesting_level == 0 {
-                            println!("DEBUG: Complex parameter '{}' completed, going back to InObject", self.state.current_param);
+                            println!(
+                                "DEBUG: Complex parameter '{}' completed, going back to InObject",
+                                self.state.current_param
+                            );
                             self.state.state = JsonParseState::InObject;
                             self.state.parameter_started = false;
                         } else if new_pos >= remaining.len() {
                             // More content expected, stop processing
+                            println!("DEBUG: InComplexValue, more content expected");
                             break;
                         }
                     } else {

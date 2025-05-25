@@ -329,6 +329,8 @@ mod tests {
         assert_fragments_match(&expected_fragments, &fragments);
     }
 
+    // Tests for chunked/partial input JSON
+
     #[test]
     fn test_realistic_anthropic_chunks() {
         let test_ui = TestUI::new();

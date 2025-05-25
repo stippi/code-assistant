@@ -196,6 +196,13 @@ impl MessageContainer {
         let mut elements = self.elements.lock().unwrap();
         let mut tool_found = false;
 
+        println!(
+            "Looking for tool_id: {}, param: {}, value len: {}",
+            tool_id,
+            name,
+            value.len()
+        );
+
         // Find the tool block with matching ID
         for element in elements.iter().rev() {
             let mut param_added = false;
@@ -204,12 +211,18 @@ impl MessageContainer {
                 if let Some(tool) = view.block.as_tool_mut() {
                     if tool.id == tool_id {
                         tool_found = true;
+                        println!(
+                            "Found tool: {}, current params: {}",
+                            tool.name,
+                            tool.parameters.len()
+                        );
 
                         // Check if parameter with this name already exists
                         for param in tool.parameters.iter_mut() {
                             if param.name == name {
                                 // Update existing parameter
                                 param.value.push_str(&value);
+                                println!("Found param: {}, len now {}", name, param.value.len());
                                 param_added = true;
                                 break;
                             }
@@ -217,6 +230,7 @@ impl MessageContainer {
 
                         // Add new parameter if not found
                         if !param_added {
+                            println!("Adding param: {}, len {}", name, value.len());
                             tool.parameters.push(ParameterBlock {
                                 name: name.clone(),
                                 value: value.clone(),
@@ -224,6 +238,7 @@ impl MessageContainer {
                             param_added = true;
                         }
 
+                        println!("After update, params: {}", tool.parameters.len());
                         cx.notify();
                     }
                 }
@@ -528,6 +543,11 @@ impl Render for BlockView {
                     .into_any_element()
             }
             BlockData::ToolUse(block) => {
+                // println!(
+                //     "render {}, parameters: {}",
+                //     block.name,
+                //     block.parameters.len()
+                // );
                 // Get the appropriate icon for this tool type
                 let icon = file_icons::get().get_tool_icon(&block.name);
 
