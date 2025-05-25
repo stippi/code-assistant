@@ -1,4 +1,5 @@
 pub mod assets;
+pub mod content_renderer;
 pub mod diff_renderer;
 mod elements;
 pub mod file_icons;
@@ -13,6 +14,7 @@ pub mod ui_events;
 
 use crate::types::WorkingMemory;
 use crate::ui::gpui::{
+    content_renderer::ContentRenderer,
     diff_renderer::DiffParameterRenderer,
     elements::MessageRole,
     parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
@@ -75,6 +77,7 @@ impl Gpui {
 
         // Register specialized renderers
         registry.register_renderer(Box::new(DiffParameterRenderer));
+        registry.register_renderer(Box::new(ContentRenderer));
 
         // Register simple renderers for parameters that don't need labels
         registry.register_renderer(Box::new(SimpleParameterRenderer::new(
