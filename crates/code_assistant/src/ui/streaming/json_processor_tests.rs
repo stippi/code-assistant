@@ -380,10 +380,77 @@ mod tests {
             }
         }
 
-        let fragments = test_ui.get_fragments();
+        let merged_fragments = test_ui.get_fragments(); // Keep this for existing assertions
+
+        // --- New: Get and assert raw fragments ---
+        let raw_fragments = test_ui.get_raw_fragments();
+
+        println!("Collected {} raw fragments:", raw_fragments.len());
+        print_fragments(&raw_fragments); // Use the utility to print them
+
+        let tool_id_str = "toolu_01UMyVAc3ZiT4V2jNAiBgRoq";
+        let expected_raw_fragments = vec![
+            DisplayFragment::ToolName {
+                name: "write_file".to_string(),
+                id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "project".to_string(),
+                value: "code-assi".to_string(), // From chunk: "{"project":"code-assi" (value part)
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "project".to_string(),
+                value: "stan".to_string(),      // From chunk: "stan"
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "project".to_string(),
+                value: "t".to_string(),        // From chunk: "t"" (value part)
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "vibe-codi".to_string(), // From chunk: ", "path": "vibe-codi" (value part)
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "ng.md".to_string(),    // From chunk: "ng.md"" (value part)
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "content".to_string(),
+                value: "AI Coding".to_string(), // From chunk: ", "content": "AI Coding" (value part)
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "content".to_string(),
+                value: " Assistants".to_string(), // From chunk: " Assistants"
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "content".to_string(),
+                value: ": Augmenting Human Potential".to_string(), // From chunk: ": Augmenting Human Potential"
+                tool_id: tool_id_str.to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: tool_id_str.to_string(), // Emitted after processing the final "}"" from " "}"
+            },
+        ];
+
+        // This assertion is expected to FAIL until the processor is fixed
+        println!("Asserting expected_raw_fragments (EXPECTED TO FAIL INITIALLY):");
+        assert_fragments_match(&expected_raw_fragments, &raw_fragments);
+        // --- End new assertions for raw fragments ---
+
+
+        // Existing assertions (should still pass or be adjusted if `get_fragments` behavior changes,
+        // but the goal is for `get_fragments` to keep its current merging behavior)
+        let fragments = merged_fragments; // Use the original variable name for existing assertions
 
         // Print for debugging
-        println!("Collected {} fragments:", fragments.len());
+        println!("Collected {} merged fragments:", fragments.len());
         for (i, fragment) in fragments.iter().enumerate() {
             match fragment {
                 DisplayFragment::ToolName { name, id } => {

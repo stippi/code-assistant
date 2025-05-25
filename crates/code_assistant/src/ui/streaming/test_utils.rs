@@ -12,12 +12,14 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone)]
 pub struct TestUI {
     fragments: Arc<Mutex<VecDeque<DisplayFragment>>>,
+    raw_fragments: Arc<Mutex<Vec<DisplayFragment>>>, // Added to record raw fragments
 }
 
 impl TestUI {
     pub fn new() -> Self {
         Self {
             fragments: Arc::new(Mutex::new(VecDeque::new())),
+            raw_fragments: Arc::new(Mutex::new(Vec::new())), // Initialize new field
         }
     }
 
@@ -66,6 +68,11 @@ impl TestUI {
             _ => false,
         }
     }
+
+    // Method to get the raw, unmerged fragments
+    pub fn get_raw_fragments(&self) -> Vec<DisplayFragment> {
+        self.raw_fragments.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
@@ -79,6 +86,9 @@ impl UserInterface for TestUI {
     }
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
+        // Record the raw fragment before any merging
+        self.raw_fragments.lock().unwrap().push(fragment.clone());
+
         let mut guard = self.fragments.lock().unwrap();
 
         // Check if we can merge this fragment with the previous one
