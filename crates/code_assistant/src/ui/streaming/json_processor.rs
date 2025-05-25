@@ -39,7 +39,7 @@ struct JsonProcessorState {
     /// Track if we're at the beginning of a block (thinking/content) for text chunks
     at_block_start: bool,
 
-    // New JSON specific state
+    // JSON specific state
     json_parsing_state: JsonParsingState,
     current_key: Option<String>,
     complex_value_nesting: u32, // For '{' '[' '}' ']' tracking within a complex value
@@ -56,8 +56,6 @@ impl Default for JsonProcessorState {
             tool_name: String::new(),
             in_thinking: false,
             at_block_start: false,
-
-            // Initialize new JSON state fields
             json_parsing_state: JsonParsingState::ExpectOpenBrace,
             current_key: None,
             complex_value_nesting: 0,
