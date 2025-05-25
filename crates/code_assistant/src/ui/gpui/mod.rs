@@ -83,6 +83,7 @@ impl Gpui {
                 ("read_files".to_string(), "paths".to_string()),
                 ("list_files".to_string(), "paths".to_string()),
                 ("replace_in_file".to_string(), "path".to_string()),
+                ("write_file".to_string(), "path".to_string()),
                 ("search_files".to_string(), "regex".to_string()),
             ],
             false, // These are not full-width
@@ -402,10 +403,31 @@ impl Gpui {
             UiEvent::StartTool { name, id } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    cx.update_entity(&last, |message, cx| {
-                        message.add_tool_use_block(&name, &id, cx);
-                    })
-                    .expect("Failed to update entity");
+                    // Check if the last message is from the assistant, otherwise create a new one
+                    let is_user_message = cx
+                        .update_entity(&last, |message, _cx| message.is_user_message())
+                        .expect("Failed to update entity");
+
+                    if is_user_message {
+                        // Create a new assistant message
+                        let result = cx.new(|cx| {
+                            let new_message =
+                                MessageContainer::with_role(MessageRole::Assistant, cx);
+                            new_message.add_tool_use_block(&name, &id, cx);
+                            new_message
+                        });
+                        if let Ok(new_message) = result {
+                            queue.push(new_message);
+                        } else {
+                            warn!("Failed to create message entity");
+                        }
+                    } else {
+                        // Update the existing assistant message
+                        cx.update_entity(&last, |message, cx| {
+                            message.add_tool_use_block(&name, &id, cx);
+                        })
+                        .expect("Failed to update entity");
+                    }
                 } else {
                     // Create a new assistant message if none exists
                     let result = cx.new(|cx| {
