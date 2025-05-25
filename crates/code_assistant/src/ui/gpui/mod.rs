@@ -45,7 +45,6 @@ pub struct Gpui {
     message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
     input_value: Arc<Mutex<Option<String>>>,
     input_requested: Arc<Mutex<bool>>,
-    ui_update_needed: Arc<Mutex<bool>>,
     working_memory: Arc<Mutex<Option<WorkingMemory>>>,
     event_sender: Arc<Mutex<async_channel::Sender<UiEvent>>>,
     event_receiver: Arc<Mutex<async_channel::Receiver<UiEvent>>>,
@@ -65,7 +64,6 @@ impl Gpui {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let input_value = Arc::new(Mutex::new(None));
         let input_requested = Arc::new(Mutex::new(false));
-        let ui_update_needed = Arc::new(Mutex::new(false));
         let working_memory = Arc::new(Mutex::new(None));
         let event_task = Arc::new(Mutex::new(None));
         let current_request_id = Arc::new(Mutex::new(0));
@@ -107,7 +105,6 @@ impl Gpui {
             message_queue,
             input_value,
             input_requested,
-            ui_update_needed,
             working_memory,
             event_sender,
             event_receiver,
@@ -124,7 +121,6 @@ impl Gpui {
         let message_queue = self.message_queue.clone();
         let input_value = self.input_value.clone();
         let input_requested = self.input_requested.clone();
-        let ui_update_needed = self.ui_update_needed.clone();
         let working_memory = self.working_memory.clone();
         let gpui_clone = self.clone();
 
@@ -230,77 +226,13 @@ impl Gpui {
                         if let Some(_view) =
                             window.root::<gpui_component::Root>().and_then(|root| root)
                         {
-                            // Activate window and set up the frame refresh cycle
+                            // Activate window
                             cx.activate(true);
-                            Self::setup_frame_refresh_cycle(window, ui_update_needed.clone());
                         }
                     })
                     .ok();
             }
         });
-    }
-
-    // Setup a recurring frame refresh cycle to check for UI updates
-    fn setup_frame_refresh_cycle(window: &mut gpui::Window, update_flag: Arc<Mutex<bool>>) {
-        // Create a recursive frame handler
-        let update_flag_ref = update_flag.clone();
-        let frame_handler = move |window: &mut gpui::Window, cx: &mut gpui::App| {
-            // Check if UI update is needed
-            let mut updated = false;
-            let mut flag = update_flag_ref.lock().unwrap();
-            if *flag {
-                // Reset the flag
-                *flag = false;
-                updated = true;
-            }
-
-            // If updates were requested, refresh the window
-            if updated {
-                cx.refresh_windows();
-            }
-
-            // Schedule another check for the next frame by creating a new closure
-            // that captures our update_flag
-            let new_handler = {
-                let update_flag = update_flag_ref.clone();
-                move |window: &mut gpui::Window, cx: &mut gpui::App| {
-                    Self::handle_frame(window, cx, update_flag);
-                }
-            };
-
-            window.on_next_frame(new_handler);
-        };
-
-        // Start the refresh cycle
-        window.on_next_frame(frame_handler);
-    }
-
-    // Helper method for the recurring frame handler
-    fn handle_frame(window: &mut gpui::Window, cx: &mut gpui::App, update_flag: Arc<Mutex<bool>>) {
-        let mut updated = false;
-
-        // Check update flag
-        let mut flag = update_flag.lock().unwrap();
-        if *flag {
-            // Reset the flag
-            *flag = false;
-            updated = true;
-        }
-
-        // If updates were requested, refresh the window
-        if updated {
-            cx.refresh_windows();
-        }
-
-        // Schedule another check for the next frame
-        let new_handler = {
-            let update_flag = update_flag.clone();
-            move |window: &mut gpui::Window, cx: &mut gpui::App| {
-                Self::handle_frame(window, cx, update_flag);
-            }
-        };
-
-        window.on_next_frame(new_handler);
     }
 
     fn process_ui_event_async(&self, event: UiEvent, cx: &mut gpui::AsyncApp) {
@@ -487,6 +419,12 @@ impl Gpui {
                     .expect("Failed to update entity");
                 }
             }
+            UiEvent::UpdateMemory { memory } => {
+                if let Ok(mut memory_guard) = self.working_memory.lock() {
+                    *memory_guard = Some(memory);
+                }
+                cx.refresh().expect("Failed to refresh windows");
+            }
         }
     }
 
@@ -631,15 +569,10 @@ impl UserInterface for Gpui {
     }
 
     async fn update_memory(&self, memory: &WorkingMemory) -> Result<(), UIError> {
-        // Update the shared working memory directly
-        if let Ok(mut memory_guard) = self.working_memory.lock() {
-            *memory_guard = Some(memory.clone());
-        }
-
-        // Set the update flag to trigger a UI refresh
-        let mut flag = self.ui_update_needed.lock().unwrap();
-        *flag = true;
-
+        // Push an event to update working memory
+        self.push_event(UiEvent::UpdateMemory {
+            memory: memory.clone(),
+        });
         Ok(())
     }
 
