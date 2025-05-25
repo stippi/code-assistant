@@ -51,6 +51,7 @@ impl MessageContainer {
         });
         let view = cx.new(|cx| BlockView::new(block, cx));
         elements.push(view);
+        cx.notify();
     }
 
     // Add a new thinking block
@@ -61,6 +62,7 @@ impl MessageContainer {
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.into()));
         let view = cx.new(|cx| BlockView::new(block, cx));
         elements.push(view);
+        cx.notify();
     }
 
     // Add a new tool use block
@@ -83,6 +85,7 @@ impl MessageContainer {
         });
         let view = cx.new(|cx| BlockView::new(block, cx));
         elements.push(view);
+        cx.notify();
     }
 
     // Update the status of a tool block
@@ -149,6 +152,7 @@ impl MessageContainer {
         });
         let view = cx.new(|cx| BlockView::new(block, cx));
         elements.push(view);
+        cx.notify();
     }
 
     // Add or append to thinking block
@@ -180,6 +184,7 @@ impl MessageContainer {
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.to_string()));
         let view = cx.new(|cx| BlockView::new(block, cx));
         elements.push(view);
+        cx.notify();
     }
 
     // Add or update tool parameter
@@ -269,6 +274,7 @@ impl MessageContainer {
             let block = BlockData::ToolUse(tool);
             let view = cx.new(|cx| BlockView::new(block, cx));
             elements.push(view);
+            cx.notify();
         }
     }
 
