@@ -6,7 +6,7 @@ use gpui::{
     IntoElement, MouseButton, SharedString, Styled, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
-use gpui_component::{scroll::ScrollbarAxis, ActiveTheme, StyledExt};
+use gpui_component::{label::Label, ActiveTheme};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::trace;
@@ -82,7 +82,7 @@ impl MessageContainer {
             status: ToolStatus::Pending,
             status_message: None,
             output: None,
-            is_collapsed: true, // Default to collapsed
+            is_collapsed: false, // Default to expanded
         });
         let view = cx.new(|cx| BlockView::new(block, cx));
         elements.push(view);
@@ -105,12 +105,15 @@ impl MessageContainer {
             element.update(cx, |view, cx| {
                 if let Some(tool) = view.block.as_tool_mut() {
                     if tool.id == tool_id {
-                        tool.status = status;
+                        tool.status = status.clone();
                         tool.status_message = message.clone();
                         tool.output = output.clone();
 
-                        // Auto-expand failed tool calls
-                        if status == ToolStatus::Error {
+                        // Auto-collapse on completion or error
+                        if status == ToolStatus::Success || status == ToolStatus::Error {
+                            tool.is_collapsed = true;
+                        } else {
+                            // Ensure it's expanded if it's still pending or in progress
                             tool.is_collapsed = false;
                         }
 
@@ -264,7 +267,7 @@ impl MessageContainer {
                 status: ToolStatus::Pending,
                 status_message: None,
                 output: None,
-                is_collapsed: true, // Default to collapsed
+                is_collapsed: false, // Default to expanded
             };
 
             tool.parameters.push(ParameterBlock {
@@ -695,53 +698,45 @@ impl Render for BlockView {
                                         .into_any(),
                                 );
 
-                                // Second row: Full-width parameters (if any)
-                                if !fullwidth_params.is_empty() {
-                                    elements.push(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .w_full()
-                                            .mt_1() // Add margin between rows
-                                            .children(
-                                                fullwidth_params
-                                                    .iter()
-                                                    .map(|param| render_parameter(param)),
-                                            )
-                                            .into_any(),
-                                    );
+                                // Conditionally add full-width parameters and output if not collapsed
+                                if !block.is_collapsed {
+                                    // Full-width parameters
+                                    if !fullwidth_params.is_empty() {
+                                        elements.push(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .w_full()
+                                                .mt_1() // Add margin between rows
+                                                .children(
+                                                    fullwidth_params
+                                                        .iter()
+                                                        .map(|param| render_parameter(param)),
+                                                )
+                                                .into_any(),
+                                        );
+                                    }
+
+                                    // Output
+                                    if let Some(output_content) = &block.output {
+                                        if !output_content.is_empty() { // Also check if output is not empty
+                                            elements.push(
+                                                div()
+                                                    .id(SharedString::from(block.id.clone()))
+                                                    .p_2()
+                                                    .mt_1()
+                                                    .w_full()
+                                                    .text_color(cx.theme().foreground)
+                                                    .text_size(px(13.))
+                                                    .child(output_content.clone())
+                                                    .into_any(),
+                                            );
+                                        }
+                                    }
                                 }
 
-                                // Tool output content (only shown when expanded or on error)
-                                // Output (only when expanded)
-                                if !block.is_collapsed && block.output.is_some() {
-                                    elements.push(
-                                        div()
-                                            .id(SharedString::from(block.id.clone()))
-                                            // .flex()
-                                            // .flex_row()
-                                            //.items_center()
-                                            //.flex_1()
-                                            .p_2()
-                                            .mt_1()
-                                            .w_full()
-                                            .max_w_full()
-                                            .min_h_0()
-                                            .max_h(px(300.)) // Max height
-                                            .overflow_scroll()
-                                            //.overflow_hidden()
-                                            // .scrollable(
-                                            //     cx.entity().entity_id(),
-                                            //     ScrollbarAxis::Vertical,
-                                            // ) // Make it scrollable
-                                            .text_color(cx.theme().foreground)
-                                            .text_size(px(13.))
-                                            .child(block.output.clone().unwrap_or_default())
-                                            .into_any(),
-                                    );
-                                }
-                                // Error message (always shown for error status)
-                                else if block.status == crate::ui::ToolStatus::Error
+                                // Error message (always shown for error status, regardless of collapsed state)
+                                if block.status == crate::ui::ToolStatus::Error
                                     && block.status_message.is_some()
                                 {
                                     elements.push(
@@ -751,15 +746,54 @@ impl Render for BlockView {
                                             .items_center()
                                             .p_2()
                                             .mt_1()
-                                            .max_h(px(300.)) // Max height
-                                            .scrollable(
-                                                cx.entity().entity_id(),
-                                                ScrollbarAxis::Vertical,
-                                            ) // Make it scrollable
                                             .text_color(cx.theme().danger.opacity(0.9))
                                             .text_size(px(13.))
                                             .child(block.status_message.clone().unwrap_or_default())
                                             .into_any(),
+                                    );
+                                }
+
+                                // Bottom collapse bar (only if expanded and there's content to collapse)
+                                if !block.is_collapsed
+                                    && (!fullwidth_params.is_empty()
+                                        || block.output.as_ref().map_or(false, |o| !o.is_empty()))
+                                {
+                                    let (collapse_icon, collapse_text) = (
+                                        file_icons::get().get_type_icon(file_icons::CHEVRON_UP),
+                                        "Collapse", // Simpler text
+                                    );
+                                    elements.push(
+                                        div()
+                                            .flex()
+                                            .justify_center()
+                                            .items_center()
+                                            .w_full()
+                                            .p_1()
+                                            .mt_1()
+                                            .border_t_1()
+                                            .border_color(cx.theme().border)
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(cx.theme().border.opacity(0.5)))
+                                            .on_mouse_up(
+                                                MouseButton::Left,
+                                                cx.listener(move |view, _event, _window, cx| {
+                                                    view.toggle_tool_collapsed(cx);
+                                                }),
+                                            )
+                                            .child(
+                                                div().flex().items_center().gap_1().children(vec![
+                                                    file_icons::render_icon(
+                                                        &collapse_icon,
+                                                        14.0,
+                                                        chevron_color, // Use existing chevron_color
+                                                        "▲",
+                                                    ).into_any(),
+                                                    Label::new(collapse_text)
+                                                        .text_color(chevron_color) // Style text consistently
+                                                        .into_any_element()
+                                                ])
+                                            )
+                                            .into_any()
                                     );
                                 }
 
