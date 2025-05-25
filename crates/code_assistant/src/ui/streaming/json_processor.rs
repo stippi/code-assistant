@@ -38,6 +38,9 @@ struct JsonProcessorState {
     in_thinking: bool,
     /// Track if we're at the beginning of a block (thinking/content) for text chunks
     at_block_start: bool,
+    /// True if any part of the current string value being parsed has been emitted.
+    /// Used to detect and emit empty strings: ""
+    emitted_string_part_for_current_key: bool,
 
     // JSON specific state
     json_parsing_state: JsonParsingState,
@@ -56,6 +59,7 @@ impl Default for JsonProcessorState {
             tool_name: String::new(),
             in_thinking: false,
             at_block_start: false,
+            emitted_string_part_for_current_key: false,
             json_parsing_state: JsonParsingState::ExpectOpenBrace,
             current_key: None,
             complex_value_nesting: 0,
@@ -161,6 +165,7 @@ impl StreamProcessorTrait for JsonStreamProcessor {
 impl JsonStreamProcessor {
     /// Process a chunk of JSON content character by character to enable streaming.
     /// This method iteratively consumes characters from the internal buffer.
+    #[allow(unused_assignments)]
     fn process_json_stream(&mut self, new_content: &str) -> Result<(), UIError> {
         self.state.buffer.push_str(new_content);
 
@@ -177,7 +182,6 @@ impl JsonStreamProcessor {
                                                        // Bytes consumed in this iteration. Defaults to current char's length.
                                                        // Will be updated by states like InValueString if they consume more.
             let mut iteration_consumed_bytes = char_len;
-            let mut consumed_char_in_state = true; // Most states consume the char they match
 
             // Cloned for debugging, avoid multiple calls to current_tool_id!
             // let current_tool_id_for_debug = self.state.tool_id.clone();
@@ -273,7 +277,8 @@ impl JsonStreamProcessor {
                         // Start of string value
                         self.state.json_parsing_state = JsonParsingState::InValueString;
                         self.state.in_string_escape = false;
-                        // temp_chars_for_value is not used for streaming string parts directly to UI
+                        self.state.emitted_string_part_for_current_key = false; // Initialize for new string value
+                                                                                // temp_chars_for_value is not used for streaming string parts directly to UI
                     } else if char_to_process == '{' || char_to_process == '[' {
                         // Start of complex value
                         self.state.json_parsing_state = JsonParsingState::InValueComplex;
@@ -306,7 +311,8 @@ impl JsonStreamProcessor {
                         // or if a previous state incorrectly transitioned.
                         // Attempt to recover by expecting a comma or brace.
                         self.state.json_parsing_state = JsonParsingState::ExpectCommaOrCloseBrace;
-                        consumed_char_in_state = false; // Re-process this char in the new state.
+                        // consumed_char_in_state = false; // Re-process this char in the new state. -> REMOVED
+                        made_progress_in_iteration = true; // Ensure loop continues for re-processing
                         continue 'char_processing_loop; // Skip current char consumption for this iteration
                     }
                     // Ensure current_key_name and tool_id are valid before extensive use
@@ -347,6 +353,7 @@ impl JsonStreamProcessor {
                             value: escaped_char_as_string,
                             tool_id,
                         })?;
+                        self.state.emitted_string_part_for_current_key = true;
                         self.state.in_string_escape = false;
                         // iteration_consumed_bytes remains char_len (for the char_to_process like 'n', '"', etc.)
                     } else if char_to_process == '\\' {
@@ -356,10 +363,19 @@ impl JsonStreamProcessor {
                         // iteration_consumed_bytes remains char_len (for this backslash char)
                     } else if char_to_process == '"' {
                         // End of string value
+                        if !self.state.emitted_string_part_for_current_key {
+                            // This means the string was empty, e.g., ""
+                            // current_key_name and tool_id are already validated and cloned above
+                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                                name: current_key_name, // Already cloned
+                                value: String::new(),   // Empty string
+                                tool_id,                // Already cloned
+                            })?;
+                            // self.state.emitted_string_part_for_current_key remains false, but it's for the *next* string.
+                        }
                         self.state.json_parsing_state = JsonParsingState::ExpectCommaOrCloseBrace;
                         // Current quote char is consumed.
                         // iteration_consumed_bytes remains char_len (for this quote char)
-                        // No fragment for the closing quote itself.
                     } else {
                         // Regular character in string value - greedy consumption
                         let mut segment = String::new();
@@ -404,6 +420,7 @@ impl JsonStreamProcessor {
                                 value: segment,
                                 tool_id,
                             })?;
+                            self.state.emitted_string_part_for_current_key = true;
                         }
                         // This InValueString state instance consumed `current_segment_byte_length` from the buffer.
                         iteration_consumed_bytes = current_segment_byte_length;
@@ -413,7 +430,7 @@ impl JsonStreamProcessor {
                     if self.state.current_key.is_none() {
                         debug!("InValueComplex state but current_key is None. Char: '{}', Buffer: '{}'", char_to_process, self.state.buffer);
                         self.state.json_parsing_state = JsonParsingState::ExpectCommaOrCloseBrace;
-                        consumed_char_in_state = false; // Re-process this char in the new state.
+                        made_progress_in_iteration = true; // Ensure loop continues for re-processing
                         continue 'char_processing_loop;
                     }
                     let current_key_name = self.state.current_key.as_ref().unwrap(); // Safe due to check above
@@ -469,7 +486,7 @@ impl JsonStreamProcessor {
                             char_to_process, self.state.buffer
                         );
                         self.state.json_parsing_state = JsonParsingState::ExpectCommaOrCloseBrace;
-                        consumed_char_in_state = false; // Re-process this char in the new state.
+                        made_progress_in_iteration = true; // Ensure loop continues for re-processing
                         continue 'char_processing_loop;
                     }
                     let current_key_name = self.state.current_key.as_ref().unwrap(); // Safe due to check above
@@ -502,7 +519,9 @@ impl JsonStreamProcessor {
                         }
                         self.state.json_parsing_state = JsonParsingState::ExpectCommaOrCloseBrace;
                         // self.state.current_key = None; // Key used up
-                        consumed_char_in_state = false; // Re-process this char in the new state (ExpectCommaOrCloseBrace)
+                        made_progress_in_iteration = true; // Ensure loop continues for re-processing
+                                                           // CRITICAL: The char (terminator) should be re-processed, so we must continue here.
+                        continue 'char_processing_loop; // Add continue to re-process current char in new state
                     } else {
                         self.state.temp_chars_for_value.push(char_to_process);
                     }
@@ -535,12 +554,12 @@ impl JsonStreamProcessor {
                 }
             }
 
-            if consumed_char_in_state {
-                // Drain the number of bytes that this iteration's state logic has processed.
-                // This could be more than just char_len if a state (like InValueString) consumed a whole segment.
-                self.state.buffer.drain(..iteration_consumed_bytes);
-                made_progress_in_iteration = true;
-            }
+            // If a 'continue 'char_processing_loop;' was hit in any of the states above,
+            // this part of the code is skipped for that iteration.
+            // Otherwise, the character (or segment) was processed, and should be drained.
+            self.state.buffer.drain(..iteration_consumed_bytes);
+            made_progress_in_iteration = true;
+
             // If consumed_char_in_state is false (e.g., continue 'char_processing_loop' was hit),
             // iteration_consumed_bytes is not used for draining, and made_progress_in_iteration
             // remains false unless a state change occurred that will lead to progress in the next iteration.
