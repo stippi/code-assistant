@@ -5,25 +5,6 @@ use llm::StreamingChunk;
 use std::sync::Arc;
 use tracing::debug;
 
-/// Simplified state machine for JSON parsing
-#[derive(Debug, Clone, PartialEq)]
-enum JsonParseState {
-    /// Outside any JSON structure or waiting for start
-    Outside,
-    /// Inside top-level JSON object
-    InObject,
-    /// Parsing a parameter name (between quotes)
-    InParamName,
-    /// After parameter name, expecting colon
-    AfterParamName,
-    /// After colon, expecting value
-    BeforeValue,
-    /// Inside a simple value (string, number, boolean, null)
-    InSimpleValue,
-    /// Inside a complex value (object or array)
-    InComplexValue,
-}
-
 /// Tag types for thinking text processing
 #[derive(PartialEq)]
 enum ThinkingTagType {
@@ -34,43 +15,24 @@ enum ThinkingTagType {
 
 /// State tracking for JSON processor
 struct JsonProcessorState {
-    /// Current parse state in the state machine
-    state: JsonParseState,
-    /// Current parameter name being parsed
-    current_param: String,
-    /// Current value being accumulated
-    current_value: String,
+    /// Buffer for accumulating incomplete JSON
+    buffer: String,
     /// Tool ID for the current parsing context
     tool_id: String,
     /// Tool name for the current parsing context
     tool_name: String,
-    /// If we're currently inside a quoted string
-    in_quotes: bool,
-    /// If the previous character was an escape character
-    escaped: bool,
-    /// Buffer for incomplete JSON chunks
-    buffer: String,
-    /// Nesting level for complex values (objects/arrays)
-    nesting_level: i32,
     /// Track if we're inside thinking tags for text chunks
     in_thinking: bool,
     /// Track if we're at the beginning of a block (thinking/content)
-    /// Used to determine when to trim leading newlines
     at_block_start: bool,
 }
 
 impl Default for JsonProcessorState {
     fn default() -> Self {
         Self {
-            state: JsonParseState::Outside,
-            current_param: String::new(),
-            current_value: String::new(),
+            buffer: String::new(),
             tool_id: String::new(),
             tool_name: String::new(),
-            in_quotes: false,
-            escaped: false,
-            buffer: String::new(),
-            nesting_level: 0,
             in_thinking: false,
             at_block_start: false,
         }
@@ -120,12 +82,7 @@ impl StreamProcessorTrait for JsonStreamProcessor {
 
                         // Only reset parser state if this is a new tool
                         if is_new_tool {
-                            self.state.state = JsonParseState::Outside;
-                            self.state.current_param.clear();
-                            self.state.current_value.clear();
-                            self.state.in_quotes = false;
-                            self.state.escaped = false;
-                            self.state.nesting_level = 0;
+                            self.state.buffer.clear();
 
                             // Send the tool name to UI only for new tools
                             self.ui.display_fragment(&DisplayFragment::ToolName {
@@ -147,305 +104,277 @@ impl StreamProcessorTrait for JsonStreamProcessor {
 }
 
 impl JsonStreamProcessor {
-    /// Process a chunk of JSON and extract parameters
+    /// Process a chunk of JSON with proper buffering and streaming
     fn process_json(&mut self, content: &str) -> Result<(), UIError> {
-        // Combine buffer with new content
-        let text = format!("{}{}", self.state.buffer, content);
-        self.state.buffer.clear();
+        // Add new content to buffer
+        self.state.buffer.push_str(content);
 
-        // Process each character
-        let mut chars = text.chars().peekable();
-        for c in chars.by_ref() {
-            match c {
-                // Handle escape character (backslash)
-                '\\' => {
-                    if self.state.in_quotes {
-                        if self.state.escaped {
-                            // Double escape becomes a literal backslash
-                            self.handle_content_char(c);
-                            self.state.escaped = false;
-                        } else {
-                            self.state.escaped = true;
-                        }
-                    } else {
-                        // Backslash outside quotes is just a regular character
-                        self.handle_content_char(c);
-                    }
-                }
-
-                // Handle quotation marks
-                '"' => {
-                    if !self.state.escaped {
-                        // Toggle quote state
-                        self.state.in_quotes = !self.state.in_quotes;
-
-                        match self.state.state {
-                            JsonParseState::InObject if self.state.in_quotes => {
-                                // Start of parameter name
-                                self.state.state = JsonParseState::InParamName;
-                                self.state.current_param.clear();
-                            }
-                            JsonParseState::InParamName if !self.state.in_quotes => {
-                                // End of parameter name
-                                self.state.state = JsonParseState::AfterParamName;
-                            }
-                            JsonParseState::BeforeValue if self.state.in_quotes => {
-                                // Start of string value
-                                self.state.state = JsonParseState::InSimpleValue;
-                                self.state.current_value.clear();
-                            }
-                            JsonParseState::InSimpleValue if !self.state.in_quotes => {
-                                // End of string value
-                                self.emit_parameter()?;
-                                self.state.state = JsonParseState::InObject;
-                            }
-                            JsonParseState::InComplexValue => {
-                                // Quote within a complex value, just add it
-                                self.handle_content_char(c);
-                            }
-                            _ => {
-                                // Other quote states, just add it as content
-                                self.handle_content_char(c);
-                            }
-                        }
-                    } else {
-                        // Escaped quote becomes a literal quote
-                        self.handle_content_char(c);
-                        self.state.escaped = false;
-                    }
-                }
-
-                // Handle opening braces - start of an object
-                '{' => {
-                    if !self.state.in_quotes {
-                        match self.state.state {
-                            JsonParseState::Outside => {
-                                // Start of top-level object
-                                self.state.state = JsonParseState::InObject;
-                            }
-                            JsonParseState::BeforeValue => {
-                                // Start of a complex object value
-                                self.state.state = JsonParseState::InComplexValue;
-                                self.state.nesting_level = 1;
-                                self.handle_content_char(c);
-                            }
-                            JsonParseState::InComplexValue => {
-                                // Nested object within complex value
-                                self.state.nesting_level += 1;
-                                self.handle_content_char(c);
-                            }
-                            _ => {
-                                // Other states, just add as content
-                                self.handle_content_char(c);
-                            }
-                        }
-                    } else {
-                        // Literal '{' inside quotes
-                        self.handle_content_char(c);
-                    }
-                    self.state.escaped = false;
-                }
-
-                // Handle closing braces - end of an object
-                '}' => {
-                    if !self.state.in_quotes {
-                        match self.state.state {
-                            JsonParseState::InObject => {
-                                // End of top-level object
-                                self.state.state = JsonParseState::Outside;
-                            }
-                            JsonParseState::InComplexValue => {
-                                // End of a nested object within complex value
-                                self.state.nesting_level -= 1;
-                                self.handle_content_char(c);
-
-                                // If we've reached the end of the complex value
-                                if self.state.nesting_level == 0 {
-                                    self.emit_parameter()?;
-                                    self.state.state = JsonParseState::InObject;
-                                }
-                            }
-                            _ => {
-                                // Other states, just add as content
-                                self.handle_content_char(c);
-                            }
-                        }
-                    } else {
-                        // Literal '}' inside quotes
-                        self.handle_content_char(c);
-                    }
-                    self.state.escaped = false;
-                }
-
-                // Handle opening brackets - start of an array
-                '[' => {
-                    if !self.state.in_quotes {
-                        match self.state.state {
-                            JsonParseState::BeforeValue => {
-                                // Start of a complex array value
-                                self.state.state = JsonParseState::InComplexValue;
-                                self.state.nesting_level = 1;
-                                self.handle_content_char(c);
-                            }
-                            JsonParseState::InComplexValue => {
-                                // Nested array within complex value
-                                self.state.nesting_level += 1;
-                                self.handle_content_char(c);
-                            }
-                            _ => {
-                                // Other states, just add as content
-                                self.handle_content_char(c);
-                            }
-                        }
-                    } else {
-                        // Literal '[' inside quotes
-                        self.handle_content_char(c);
-                    }
-                    self.state.escaped = false;
-                }
-
-                // Handle closing brackets - end of an array
-                ']' => {
-                    if !self.state.in_quotes {
-                        match self.state.state {
-                            JsonParseState::InComplexValue => {
-                                // End of a nested array within complex value
-                                self.state.nesting_level -= 1;
-                                self.handle_content_char(c);
-
-                                // If we've reached the end of the complex value
-                                if self.state.nesting_level == 0 {
-                                    self.emit_parameter()?;
-                                    self.state.state = JsonParseState::InObject;
-                                }
-                            }
-                            _ => {
-                                // Other states, just add as content
-                                self.handle_content_char(c);
-                            }
-                        }
-                    } else {
-                        // Literal ']' inside quotes
-                        self.handle_content_char(c);
-                    }
-                    self.state.escaped = false;
-                }
-
-                // Handle colon - separates parameter name from value
-                ':' => {
-                    if !self.state.in_quotes {
-                        if self.state.state == JsonParseState::AfterParamName {
-                            // Transition from parameter name to value
-                            self.state.state = JsonParseState::BeforeValue;
-                        } else if self.state.state == JsonParseState::InComplexValue {
-                            // Colon within a complex value
-                            self.handle_content_char(c);
-                        }
-                    } else {
-                        // Literal ':' inside quotes
-                        self.handle_content_char(c);
-                    }
-                    self.state.escaped = false;
-                }
-
-                // Handle comma - separates parameters or values in arrays
-                ',' => {
-                    if !self.state.in_quotes {
-                        match self.state.state {
-                            JsonParseState::InObject => {
-                                // Comma between parameters in the top-level object
-                                // Just wait for the next parameter name
-                            }
-                            JsonParseState::InSimpleValue => {
-                                // End of a simple value
-                                self.emit_parameter()?;
-                                self.state.state = JsonParseState::InObject;
-                            }
-                            JsonParseState::InComplexValue => {
-                                // Comma within a complex value
-                                self.handle_content_char(c);
-                            }
-                            _ => {
-                                // Other states, ignore or add as content
-                                if self.state.state == JsonParseState::InComplexValue {
-                                    self.handle_content_char(c);
-                                }
-                            }
-                        }
-                    } else {
-                        // Literal ',' inside quotes
-                        self.handle_content_char(c);
-                    }
-                    self.state.escaped = false;
-                }
-
-                // Handle whitespace
-                ' ' | '\t' | '\n' | '\r' => {
-                    if self.state.in_quotes || self.state.state == JsonParseState::InComplexValue {
-                        // Preserve whitespace in quotes and complex values
-                        self.handle_content_char(c);
-                    }
-                    // Otherwise, ignore whitespace
-                    self.state.escaped = false;
-                }
-
-                // Handle other characters (numbers, letters, etc.)
-                _ => {
-                    if self.state.state == JsonParseState::BeforeValue && !self.state.in_quotes {
-                        // Start of a non-string primitive value (number, boolean, null)
-                        self.state.state = JsonParseState::InSimpleValue;
-                        self.state.current_value.clear();
-                        self.handle_content_char(c);
-                    } else {
-                        // Any other character just gets added to current content
-                        self.handle_content_char(c);
-                    }
-                    self.state.escaped = false;
-                }
+        // Try to extract and emit complete parameters
+        loop {
+            let initial_buffer_len = self.state.buffer.len();
+            self.try_extract_parameter()?;
+            
+            // If buffer didn't change, we can't make more progress
+            if self.state.buffer.len() == initial_buffer_len {
+                break;
             }
-        }
-
-        // If we're in the middle of processing, store remaining data
-        if !text.is_empty()
-            && (self.state.in_quotes
-                || self.state.state == JsonParseState::InComplexValue
-                || self.state.state == JsonParseState::InSimpleValue)
-        {
-            // Store any remaining characters that would be needed for the next chunk
-            self.state.buffer = chars.collect::<String>();
         }
 
         Ok(())
     }
 
-    /// Helper to handle adding a character to the current content
-    fn handle_content_char(&mut self, c: char) {
-        match self.state.state {
-            JsonParseState::InParamName => {
-                self.state.current_param.push(c);
-            }
-            JsonParseState::InSimpleValue | JsonParseState::InComplexValue => {
-                self.state.current_value.push(c);
-            }
-            _ => {}
+    /// Try to extract one complete parameter from the buffer
+    fn try_extract_parameter(&mut self) -> Result<(), UIError> {
+        let json_str = self.state.buffer.trim_start();
+        
+        if json_str.is_empty() {
+            return Ok(());
         }
-    }
 
-    /// Emit the current parameter to the UI
-    fn emit_parameter(&mut self) -> Result<(), UIError> {
-        // Only emit if we have both a parameter name and value
-        if !self.state.current_param.is_empty() && self.state.state != JsonParseState::InParamName {
+        // Find or continue with JSON object
+        let working_json = if let Some(brace_pos) = json_str.find('{') {
+            &json_str[brace_pos..]
+        } else if json_str.starts_with(',') || json_str.starts_with('"') {
+            // This looks like a continuation of JSON - create a temporary complete JSON
+            &format!("{{{}", json_str)
+        } else {
+            return Ok(()); // Not ready yet
+        };
+
+        // Try to find a complete parameter
+        if let Some((param_name, param_value, consumed_chars)) = self.find_complete_parameter(working_json) {
+            // Emit the parameter
             self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                name: self.state.current_param.clone(),
-                value: self.state.current_value.clone(),
+                name: param_name,
+                value: param_value,
                 tool_id: self.state.tool_id.clone(),
             })?;
 
-            // Clear the current value but keep the parameter name
-            // in case there are multiple values with the same parameter
-            self.state.current_value.clear();
+            // Remove consumed content from buffer
+            let chars_to_remove = if json_str.starts_with(',') || json_str.starts_with('"') {
+                consumed_chars - 1 // Account for the fake opening brace
+            } else {
+                let brace_pos = json_str.find('{').unwrap();
+                brace_pos + consumed_chars
+            };
+            
+            // Calculate actual position in original buffer
+            let trim_start_offset = self.state.buffer.len() - json_str.len();
+            let total_chars_to_remove = trim_start_offset + chars_to_remove;
+            
+            if total_chars_to_remove < self.state.buffer.len() {
+                self.state.buffer = self.state.buffer[total_chars_to_remove..].to_string();
+            } else {
+                self.state.buffer.clear();
+            }
         }
+
         Ok(())
+    }
+
+    /// Find a complete parameter (name + value) in the JSON string
+    /// Returns (param_name, param_value, chars_consumed) if found
+    fn find_complete_parameter(&self, json_str: &str) -> Option<(String, String, usize)> {
+        let chars: Vec<char> = json_str.chars().collect();
+        let mut pos = 0;
+
+        // Skip opening brace and whitespace
+        while pos < chars.len() && (chars[pos] == '{' || chars[pos].is_whitespace()) {
+            pos += 1;
+        }
+
+        // Skip comma if present
+        if pos < chars.len() && chars[pos] == ',' {
+            pos += 1;
+            while pos < chars.len() && chars[pos].is_whitespace() {
+                pos += 1;
+            }
+        }
+
+        // Parse parameter name
+        if pos >= chars.len() || chars[pos] != '"' {
+            return None;
+        }
+
+        let (param_name, name_end) = self.parse_string(&chars, pos)?;
+        pos = name_end;
+
+        // Skip whitespace and find colon
+        while pos < chars.len() && chars[pos].is_whitespace() {
+            pos += 1;
+        }
+        if pos >= chars.len() || chars[pos] != ':' {
+            return None;
+        }
+        pos += 1; // Skip colon
+
+        // Skip whitespace before value
+        while pos < chars.len() && chars[pos].is_whitespace() {
+            pos += 1;
+        }
+        if pos >= chars.len() {
+            return None;
+        }
+
+        // Parse value based on type
+        let (param_value, value_end) = match chars[pos] {
+            '"' => self.parse_string(&chars, pos)?,
+            '{' => self.parse_object(&chars, pos)?,
+            '[' => self.parse_array(&chars, pos)?,
+            _ => self.parse_simple_value(&chars, pos)?,
+        };
+
+        Some((param_name, param_value, value_end))
+    }
+
+    /// Parse a quoted string starting at position
+    fn parse_string(&self, chars: &[char], start_pos: usize) -> Option<(String, usize)> {
+        if start_pos >= chars.len() || chars[start_pos] != '"' {
+            return None;
+        }
+
+        let mut pos = start_pos + 1;
+        let mut result = String::new();
+        let mut escaped = false;
+
+        while pos < chars.len() {
+            let c = chars[pos];
+
+            if escaped {
+                match c {
+                    'n' => result.push('\n'),
+                    'r' => result.push('\r'),
+                    't' => result.push('\t'),
+                    '\\' => result.push('\\'),
+                    '"' => result.push('"'),
+                    _ => {
+                        result.push('\\');
+                        result.push(c);
+                    }
+                }
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                return Some((result, pos + 1));
+            } else {
+                result.push(c);
+            }
+
+            pos += 1;
+        }
+
+        None // Incomplete string
+    }
+
+    /// Parse an object starting at position
+    fn parse_object(&self, chars: &[char], start_pos: usize) -> Option<(String, usize)> {
+        if start_pos >= chars.len() || chars[start_pos] != '{' {
+            return None;
+        }
+
+        let mut pos = start_pos;
+        let mut result = String::new();
+        let mut nesting_level = 0;
+        let mut in_string = false;
+        let mut escaped = false;
+
+        while pos < chars.len() {
+            let c = chars[pos];
+            result.push(c);
+
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    in_string = false;
+                }
+            } else {
+                match c {
+                    '"' => in_string = true,
+                    '{' => nesting_level += 1,
+                    '}' => {
+                        nesting_level -= 1;
+                        if nesting_level == 0 {
+                            return Some((result, pos + 1));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            pos += 1;
+        }
+
+        None // Incomplete object
+    }
+
+    /// Parse an array starting at position
+    fn parse_array(&self, chars: &[char], start_pos: usize) -> Option<(String, usize)> {
+        if start_pos >= chars.len() || chars[start_pos] != '[' {
+            return None;
+        }
+
+        let mut pos = start_pos;
+        let mut result = String::new();
+        let mut nesting_level = 0;
+        let mut in_string = false;
+        let mut escaped = false;
+
+        while pos < chars.len() {
+            let c = chars[pos];
+            result.push(c);
+
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    in_string = false;
+                }
+            } else {
+                match c {
+                    '"' => in_string = true,
+                    '[' => nesting_level += 1,
+                    ']' => {
+                        nesting_level -= 1;
+                        if nesting_level == 0 {
+                            return Some((result, pos + 1));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            pos += 1;
+        }
+
+        None // Incomplete array
+    }
+
+    /// Parse a simple value (number, boolean, null)
+    fn parse_simple_value(&self, chars: &[char], start_pos: usize) -> Option<(String, usize)> {
+        let mut pos = start_pos;
+        let mut result = String::new();
+
+        while pos < chars.len() {
+            let c = chars[pos];
+
+            if matches!(c, ',' | '}' | ']') || c.is_whitespace() {
+                if result.is_empty() {
+                    return None;
+                }
+                return Some((result, pos));
+            }
+
+            result.push(c);
+            pos += 1;
+        }
+
+        None // Incomplete simple value
     }
 
     /// Process text chunks and extract <thinking> blocks
@@ -507,10 +436,9 @@ impl JsonStreamProcessor {
                                 processed_pre_text,
                             ))?;
                         } else {
-                            let mut final_pre_text = processed_pre_text; // Is a String
+                            let mut final_pre_text = processed_pre_text;
 
                             // If a real thinking tag follows, trim ALL trailing spaces.
-                            // Otherwise (not a thinking tag), final_pre_text is not trimmed of trailing spaces here.
                             if tag_type == ThinkingTagType::Start
                                 || tag_type == ThinkingTagType::End
                             {
@@ -569,7 +497,6 @@ impl JsonStreamProcessor {
                         }
                         current_pos = end_char_pos;
                         if !single_char_slice_str.is_empty() {
-                            // If any char (e.g. '<') emitted
                             self.state.at_block_start = false;
                         }
                     }
@@ -587,7 +514,6 @@ impl JsonStreamProcessor {
                     }
 
                     if !processed_remaining_text.is_empty() {
-                        // Only set at_block_start if non-empty text was processed
                         self.state.at_block_start = false;
                     }
 
@@ -612,14 +538,12 @@ impl JsonStreamProcessor {
     /// Detect if the given text starts with a thinking tag
     fn detect_thinking_tag(&self, text: &str) -> (ThinkingTagType, usize) {
         if text.starts_with("<thinking>") {
-            (ThinkingTagType::Start, 10) // Length of "<thinking>"
+            (ThinkingTagType::Start, 10)
         } else if text.starts_with("</thinking>") {
-            (ThinkingTagType::End, 11) // Length of "</thinking>"
+            (ThinkingTagType::End, 11)
         } else if text.starts_with("<thinking") {
-            // Incomplete opening tag
             (ThinkingTagType::Start, 0)
         } else if text.starts_with("</thinking") {
-            // Incomplete closing tag
             (ThinkingTagType::End, 0)
         } else {
             (ThinkingTagType::None, 0)
@@ -627,26 +551,20 @@ impl JsonStreamProcessor {
     }
 
     /// Check if a string is a potential beginning of a thinking tag
-    /// This method closely mirrors the XML processor's is_potential_tag_start method
     fn is_potential_thinking_tag_start(&self, text: &str) -> bool {
-        // Tag prefixes to check for
         const TAG_PREFIXES: [&str; 2] = ["<thinking>", "</thinking>"];
 
-        // Check if the text could be the start of any tag
         for prefix in &TAG_PREFIXES {
-            let text_chars: Vec<char> = text.chars().collect(); // Convert text to Vec<char>
-            let prefix_chars: Vec<char> = prefix.chars().collect(); // Convert prefix to Vec<char>
+            let text_chars: Vec<char> = text.chars().collect();
+            let prefix_chars: Vec<char> = prefix.chars().collect();
 
-            // Loop through all possible partial matches
             for i in 1..=prefix_chars.len().min(text_chars.len()) {
-                // Check if the last `i` characters of text match the first `i` characters of prefix
                 if text_chars[text_chars.len() - i..] == prefix_chars[..i] {
                     return true;
                 }
             }
         }
 
-        // Also check for incomplete tags that already started
         if text.contains('<') && !text.contains('>') {
             return true;
         }
