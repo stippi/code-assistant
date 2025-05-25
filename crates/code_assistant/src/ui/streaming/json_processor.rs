@@ -38,6 +38,8 @@ struct JsonProcessorState {
     state: JsonParseState,
     /// Current parameter name being parsed
     current_param: String,
+    /// Current value being accumulated
+    current_value: String,
     /// Tool ID for the current parsing context
     tool_id: String,
     /// Tool name for the current parsing context
@@ -55,8 +57,6 @@ struct JsonProcessorState {
     /// Track if we're at the beginning of a block (thinking/content)
     /// Used to determine when to trim leading newlines
     at_block_start: bool,
-    /// Track if we've already emitted the parameter start
-    parameter_started: bool,
 }
 
 impl Default for JsonProcessorState {
@@ -64,6 +64,7 @@ impl Default for JsonProcessorState {
         Self {
             state: JsonParseState::Outside,
             current_param: String::new(),
+            current_value: String::new(),
             tool_id: String::new(),
             tool_name: String::new(),
             in_quotes: false,
@@ -72,7 +73,6 @@ impl Default for JsonProcessorState {
             nesting_level: 0,
             in_thinking: false,
             at_block_start: false,
-            parameter_started: false,
         }
     }
 }
@@ -122,10 +122,10 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                         if is_new_tool {
                             self.state.state = JsonParseState::Outside;
                             self.state.current_param.clear();
+                            self.state.current_value.clear();
                             self.state.in_quotes = false;
                             self.state.escaped = false;
                             self.state.nesting_level = 0;
-                            self.state.parameter_started = false;
 
                             // Send the tool name to UI only for new tools
                             self.ui.display_fragment(&DisplayFragment::ToolName {
@@ -137,7 +137,7 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                 }
 
                 // Process the JSON content
-                self.process_json_chunk(content)
+                self.process_json(content)
             }
 
             // For plain text chunks, process for thinking tags and then display
@@ -147,408 +147,305 @@ impl StreamProcessorTrait for JsonStreamProcessor {
 }
 
 impl JsonStreamProcessor {
-    /// Process a chunk of JSON with chunk-based streaming approach
-    fn process_json_chunk(&mut self, content: &str) -> Result<(), UIError> {
+    /// Process a chunk of JSON and extract parameters
+    fn process_json(&mut self, content: &str) -> Result<(), UIError> {
         // Combine buffer with new content
         let text = format!("{}{}", self.state.buffer, content);
         self.state.buffer.clear();
 
-        let mut pos = 0;
-        let chars: Vec<char> = text.chars().collect();
-
-        while pos < chars.len() {
-            match self.state.state {
-                JsonParseState::Outside => {
-                    // Look for opening brace
-                    if let Some(brace_pos) = text[pos..].find('{') {
-                        pos += brace_pos + 1;
-                        println!("DEBUG: Outside ->  InObject");
-                        self.state.state = JsonParseState::InObject;
-                    } else {
-                        // No opening brace found, buffer the rest
-                        println!("DEBUG: Outside, buffering");
-                        self.state.buffer = text[pos..].to_string();
-                        break;
-                    }
-                }
-
-                JsonParseState::InObject => {
-                    // Look for start of parameter name (quote)
-                    if let Some(quote_pos) = self.find_next_structural_quote(&text[pos..]) {
-                        pos += quote_pos + 1;
-                        println!("DEBUG: InObject ->  InParamName");
-                        self.state.state = JsonParseState::InParamName;
-                        self.state.current_param.clear();
-                    } else {
-                        // No quote found, buffer the rest
-                        println!("DEBUG: InObject, buffering");
-                        self.state.buffer = text[pos..].to_string();
-                        break;
-                    }
-                }
-
-                JsonParseState::InParamName => {
-                    // Look for end of parameter name (closing quote)
-                    if let Some(quote_pos) = self.find_next_structural_quote(&text[pos..]) {
-                        // Extract parameter name
-                        self.state.current_param = text[pos..pos + quote_pos].to_string();
-                        println!(
-                            "DEBUG: Found parameter name: '{}'",
-                            self.state.current_param
-                        );
-                        pos += quote_pos + 1;
-                        self.state.state = JsonParseState::AfterParamName;
-                    } else {
-                        // No closing quote found, buffer the rest
-                        println!("DEBUG: InParamName, buffering");
-                        self.state.buffer = text[pos..].to_string();
-                        break;
-                    }
-                }
-
-                JsonParseState::AfterParamName => {
-                    // Look for colon
-                    if let Some(colon_pos) = text[pos..].find(':') {
-                        pos += colon_pos + 1;
-                        self.state.state = JsonParseState::BeforeValue;
-                    } else {
-                        // No colon found, buffer the rest
-                        println!("DEBUG: AfterParamName, buffering");
-                        self.state.buffer = text[pos..].to_string();
-                        break;
-                    }
-                }
-
-                JsonParseState::BeforeValue => {
-                    // Skip whitespace and determine value type
-                    while pos < chars.len() && chars[pos].is_whitespace() {
-                        pos += 1;
-                    }
-
-                    if pos >= chars.len() {
-                        // No more characters, buffer empty and wait for more
-                        break;
-                    }
-
-                    match chars[pos] {
-                        '"' => {
-                            // String value
-                            println!("DEBUG: BeforeValue -> InSimpleValue");
-                            pos += 1; // Skip opening quote
-                            self.state.state = JsonParseState::InSimpleValue;
-                            self.state.in_quotes = true;
-                            self.state.parameter_started = false;
-                            // Don't emit here, wait for actual content
-                        }
-                        '{' | '[' => {
-                            // Complex value (object or array)
-                            println!("DEBUG: BeforeValue -> InComplexValue");
-                            self.state.state = JsonParseState::InComplexValue;
-                            self.state.nesting_level = 1;
-                            self.state.in_quotes = false;
-                            self.state.parameter_started = false;
-
-                            // Emit parameter start with the opening brace/bracket
-                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                                name: self.state.current_param.clone(),
-                                value: chars[pos].to_string(),
-                                tool_id: self.state.tool_id.clone(),
-                            })?;
-                            self.state.parameter_started = true;
-
-                            pos += 1; // Skip opening brace/bracket
-                        }
-                        _ => {
-                            // Simple value (number, boolean, null)
-                            println!("DEBUG: BeforeValue -> InSimpleValue");
-                            self.state.state = JsonParseState::InSimpleValue;
-                            self.state.in_quotes = false;
-                            self.state.parameter_started = false;
-                            // Don't emit here, wait for actual content
-                        }
-                    }
-                }
-
-                JsonParseState::InSimpleValue => {
-                    // We're now in a parameter value - stream the rest of the chunk
-                    let remaining = &text[pos..];
-                    if !remaining.is_empty() {
-                        // Emit parameter start if not already done
-                        if !self.state.parameter_started {
-                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                                name: self.state.current_param.clone(),
-                                value: String::new(),
-                                tool_id: self.state.tool_id.clone(),
-                            })?;
-                            self.state.parameter_started = true;
-                        }
-
-                        // Find the end of this parameter value
-                        println!(
-                            "DEBUG: in_quotes={}, remaining='{}'",
-                            self.state.in_quotes, remaining
-                        );
-                        let (value_content, new_pos, is_value_complete) = if self.state.in_quotes {
-                            let (content, consumed) = self.extract_quoted_content(remaining)?;
-                            // extract_quoted_content returns pos+1 when it finds a closing quote
-                            // So if we consumed less than the full remaining text, we found the quote
-                            let complete = consumed > 0
-                                && consumed <= remaining.len()
-                                && consumed > content.len(); // We consumed more than just the content
-                            println!("DEBUG: quoted - content='{}', consumed={}, remaining_len={}, complete={}",
-                                   content, consumed, remaining.len(), complete);
-                            (content, consumed, complete)
+        // Process each character
+        let mut chars = text.chars().peekable();
+        for c in chars.by_ref() {
+            match c {
+                // Handle escape character (backslash)
+                '\\' => {
+                    if self.state.in_quotes {
+                        if self.state.escaped {
+                            // Double escape becomes a literal backslash
+                            self.handle_content_char(c);
+                            self.state.escaped = false;
                         } else {
-                            let (content, consumed) = self.extract_simple_value_content(remaining);
-                            // For unquoted values, check for structural delimiters
-                            let complete = self.value_is_complete(remaining, consumed);
-                            println!(
-                                "DEBUG: unquoted - content='{}', consumed={}, complete={}",
-                                content, consumed, complete
-                            );
-                            (content, consumed, complete)
-                        };
-
-                        if !value_content.is_empty() {
-                            // Emit the value content
-                            println!(
-                                "DEBUG: Emitting simple param '{}' with value: '{}'",
-                                self.state.current_param, value_content
-                            );
-                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                                name: self.state.current_param.clone(),
-                                value: value_content,
-                                tool_id: self.state.tool_id.clone(),
-                            })?;
-                        }
-
-                        pos += new_pos;
-
-                        // Check if we've reached the end of the value
-                        if is_value_complete {
-                            println!(
-                                "DEBUG: Parameter '{}' completed, going back to InObject",
-                                self.state.current_param
-                            );
-                            self.state.state = JsonParseState::InObject;
-                            self.state.parameter_started = false;
-                            // Skip the closing quote for quoted strings
-                            if self.state.in_quotes && pos < chars.len() && chars[pos] == '"' {
-                                pos += 1;
-                            }
-                        } else if new_pos >= remaining.len() {
-                            // More content expected, buffer any incomplete part
-                            println!("DEBUG: InSimpleValue, more content expected");
-                            break;
+                            self.state.escaped = true;
                         }
                     } else {
-                        break;
+                        // Backslash outside quotes is just a regular character
+                        self.handle_content_char(c);
                     }
                 }
 
-                JsonParseState::InComplexValue => {
-                    // We're in a complex value - stream the content
-                    let remaining = &text[pos..];
-                    if !remaining.is_empty() {
-                        // Emit parameter start if not already done
-                        if !self.state.parameter_started {
-                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                                name: self.state.current_param.clone(),
-                                value: String::new(),
-                                tool_id: self.state.tool_id.clone(),
-                            })?;
-                            self.state.parameter_started = true;
-                        }
+                // Handle quotation marks
+                '"' => {
+                    if !self.state.escaped {
+                        // Toggle quote state
+                        self.state.in_quotes = !self.state.in_quotes;
 
-                        // Extract complex value content
-                        let (value_content, new_pos, nesting_change) =
-                            self.extract_complex_value_content(remaining)?;
-
-                        if !value_content.is_empty() {
-                            // Emit the value content
-                            println!(
-                                "DEBUG: Emitting complex param '{}' with value: '{}'",
-                                self.state.current_param, value_content
-                            );
-                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                                name: self.state.current_param.clone(),
-                                value: value_content,
-                                tool_id: self.state.tool_id.clone(),
-                            })?;
-                        }
-
-                        self.state.nesting_level += nesting_change;
-                        pos += new_pos;
-
-                        // Check if we've reached the end of the complex value
-                        if self.state.nesting_level == 0 {
-                            println!(
-                                "DEBUG: Complex parameter '{}' completed, going back to InObject",
-                                self.state.current_param
-                            );
-                            self.state.state = JsonParseState::InObject;
-                            self.state.parameter_started = false;
-                        } else if new_pos >= remaining.len() {
-                            // More content expected, stop processing
-                            println!("DEBUG: InComplexValue, more content expected");
-                            break;
+                        match self.state.state {
+                            JsonParseState::InObject if self.state.in_quotes => {
+                                // Start of parameter name
+                                self.state.state = JsonParseState::InParamName;
+                                self.state.current_param.clear();
+                            }
+                            JsonParseState::InParamName if !self.state.in_quotes => {
+                                // End of parameter name
+                                self.state.state = JsonParseState::AfterParamName;
+                            }
+                            JsonParseState::BeforeValue if self.state.in_quotes => {
+                                // Start of string value
+                                self.state.state = JsonParseState::InSimpleValue;
+                                self.state.current_value.clear();
+                            }
+                            JsonParseState::InSimpleValue if !self.state.in_quotes => {
+                                // End of string value
+                                self.emit_parameter()?;
+                                self.state.state = JsonParseState::InObject;
+                            }
+                            JsonParseState::InComplexValue => {
+                                // Quote within a complex value, just add it
+                                self.handle_content_char(c);
+                            }
+                            _ => {
+                                // Other quote states, just add it as content
+                                self.handle_content_char(c);
+                            }
                         }
                     } else {
-                        break;
+                        // Escaped quote becomes a literal quote
+                        self.handle_content_char(c);
+                        self.state.escaped = false;
                     }
+                }
+
+                // Handle opening braces - start of an object
+                '{' => {
+                    if !self.state.in_quotes {
+                        match self.state.state {
+                            JsonParseState::Outside => {
+                                // Start of top-level object
+                                self.state.state = JsonParseState::InObject;
+                            }
+                            JsonParseState::BeforeValue => {
+                                // Start of a complex object value
+                                self.state.state = JsonParseState::InComplexValue;
+                                self.state.nesting_level = 1;
+                                self.handle_content_char(c);
+                            }
+                            JsonParseState::InComplexValue => {
+                                // Nested object within complex value
+                                self.state.nesting_level += 1;
+                                self.handle_content_char(c);
+                            }
+                            _ => {
+                                // Other states, just add as content
+                                self.handle_content_char(c);
+                            }
+                        }
+                    } else {
+                        // Literal '{' inside quotes
+                        self.handle_content_char(c);
+                    }
+                    self.state.escaped = false;
+                }
+
+                // Handle closing braces - end of an object
+                '}' => {
+                    if !self.state.in_quotes {
+                        match self.state.state {
+                            JsonParseState::InObject => {
+                                // End of top-level object
+                                self.state.state = JsonParseState::Outside;
+                            }
+                            JsonParseState::InComplexValue => {
+                                // End of a nested object within complex value
+                                self.state.nesting_level -= 1;
+                                self.handle_content_char(c);
+
+                                // If we've reached the end of the complex value
+                                if self.state.nesting_level == 0 {
+                                    self.emit_parameter()?;
+                                    self.state.state = JsonParseState::InObject;
+                                }
+                            }
+                            _ => {
+                                // Other states, just add as content
+                                self.handle_content_char(c);
+                            }
+                        }
+                    } else {
+                        // Literal '}' inside quotes
+                        self.handle_content_char(c);
+                    }
+                    self.state.escaped = false;
+                }
+
+                // Handle opening brackets - start of an array
+                '[' => {
+                    if !self.state.in_quotes {
+                        match self.state.state {
+                            JsonParseState::BeforeValue => {
+                                // Start of a complex array value
+                                self.state.state = JsonParseState::InComplexValue;
+                                self.state.nesting_level = 1;
+                                self.handle_content_char(c);
+                            }
+                            JsonParseState::InComplexValue => {
+                                // Nested array within complex value
+                                self.state.nesting_level += 1;
+                                self.handle_content_char(c);
+                            }
+                            _ => {
+                                // Other states, just add as content
+                                self.handle_content_char(c);
+                            }
+                        }
+                    } else {
+                        // Literal '[' inside quotes
+                        self.handle_content_char(c);
+                    }
+                    self.state.escaped = false;
+                }
+
+                // Handle closing brackets - end of an array
+                ']' => {
+                    if !self.state.in_quotes {
+                        match self.state.state {
+                            JsonParseState::InComplexValue => {
+                                // End of a nested array within complex value
+                                self.state.nesting_level -= 1;
+                                self.handle_content_char(c);
+
+                                // If we've reached the end of the complex value
+                                if self.state.nesting_level == 0 {
+                                    self.emit_parameter()?;
+                                    self.state.state = JsonParseState::InObject;
+                                }
+                            }
+                            _ => {
+                                // Other states, just add as content
+                                self.handle_content_char(c);
+                            }
+                        }
+                    } else {
+                        // Literal ']' inside quotes
+                        self.handle_content_char(c);
+                    }
+                    self.state.escaped = false;
+                }
+
+                // Handle colon - separates parameter name from value
+                ':' => {
+                    if !self.state.in_quotes {
+                        if self.state.state == JsonParseState::AfterParamName {
+                            // Transition from parameter name to value
+                            self.state.state = JsonParseState::BeforeValue;
+                        } else if self.state.state == JsonParseState::InComplexValue {
+                            // Colon within a complex value
+                            self.handle_content_char(c);
+                        }
+                    } else {
+                        // Literal ':' inside quotes
+                        self.handle_content_char(c);
+                    }
+                    self.state.escaped = false;
+                }
+
+                // Handle comma - separates parameters or values in arrays
+                ',' => {
+                    if !self.state.in_quotes {
+                        match self.state.state {
+                            JsonParseState::InObject => {
+                                // Comma between parameters in the top-level object
+                                // Just wait for the next parameter name
+                            }
+                            JsonParseState::InSimpleValue => {
+                                // End of a simple value
+                                self.emit_parameter()?;
+                                self.state.state = JsonParseState::InObject;
+                            }
+                            JsonParseState::InComplexValue => {
+                                // Comma within a complex value
+                                self.handle_content_char(c);
+                            }
+                            _ => {
+                                // Other states, ignore or add as content
+                                if self.state.state == JsonParseState::InComplexValue {
+                                    self.handle_content_char(c);
+                                }
+                            }
+                        }
+                    } else {
+                        // Literal ',' inside quotes
+                        self.handle_content_char(c);
+                    }
+                    self.state.escaped = false;
+                }
+
+                // Handle whitespace
+                ' ' | '\t' | '\n' | '\r' => {
+                    if self.state.in_quotes || self.state.state == JsonParseState::InComplexValue {
+                        // Preserve whitespace in quotes and complex values
+                        self.handle_content_char(c);
+                    }
+                    // Otherwise, ignore whitespace
+                    self.state.escaped = false;
+                }
+
+                // Handle other characters (numbers, letters, etc.)
+                _ => {
+                    if self.state.state == JsonParseState::BeforeValue && !self.state.in_quotes {
+                        // Start of a non-string primitive value (number, boolean, null)
+                        self.state.state = JsonParseState::InSimpleValue;
+                        self.state.current_value.clear();
+                        self.handle_content_char(c);
+                    } else {
+                        // Any other character just gets added to current content
+                        self.handle_content_char(c);
+                    }
+                    self.state.escaped = false;
                 }
             }
+        }
+
+        // If we're in the middle of processing, store remaining data
+        if !text.is_empty()
+            && (self.state.in_quotes
+                || self.state.state == JsonParseState::InComplexValue
+                || self.state.state == JsonParseState::InSimpleValue)
+        {
+            // Store any remaining characters that would be needed for the next chunk
+            self.state.buffer = chars.collect::<String>();
         }
 
         Ok(())
     }
 
-    /// Find the next structural quote (not escaped)
-    fn find_next_structural_quote(&self, text: &str) -> Option<usize> {
-        let mut escaped = false;
-        for (i, c) in text.char_indices() {
-            match c {
-                '\\' if !escaped => escaped = true,
-                '"' if !escaped => return Some(i),
-                _ => escaped = false,
+    /// Helper to handle adding a character to the current content
+    fn handle_content_char(&mut self, c: char) {
+        match self.state.state {
+            JsonParseState::InParamName => {
+                self.state.current_param.push(c);
             }
+            JsonParseState::InSimpleValue | JsonParseState::InComplexValue => {
+                self.state.current_value.push(c);
+            }
+            _ => {}
         }
-        None
     }
 
-    /// Extract content from a quoted string value
-    fn extract_quoted_content(&self, text: &str) -> Result<(String, usize), UIError> {
-        let mut content = String::new();
-        let mut pos = 0;
-        let mut escaped = false;
-        let chars: Vec<char> = text.chars().collect();
+    /// Emit the current parameter to the UI
+    fn emit_parameter(&mut self) -> Result<(), UIError> {
+        // Only emit if we have both a parameter name and value
+        if !self.state.current_param.is_empty() && self.state.state != JsonParseState::InParamName {
+            self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                name: self.state.current_param.clone(),
+                value: self.state.current_value.clone(),
+                tool_id: self.state.tool_id.clone(),
+            })?;
 
-        while pos < chars.len() {
-            let c = chars[pos];
-            match c {
-                '\\' if !escaped => {
-                    escaped = true;
-                    // Don't add the backslash to content, it's just the escape char
-                }
-                '"' if !escaped => {
-                    // End of quoted string
-                    return Ok((content, pos + 1));
-                }
-                '"' if escaped => {
-                    // Escaped quote becomes literal quote
-                    content.push(c);
-                    escaped = false;
-                }
-                'n' if escaped => {
-                    // Escaped newline
-                    content.push('\n');
-                    escaped = false;
-                }
-                't' if escaped => {
-                    // Escaped tab
-                    content.push('\t');
-                    escaped = false;
-                }
-                'r' if escaped => {
-                    // Escaped carriage return
-                    content.push('\r');
-                    escaped = false;
-                }
-                '\\' if escaped => {
-                    // Escaped backslash
-                    content.push('\\');
-                    escaped = false;
-                }
-                _ => {
-                    if escaped {
-                        // Unknown escape sequence, keep the backslash
-                        content.push('\\');
-                        escaped = false;
-                    }
-                    content.push(c);
-                }
-            }
-            pos += 1;
+            // Clear the current value but keep the parameter name
+            // in case there are multiple values with the same parameter
+            self.state.current_value.clear();
         }
-
-        // Incomplete quoted string, return what we have
-        Ok((content, pos))
-    }
-
-    /// Extract content from a simple (non-quoted) value
-    fn extract_simple_value_content(&self, text: &str) -> (String, usize) {
-        // For simple values, find the next structural character (, } ])
-        let mut pos = 0;
-        let chars: Vec<char> = text.chars().collect();
-
-        while pos < chars.len() {
-            match chars[pos] {
-                ',' | '}' | ']' => break,
-                _ => pos += 1,
-            }
-        }
-
-        (text[..pos].to_string(), pos)
-    }
-
-    /// Extract content from a complex value (object or array)
-    fn extract_complex_value_content(&self, text: &str) -> Result<(String, usize, i32), UIError> {
-        let mut content = String::new();
-        let mut pos = 0;
-        let mut nesting_change = 0;
-        let mut in_quotes = false;
-        let mut escaped = false;
-        let chars: Vec<char> = text.chars().collect();
-
-        while pos < chars.len() {
-            let c = chars[pos];
-
-            match c {
-                '\\' if in_quotes && !escaped => {
-                    escaped = true;
-                    content.push(c);
-                }
-                '"' if !escaped => {
-                    in_quotes = !in_quotes;
-                    content.push(c);
-                }
-                '{' | '[' if !in_quotes => {
-                    nesting_change += 1;
-                    content.push(c);
-                }
-                '}' | ']' if !in_quotes => {
-                    nesting_change -= 1;
-                    content.push(c);
-                    if self.state.nesting_level + nesting_change == 0 {
-                        // End of complex value
-                        return Ok((content, pos + 1, nesting_change));
-                    }
-                }
-                _ => {
-                    if escaped {
-                        escaped = false;
-                    }
-                    content.push(c);
-                }
-            }
-            pos += 1;
-        }
-
-        // Return what we have so far
-        Ok((content, pos, nesting_change))
-    }
-
-    /// Check if a value is complete based on the context
-    fn value_is_complete(&self, text: &str, pos: usize) -> bool {
-        if pos >= text.len() {
-            return false;
-        }
-
-        // Check if we've hit a structural delimiter
-        match text.chars().nth(pos) {
-            Some(',') | Some('}') | Some(']') => true,
-            _ => false,
-        }
+        Ok(())
     }
 
     /// Process text chunks and extract <thinking> blocks
