@@ -414,7 +414,10 @@ impl JsonStreamProcessor {
                         }
 
                         if !segment.is_empty() {
-                            // debug!("Emitting segment for key '{}': '{}'", current_key_name, segment);
+                            debug!(
+                                "Emitting segment for key '{}': '{}'",
+                                current_key_name, segment
+                            );
                             self.ui.display_fragment(&DisplayFragment::ToolParameter {
                                 name: current_key_name.clone(), // Clone as key_name is used again if string continues
                                 value: segment,

@@ -9,6 +9,7 @@ use gpui::{prelude::*, FontWeight};
 use gpui_component::{scroll::ScrollbarAxis, ActiveTheme, StyledExt};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tracing::trace;
 
 /// Role of a message in the conversation
 #[derive(Debug, Clone, PartialEq)]
@@ -201,7 +202,7 @@ impl MessageContainer {
         let mut elements = self.elements.lock().unwrap();
         let mut tool_found = false;
 
-        println!(
+        trace!(
             "Looking for tool_id: {}, param: {}, value len: {}",
             tool_id,
             name,
@@ -216,7 +217,7 @@ impl MessageContainer {
                 if let Some(tool) = view.block.as_tool_mut() {
                     if tool.id == tool_id {
                         tool_found = true;
-                        println!(
+                        trace!(
                             "Found tool: {}, current params: {}",
                             tool.name,
                             tool.parameters.len()
@@ -227,7 +228,7 @@ impl MessageContainer {
                             if param.name == name {
                                 // Update existing parameter
                                 param.value.push_str(&value);
-                                println!("Found param: {}, len now {}", name, param.value.len());
+                                trace!("Found param: {}, len now {}", name, param.value.len());
                                 param_added = true;
                                 break;
                             }
@@ -235,7 +236,7 @@ impl MessageContainer {
 
                         // Add new parameter if not found
                         if !param_added {
-                            println!("Adding param: {}, len {}", name, value.len());
+                            trace!("Adding param: {}, len {}", name, value.len());
                             tool.parameters.push(ParameterBlock {
                                 name: name.clone(),
                                 value: value.clone(),
@@ -243,7 +244,7 @@ impl MessageContainer {
                             param_added = true;
                         }
 
-                        println!("After update, params: {}", tool.parameters.len());
+                        trace!("After update, params: {}", tool.parameters.len());
                         cx.notify();
                     }
                 }
@@ -549,11 +550,6 @@ impl Render for BlockView {
                     .into_any_element()
             }
             BlockData::ToolUse(block) => {
-                // println!(
-                //     "render {}, parameters: {}",
-                //     block.name,
-                //     block.parameters.len()
-                // );
                 // Get the appropriate icon for this tool type
                 let icon = file_icons::get().get_tool_icon(&block.name);
 
