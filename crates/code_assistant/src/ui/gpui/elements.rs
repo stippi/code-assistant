@@ -719,7 +719,8 @@ impl Render for BlockView {
 
                                     // Output
                                     if let Some(output_content) = &block.output {
-                                        if !output_content.is_empty() { // Also check if output is not empty
+                                        if !output_content.is_empty() {
+                                            // Also check if output is not empty
                                             elements.push(
                                                 div()
                                                     .id(SharedString::from(block.id.clone()))
@@ -780,8 +781,8 @@ impl Render for BlockView {
                                                     view.toggle_tool_collapsed(cx);
                                                 }),
                                             )
-                                            .child(
-                                                div().flex().items_center().gap_1().children(vec![
+                                            .child(div().flex().items_center().gap_1().children(
+                                                vec![
                                                     file_icons::render_icon(
                                                         &collapse_icon,
                                                         14.0,
@@ -791,9 +792,9 @@ impl Render for BlockView {
                                                     Label::new(collapse_text)
                                                         .text_color(chevron_color) // Style text consistently
                                                         .into_any_element()
-                                                ])
-                                            )
-                                            .into_any()
+                                                ],
+                                            ))
+                                            .into_any(),
                                     );
                                 }
 
