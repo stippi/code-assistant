@@ -16,8 +16,8 @@ pub enum ToolStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StreamingState {
-    Idle,         // No active streaming, ready to send
-    Streaming,    // Currently streaming response
+    Idle,          // No active streaming, ready to send
+    Streaming,     // Currently streaming response
     StopRequested, // User requested stop, waiting for stream to end
 }
 
