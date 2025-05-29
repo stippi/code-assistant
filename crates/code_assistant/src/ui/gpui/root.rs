@@ -5,8 +5,8 @@ use super::theme;
 use super::CloseWindow;
 use crate::ui::StreamingState;
 use gpui::{
-    div, prelude::*, px, rgba, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    MouseButton, MouseUpEvent,
+    div, prelude::*, px, rgba, App, Context, CursorStyle, Entity, FocusHandle, Focusable, MouseButton,
+    MouseUpEvent,
 };
 use gpui_component::input::InputState;
 use gpui_component::input::TextInput;
@@ -257,10 +257,24 @@ impl Render for RootView {
                                     .p_2()
                                     .gap_2()
                                     .child({
-                                        let text_input_handle =
-                                            self.text_input.read(cx).focus_handle(cx);
+                                        let text_input_handle = self.text_input.read(cx).focus_handle(cx);
                                         let is_focused = text_input_handle.is_focused(window);
-
+                                        
+                                        div()
+                                            .flex_1()
+                                            .border_1()
+                                            .border_color(if is_focused {
+                                                cx.theme().primary // Blue border when focused
+                                            } else if cx.theme().is_dark() {
+                                                rgba(0x555555FF).into() // Brighter border for dark theme
+                                            } else {
+                                                rgba(0x999999FF).into() // Darker border for light theme
+                                            })
+                                            .rounded_md()
+                                            .track_focus(&text_input_handle)
+                                            .child(TextInput::new(&self.text_input))
+                                    })
+                                    .child(
                                         div()
                                             .flex_1()
                                             .border_1()
