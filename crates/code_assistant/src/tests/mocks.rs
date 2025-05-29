@@ -249,6 +249,11 @@ impl UserInterface for MockUI {
         // Mock implementation does nothing with request completion
         Ok(())
     }
+
+    fn should_streaming_continue(&self) -> bool {
+        // Mock implementation always continues streaming
+        true
+    }
 }
 
 // Mock Explorer

@@ -31,6 +31,7 @@ pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
 use std::any::Any;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::warn;
@@ -54,6 +55,7 @@ pub struct Gpui {
     last_xml_tool_id: Arc<Mutex<String>>,
     #[allow(dead_code)]
     parameter_renderers: Arc<ParameterRendererRegistry>, // TODO: Needed?!
+    continue_streaming: Arc<AtomicBool>,
 }
 
 // Implement Global trait for Gpui
@@ -69,6 +71,7 @@ impl Gpui {
         let current_request_id = Arc::new(Mutex::new(0));
         let current_tool_counter = Arc::new(Mutex::new(0));
         let last_xml_tool_id = Arc::new(Mutex::new(String::new()));
+        let continue_streaming = Arc::new(AtomicBool::new(true));
 
         // Initialize parameter renderers registry with default renderer
         let mut registry = ParameterRendererRegistry::new(Box::new(DefaultParameterRenderer));
@@ -113,6 +116,7 @@ impl Gpui {
             current_tool_counter,
             last_xml_tool_id,
             parameter_renderers,
+            continue_streaming,
         }
     }
 
@@ -577,6 +581,9 @@ impl UserInterface for Gpui {
     }
 
     async fn begin_llm_request(&self) -> Result<u64, UIError> {
+        // Reset streaming flag
+        self.continue_streaming.store(true, Ordering::Relaxed);
+
         // Increment request ID counter
         let mut request_id = self.current_request_id.lock().unwrap();
         *request_id += 1;
@@ -591,5 +598,9 @@ impl UserInterface for Gpui {
     async fn end_llm_request(&self, _request_id: u64) -> Result<(), UIError> {
         // For now, we don't need special handling for request completion
         Ok(())
+    }
+
+    fn should_streaming_continue(&self) -> bool {
+        self.continue_streaming.load(Ordering::Relaxed)
     }
 }

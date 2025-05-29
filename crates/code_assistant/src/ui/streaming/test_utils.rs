@@ -129,6 +129,11 @@ impl UserInterface for TestUI {
         // Mock implementation does nothing with request completion
         Ok(())
     }
+
+    fn should_streaming_continue(&self) -> bool {
+        // Test implementation always continues streaming
+        true
+    }
 }
 
 /// Helper function to split text into small chunks for testing tag handling

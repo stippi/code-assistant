@@ -61,6 +61,9 @@ pub trait UserInterface: Send + Sync {
 
     /// Informs the UI that an LLM request has completed
     async fn end_llm_request(&self, request_id: u64) -> Result<(), UIError>;
+
+    /// Check if streaming should continue
+    fn should_streaming_continue(&self) -> bool;
 }
 
 #[cfg(test)]

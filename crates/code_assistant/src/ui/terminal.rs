@@ -234,4 +234,9 @@ impl UserInterface for TerminalUI {
 
         Ok(())
     }
+
+    fn should_streaming_continue(&self) -> bool {
+        // Terminal UI always continues streaming (no stop functionality)
+        true
+    }
 }

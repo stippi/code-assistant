@@ -594,9 +594,18 @@ impl Agent {
 
         // Create a StreamProcessor and use it to process streaming chunks
         let ui = Arc::clone(&self.ui);
-        let processor = Arc::new(Mutex::new(create_stream_processor(self.tool_mode, ui)));
+        let processor = Arc::new(Mutex::new(create_stream_processor(
+            self.tool_mode,
+            ui.clone(),
+        )));
 
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
+            // Check if streaming should continue
+            if !ui.should_streaming_continue() {
+                debug!("Streaming should stop - user requested cancellation");
+                return Err(anyhow::anyhow!("Streaming cancelled by user"));
+            }
+
             let mut processor_guard = processor.lock().unwrap();
             processor_guard
                 .process(chunk)
