@@ -14,6 +14,13 @@ pub enum ToolStatus {
     Error,   // Error during execution
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StreamingState {
+    Idle,         // No active streaming, ready to send
+    Streaming,    // Currently streaming response
+    StopRequested, // User requested stop, waiting for stream to end
+}
+
 #[derive(Debug, Clone)]
 pub enum UIMessage {
     // System actions that the agent takes
