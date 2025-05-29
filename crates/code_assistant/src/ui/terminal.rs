@@ -223,15 +223,15 @@ impl UserInterface for TerminalUI {
         Ok(request_id)
     }
 
-    async fn end_llm_request(&self, request_id: u64) -> Result<(), UIError> {
+    async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError> {
         // Optionally display a message that the request has completed
-        self.write_line(
-            &format!("Completed LLM request ({})", request_id)
-                .dark_blue()
-                .to_string(),
-        )
-        .await?;
+        let message = if cancelled {
+            format!("Cancelled LLM request ({})", request_id)
+        } else {
+            format!("Completed LLM request ({})", request_id)
+        };
 
+        self.write_line(&message.dark_blue().to_string()).await?;
         Ok(())
     }
 

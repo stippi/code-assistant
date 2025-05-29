@@ -432,6 +432,26 @@ impl Gpui {
                 }
                 cx.refresh().expect("Failed to refresh windows");
             }
+            UiEvent::StreamingStarted(request_id) => {
+                let queue = self.message_queue.lock().unwrap();
+                if let Some(last_message) = queue.last() {
+                    cx.update_entity(last_message, |message_container, _cx| {
+                        message_container.set_current_request_id(request_id);
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
+            UiEvent::StreamingStopped { id, cancelled } => {
+                if cancelled {
+                    let queue = self.message_queue.lock().unwrap();
+                    for message_container in queue.iter() {
+                        cx.update_entity(message_container, |message_container, cx| {
+                            message_container.remove_blocks_with_request_id(id, cx);
+                        })
+                        .expect("Failed to update entity");
+                    }
+                }
+            }
         }
     }
 
@@ -590,17 +610,28 @@ impl UserInterface for Gpui {
         // Increment request ID counter
         let mut request_id = self.current_request_id.lock().unwrap();
         *request_id += 1;
+        let current_id = *request_id;
 
         // Reset tool counter for this request
         let mut tool_counter = self.current_tool_counter.lock().unwrap();
         *tool_counter = 0;
 
-        Ok(*request_id)
+        // Send StreamingStarted event
+        self.push_event(UiEvent::StreamingStarted(current_id));
+
+        Ok(current_id)
     }
 
-    async fn end_llm_request(&self, _request_id: u64) -> Result<(), UIError> {
+    async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError> {
         // Reset streaming state to Idle
         *self.streaming_state.lock().unwrap() = StreamingState::Idle;
+
+        // Send StreamingStopped event
+        self.push_event(UiEvent::StreamingStopped {
+            id: request_id,
+            cancelled,
+        });
+
         Ok(())
     }
 

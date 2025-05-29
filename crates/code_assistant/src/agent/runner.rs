@@ -117,13 +117,18 @@ impl Agent {
     }
 
     /// Handles the interaction with the LLM to get the next assistant message.
-    /// Appends the assistant's message to the history.
+    /// Appends the assistant's message to the history only if it has content.
     async fn obtain_llm_response(&mut self, messages: Vec<Message>) -> Result<llm::LLMResponse> {
         let llm_response = self.get_next_assistant_message(messages).await?;
-        self.append_message(Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Structured(llm_response.content.clone()),
-        })?;
+
+        // Only add to message history if there's actual content
+        if !llm_response.content.is_empty() {
+            self.append_message(Message {
+                role: MessageRole::Assistant,
+                content: MessageContent::Structured(llm_response.content.clone()),
+            })?;
+        }
+
         Ok(llm_response)
     }
 
@@ -227,14 +232,7 @@ impl Agent {
             request_counter += 1;
 
             // 1. Obtain LLM response (includes adding assistant message to history)
-            let llm_response = match self.obtain_llm_response(messages).await {
-                Ok(response) => response,
-                Err(e) => {
-                    // Log critical error and break loop
-                    tracing::error!("Critical error obtaining LLM response: {}", e);
-                    return Err(e);
-                }
-            };
+            let llm_response = self.obtain_llm_response(messages).await?;
 
             // 2. Extract tool requests from LLM response and determine the next flow action
             let (tool_requests, flow) = self
@@ -613,10 +611,30 @@ impl Agent {
         });
 
         // Send message to LLM provider
-        let response = self
+        let response = match self
             .llm_provider
             .send_message(request, Some(&streaming_callback))
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(e) => {
+                // Check for streaming cancelled error
+                if e.to_string().contains("Streaming cancelled by user") {
+                    debug!("Streaming cancelled by user in LLM request {}", request_id);
+                    // End LLM request with cancelled=true
+                    let _ = self.ui.end_llm_request(request_id, true).await;
+                    // Return empty response
+                    return Ok(llm::LLMResponse {
+                        content: Vec::new(),
+                        usage: llm::Usage::zero(),
+                    });
+                }
+
+                // For other errors, still end the request but not cancelled
+                let _ = self.ui.end_llm_request(request_id, false).await;
+                return Err(e);
+            }
+        };
 
         // Print response for debugging
         debug!("Raw LLM response:");
@@ -640,8 +658,8 @@ impl Agent {
             response.usage.cache_read_input_tokens
         );
 
-        // Inform UI that the LLM request has completed
-        let _ = self.ui.end_llm_request(request_id).await;
+        // Inform UI that the LLM request has completed (normal completion)
+        let _ = self.ui.end_llm_request(request_id, false).await;
         debug!("Completed LLM request with ID: {}", request_id);
 
         Ok(response)

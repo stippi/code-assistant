@@ -125,7 +125,7 @@ impl UserInterface for TestUI {
         Ok(42)
     }
 
-    async fn end_llm_request(&self, _request_id: u64) -> Result<(), UIError> {
+    async fn end_llm_request(&self, _request_id: u64, _cancelled: bool) -> Result<(), UIError> {
         // Mock implementation does nothing with request completion
         Ok(())
     }

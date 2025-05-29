@@ -23,6 +23,7 @@ pub enum MessageRole {
 pub struct MessageContainer {
     elements: Arc<Mutex<Vec<Entity<BlockView>>>>,
     role: MessageRole,
+    current_request_id: Arc<Mutex<u64>>,
 }
 
 impl MessageContainer {
@@ -30,6 +31,35 @@ impl MessageContainer {
         Self {
             elements: Arc::new(Mutex::new(Vec::new())),
             role,
+            current_request_id: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    // Set the current request ID for this message container
+    pub fn set_current_request_id(&self, request_id: u64) {
+        *self.current_request_id.lock().unwrap() = request_id;
+    }
+
+    // Remove all blocks with the given request ID
+    pub fn remove_blocks_with_request_id(&self, request_id: u64, cx: &mut Context<Self>) {
+        let mut elements = self.elements.lock().unwrap();
+        let mut blocks_to_remove = Vec::new();
+
+        // Find indices of blocks to remove
+        for (index, element) in elements.iter().enumerate() {
+            let should_remove = element.read(cx).request_id == request_id;
+            if should_remove {
+                blocks_to_remove.push(index);
+            }
+        }
+
+        // Remove blocks in reverse order to maintain indices
+        for &index in blocks_to_remove.iter().rev() {
+            elements.remove(index);
+        }
+
+        if !blocks_to_remove.is_empty() {
+            cx.notify();
         }
     }
 
@@ -46,11 +76,12 @@ impl MessageContainer {
     // Add a new text block
     pub fn add_text_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
         self.finish_any_thinking_blocks(cx);
+        let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::TextBlock(TextBlock {
             content: content.into(),
         });
-        let view = cx.new(|cx| BlockView::new(block, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
         elements.push(view);
         cx.notify();
     }
@@ -59,9 +90,10 @@ impl MessageContainer {
     #[allow(dead_code)]
     pub fn add_thinking_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
         self.finish_any_thinking_blocks(cx);
+        let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.into()));
-        let view = cx.new(|cx| BlockView::new(block, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
         elements.push(view);
         cx.notify();
     }
@@ -74,6 +106,7 @@ impl MessageContainer {
         cx: &mut Context<Self>,
     ) {
         self.finish_any_thinking_blocks(cx);
+        let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::ToolUse(ToolUseBlock {
             name: name.into(),
@@ -84,7 +117,7 @@ impl MessageContainer {
             output: None,
             is_collapsed: false, // Default to expanded
         });
-        let view = cx.new(|cx| BlockView::new(block, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
         elements.push(view);
         cx.notify();
     }
@@ -151,10 +184,11 @@ impl MessageContainer {
         }
 
         // If we reach here, we need to add a new text block
+        let request_id = *self.current_request_id.lock().unwrap();
         let block = BlockData::TextBlock(TextBlock {
             content: content.to_string(),
         });
-        let view = cx.new(|cx| BlockView::new(block, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
         elements.push(view);
         cx.notify();
     }
@@ -185,8 +219,9 @@ impl MessageContainer {
         }
 
         // If we reach here, we need to add a new thinking block
+        let request_id = *self.current_request_id.lock().unwrap();
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.to_string()));
-        let view = cx.new(|cx| BlockView::new(block, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
         elements.push(view);
         cx.notify();
     }
@@ -260,6 +295,7 @@ impl MessageContainer {
 
         // If we didn't find a matching tool, create a new one with this parameter
         if !tool_found {
+            let request_id = *self.current_request_id.lock().unwrap();
             let mut tool = ToolUseBlock {
                 name: "unknown".to_string(), // Default name since we only have ID
                 id: tool_id.clone(),
@@ -276,7 +312,7 @@ impl MessageContainer {
             });
 
             let block = BlockData::ToolUse(tool);
-            let view = cx.new(|cx| BlockView::new(block, cx));
+            let view = cx.new(|cx| BlockView::new(block, request_id, cx));
             elements.push(view);
             cx.notify();
         }
@@ -368,11 +404,12 @@ impl BlockData {
 /// Entity view for a block
 pub struct BlockView {
     block: BlockData,
+    request_id: u64,
 }
 
 impl BlockView {
-    pub fn new(block: BlockData, _cx: &mut Context<Self>) -> Self {
-        Self { block }
+    pub fn new(block: BlockData, request_id: u64, _cx: &mut Context<Self>) -> Self {
+        Self { block, request_id }
     }
 
     fn toggle_thinking_collapsed(&mut self, cx: &mut Context<Self>) {
