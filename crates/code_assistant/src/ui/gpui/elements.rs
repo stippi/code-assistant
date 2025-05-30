@@ -758,11 +758,12 @@ impl Render for BlockView {
                                     if let Some(output_content) = &block.output {
                                         if !output_content.is_empty() {
                                             // Also check if output is not empty
-                                            let output_color = if block.status == crate::ui::ToolStatus::Error {
-                                                cx.theme().danger
-                                            } else {
-                                                cx.theme().foreground
-                                            };
+                                            let output_color =
+                                                if block.status == crate::ui::ToolStatus::Error {
+                                                    cx.theme().danger
+                                                } else {
+                                                    cx.theme().foreground
+                                                };
 
                                             elements.push(
                                                 div()
@@ -782,7 +783,8 @@ impl Render for BlockView {
                                 // Error message (only shown for error status when collapsed, or when there's no output)
                                 if block.status == crate::ui::ToolStatus::Error
                                     && block.status_message.is_some()
-                                    && (block.is_collapsed || block.output.as_ref().map_or(true, |o| o.is_empty()))
+                                    && (block.is_collapsed
+                                        || block.output.as_ref().map_or(true, |o| o.is_empty()))
                                 {
                                     elements.push(
                                         div()
