@@ -758,13 +758,19 @@ impl Render for BlockView {
                                     if let Some(output_content) = &block.output {
                                         if !output_content.is_empty() {
                                             // Also check if output is not empty
+                                            let output_color = if block.status == crate::ui::ToolStatus::Error {
+                                                cx.theme().danger
+                                            } else {
+                                                cx.theme().foreground
+                                            };
+
                                             elements.push(
                                                 div()
                                                     .id(SharedString::from(block.id.clone()))
                                                     .p_2()
                                                     .mt_1()
                                                     .w_full()
-                                                    .text_color(cx.theme().foreground)
+                                                    .text_color(output_color)
                                                     .text_size(px(13.))
                                                     .child(output_content.clone())
                                                     .into_any(),
@@ -773,9 +779,10 @@ impl Render for BlockView {
                                     }
                                 }
 
-                                // Error message (always shown for error status, regardless of collapsed state)
+                                // Error message (only shown for error status when collapsed, or when there's no output)
                                 if block.status == crate::ui::ToolStatus::Error
                                     && block.status_message.is_some()
+                                    && (block.is_collapsed || block.output.as_ref().map_or(true, |o| o.is_empty()))
                                 {
                                     elements.push(
                                         div()
