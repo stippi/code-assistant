@@ -258,130 +258,33 @@ impl Gpui {
                 }
             }
             UiEvent::AppendToTextBlock { content } => {
-                let mut queue = self.message_queue.lock().unwrap();
+                let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    // Check if the last message is from the assistant, otherwise create a new one
-
-                    let is_user_message = cx
-                        .update_entity(&last, |message, _cx| message.is_user_message())
-                        .expect("Failed to update entity");
-
-                    if is_user_message {
-                        // Create a new assistant message
-                        let result = cx.new(|cx| {
-                            let new_message =
-                                MessageContainer::with_role(MessageRole::Assistant, cx);
-                            new_message.add_text_block(&content, cx);
-                            new_message
-                        });
-                        if let Ok(new_message) = result {
-                            queue.push(new_message);
-                        } else {
-                            warn!("Failed to create message entity");
-                        }
-                    } else {
-                        // Update the existing assistant message
-                        cx.update_entity(&last, |message, cx| {
-                            message.add_or_append_to_text_block(&content, cx)
-                        })
-                        .expect("Failed to update entity");
-                    }
-                } else {
-                    // If there are no messages, create a new assistant message
-                    let result = cx.new(|cx| {
-                        let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
-                        new_message.add_text_block(&content, cx);
-                        new_message
-                    });
-                    if let Ok(new_message) = result {
-                        queue.push(new_message);
-                    } else {
-                        warn!("Failed to create message entity");
-                    }
+                    // Since StreamingStarted ensures last container is Assistant, we can safely append
+                    cx.update_entity(&last, |message, cx| {
+                        message.add_or_append_to_text_block(&content, cx)
+                    })
+                    .expect("Failed to update entity");
                 }
             }
             UiEvent::AppendToThinkingBlock { content } => {
-                let mut queue = self.message_queue.lock().unwrap();
+                let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    // Check if the last message is from the assistant, otherwise create a new one
-                    let is_user_message = cx
-                        .update_entity(&last, |message, _cx| message.is_user_message())
-                        .expect("Failed to update entity");
-
-                    if is_user_message {
-                        // Create a new assistant message
-                        let result = cx.new(|cx| {
-                            let new_message =
-                                MessageContainer::with_role(MessageRole::Assistant, cx);
-                            new_message.add_thinking_block(&content, cx);
-                            new_message
-                        });
-                        if let Ok(new_message) = result {
-                            queue.push(new_message);
-                        } else {
-                            warn!("Failed to create message entity");
-                        }
-                    } else {
-                        // Update the existing assistant message
-                        cx.update_entity(&last, |message, cx| {
-                            message.add_or_append_to_thinking_block(&content, cx)
-                        })
-                        .expect("Failed to update entity");
-                    }
-                } else {
-                    // If there are no messages, create a new assistant message
-                    let result = cx.new(|cx| {
-                        let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
-                        new_message.add_thinking_block(&content, cx);
-                        new_message
-                    });
-                    if let Ok(new_message) = result {
-                        queue.push(new_message);
-                    } else {
-                        warn!("Failed to create message entity");
-                    }
+                    // Since StreamingStarted ensures last container is Assistant, we can safely append
+                    cx.update_entity(&last, |message, cx| {
+                        message.add_or_append_to_thinking_block(&content, cx)
+                    })
+                    .expect("Failed to update entity");
                 }
             }
             UiEvent::StartTool { name, id } => {
-                let mut queue = self.message_queue.lock().unwrap();
+                let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    // Check if the last message is from the assistant, otherwise create a new one
-                    let is_user_message = cx
-                        .update_entity(&last, |message, _cx| message.is_user_message())
-                        .expect("Failed to update entity");
-
-                    if is_user_message {
-                        // Create a new assistant message
-                        let result = cx.new(|cx| {
-                            let new_message =
-                                MessageContainer::with_role(MessageRole::Assistant, cx);
-                            new_message.add_tool_use_block(&name, &id, cx);
-                            new_message
-                        });
-                        if let Ok(new_message) = result {
-                            queue.push(new_message);
-                        } else {
-                            warn!("Failed to create message entity");
-                        }
-                    } else {
-                        // Update the existing assistant message
-                        cx.update_entity(&last, |message, cx| {
-                            message.add_tool_use_block(&name, &id, cx);
-                        })
-                        .expect("Failed to update entity");
-                    }
-                } else {
-                    // Create a new assistant message if none exists
-                    let result = cx.new(|cx| {
-                        let new_message = MessageContainer::with_role(MessageRole::Assistant, cx);
-                        new_message.add_tool_use_block(&name, &id, cx);
-                        new_message
-                    });
-                    if let Ok(new_message) = result {
-                        queue.push(new_message);
-                    } else {
-                        warn!("Failed to create message entity");
-                    }
+                    // Since StreamingStarted ensures last container is Assistant, we can safely add tool
+                    cx.update_entity(&last, |message, cx| {
+                        message.add_tool_use_block(&name, &id, cx);
+                    })
+                    .expect("Failed to update entity");
                 }
             }
             UiEvent::UpdateToolParameter {
@@ -433,12 +336,36 @@ impl Gpui {
                 cx.refresh().expect("Failed to refresh windows");
             }
             UiEvent::StreamingStarted(request_id) => {
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last_message) = queue.last() {
-                    cx.update_entity(last_message, |message_container, _cx| {
-                        message_container.set_current_request_id(request_id);
-                    })
-                    .expect("Failed to update entity");
+                let mut queue = self.message_queue.lock().unwrap();
+
+                // Check if we need to create a new assistant container
+                let needs_new_container = if let Some(last) = queue.last() {
+                    cx.update_entity(&last, |message, _cx| message.is_user_message())
+                        .expect("Failed to update entity")
+                } else {
+                    true
+                };
+
+                if needs_new_container {
+                    // Create new assistant container
+                    let assistant_container = cx
+                        .new(|cx| {
+                            let container = MessageContainer::with_role(MessageRole::Assistant, cx);
+                            container.set_current_request_id(request_id);
+                            container.set_waiting_for_content(true);
+                            container
+                        })
+                        .expect("Failed to create new container");
+                    queue.push(assistant_container);
+                } else {
+                    // Use existing assistant container
+                    if let Some(last_message) = queue.last() {
+                        cx.update_entity(last_message, |container, _cx| {
+                            container.set_current_request_id(request_id);
+                            container.set_waiting_for_content(true);
+                        })
+                        .expect("Failed to update existing container");
+                    }
                 }
             }
             UiEvent::StreamingStopped { id, cancelled } => {
