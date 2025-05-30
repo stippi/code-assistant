@@ -388,7 +388,7 @@
       "icon": "icons/send.svg"
     },
     "stop": {
-      "icon": "icons/circle_stop.svg"
+      "icon": "icons/stop.svg"
     }
   }
 }
