@@ -25,9 +25,9 @@ pub fn custom_dark_theme() -> gpui_component::theme::ThemeColor {
 
     // Buttons
     colors.primary = rgb(0x0099EE).into(); // Primary button (submit)
-    colors.primary_hover = rgb(0x4466cc).into();
-    colors.danger = rgb(0x553333).into(); // Danger button (clear)
-    colors.danger_hover = rgb(0x664444).into();
+    colors.primary_hover = rgb(0x4466CC).into();
+    colors.danger = rgb(0xFF2934).into(); // Danger button (stop)
+    colors.danger_hover = rgb(0xFF3D46).into();
 
     // Tool status colors
     colors.success = rgb(0x47D136).into();
@@ -61,8 +61,8 @@ pub fn custom_light_theme() -> gpui_component::theme::ThemeColor {
     // Buttons
     colors.primary = rgb(0x53AEFF).into(); // Primary button (submit)
     colors.primary_hover = rgb(0x3355BB).into();
-    colors.danger = rgb(0xBB3333).into(); // Danger button (clear)
-    colors.danger_hover = rgb(0xCC4444).into();
+    colors.danger = rgb(0xFF2934).into(); // Danger button (stop)
+    colors.danger_hover = rgb(0xFF3D46).into();
 
     // Tool status colors
     colors.success = rgb(0x2BB517).into();
