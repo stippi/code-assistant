@@ -360,9 +360,10 @@ impl Gpui {
                 } else {
                     // Use existing assistant container
                     if let Some(last_message) = queue.last() {
-                        cx.update_entity(last_message, |container, _cx| {
+                        cx.update_entity(last_message, |container, cx| {
                             container.set_current_request_id(request_id);
                             container.set_waiting_for_content(true);
+                            cx.notify();
                         })
                         .expect("Failed to update existing container");
                     }
