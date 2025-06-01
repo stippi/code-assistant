@@ -8,8 +8,7 @@ A CLI tool built in Rust for assisting with code-related tasks.
 
 - **Autonomous Exploration**: The agent can intelligently explore codebases and build up working memory of the project structure.
 - **Reading/Writing Files**: The agent can read file contents and make changes to files as needed.
-- **Working Memory Management**: Efficient handling of file contents with the ability to load and unload files from memory.
-- **File Summarization**: Capability to create and store file summaries for quick reference and better understanding of the codebase.
+- **User Interface**: The agent can run with a UI based on [Zed](https://zed.dev)'s [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui).
 - **Interactive Communication**: Ability to ask users questions and get responses for better decision-making.
 - **MCP Server Mode**: Can run as a Model Context Protocol server, providing tools and resources to LLMs running in an MCP client.
 
@@ -126,21 +125,6 @@ Examples:
 # Analyze code in current directory using Anthropic's Claude
 code-assistant --task "Explain the purpose of this codebase"
 
-# Use OpenAI to analyze a specific directory with verbose logging
-code-assistant -p open-ai --path ./my-project -t "List all API endpoints" -v
-
-# Use Google's Vertex AI with a specific model
-code-assistant -p vertex --model gemini-1.5-flash -t "Analyze code complexity"
-
-# Use Ollama with a specific model (model is required for Ollama)
-code-assistant -p ollama -m codellama --task "Find all TODO comments in the codebase"
-
-# Use AI Core provider
-code-assistant -p ai-core --task "Document the public API"
-
-# Use with working memory agent mode instead of message history mode
-code-assistant --task "Find performance bottlenecks" --agent-mode working_memory
-
 # Continue a previously interrupted task
 code-assistant --continue-task
 
@@ -170,6 +154,9 @@ Available options:
 This section is not really a roadmap, as the items are in no particular order.
 Below are some topics that are likely the next focus.
 
+- **Improve UI**: There are various ways in which the UI can be improved.
+- **Persist Chats**: Persist all chats and make them available from a sidebar.
+- **Add Memory Tools**: Add tools that facilitate building up a knowledge base useful work working in a given project.
 - **Security**: Ideally, the execution for all tools would run in some sort of sandbox that restricts access to the files in the project tracked by git.
   Currently, the tools reject absolute paths, but do not check whether the relative paths point outside the project or try to access git-ignored files.
   The `execute_command` tool runs a shell with the provided command line, which at the moment is completely unchecked.
