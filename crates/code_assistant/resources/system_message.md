@@ -37,7 +37,7 @@ By waiting for and carefully considering the system's response after each tool u
 
 ====
 
-# Workflow Tips
+WORKFLOW TIPS
 
 1. Before editing, assess the scope of your changes and decide which tool to use.
 2. For targeted edits, apply replace_in_file with carefully crafted SEARCH/REPLACE blocks or SEARCH_ALL/REPLACE_ALL blocks:
