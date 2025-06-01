@@ -3,9 +3,10 @@ use super::memory::MemoryView;
 use super::messages::MessagesView;
 use super::theme;
 use super::CloseWindow;
+use crate::ui::StreamingState;
 use gpui::{
-    div, prelude::*, px, App, Context, CursorStyle, Entity, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent,
+    div, prelude::*, px, rgba, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
+    MouseButton, MouseUpEvent,
 };
 use gpui_component::input::InputState;
 use gpui_component::input::TextInput;
@@ -23,6 +24,8 @@ pub struct RootView {
     input_requested: Arc<Mutex<bool>>,
     // Memory view state
     memory_collapsed: bool,
+    // Streaming state - shared with Gpui
+    streaming_state: Arc<Mutex<StreamingState>>,
 }
 
 impl RootView {
@@ -33,6 +36,7 @@ impl RootView {
         cx: &mut Context<Self>,
         input_value: Arc<Mutex<Option<String>>>,
         input_requested: Arc<Mutex<bool>>,
+        streaming_state: Arc<Mutex<StreamingState>>,
     ) -> Self {
         Self {
             text_input,
@@ -43,6 +47,7 @@ impl RootView {
             input_value,
             input_requested,
             memory_collapsed: false,
+            streaming_state,
         }
     }
 
@@ -98,6 +103,17 @@ impl RootView {
         });
         cx.notify();
     }
+
+    fn on_stop_click(
+        &mut self,
+        _: &MouseUpEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Set streaming state to StopRequested
+        *self.streaming_state.lock().unwrap() = StreamingState::StopRequested;
+        cx.notify();
+    }
 }
 
 impl Focusable for RootView {
@@ -107,9 +123,10 @@ impl Focusable for RootView {
 }
 
 impl Render for RootView {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Check if input is requested
+    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Check if input is requested and current streaming state
         let is_input_requested = *self.input_requested.lock().unwrap();
+        let current_streaming_state = *self.streaming_state.lock().unwrap();
 
         // Main container with titlebar and content
         div()
@@ -239,36 +256,105 @@ impl Render for RootView {
                                     .items_center()
                                     .p_2()
                                     .gap_2()
-                                    .child(div().flex_1().child(TextInput::new(&self.text_input)))
-                                    .child(
+                                    .child({
+                                        let text_input_handle =
+                                            self.text_input.read(cx).focus_handle(cx);
+                                        let is_focused = text_input_handle.is_focused(window);
+
                                         div()
-                                            .size(px(40.))
-                                            .rounded_sm()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .cursor(if is_input_requested {
-                                                CursorStyle::PointingHand
+                                            .flex_1()
+                                            .border_1()
+                                            .border_color(if is_focused {
+                                                cx.theme().primary // Blue border when focused
+                                            } else if cx.theme().is_dark() {
+                                                rgba(0x555555FF).into() // Brighter border for dark theme
                                             } else {
-                                                CursorStyle::OperationNotAllowed
+                                                rgba(0x999999FF).into() // Darker border for light theme
                                             })
-                                            .child(file_icons::render_icon(
-                                                &file_icons::get().get_type_icon(file_icons::SEND),
-                                                22.0,
+                                            .rounded_md()
+                                            .track_focus(&text_input_handle)
+                                            .child(TextInput::new(&self.text_input))
+                                    })
+                                    .child({
+                                        // Create button based on streaming state
+                                        match current_streaming_state {
+                                            StreamingState::Idle => {
+                                                // Show send button, enabled only if input is requested
+                                                let mut button = div()
+                                                    .size(px(40.))
+                                                    .rounded_sm()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .cursor(if is_input_requested {
+                                                        CursorStyle::PointingHand
+                                                    } else {
+                                                        CursorStyle::OperationNotAllowed
+                                                    })
+                                                    .child(file_icons::render_icon(
+                                                        &file_icons::get()
+                                                            .get_type_icon(file_icons::SEND),
+                                                        22.0,
+                                                        if is_input_requested {
+                                                            cx.theme().primary
+                                                        } else {
+                                                            cx.theme().muted_foreground
+                                                        },
+                                                        ">",
+                                                    ));
+
                                                 if is_input_requested {
-                                                    cx.theme().primary
-                                                } else {
-                                                    cx.theme().muted_foreground
-                                                },
-                                                ">",
-                                            ))
-                                            .when(is_input_requested, |style| {
-                                                style.hover(|s| s.bg(cx.theme().muted)).on_mouse_up(
-                                                    MouseButton::Left,
-                                                    cx.listener(Self::on_submit_click),
-                                                )
-                                            }),
-                                    ),
+                                                    button = button
+                                                        .hover(|s| s.bg(cx.theme().muted))
+                                                        .on_mouse_up(
+                                                            MouseButton::Left,
+                                                            cx.listener(Self::on_submit_click),
+                                                        );
+                                                }
+
+                                                button
+                                            }
+                                            StreamingState::Streaming => {
+                                                // Show stop button, enabled
+                                                div()
+                                                    .size(px(40.))
+                                                    .rounded_sm()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .cursor(CursorStyle::PointingHand)
+                                                    .hover(|s| s.bg(cx.theme().muted))
+                                                    .child(file_icons::render_icon(
+                                                        &file_icons::get()
+                                                            .get_type_icon(file_icons::STOP),
+                                                        22.0,
+                                                        cx.theme().danger,
+                                                        "⬜",
+                                                    ))
+                                                    .on_mouse_up(
+                                                        MouseButton::Left,
+                                                        cx.listener(Self::on_stop_click),
+                                                    )
+                                            }
+                                            StreamingState::StopRequested => {
+                                                // Show stop button, disabled/grayed out
+                                                div()
+                                                    .size(px(40.))
+                                                    .rounded_sm()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .cursor(CursorStyle::OperationNotAllowed)
+                                                    .child(file_icons::render_icon(
+                                                        &file_icons::get()
+                                                            .get_type_icon(file_icons::STOP),
+                                                        22.0,
+                                                        cx.theme().muted_foreground,
+                                                        "⬜",
+                                                    ))
+                                            }
+                                        }
+                                    }),
                             ),
                     )
                     // Right sidebar with memory view - only show if not collapsed

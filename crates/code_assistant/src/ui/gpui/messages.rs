@@ -1,7 +1,11 @@
 use super::elements::MessageContainer;
-use gpui::{div, prelude::*, px, rgb, App, Context, Entity, FocusHandle, Focusable, Window};
+use gpui::{
+    bounce, div, ease_in_out, percentage, prelude::*, px, rgb, svg, Animation, AnimationExt, App,
+    Context, Entity, FocusHandle, Focusable, SharedString, Transformation, Window,
+};
 use gpui_component::{scroll::ScrollbarAxis, v_flex, ActiveTheme, StyledExt};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// MessagesView - Component responsible for displaying the message history
 pub struct MessagesView {
@@ -97,9 +101,51 @@ impl Render for MessagesView {
                             message_container
                         };
 
-                        // Simply render each block entity
+                        // Render all block elements
                         let elements = msg.read(cx).elements();
-                        message_container.children(elements)
+                        let mut container_children = vec![];
+
+                        // Add all existing blocks
+                        for element in elements {
+                            container_children.push(element.into_any_element());
+                        }
+
+                        // Add loading indicator if waiting for content
+                        if msg.read(cx).is_waiting_for_content() {
+                            container_children.push(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .p_2()
+                                    .child(
+                                        svg()
+                                            .size(px(18.))
+                                            .path(SharedString::from("icons/arrow_circle.svg"))
+                                            .text_color(cx.theme().info)
+                                            .with_animation(
+                                                "loading_indicator",
+                                                Animation::new(Duration::from_secs(2))
+                                                    .repeat()
+                                                    .with_easing(bounce(ease_in_out)),
+                                                |svg, delta| {
+                                                    svg.with_transformation(Transformation::rotate(
+                                                        percentage(delta),
+                                                    ))
+                                                },
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_color(cx.theme().info)
+                                            .text_size(px(14.))
+                                            .child("Waiting for response..."),
+                                    )
+                                    .into_any_element(),
+                            );
+                        }
+
+                        message_container.children(container_children)
                     })),
             )
     }

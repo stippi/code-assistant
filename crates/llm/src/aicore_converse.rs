@@ -399,6 +399,12 @@ impl AiCoreClient {
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
         let token = self.token_manager.get_valid_token().await?;
 
+        // Start recording before HTTP request to capture real latency
+        if let Some(recorder) = &self.recorder {
+            let request_json = serde_json::to_value(request)?;
+            recorder.start_recording(request_json)?;
+        }
+
         let request_builder = self
             .client
             .post(&self.get_url(streaming_callback.is_some()))
@@ -625,13 +631,6 @@ impl AiCoreClient {
                     }
                 }
                 Ok(())
-            }
-
-            // Start recording if a recorder is available
-            if let Some(recorder) = &self.recorder {
-                // Serialize request for recording
-                let request_json = serde_json::to_value(request)?;
-                recorder.start_recording(request_json)?;
             }
 
             while let Some(chunk) = response.chunk().await? {

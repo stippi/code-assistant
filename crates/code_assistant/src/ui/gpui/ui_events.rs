@@ -30,4 +30,8 @@ pub enum UiEvent {
     EndTool { id: String },
     /// Update the working memory view
     UpdateMemory { memory: WorkingMemory },
+    /// Streaming started for a request
+    StreamingStarted(u64),
+    /// Streaming stopped for a request
+    StreamingStopped { id: u64, cancelled: bool },
 }

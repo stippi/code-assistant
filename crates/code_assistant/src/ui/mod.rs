@@ -14,6 +14,13 @@ pub enum ToolStatus {
     Error,   // Error during execution
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StreamingState {
+    Idle,          // No active streaming, ready to send
+    Streaming,     // Currently streaming response
+    StopRequested, // User requested stop, waiting for stream to end
+}
+
 #[derive(Debug, Clone)]
 pub enum UIMessage {
     // System actions that the agent takes
@@ -60,7 +67,10 @@ pub trait UserInterface: Send + Sync {
     async fn begin_llm_request(&self) -> Result<u64, UIError>;
 
     /// Informs the UI that an LLM request has completed
-    async fn end_llm_request(&self, request_id: u64) -> Result<(), UIError>;
+    async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError>;
+
+    /// Check if streaming should continue
+    fn should_streaming_continue(&self) -> bool;
 }
 
 #[cfg(test)]
