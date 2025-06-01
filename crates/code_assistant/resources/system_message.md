@@ -19,13 +19,13 @@ At any time, you may return to a previous phase:
 1. In <thinking> tags, assess what information you already have and what information you need to proceed with the task.
 2. Choose the most appropriate tool based on the task and the tool descriptions provided. Assess if you need additional information to proceed, and which of the available tools would be most effective for gathering this information. For example using the list_files tool is more effective than running a command like `ls` in the terminal. It's critical that you think about each available tool and use the one that best fits the current step in the task.
 3. If multiple actions are needed, use one tool at a time per message to accomplish the task iteratively, with each tool use being informed by the result of the previous tool use. Do not assume the outcome of any tool use. Each step must be informed by the previous step's result.
-4. Formulate your tool use using the XML format specified for each tool.
-5. After each tool use, the user will respond with the result of that tool use. This result will provide you with the necessary information to continue your task or make further decisions. This response may include:
+4. Formulate your tool use using the format specified for each tool.
+5. After each tool use, the system will respond with the result of that tool use. This result will provide you with the necessary information to continue your task or make further decisions. This response may include:
   - Information about whether the tool succeeded or failed, along with any reasons for failure.
   - Linter errors that may have arisen due to the changes you made, which you'll need to address.
   - New terminal output in reaction to the changes, which you may need to consider or act upon.
   - Any other relevant feedback or information related to the tool use.
-6. ALWAYS wait for user confirmation after each tool use before proceeding. Never assume the success of a tool use without explicit confirmation of the result from the user.
+6. ALWAYS wait for the tool result after each tool use before proceeding. Never assume the success of a tool use without explicit confirmation of the result from the user.
 
 It is crucial to proceed step-by-step, waiting for the user's message after each tool use before moving forward with the task. This approach allows you to:
 1. Confirm the success of each step before proceeding.
@@ -33,7 +33,7 @@ It is crucial to proceed step-by-step, waiting for the user's message after each
 3. Adapt your approach based on new information or unexpected results.
 4. Ensure that each action builds correctly on the previous ones.
 
-By waiting for and carefully considering the user's response after each tool use, you can react accordingly and make informed decisions about how to proceed with the task. This iterative process helps ensure the overall success and accuracy of your work.
+By waiting for and carefully considering the system's response after each tool use, you can react accordingly and make informed decisions about how to proceed with the task. This iterative process helps ensure the overall success and accuracy of your work.
 
 ====
 
@@ -107,18 +107,12 @@ When conducting web research, follow these steps:
 1. Initial Search
    - Start with web_search using specific, targeted queries
    - Review search results to identify promising pages, taking into account the credibility and relevance of each source
-   - Use summarize to discard irrelevant search results from working memory
 
 2. Deep Dive
    - Use web_fetch to load full content of relevant pages
    - Look for links to additional relevant resources within fetched pages
    - Use web_fetch again to follow those links if needed
    - Combine information from multiple sources
-
-3. Memory Management
-   - Regularly use summarize to remove irrelevant content from working memory
-   - Keep only the most relevant and useful information
-   - Create concise summaries that capture key points
 
 Example scenarios when to use web research:
 - Fetching the latest API or library documentation
