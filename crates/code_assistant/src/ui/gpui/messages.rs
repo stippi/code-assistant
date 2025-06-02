@@ -4,7 +4,10 @@ use gpui::{
     Context, Entity, FocusHandle, Focusable, Pixels, Point, ScrollHandle, SharedString, Size, Task,
     Timer, Transformation, Window,
 };
-use gpui_component::{scroll::ScrollbarAxis, v_flex, ActiveTheme, StyledExt};
+use gpui_component::{
+    scroll::{Scrollbar, ScrollbarState},
+    v_flex, ActiveTheme,
+};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -75,6 +78,7 @@ pub struct MessagesView {
     // Auto-scroll functionality
     scroll_handle: ScrollHandle,
     scroll_state: Rc<RefCell<AutoScrollState>>,
+    scrollbar_state: Rc<Cell<ScrollbarState>>,
     config: AutoScrollConfig,
     content_size: Rc<Cell<Size<Pixels>>>,
     viewport_size: Rc<Cell<Size<Pixels>>>,
@@ -82,8 +86,8 @@ pub struct MessagesView {
     // Animation task
     scroll_task: Rc<RefCell<Option<Task<()>>>>,
 
-    // Track message count to detect new messages
-    last_message_count: Rc<Cell<usize>>,
+    // Track content size to detect content changes
+    last_content_height: Rc<Cell<f32>>,
 }
 
 impl MessagesView {
@@ -96,11 +100,12 @@ impl MessagesView {
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
             scroll_state: Rc::new(RefCell::new(AutoScrollState::default())),
+            scrollbar_state: Rc::new(Cell::new(ScrollbarState::default())),
             config: AutoScrollConfig::default(),
             content_size: Rc::new(Cell::new(Size::default())),
             viewport_size: Rc::new(Cell::new(Size::default())),
             scroll_task: Rc::new(RefCell::new(None)),
-            last_message_count: Rc::new(Cell::new(0)),
+            last_content_height: Rc::new(Cell::new(0.0)),
         }
     }
 
@@ -193,6 +198,7 @@ impl MessagesView {
                             distance_to_target.signum() * max_move
                         };
 
+                        println!("Animating scroll offset");
                         let new_y = current_y + move_distance;
                         scroll_handle.set_offset(Point::new(current_offset.x, px(new_y)));
 
@@ -220,12 +226,13 @@ impl MessagesView {
         self.scroll_state.borrow_mut().animating = true;
     }
 
-    /// Handle new messages being added
-    fn handle_new_messages(&self, new_count: usize, cx: &mut Context<Self>) {
-        let old_count = self.last_message_count.get();
+    /// Handle content size changes (detecting new content)
+    fn handle_content_change(&self, new_height: f32, cx: &mut Context<Self>) {
+        let old_height = self.last_content_height.get();
 
-        if new_count > old_count {
-            self.last_message_count.set(new_count);
+        // Content grew (new content added)
+        if new_height > old_height + 1.0 {
+            self.last_content_height.set(new_height);
 
             // Only auto-scroll if we were already at the bottom
             if self.is_at_bottom() {
@@ -239,6 +246,7 @@ impl MessagesView {
     fn handle_manual_scroll(&self) {
         if self.is_at_bottom() {
             // User scrolled back to bottom, re-enable auto-scroll
+            println!("At bottom");
             self.scroll_state.borrow_mut().enabled = true;
         } else {
             // User scrolled away from bottom, disable auto-scroll
@@ -248,6 +256,7 @@ impl MessagesView {
             // Cancel animation task
             drop(state);
             *self.scroll_task.borrow_mut() = None;
+            println!("Away from bottom");
         }
     }
 }
@@ -266,8 +275,7 @@ impl Render for MessagesView {
             lock.clone()
         };
 
-        // Check for new messages
-        self.handle_new_messages(messages.len(), cx);
+        // No need to check messages here - content changes are detected in canvas
 
         // Get the theme colors for user messages
         let user_accent = if cx.theme().is_dark() {
@@ -287,127 +295,148 @@ impl Render for MessagesView {
             .min_h_0() // Minimum height to ensure scrolling works
             .relative() // For absolute positioning of scrollbar
             .child(
-                v_flex()
-                    .id("messages")
-                    .flex_1()
-                    .p_2()
-                    .track_scroll(&self.scroll_handle)
-                    .scrollable(cx.entity().entity_id(), ScrollbarAxis::Vertical)
-                    .bg(cx.theme().card)
-                    .gap_2()
-                    .text_size(px(16.))
-                    // Handle manual scroll events
-                    .on_scroll_wheel(cx.listener(
-                        move |view, _event: &gpui::ScrollWheelEvent, _window, _cx| {
-                            view.handle_manual_scroll();
-                        },
-                    ))
-                    .children(messages.into_iter().map(|msg| {
-                        // Create message container with appropriate styling based on role
-                        let mut message_container = div().p_3().flex().flex_col().gap_2();
+                div()
+                    .id("messages-scroll-container")
+                    .size_full()
+                    .overflow_hidden()
+                    .child(
+                        v_flex()
+                            .id("messages")
+                            .p_2()
+                            .track_scroll(&self.scroll_handle)
+                            .overflow_scroll()
+                            .size_full()
+                            .bg(cx.theme().card)
+                            .gap_2()
+                            .text_size(px(16.))
+                            // Handle manual scroll events
+                            .on_scroll_wheel(cx.listener(
+                                move |view, _event: &gpui::ScrollWheelEvent, _window, _cx| {
+                                    view.handle_manual_scroll();
+                                },
+                            ))
+                            .children(messages.into_iter().map(|msg| {
+                                // Create message container with appropriate styling based on role
+                                let mut message_container = div().p_3().flex().flex_col().gap_2();
 
-                        if msg.read(cx).is_user_message() {
-                            message_container = message_container
-                                .m_3()
-                                .bg(cx.theme().muted.opacity(0.3)) // Use theme muted color with opacity
-                                .rounded_md()
-                                .shadow_sm();
-                        }
+                                if msg.read(cx).is_user_message() {
+                                    message_container = message_container
+                                        .m_3()
+                                        .bg(cx.theme().muted.opacity(0.3)) // Use theme muted color with opacity
+                                        .rounded_md()
+                                        .shadow_sm();
+                                }
 
-                        // Create message container with user badge if needed
-                        let message_container = if msg.read(cx).is_user_message() {
-                            message_container.child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_2()
-                                    .children(vec![
-                                        super::file_icons::render_icon_container(
-                                            &super::file_icons::get()
-                                                .get_type_icon(super::file_icons::TOOL_USER_INPUT),
-                                            16.0,
-                                            user_accent, // Use themed user accent color
-                                            "👤",
-                                        )
-                                        .into_any_element(),
+                                // Create message container with user badge if needed
+                                let message_container = if msg.read(cx).is_user_message() {
+                                    message_container.child(
+                                        div().flex().flex_row().items_center().gap_2().children(
+                                            vec![
+                                                super::file_icons::render_icon_container(
+                                                    &super::file_icons::get().get_type_icon(
+                                                        super::file_icons::TOOL_USER_INPUT,
+                                                    ),
+                                                    16.0,
+                                                    user_accent, // Use themed user accent color
+                                                    "👤",
+                                                )
+                                                .into_any_element(),
+                                                div()
+                                                    .font_weight(gpui::FontWeight(600.0))
+                                                    .text_color(user_accent) // Use themed user accent color
+                                                    .child("You")
+                                                    .into_any_element(),
+                                            ],
+                                        ),
+                                    )
+                                } else {
+                                    message_container
+                                };
+
+                                // Render all block elements
+                                let elements = msg.read(cx).elements();
+                                let mut container_children = vec![];
+
+                                // Add all existing blocks
+                                for element in elements {
+                                    container_children.push(element.into_any_element());
+                                }
+
+                                // Add loading indicator if waiting for content
+                                if msg.read(cx).is_waiting_for_content() {
+                                    container_children.push(
                                         div()
-                                            .font_weight(gpui::FontWeight(600.0))
-                                            .text_color(user_accent) // Use themed user accent color
-                                            .child("You")
-                                            .into_any_element(),
-                                    ]),
-                            )
-                        } else {
-                            message_container
-                        };
-
-                        // Render all block elements
-                        let elements = msg.read(cx).elements();
-                        let mut container_children = vec![];
-
-                        // Add all existing blocks
-                        for element in elements {
-                            container_children.push(element.into_any_element());
-                        }
-
-                        // Add loading indicator if waiting for content
-                        if msg.read(cx).is_waiting_for_content() {
-                            container_children.push(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .p_2()
-                                    .child(
-                                        svg()
-                                            .size(px(18.))
-                                            .path(SharedString::from("icons/arrow_circle.svg"))
-                                            .text_color(cx.theme().info)
-                                            .with_animation(
-                                                "loading_indicator",
-                                                Animation::new(Duration::from_secs(2))
-                                                    .repeat()
-                                                    .with_easing(bounce(ease_in_out)),
-                                                |svg, delta| {
-                                                    svg.with_transformation(Transformation::rotate(
-                                                        percentage(delta),
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .p_2()
+                                            .child(
+                                                svg()
+                                                    .size(px(18.))
+                                                    .path(SharedString::from(
+                                                        "icons/arrow_circle.svg",
                                                     ))
-                                                },
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_color(cx.theme().info)
-                                            .text_size(px(14.))
-                                            .child("Waiting for response..."),
-                                    )
-                                    .into_any_element(),
-                            );
-                        }
+                                                    .text_color(cx.theme().info)
+                                                    .with_animation(
+                                                        "loading_indicator",
+                                                        Animation::new(Duration::from_secs(2))
+                                                            .repeat()
+                                                            .with_easing(bounce(ease_in_out)),
+                                                        |svg, delta| {
+                                                            svg.with_transformation(
+                                                                Transformation::rotate(percentage(
+                                                                    delta,
+                                                                )),
+                                                            )
+                                                        },
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_color(cx.theme().info)
+                                                    .text_size(px(14.))
+                                                    .child("Waiting for response..."),
+                                            )
+                                            .into_any_element(),
+                                    );
+                                }
 
-                        message_container.children(container_children)
-                    }))
-                    // Add a canvas to track content size changes
-                    .child({
-                        gpui::canvas(
-                            move |bounds, _window, _cx| {
-                                //println!("update content size: {:?}", bounds.size);
-                                content_size.set(bounds.size);
-                            },
-                            move |_bounds, _window, _element_state, _cx| {},
-                        )
-                        .absolute()
-                        .size_full()
-                    }),
+                                message_container.children(container_children)
+                            }))
+                            // Add a canvas to track content size changes
+                            .child({
+                                let content_size_clone = content_size.clone();
+                                let entity = cx.entity().clone();
+                                gpui::canvas(
+                                    move |bounds, _window, cx| {
+                                        let new_height = bounds.size.height.0;
+                                        content_size_clone.set(bounds.size);
+
+                                        // Trigger content change detection
+                                        entity.update(cx, |view, cx| {
+                                            view.handle_content_change(new_height, cx);
+                                        });
+                                    },
+                                    move |_bounds, _window, _element_state, _cx| {},
+                                )
+                                .absolute()
+                                .size_full()
+                            }),
+                    )
+                    // Add scrollbar
+                    .child(Scrollbar::vertical(
+                        cx.entity().entity_id(),
+                        self.scrollbar_state.clone(),
+                        self.scroll_handle.clone(),
+                        self.content_size.get(),
+                    )),
             )
             // Add a canvas to track viewport size
             .child({
-                let viewport_size = viewport_size.clone();
+                let viewport_size_clone = viewport_size.clone();
                 gpui::canvas(
                     move |bounds, _window, _cx| {
-                        //println!("update view port size: {:?}", bounds.size);
-                        viewport_size.set(bounds.size);
+                        viewport_size_clone.set(bounds.size);
                     },
                     move |_bounds, _window, _element_state, _cx| {},
                 )
