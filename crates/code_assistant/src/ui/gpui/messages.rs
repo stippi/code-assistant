@@ -372,7 +372,7 @@ impl Render for MessagesView {
                                             .p_2()
                                             .child(
                                                 svg()
-                                                    .size(px(18.))
+                                                    .size(px(16.))
                                                     .path(SharedString::from(
                                                         "icons/arrow_circle.svg",
                                                     ))
@@ -394,7 +394,7 @@ impl Render for MessagesView {
                                             .child(
                                                 div()
                                                     .text_color(cx.theme().info)
-                                                    .text_size(px(14.))
+                                                    .text_size(px(12.))
                                                     .child("Waiting for response..."),
                                             )
                                             .into_any_element(),
