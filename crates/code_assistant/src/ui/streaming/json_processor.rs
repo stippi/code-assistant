@@ -95,6 +95,21 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                 tool_name,
                 tool_id,
             } => {
+                // If there's text in the buffer from previous Text chunks, process it first.
+                if !self.state.buffer.is_empty() {
+                    debug!(
+                        "Flushing text buffer before processing InputJson. Buffer content: '{}'",
+                        self.state.buffer
+                    );
+                    // Call process_text_with_thinking_tags with an empty string
+                    // to make it process its current buffer contents.
+                    self.process_text_with_thinking_tags("")?;
+                    // After this, self.state.buffer should ideally be empty or contain
+                    // a genuinely incomplete tag part that process_text_with_thinking_tags decided to keep.
+                    // The JSON processing logic, especially for a new tool invocation, typically
+                    // clears self.state.buffer. This flush ensures text finalization.
+                }
+
                 debug!(
                     "InputJson: content: '{}', tool_name: '{:?}', tool_id: '{:?}', current_json_state: {:?}, current_buffer: '{}'",
                     content, tool_name, tool_id, self.state.json_parsing_state, self.state.buffer
@@ -577,36 +592,78 @@ impl JsonStreamProcessor {
 
     /// Process text chunks and extract <thinking> blocks
     fn process_text_with_thinking_tags(&mut self, text: &str) -> Result<(), UIError> {
-        // Combine buffer with new text
-        let current_text = format!("{}{}", self.state.buffer, text);
+        let is_flushing_call = text.is_empty() && !self.state.buffer.is_empty();
 
-        // Buffer truncating logic
-        let mut processing_text = current_text.clone();
-        let mut safe_length = processing_text.len();
-        for j in (1..=processing_text.len().min(20)).rev() {
-            if !processing_text.is_char_boundary(processing_text.len() - j) {
-                continue;
-            }
-            let suffix = &processing_text[processing_text.len() - j..];
-            if suffix.ends_with('\n') && j == 1 {
-                safe_length = processing_text.len() - 1;
-                self.state.buffer = "\n".to_string();
-                break;
-            } else if self.is_potential_thinking_tag_start(suffix) {
-                safe_length = processing_text.len() - j;
-                self.state.buffer = suffix.to_string();
-                break;
-            }
+        // Combine old buffer with new text
+        let mut combined_text = self.state.buffer.clone();
+        combined_text.push_str(text);
+
+        if combined_text.is_empty() {
+            self.state.buffer.clear(); // Ensure it is clear if nothing to process
+            return Ok(());
         }
-        if safe_length < processing_text.len() {
-            // Ensure safe_length is at a char boundary
-            while safe_length > 0 && !processing_text.is_char_boundary(safe_length) {
-                safe_length -= 1;
-            }
-            processing_text = processing_text[..safe_length].to_string();
+
+        let processing_text: String;
+        // `self.state.buffer` will be managed based on whether it's a flushing call or not,
+        // and then potentially updated by the main processing loop if `processing_text` ends
+        // in an incomplete tag.
+
+        if is_flushing_call {
+            processing_text = combined_text; // Process the entire current_text (which is the old buffer)
+            self.state.buffer.clear(); // Clear buffer; loop below will repopulate if `processing_text` ends in a truly partial tag
         } else {
-            self.state.buffer.clear();
+            // Suffix logic, operating on `combined_text`.
+            // This determines `processing_text` and what suffix (if any) goes into `self.state.buffer`.
+            let temp_combined_text_for_suffix_eval = combined_text.clone();
+            let mut safe_len_for_processing = temp_combined_text_for_suffix_eval.len();
+            let mut suffix_identified_and_buffered = false;
+
+            for j in (1..=temp_combined_text_for_suffix_eval.len().min(20)).rev() {
+                if !temp_combined_text_for_suffix_eval
+                    .is_char_boundary(temp_combined_text_for_suffix_eval.len() - j)
+                {
+                    continue;
+                }
+                let suffix_candidate = &temp_combined_text_for_suffix_eval
+                    [temp_combined_text_for_suffix_eval.len() - j..];
+
+                if suffix_candidate.ends_with('\n') && j == 1 {
+                    safe_len_for_processing = temp_combined_text_for_suffix_eval.len() - 1;
+                    self.state.buffer = "\n".to_string();
+                    suffix_identified_and_buffered = true;
+                    break;
+                } else if self.is_potential_thinking_tag_start(suffix_candidate) {
+                    safe_len_for_processing = temp_combined_text_for_suffix_eval.len() - j;
+                    self.state.buffer = suffix_candidate.to_string();
+                    suffix_identified_and_buffered = true;
+                    break;
+                }
+            }
+
+            if safe_len_for_processing < temp_combined_text_for_suffix_eval.len() {
+                // A suffix was cut and placed in self.state.buffer.
+                // Ensure safe_len_for_processing is at a char boundary (it should be, but double check).
+                while safe_len_for_processing > 0
+                    && !temp_combined_text_for_suffix_eval.is_char_boundary(safe_len_for_processing)
+                {
+                    safe_len_for_processing -= 1;
+                }
+                processing_text =
+                    temp_combined_text_for_suffix_eval[..safe_len_for_processing].to_string();
+            } else {
+                // No suffix was cut, or the cut part was not put in self.state.buffer by the loop.
+                // Process all of combined_text.
+                processing_text = temp_combined_text_for_suffix_eval;
+                if !suffix_identified_and_buffered {
+                    // If no suffix was explicitly put in buffer by the logic above, clear it.
+                    self.state.buffer.clear();
+                }
+            }
         }
+
+        // The main processing loop for `processing_text` starts from here.
+        // `self.state.buffer` has been prepared (either cleared for flushing, or set by suffix logic).
+        // This loop may further update `self.state.buffer` if `processing_text` itself ends in an incomplete tag.
 
         let mut current_pos = 0;
         while current_pos < processing_text.len() {
