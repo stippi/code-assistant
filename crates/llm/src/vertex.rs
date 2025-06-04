@@ -40,12 +40,18 @@ struct VertexMessage {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct VertexPart {
-    #[serde(rename = "functionCall")]
-    function_call: Option<VertexFunctionCall>,
-    #[serde(rename = "functionResponse")]
-    function_response: Option<VertexFunctionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thought: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thought_signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function_call: Option<VertexFunctionCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function_response: Option<VertexFunctionResponse>,
 }
 
 #[derive(Debug, Serialize)]
@@ -237,19 +243,35 @@ impl VertexClient {
         let parts = match &message.content {
             MessageContent::Text(text) => vec![VertexPart {
                 text: Some(text.clone()),
+                thought: None,
+                thought_signature: None,
                 function_call: None,
                 function_response: None,
             }],
             MessageContent::Structured(blocks) => blocks
                 .iter()
                 .filter_map(|block| match block {
+                    ContentBlock::Thinking {
+                        thinking,
+                        signature,
+                    } => Some(VertexPart {
+                        text: Some(thinking.clone()),
+                        thought: Some(true),
+                        thought_signature: Some(signature.clone()),
+                        function_call: None,
+                        function_response: None,
+                    }),
                     ContentBlock::Text { text } => Some(VertexPart {
                         text: Some(text.clone()),
+                        thought: None,
+                        thought_signature: None,
                         function_call: None,
                         function_response: None,
                     }),
                     ContentBlock::ToolUse { name, input, .. } => Some(VertexPart {
                         text: None,
+                        thought: None,
+                        thought_signature: None,
                         function_call: Some(VertexFunctionCall {
                             name: name.clone(),
                             args: input.clone(),
@@ -262,6 +284,8 @@ impl VertexClient {
                         ..
                     } => Some(VertexPart {
                         text: None,
+                        thought: None,
+                        thought_signature: None,
                         function_call: None,
                         function_response: Some(VertexFunctionResponse {
                             // Extract the function name from the tool_use_id
@@ -380,7 +404,15 @@ impl VertexClient {
                                     input: function_call.args,
                                 }
                             } else if let Some(text) = part.text {
-                                ContentBlock::Text { text }
+                                // Check if this is a thinking part
+                                if part.thought == Some(true) {
+                                    ContentBlock::Thinking {
+                                        thinking: text,
+                                        signature: part.thought_signature.unwrap_or_default(),
+                                    }
+                                } else {
+                                    ContentBlock::Text { text }
+                                }
                             } else {
                                 // Fallback if neither function_call nor text is present
                                 ContentBlock::Text {
@@ -431,9 +463,100 @@ impl VertexClient {
         let rate_limits = VertexRateLimitInfo::from_response(&response);
 
         let mut content_blocks = Vec::new();
-        let mut current_text = String::new();
         let mut last_usage: Option<VertexUsageMetadata> = None;
         let mut line_buffer = String::new();
+
+        // Helper function to process SSE lines
+        let process_sse_line = |line: &str,
+                                blocks: &mut Vec<ContentBlock>,
+                                usage: &mut Option<VertexUsageMetadata>,
+                                callback: &StreamingCallback,
+                                tool_id_generator: &Box<dyn ToolIDGenerator + Send + Sync>|
+         -> Result<()> {
+            if let Some(data) = line.strip_prefix("data: ") {
+                debug!("Received data line: {}", data);
+                if let Ok(response) = serde_json::from_str::<VertexResponse>(data) {
+                    if let Some(candidate) = response.candidates.first() {
+                        for part in &candidate.content.parts {
+                            if let Some(text) = &part.text {
+                                // Check if this is a thinking part
+                                if part.thought == Some(true) {
+                                    // Stream thinking content
+                                    callback(&StreamingChunk::Thinking(text.clone()))?;
+
+                                    // Check if we can extend the last thinking block or need to create a new one
+                                    match blocks.last_mut() {
+                                        Some(ContentBlock::Thinking {
+                                            thinking,
+                                            signature,
+                                        }) => {
+                                            // Extend existing thinking block
+                                            thinking.push_str(text);
+                                            // Update signature if provided
+                                            if let Some(new_signature) = &part.thought_signature {
+                                                *signature = new_signature.clone();
+                                            }
+                                        }
+                                        _ => {
+                                            // Create new thinking block
+                                            blocks.push(ContentBlock::Thinking {
+                                                thinking: text.clone(),
+                                                signature: part
+                                                    .thought_signature
+                                                    .clone()
+                                                    .unwrap_or_default(),
+                                            });
+                                        }
+                                    }
+                                } else {
+                                    // Regular text content
+                                    callback(&StreamingChunk::Text(text.clone()))?;
+
+                                    // Check if we can extend the last text block or need to create a new one
+                                    match blocks.last_mut() {
+                                        Some(ContentBlock::Text { text: last_text }) => {
+                                            // Extend existing text block
+                                            last_text.push_str(text);
+                                        }
+                                        _ => {
+                                            // Create new text block
+                                            blocks.push(ContentBlock::Text { text: text.clone() });
+                                        }
+                                    }
+                                }
+                            } else if let Some(function_call) = &part.function_call {
+                                // Generate a tool ID that includes the function name for later extraction
+                                let tool_id = tool_id_generator.generate_id(&function_call.name);
+
+                                // Stream the JSON input for tools
+                                if let Ok(args_str) = serde_json::to_string(&function_call.args) {
+                                    callback(&StreamingChunk::InputJson {
+                                        content: args_str,
+                                        tool_name: Some(function_call.name.clone()),
+                                        tool_id: Some(tool_id.clone()),
+                                    })?;
+                                }
+
+                                // Always create a new tool use block (they don't get extended)
+                                blocks.push(ContentBlock::ToolUse {
+                                    id: tool_id,
+                                    name: function_call.name.clone(),
+                                    input: function_call.args.clone(),
+                                });
+                            }
+                        }
+                    }
+                    if let Some(usage_metadata) = response.usage_metadata {
+                        *usage = Some(usage_metadata);
+                    }
+                } else {
+                    warn!("Failed to parse Vertex response from data: {}", data);
+                }
+            } else if line.len() > 1 {
+                warn!("Received line without 'data' prefix: {}", line);
+            }
+            Ok(())
+        };
 
         while let Some(chunk) = response.chunk().await? {
             let chunk_str = std::str::from_utf8(&chunk)?;
@@ -441,60 +564,13 @@ impl VertexClient {
             for c in chunk_str.chars() {
                 if c == '\n' {
                     if !line_buffer.is_empty() {
-                        if let Some(data) = line_buffer.strip_prefix("data: ") {
-                            debug!("Received data line: {}", data);
-                            if let Ok(response) = serde_json::from_str::<VertexResponse>(data) {
-                                if let Some(candidate) = response.candidates.first() {
-                                    for part in &candidate.content.parts {
-                                        if let Some(text) = &part.text {
-                                            streaming_callback(&StreamingChunk::Text(
-                                                text.clone(),
-                                            ))?;
-                                            current_text.push_str(text);
-                                        } else if let Some(function_call) = &part.function_call {
-                                            // If we have accumulated text, push it as a content block
-                                            if !current_text.is_empty() {
-                                                content_blocks.push(ContentBlock::Text {
-                                                    text: current_text.clone(),
-                                                });
-                                                current_text.clear();
-                                            }
-
-                                            // Generate a tool ID that includes the function name for later extraction
-                                            let tool_id = self
-                                                .tool_id_generator
-                                                .generate_id(&function_call.name);
-
-                                            // Stream the JSON input for tools
-                                            if let Ok(args_str) =
-                                                serde_json::to_string(&function_call.args)
-                                            {
-                                                streaming_callback(&StreamingChunk::InputJson {
-                                                    content: args_str,
-                                                    tool_name: Some(function_call.name.clone()),
-                                                    tool_id: Some(tool_id.clone()),
-                                                })?;
-                                            }
-
-                                            content_blocks.push(ContentBlock::ToolUse {
-                                                id: tool_id,
-                                                name: function_call.name.clone(),
-                                                input: function_call.args.clone(),
-                                            });
-                                        }
-                                    }
-                                }
-                                if let Some(usage) = response.usage_metadata {
-                                    last_usage = Some(usage);
-                                }
-                            } else {
-                                warn!("Failed to parse Vertex response from data: {}", data);
-                            }
-                        } else {
-                            if line_buffer.len() > 1 {
-                                warn!("Received line without 'data' prefix: {}", line_buffer);
-                            }
-                        }
+                        process_sse_line(
+                            &line_buffer,
+                            &mut content_blocks,
+                            &mut last_usage,
+                            streaming_callback,
+                            &self.tool_id_generator,
+                        )?;
                         line_buffer.clear();
                     }
                 } else {
@@ -505,25 +581,13 @@ impl VertexClient {
 
         // Process any remaining data in the buffer
         if !line_buffer.is_empty() {
-            if let Some(data) = line_buffer.strip_prefix("data: ") {
-                debug!("Received last data line: {}", data);
-                if let Ok(response) = serde_json::from_str::<VertexResponse>(data) {
-                    if let Some(usage) = response.usage_metadata {
-                        last_usage = Some(usage);
-                    }
-                } else {
-                    warn!("Failed to parse Vertex response from data: {}", data);
-                }
-            } else {
-                if line_buffer.len() > 1 {
-                    warn!("Received line without 'data' prefix: {}", line_buffer);
-                }
-            }
-        }
-
-        // Push any remaining text as a final content block
-        if !current_text.is_empty() {
-            content_blocks.push(ContentBlock::Text { text: current_text });
+            process_sse_line(
+                &line_buffer,
+                &mut content_blocks,
+                &mut last_usage,
+                streaming_callback,
+                &self.tool_id_generator,
+            )?;
         }
 
         Ok((
