@@ -66,6 +66,12 @@ struct VertexResponse {
     candidates: Vec<VertexCandidate>,
     #[serde(rename = "usageMetadata")]
     usage_metadata: Option<VertexUsageMetadata>,
+    #[serde(rename = "modelVersion")]
+    #[allow(dead_code)]
+    model_version: Option<String>,
+    #[serde(rename = "responseId")]
+    #[allow(dead_code)]
+    response_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,11 +85,22 @@ struct VertexUsageMetadata {
     total_token_count: u32,
     #[serde(rename = "cachedContentTokenCount")]
     cached_content_token_count: Option<u32>,
+    #[serde(rename = "thoughtsTokenCount")]
+    #[allow(dead_code)]
+    thoughts_token_count: Option<u32>,
+    #[serde(rename = "promptTokensDetails")]
+    #[allow(dead_code)]
+    prompt_tokens_details: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct VertexCandidate {
     content: VertexContent,
+    #[serde(rename = "finishReason")]
+    #[allow(dead_code)]
+    finish_reason: Option<String>,
+    #[allow(dead_code)]
+    index: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -197,6 +214,7 @@ pub struct VertexClient {
 impl VertexClient {
     pub fn default_base_url() -> String {
         "https://generativelanguage.googleapis.com/v1beta".to_string()
+        //"https://aiplatform.googleapis.com/v1/publishers/google".to_string()
     }
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
@@ -476,6 +494,7 @@ impl VertexClient {
             if let Some(data) = line.strip_prefix("data: ") {
                 debug!("Received data line: {}", data);
                 if let Ok(response) = serde_json::from_str::<VertexResponse>(data) {
+                    // Process candidates and their content parts if present
                     if let Some(candidate) = response.candidates.first() {
                         for part in &candidate.content.parts {
                             if let Some(text) = &part.text {
@@ -546,6 +565,7 @@ impl VertexClient {
                             }
                         }
                     }
+                    // Always update usage metadata if present (including final responses)
                     if let Some(usage_metadata) = response.usage_metadata {
                         *usage = Some(usage_metadata);
                     }
