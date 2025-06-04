@@ -1,5 +1,6 @@
 use crate::{
-    types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
+    recording::APIRecorder, types::*, utils, ApiError, LLMProvider, RateLimitHandler,
+    StreamingCallback, StreamingChunk,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -209,6 +210,7 @@ pub struct VertexClient {
     model: String,
     base_url: String,
     tool_id_generator: Box<dyn ToolIDGenerator + Send + Sync>,
+    recorder: Option<APIRecorder>,
 }
 
 impl VertexClient {
@@ -238,6 +240,25 @@ impl VertexClient {
             model,
             base_url,
             tool_id_generator,
+            recorder: None,
+        }
+    }
+
+    /// Create a new client with recording capability
+    pub fn new_with_recorder<P: AsRef<std::path::Path>>(
+        api_key: String,
+        model: String,
+        base_url: String,
+        tool_id_generator: Box<dyn ToolIDGenerator + Send + Sync>,
+        recording_path: P,
+    ) -> Self {
+        Self {
+            client: Client::new(),
+            api_key,
+            model,
+            base_url,
+            tool_id_generator,
+            recorder: Some(APIRecorder::new(recording_path)),
         }
     }
 
@@ -467,6 +488,11 @@ impl VertexClient {
         request: &VertexRequest,
         streaming_callback: &StreamingCallback,
     ) -> Result<(LLMResponse, VertexRateLimitInfo)> {
+        // Start recording if a recorder is available
+        if let Some(recorder) = &self.recorder {
+            let request_json = serde_json::to_value(request)?;
+            recorder.start_recording(request_json)?;
+        }
         let response = self
             .client
             .post(self.get_url(true))
@@ -489,10 +515,15 @@ impl VertexClient {
                                 blocks: &mut Vec<ContentBlock>,
                                 usage: &mut Option<VertexUsageMetadata>,
                                 callback: &StreamingCallback,
-                                tool_id_generator: &Box<dyn ToolIDGenerator + Send + Sync>|
+                                tool_id_generator: &Box<dyn ToolIDGenerator + Send + Sync>,
+                                recorder: &Option<APIRecorder>|
          -> Result<()> {
             if let Some(data) = line.strip_prefix("data: ") {
                 debug!("Received data line: {}", data);
+                // Record the chunk if recorder is available
+                if let Some(recorder) = recorder {
+                    recorder.record_chunk(data)?;
+                }
                 if let Ok(response) = serde_json::from_str::<VertexResponse>(data) {
                     // Process candidates and their content parts if present
                     if let Some(candidate) = response.candidates.first() {
@@ -590,6 +621,7 @@ impl VertexClient {
                             &mut last_usage,
                             streaming_callback,
                             &self.tool_id_generator,
+                            &self.recorder,
                         )?;
                         line_buffer.clear();
                     }
@@ -607,7 +639,13 @@ impl VertexClient {
                 &mut last_usage,
                 streaming_callback,
                 &self.tool_id_generator,
+                &self.recorder,
             )?;
+        }
+
+        // End recording if a recorder is available
+        if let Some(recorder) = &self.recorder {
+            recorder.end_recording()?;
         }
 
         Ok((
