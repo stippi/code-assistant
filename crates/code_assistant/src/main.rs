@@ -140,16 +140,6 @@ async fn create_llm_client(
     }
 
     // Otherwise continue with normal provider setup
-    if record_path.is_some() {
-        match provider {
-            LLMProviderType::Anthropic | LLMProviderType::AiCore => {}
-            _ => {
-                eprintln!(
-                    "Warning: Recording is only supported for the Anthropic and AI Core providers"
-                );
-            }
-        }
-    }
     match provider {
         LLMProviderType::AiCore => {
             let config = DeploymentConfig::load()
@@ -203,7 +193,17 @@ async fn create_llm_client(
             let model_name = model.unwrap_or_else(|| "gemini-2.5-pro-preview-05-06".to_string());
             let base_url = base_url.unwrap_or(VertexClient::default_base_url());
 
-            Ok(Box::new(VertexClient::new(api_key, model_name, base_url)))
+            if let Some(path) = record_path {
+                Ok(Box::new(VertexClient::new_with_recorder(
+                    api_key,
+                    model_name,
+                    base_url,
+                    Box::new(llm::vertex::DefaultToolIDGenerator::new()), // Add default tool_id_generator
+                    path,
+                )))
+            } else {
+                Ok(Box::new(VertexClient::new(api_key, model_name, base_url)))
+            }
         }
 
         LLMProviderType::Ollama => {

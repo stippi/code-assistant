@@ -981,4 +981,77 @@ mod tests {
         ];
         assert_fragments_match(&expected_merged_fragments, &merged_fragments);
     }
+
+    #[test]
+    fn test_thinking_to_tool_transition() {
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let mut processor = JsonStreamProcessor::new(ui_arc);
+
+        let chunks = vec![
+            StreamingChunk::Text("<thinking>\nStart of a ".to_string()),
+            StreamingChunk::Text("thinking block\n</thinking>".to_string()),
+            StreamingChunk::InputJson {
+                tool_id: Some("tool-id".to_string()),
+                tool_name: Some("read_files".to_string()),
+                content: "{\"project\": \"code-assistant\",\"paths\": [\"Cargo.toml\"]}"
+                    .to_string(),
+            },
+        ];
+
+        for chunk in chunks {
+            processor.process(&chunk).unwrap();
+        }
+
+        // Test raw fragments for string parts
+        let raw_fragments = test_ui.get_raw_fragments();
+        println!("Raw fragments for thinking transition test:");
+        print_fragments(&raw_fragments);
+
+        let expected_raw_fragments_subset = vec![
+            DisplayFragment::ThinkingText("Start of a ".to_string()),
+            DisplayFragment::ThinkingText("thinki".to_string()),
+            DisplayFragment::ThinkingText("ng block".to_string()),
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "tool-id".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "project".to_string(),
+                value: "code-assistant".to_string(),
+                tool_id: "tool-id".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "paths".to_string(),
+                value: "[\"Cargo.toml\"]".to_string(), // Value is a JSON string representation
+                tool_id: "tool-id".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-id".to_string(),
+            },
+        ];
+
+        // Check that all expected fragments are present in the raw fragments.
+        let mut all_expected_found = true;
+        for expected_frag in &expected_raw_fragments_subset {
+            if !raw_fragments.contains(expected_frag) {
+                eprintln!("Missing expected fragment: {:?}", expected_frag);
+                all_expected_found = false;
+            }
+        }
+        assert!(
+            all_expected_found,
+            "Not all expected raw fragments were found in the output."
+        );
+
+        // Additionally, check the total count to ensure no unexpected extra fragments.
+        assert_eq!(
+            raw_fragments.len(),
+            expected_raw_fragments_subset.len(),
+            "Mismatch in the total number of raw fragments (expected {}, got {}). Raw fragments: {:?}",
+            expected_raw_fragments_subset.len(),
+            raw_fragments.len(),
+            raw_fragments
+        );
+    }
 }
