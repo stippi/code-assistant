@@ -1,8 +1,8 @@
 use super::elements::MessageContainer;
 use gpui::{
     bounce, div, ease_in_out, percentage, prelude::*, px, rgb, svg, Animation, AnimationExt, App,
-    Context, Entity, FocusHandle, Focusable, Pixels, Point, ScrollHandle, SharedString, Size, Task,
-    Timer, Transformation, Window,
+    Bounds, Context, Entity, FocusHandle, Focusable, Pixels, Point, ScrollHandle, SharedString,
+    Size, Task, Timer, Transformation, Window,
 };
 use gpui_component::{
     scroll::{Scrollbar, ScrollbarState},
@@ -11,64 +11,9 @@ use gpui_component::{
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration; // Instant is no longer used here directly for AutoScrollState
 
-/// Configuration for the auto-scroll animation
-#[derive(Clone)]
-struct AutoScrollConfig {
-    /// Base animation speed in pixels per second
-    base_speed: f32,
-    /// Maximum animation speed in pixels per second
-    max_speed: f32,
-    /// How much to accelerate when content is added frequently
-    acceleration_factor: f32,
-    /// Threshold distance from bottom to consider "at bottom"
-    bottom_threshold: f32,
-    /// Minimum time between scroll updates in milliseconds
-    update_interval: u64,
-}
-
-impl Default for AutoScrollConfig {
-    fn default() -> Self {
-        Self {
-            base_speed: 800.0, // pixels per second
-            max_speed: 2400.0,
-            acceleration_factor: 1.5,
-            bottom_threshold: 50.0, // pixels from bottom
-            update_interval: 16,    // ~60fps
-        }
-    }
-}
-
-/// State for auto-scroll animation
-#[derive(Clone)]
-struct AutoScrollState {
-    /// Whether auto-scroll is currently enabled
-    enabled: bool,
-    /// Current target position (bottom of content)
-    target_y: f32,
-    /// Current animation speed
-    current_speed: f32,
-    /// Last time content was added
-    last_content_added: Instant,
-    /// Last time we updated the scroll position
-    last_update: Instant,
-    /// Whether we're currently animating
-    animating: bool,
-}
-
-impl Default for AutoScrollState {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            target_y: 0.0,
-            current_speed: AutoScrollConfig::default().base_speed,
-            last_content_added: Instant::now(),
-            last_update: Instant::now(),
-            animating: false,
-        }
-    }
-}
+// AutoScrollConfig and AutoScrollState structs are removed.
 
 /// MessagesView - Component responsible for displaying the message history
 pub struct MessagesView {
@@ -77,14 +22,15 @@ pub struct MessagesView {
 
     // Auto-scroll functionality
     scroll_handle: ScrollHandle,
-    scroll_state: Rc<RefCell<AutoScrollState>>,
+    // scroll_state and config are removed
     scrollbar_state: Rc<Cell<ScrollbarState>>,
-    config: AutoScrollConfig,
     content_size: Rc<Cell<Size<Pixels>>>,
     viewport_size: Rc<Cell<Size<Pixels>>>,
+    autoscroll_active: Rc<Cell<bool>>,
+    was_at_bottom_before_update: Rc<Cell<bool>>,
 
-    // Animation task
-    scroll_task: Rc<RefCell<Option<Task<()>>>>,
+    // Animation task (renamed from scroll_task for consistency with playground)
+    autoscroll_task: Rc<RefCell<Option<Task<()>>>>,
 
     // Track content size to detect content changes
     last_content_height: Rc<Cell<f32>>,
@@ -99,164 +45,192 @@ impl MessagesView {
             message_queue,
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
-            scroll_state: Rc::new(RefCell::new(AutoScrollState::default())),
+            // scroll_state and config initializations are removed
             scrollbar_state: Rc::new(Cell::new(ScrollbarState::default())),
-            config: AutoScrollConfig::default(),
             content_size: Rc::new(Cell::new(Size::default())),
             viewport_size: Rc::new(Cell::new(Size::default())),
-            scroll_task: Rc::new(RefCell::new(None)),
+            autoscroll_active: Rc::new(Cell::new(false)), // Initialize to false
+            was_at_bottom_before_update: Rc::new(Cell::new(false)), // Initialize to false
+            autoscroll_task: Rc::new(RefCell::new(None)),
             last_content_height: Rc::new(Cell::new(0.0)),
         }
     }
 
-    /// Check if we're currently at the bottom of the scroll area
-    fn is_at_bottom(&self) -> bool {
-        let current_offset = self.scroll_handle.offset();
-        let content_height = self.content_size.get().height.0;
-        let viewport_height = self.viewport_size.get().height.0;
+    // is_at_bottom will be replaced by the version from gpui-playground
+    // start_auto_scroll_animation will be replaced by start_autoscroll_task from gpui-playground
 
+    // /// Check if we're currently at the bottom of the scroll area
+    // Ported from gpui-playground
+    fn is_at_bottom(&self, tolerance: Pixels) -> bool {
+        let current_scroll_offset_y = self.scroll_handle.offset().y;
+        // content_size and viewport_size are Rc<Cell<Size<Pixels>>> in MessagesView
+        let content_height = self.content_size.get().height;
+        let viewport_height = self.viewport_size.get().height;
+
+        // If content is smaller than or equal to viewport, we are always "at bottom"
         if content_height <= viewport_height {
-            return true; // No scrolling needed
+            return true;
         }
 
-        let max_scroll = content_height - viewport_height;
-        let distance_from_bottom = max_scroll - (-current_offset.y.0);
+        // Max scroll offset is -(content_height - viewport_height)
+        let max_scroll_offset_y = -(content_height - viewport_height);
 
-        distance_from_bottom <= self.config.bottom_threshold
+        // Check if current offset is within tolerance of max scroll offset
+        (current_scroll_offset_y - max_scroll_offset_y).abs() <= tolerance
     }
 
-    /// Start or update the auto-scroll animation
-    fn start_auto_scroll_animation(&self, cx: &mut Context<Self>) {
-        let scroll_handle = self.scroll_handle.clone();
-        let scroll_state = self.scroll_state.clone();
-        let config = self.config.clone();
-        let content_size = self.content_size.clone();
-        let viewport_size = self.viewport_size.clone();
+    // Ported from gpui-playground and adapted for MessagesView
+    fn start_autoscroll_task(&self, cx: &mut Context<Self>) {
+        // Cancel existing task if any
+        *self.autoscroll_task.borrow_mut() = None; // Use the renamed task field
 
-        // Cancel any existing animation
-        *self.scroll_task.borrow_mut() = None;
+        if !self.autoscroll_active.get() {
+            // println!("Auto-scroll not active, task not started.");
+            return;
+        }
+        // println!("Starting autoscroll task...");
 
-        let task = cx.spawn(async move |weak_entity, cx| {
-            let mut timer = Timer::after(Duration::from_millis(config.update_interval));
+        let scroll_handle_orig = self.scroll_handle.clone();
+        let autoscroll_active_orig = self.autoscroll_active.clone();
+
+        let task = cx.spawn(async move |weak_entity, async_app_cx| {
+            let mut timer = Timer::after(Duration::from_millis(16)); // Aim for ~60 FPS
+
+            // Easing animation variables
+            let mut current_scroll_speed: f32 = 0.0;
+            const SPRING_K: f32 = 0.035;
+            const DAMPING_C: f32 = 0.32;
+            const MIN_DISTANCE_TO_STOP_PX: f32 = 0.5;
+            const MIN_SPEED_TO_STOP: f32 = 0.5;
 
             loop {
                 timer.await;
-                timer = Timer::after(Duration::from_millis(config.update_interval));
+                timer = Timer::after(Duration::from_millis(16));
 
-                let should_continue = weak_entity
-                    .update(cx, |_view, cx| {
-                        let mut state = scroll_state.borrow_mut();
+                let autoscroll_active_for_update = autoscroll_active_orig.clone();
+                let scroll_handle_for_update = scroll_handle_orig.clone();
 
-                        if !state.enabled {
-                            state.animating = false;
-                            return false;
-                        }
+                let update_result = weak_entity.update(async_app_cx, move |view, model_cx| {
+                    if !autoscroll_active_for_update.get() {
+                        return false; // Stop task
+                    }
 
-                        let current_offset = scroll_handle.offset();
-                        let target_y = {
-                            let content_height = content_size.get().height.0;
-                            let viewport_height = viewport_size.get().height.0;
+                    // Access content_size and viewport_size through the view captured by the closure
+                    let content_h = view.content_size.get().height;
+                    let viewport_h = view.viewport_size.get().height;
 
-                            if content_height <= viewport_height {
-                                0.0
-                            } else {
-                                -(content_height - viewport_height)
+                    if viewport_h == px(0.0) {
+                        return true; // Viewport not measured yet, wait
+                    }
+
+                    let scrollable_amount = content_h - viewport_h;
+                    let target_y_px = if scrollable_amount > px(0.0) {
+                        -scrollable_amount
+                    } else {
+                        px(0.0)
+                    };
+
+                    let current_offset_y_px = scroll_handle_for_update.offset().y;
+                    let displacement_x_f32 = current_offset_y_px.0 - target_y_px.0;
+                    let distance_to_target_abs_f32 = displacement_x_f32.abs();
+
+                    if distance_to_target_abs_f32 < MIN_DISTANCE_TO_STOP_PX
+                        && current_scroll_speed.abs() < MIN_SPEED_TO_STOP
+                    {
+                        scroll_handle_for_update.set_offset(Point {
+                            x: px(0.0),
+                            y: target_y_px,
+                        });
+                        autoscroll_active_for_update.set(false);
+                        current_scroll_speed = 0.0;
+                        return false; // Stop task
+                    }
+
+                    let force_spring_f32 = -SPRING_K * displacement_x_f32;
+                    let force_damping_f32 = -DAMPING_C * current_scroll_speed;
+                    let total_acceleration_f32 = force_spring_f32 + force_damping_f32;
+                    current_scroll_speed += total_acceleration_f32;
+
+                    let mut final_scroll_delta_f32 = current_scroll_speed;
+
+                    if displacement_x_f32.abs() > f32::EPSILON {
+                        let current_displacement_sign = displacement_x_f32.signum();
+                        let planned_offset_y_f32 = current_offset_y_px.0 + final_scroll_delta_f32;
+                        let planned_displacement_f32 = planned_offset_y_f32 - target_y_px.0;
+
+                        if planned_displacement_f32.signum() != current_displacement_sign {
+                            if distance_to_target_abs_f32 > MIN_DISTANCE_TO_STOP_PX {
+                                final_scroll_delta_f32 = -displacement_x_f32;
+                                current_scroll_speed = 0.0;
                             }
-                        };
-
-                        // Update target if content changed
-                        if (target_y - state.target_y).abs() > 1.0 {
-                            state.target_y = target_y;
-                            state.last_content_added = Instant::now();
-
-                            // Increase speed when content is added frequently
-                            let time_since_last_add =
-                                state.last_content_added.duration_since(state.last_update);
-                            if time_since_last_add < Duration::from_millis(500) {
-                                state.current_speed = (state.current_speed
-                                    * config.acceleration_factor)
-                                    .min(config.max_speed);
-                            }
                         }
+                    }
 
-                        let current_y = current_offset.y.0;
-                        let distance_to_target = target_y - current_y;
+                    if final_scroll_delta_f32.abs() > distance_to_target_abs_f32 {
+                        final_scroll_delta_f32 = -displacement_x_f32;
+                    }
 
-                        // Check if we've reached the target
-                        if distance_to_target.abs() < 1.0 {
-                            state.animating = false;
-                            return false;
-                        }
+                    let new_y_calculated_px = current_offset_y_px + px(final_scroll_delta_f32);
 
-                        // Calculate smooth movement
-                        let dt = state.last_update.elapsed().as_secs_f32();
-                        let max_move = state.current_speed * dt;
+                    scroll_handle_for_update.set_offset(Point {
+                        x: px(0.0),
+                        y: new_y_calculated_px,
+                    });
+                    model_cx.notify();
+                    true // Continue task
+                });
 
-                        let move_distance = if distance_to_target.abs() < max_move {
-                            distance_to_target
-                        } else {
-                            distance_to_target.signum() * max_move
-                        };
-
-                        println!("Animating scroll offset");
-                        let new_y = current_y + move_distance;
-                        scroll_handle.set_offset(Point::new(current_offset.x, px(new_y)));
-
-                        state.last_update = Instant::now();
-                        state.animating = true;
-
-                        // Gradually slow down if no new content
-                        if state.last_content_added.elapsed() > Duration::from_millis(1000) {
-                            state.current_speed =
-                                (state.current_speed * 0.98).max(config.base_speed);
-                        }
-
-                        cx.notify();
-                        true
-                    })
-                    .unwrap_or(false);
-
-                if !should_continue {
+                if update_result.is_err() || !update_result.unwrap_or(false) {
+                    autoscroll_active_orig.set(false);
                     break;
                 }
             }
         });
 
-        *self.scroll_task.borrow_mut() = Some(task);
-        self.scroll_state.borrow_mut().animating = true;
+        *self.autoscroll_task.borrow_mut() = Some(task); // Use the renamed task field
     }
 
     /// Handle content size changes (detecting new content)
     fn handle_content_change(&self, new_height: f32, cx: &mut Context<Self>) {
         let old_height = self.last_content_height.get();
 
+        // Check if at bottom BEFORE considering new height for auto-scroll decision logic
+        // Use a tolerance, e.g., 50px, similar to the old config.bottom_threshold
+        let at_bottom_before_update = self.is_at_bottom(px(50.0));
+        self.was_at_bottom_before_update
+            .set(at_bottom_before_update);
+        // println!("ContentChange: was_at_bottom_before_update set to: {}", at_bottom_before_update);
+
         // Content grew (new content added)
         if new_height > old_height + 1.0 {
+            // Ensure there's a noticeable growth
             self.last_content_height.set(new_height);
 
-            // Only auto-scroll if we were already at the bottom
-            if self.is_at_bottom() {
-                self.scroll_state.borrow_mut().enabled = true;
-                self.start_auto_scroll_animation(cx);
+            // Decide if we need to autoscroll based on new logic
+            if self.was_at_bottom_before_update.get() || self.autoscroll_active.get() {
+                self.autoscroll_active.set(true);
+                // println!("ContentChange: autoscroll_active set to true, starting task.");
+                self.start_autoscroll_task(cx);
+            } else {
+                self.autoscroll_active.set(false);
+                // println!("ContentChange: autoscroll_active set to false.");
             }
         }
     }
 
     /// Handle manual scrolling by user
     fn handle_manual_scroll(&self) {
-        if self.is_at_bottom() {
-            // User scrolled back to bottom, re-enable auto-scroll
-            println!("At bottom");
-            self.scroll_state.borrow_mut().enabled = true;
+        // Use a tolerance, e.g., 50px
+        if self.is_at_bottom(px(50.0)) {
+            // User scrolled back to bottom, re-enable auto-scroll possibility for next content add.
+            // println!("ManualScroll: At bottom, autoscroll_active enabled.");
+            self.autoscroll_active.set(true);
+            // We don't start the task here; new content or handle_content_change will decide.
         } else {
-            // User scrolled away from bottom, disable auto-scroll
-            let mut state = self.scroll_state.borrow_mut();
-            state.enabled = false;
-            state.animating = false;
-            // Cancel animation task
-            drop(state);
-            *self.scroll_task.borrow_mut() = None;
-            println!("Away from bottom");
+            // User scrolled away from bottom, disable auto-scroll and stop any active animation.
+            // println!("ManualScroll: Away from bottom, autoscroll_active disabled, task cancelled.");
+            self.autoscroll_active.set(false);
+            *self.autoscroll_task.borrow_mut() = None; // Cancel the animation task
         }
     }
 }
@@ -275,8 +249,6 @@ impl Render for MessagesView {
             lock.clone()
         };
 
-        // No need to check messages here - content changes are detected in canvas
-
         // Get the theme colors for user messages
         let user_accent = if cx.theme().is_dark() {
             rgb(0x6BD9A8) // Dark mode user accent
@@ -285,15 +257,34 @@ impl Render for MessagesView {
         };
 
         // Clone handles for closures
-        let content_size = self.content_size.clone();
-        let viewport_size = self.viewport_size.clone();
+        let content_size_rc = self.content_size.clone(); // Renamed for clarity in on_children_prepainted
+        let viewport_size_rc = self.viewport_size.clone(); // Renamed for clarity
+        let view_entity = cx.entity().clone(); // Clone entity for use in callbacks
 
         // Messages display area with scrollbar
         div()
+            .on_children_prepainted({
+                // ADDED: Listener for viewport_size
+                let view_entity = view_entity.clone();
+                let viewport_size_rc = viewport_size_rc.clone();
+                move |bounds_vec: Vec<Bounds<Pixels>>, _window, app| {
+                    if let Some(first_child_bounds) = bounds_vec.first() {
+                        let new_viewport_size = first_child_bounds.size;
+                        if viewport_size_rc.get() != new_viewport_size {
+                            println!("view port size changed: {:?}", new_viewport_size);
+                            viewport_size_rc.set(new_viewport_size);
+                            // No cx.notify() needed here usually, as size changes often trigger repaint indirectly
+                            // or are used in subsequent logic like is_at_bottom.
+                            // view_entity.update(app, |view, cx| cx.notify()); // If explicit redraw needed
+                        }
+                    }
+                }
+            })
             .id("messages-container")
             .flex_1() // Take remaining space in the parent container
             .min_h_0() // Minimum height to ensure scrolling works
             .relative() // For absolute positioning of scrollbar
+            .overflow_hidden() // ADDED: Crucial for stable viewport measurement
             .child(
                 div()
                     .id("messages-scroll-container")
@@ -301,6 +292,31 @@ impl Render for MessagesView {
                     .overflow_hidden()
                     .child(
                         v_flex()
+                            .on_children_prepainted({
+                                // ADDED: Listener for content_size
+                                let view_entity = view_entity.clone();
+                                let content_size_rc = content_size_rc.clone();
+                                move |bounds_vec: Vec<Bounds<Pixels>>, _window, app| {
+                                    if let Some(first_child_bounds) = bounds_vec.first() {
+                                        let new_content_size = first_child_bounds.size;
+                                        if content_size_rc.get() != new_content_size {
+                                            println!(
+                                                "content size changed: {:?}",
+                                                new_content_size
+                                            );
+                                            content_size_rc.set(new_content_size);
+                                            // This is where content height changes are detected.
+                                            // The original canvas called handle_content_change directly.
+                                            // We need to replicate that behavior.
+                                            let new_height = new_content_size.height.0;
+                                            view_entity.update(app, |view, cx| {
+                                                view.handle_content_change(new_height, cx);
+                                                // cx.notify(); // handle_content_change calls notify if needed
+                                            });
+                                        }
+                                    }
+                                }
+                            })
                             .id("messages")
                             .p_2()
                             .track_scroll(&self.scroll_handle)
@@ -402,46 +418,24 @@ impl Render for MessagesView {
                                 }
 
                                 message_container.children(container_children)
-                            }))
-                            // Add a canvas to track content size changes
-                            .child({
-                                let content_size_clone = content_size.clone();
-                                let entity = cx.entity().clone();
-                                gpui::canvas(
-                                    move |bounds, _window, cx| {
-                                        let new_height = bounds.size.height.0;
-                                        content_size_clone.set(bounds.size);
-
-                                        // Trigger content change detection
-                                        entity.update(cx, |view, cx| {
-                                            view.handle_content_change(new_height, cx);
-                                        });
-                                    },
-                                    move |_bounds, _window, _element_state, _cx| {},
-                                )
-                                .absolute()
-                                .size_full()
-                            }),
+                            })),
                     )
                     // Add scrollbar
-                    .child(Scrollbar::vertical(
-                        cx.entity().entity_id(),
-                        self.scrollbar_state.clone(),
-                        self.scroll_handle.clone(),
-                        self.content_size.get(),
-                    )),
+                    .child(
+                        // Child 2: The manual scrollbar, absolutely positioned relative to outer_container
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .bottom_0()
+                            .w(px(12.))
+                            .child(Scrollbar::vertical(
+                                cx.entity().entity_id(),
+                                self.scrollbar_state.clone(),
+                                self.scroll_handle.clone(),
+                                self.content_size.get(),
+                            )),
+                    ),
             )
-            // Add a canvas to track viewport size
-            .child({
-                let viewport_size_clone = viewport_size.clone();
-                gpui::canvas(
-                    move |bounds, _window, _cx| {
-                        viewport_size_clone.set(bounds.size);
-                    },
-                    move |_bounds, _window, _element_state, _cx| {},
-                )
-                .absolute()
-                .size_full()
-            })
     }
 }
