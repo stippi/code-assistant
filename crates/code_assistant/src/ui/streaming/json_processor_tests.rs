@@ -1039,7 +1039,10 @@ mod tests {
                 all_expected_found = false;
             }
         }
-        assert!(all_expected_found, "Not all expected raw fragments were found in the output.");
+        assert!(
+            all_expected_found,
+            "Not all expected raw fragments were found in the output."
+        );
 
         // Additionally, check the total count to ensure no unexpected extra fragments.
         assert_eq!(
