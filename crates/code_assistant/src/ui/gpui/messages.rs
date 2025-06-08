@@ -207,22 +207,6 @@ impl MessagesView {
             }
         }
     }
-
-    /// Handle manual scrolling by user
-    fn handle_manual_scroll(&self) {
-        // Use a tolerance, e.g., 50px
-        if self.is_at_bottom(px(50.0)) {
-            // User scrolled back to bottom, re-enable auto-scroll possibility for next content add.
-            trace!("ManualScroll: At bottom, autoscroll_active enabled.");
-            self.autoscroll_active.set(true);
-            // We don't start the task here; new content or handle_content_change will decide.
-        } else {
-            // User scrolled away from bottom, disable auto-scroll and stop any active animation.
-            trace!("ManualScroll: Away from bottom, autoscroll_active disabled, task cancelled.");
-            self.autoscroll_active.set(false);
-            *self.autoscroll_task.borrow_mut() = None; // Cancel the animation task
-        }
-    }
 }
 
 impl Focusable for MessagesView {
@@ -278,12 +262,6 @@ impl Render for MessagesView {
                     .size_full() // Fills the messages-container
                     .overflow_scroll() // Enables native scrolling for this div
                     .track_scroll(&self.scroll_handle) // Links to our scroll state
-                    // Handle manual scroll events
-                    .on_scroll_wheel(cx.listener(
-                        move |view, _event: &gpui::ScrollWheelEvent, _window, _cx| {
-                            view.handle_manual_scroll();
-                        },
-                    ))
                     .child(
                         // Wrapper for messages to measure their content size
                         div()
