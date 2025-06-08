@@ -52,6 +52,9 @@ impl Render for MessagesView {
             .bg(cx.theme().card)
             .gap_2()
             .text_size(px(16.))
+            .on_scroll_wheel(|event, _window, _app| {
+                println!("Scroll wheel event: {:?}", event);
+            })
             .children(messages.into_iter().map(|msg| {
                 // Create message container with appropriate styling based on role
                 let mut message_container = div().p_3().flex().flex_col().gap_2();
