@@ -12,7 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{info, trace};
+use tracing::{debug, trace};
 
 /// MessagesView - Component responsible for displaying the message history
 pub struct MessagesView {
@@ -76,10 +76,10 @@ impl MessagesView {
         *self.autoscroll_task.borrow_mut() = None;
 
         if !self.autoscroll_active.get() {
-            info!("Auto-scroll not active, task not started.");
+            trace!("Auto-scroll not active, task not started.");
             return;
         }
-        info!("Starting autoscroll task...");
+        debug!("Starting autoscroll task...");
 
         let scroll_handle_orig = self.scroll_handle.clone();
         let autoscroll_active_orig = self.autoscroll_active.clone();
@@ -189,7 +189,7 @@ impl MessagesView {
         let at_bottom_before_update = self.is_at_bottom(px(50.0));
         self.was_at_bottom_before_update
             .set(at_bottom_before_update);
-        info!(
+        trace!(
             "ContentChange: was_at_bottom_before_update set to: {}",
             at_bottom_before_update
         );
