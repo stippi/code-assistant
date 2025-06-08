@@ -45,7 +45,7 @@ impl Render for MessagesView {
             rgb(0x0A8A55) // Light mode user accent
         };
 
-        // Render the messages content (this will be wrapped by AutoScrollContainer)
+        // Render the messages content
         v_flex()
             .id("messages")
             .p_2()
