@@ -317,19 +317,20 @@ impl<T: Render> Render for AutoScrollContainer<T> {
                         div()
                             .on_children_prepainted({
                                 let view_entity = view.clone();
+                                let content_size_rc = content_size_rc.clone();
                                 move |bounds_vec, _window, app| {
                                     if let Some(text_view_bounds) = bounds_vec.first() {
                                         let new_content_size = text_view_bounds.size;
-                                        view_entity.update(app, |view, cx_update| {
-                                            if view.content_size != new_content_size {
-                                                view.content_size = new_content_size;
-                                                println!(
-                                                    "New content_size: {:?}",
-                                                    new_content_size
-                                                );
-                                                cx_update.notify();
-                                            }
-                                        });
+                                        if content_size_rc.get() != new_content_size {
+                                            content_size_rc.set(new_content_size);
+                                            trace!("New content_size: {:?}", new_content_size);
+
+                                            // Handle content change for auto-scroll
+                                            let new_height = new_content_size.height.0;
+                                            view_entity.update(app, |view, cx_update| {
+                                                view.handle_content_change(new_height, cx_update);
+                                            });
+                                        }
                                     }
                                 }
                             })
