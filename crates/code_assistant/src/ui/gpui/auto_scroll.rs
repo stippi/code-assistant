@@ -180,7 +180,6 @@ impl<T: Render> AutoScrollContainer<T> {
             trace!("Auto-scroll not active, task not started.");
             return;
         }
-        debug!("Starting autoscroll task...");
 
         // Initialize expected position to current position to avoid false positives
         let current_position = self.scroll_handle.offset().y.0;
