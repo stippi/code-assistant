@@ -12,7 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::trace;
+use tracing::{info, trace};
 
 /// MessagesView - Component responsible for displaying the message history
 pub struct MessagesView {
@@ -76,16 +76,16 @@ impl MessagesView {
         *self.autoscroll_task.borrow_mut() = None;
 
         if !self.autoscroll_active.get() {
-            // println!("Auto-scroll not active, task not started.");
+            info!("Auto-scroll not active, task not started.");
             return;
         }
-        // println!("Starting autoscroll task...");
+        info!("Starting autoscroll task...");
 
         let scroll_handle_orig = self.scroll_handle.clone();
         let autoscroll_active_orig = self.autoscroll_active.clone();
 
         let task = cx.spawn(async move |weak_entity, async_app_cx| {
-            let mut timer = Timer::after(Duration::from_millis(16)); // Aim for ~60 FPS
+            let mut timer = Timer::after(Duration::from_millis(8)); // Aim for ~120 FPS
 
             // Easing animation variables
             let mut current_scroll_speed: f32 = 0.0;
@@ -182,22 +182,20 @@ impl MessagesView {
     /// Handle content size changes (detecting new content)
     fn handle_content_change(&self, new_height: f32, cx: &mut Context<Self>) {
         let old_height = self.last_content_height.get();
+        self.last_content_height.set(new_height);
 
         // Check if at bottom BEFORE considering new height for auto-scroll decision logic
         // Use a tolerance, e.g., 50px, similar to the old config.bottom_threshold
         let at_bottom_before_update = self.is_at_bottom(px(50.0));
         self.was_at_bottom_before_update
             .set(at_bottom_before_update);
-        trace!(
+        info!(
             "ContentChange: was_at_bottom_before_update set to: {}",
             at_bottom_before_update
         );
 
         // Content grew (new content added)
         if new_height > old_height + 1.0 {
-            // Ensure there's a noticeable growth
-            self.last_content_height.set(new_height);
-
             // Decide if we need to autoscroll based on new logic
             if self.was_at_bottom_before_update.get() || self.autoscroll_active.get() {
                 self.autoscroll_active.set(true);
