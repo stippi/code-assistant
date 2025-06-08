@@ -1,4 +1,5 @@
 pub mod assets;
+pub mod auto_scroll;
 pub mod content_renderer;
 pub mod diff_renderer;
 mod elements;

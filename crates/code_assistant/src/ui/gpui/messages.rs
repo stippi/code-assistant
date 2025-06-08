@@ -1,4 +1,5 @@
 use super::elements::MessageContainer;
+use super::auto_scroll::{AutoScrollContainer, AutoScrollable};
 use gpui::{
     bounce, div, ease_in_out, percentage, prelude::*, px, rgb, svg, Animation, AnimationExt, App,
     Bounds, Context, Entity, FocusHandle, Focusable, Pixels, Point, ScrollHandle, SharedString,
