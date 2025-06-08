@@ -1,24 +1,12 @@
 use gpui::{
-    div, prelude::*, px, Bounds, Context, Pixels, Point, ScrollHandle, SharedString, Size, Task,
-    Timer,
+    div, prelude::*, px, Bounds, Context, Entity, Pixels, Point, ScrollHandle, SharedString, Size,
+    Task, Timer, Window,
 };
 use gpui_component::scroll::{Scrollbar, ScrollbarState};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 use tracing::{debug, trace};
-
-/// Trait that must be implemented by components that want to use AutoScrollContainer
-pub trait AutoScrollable: Render {
-    /// Get the current content size
-    fn content_size(&self) -> Size<Pixels>;
-
-    /// Get the current viewport size
-    fn viewport_size(&self) -> Size<Pixels>;
-
-    /// Handle content size changes (for detecting new content)
-    fn handle_content_change(&mut self, new_height: f32, cx: &mut Context<Self>);
-}
 
 /// Configuration for auto-scroll behavior
 #[derive(Clone)]
@@ -51,7 +39,7 @@ impl Default for AutoScrollConfig {
 }
 
 /// AutoScrollContainer - A reusable component that wraps scrollable content with auto-scroll functionality
-pub struct AutoScrollContainer {
+pub struct AutoScrollContainer<T: Render> {
     // Core scroll state
     scroll_handle: ScrollHandle,
     scrollbar_state: Rc<Cell<ScrollbarState>>,
@@ -71,16 +59,23 @@ pub struct AutoScrollContainer {
 
     // Content ID for tracking
     content_id: String,
+
+    // Content entity
+    content_entity: Entity<T>,
 }
 
-impl AutoScrollContainer {
+impl<T: Render> AutoScrollContainer<T> {
     /// Create a new AutoScrollContainer with default configuration
-    pub fn new(content_id: impl Into<String>) -> Self {
-        Self::with_config(content_id, AutoScrollConfig::default())
+    pub fn new(content_id: impl Into<String>, content_entity: Entity<T>) -> Self {
+        Self::with_config(content_id, content_entity, AutoScrollConfig::default())
     }
 
     /// Create a new AutoScrollContainer with custom configuration
-    pub fn with_config(content_id: impl Into<String>, config: AutoScrollConfig) -> Self {
+    pub fn with_config(
+        content_id: impl Into<String>,
+        content_entity: Entity<T>,
+        config: AutoScrollConfig,
+    ) -> Self {
         Self {
             scroll_handle: ScrollHandle::new(),
             scrollbar_state: Rc::new(Cell::new(ScrollbarState::default())),
@@ -92,6 +87,7 @@ impl AutoScrollContainer {
             last_content_height: Rc::new(Cell::new(0.0)),
             config,
             content_id: content_id.into(),
+            content_entity,
         }
     }
 
@@ -116,7 +112,7 @@ impl AutoScrollContainer {
     }
 
     /// Manually trigger auto-scroll (useful for programmatic scrolling)
-    pub fn trigger_autoscroll<T: AutoScrollable>(&self, cx: &mut Context<T>) {
+    pub fn trigger_autoscroll(&self, cx: &mut Context<Self>) {
         self.autoscroll_active.set(true);
         self.start_autoscroll_task(cx);
     }
@@ -140,7 +136,7 @@ impl AutoScrollContainer {
     }
 
     /// Start the auto-scroll animation task
-    fn start_autoscroll_task<T: AutoScrollable>(&self, cx: &mut Context<T>) {
+    fn start_autoscroll_task(&self, cx: &mut Context<Self>) {
         // Cancel existing task if any
         *self.autoscroll_task.borrow_mut() = None;
 
@@ -250,7 +246,7 @@ impl AutoScrollContainer {
     }
 
     /// Handle content size changes (detecting new content)
-    pub fn handle_content_change<T: AutoScrollable>(&self, new_height: f32, cx: &mut Context<T>) {
+    pub fn handle_content_change(&self, new_height: f32, cx: &mut Context<Self>) {
         let old_height = self.last_content_height.get();
         self.last_content_height.set(new_height);
 
@@ -276,18 +272,16 @@ impl AutoScrollContainer {
             }
         }
     }
+}
 
-    /// Render the auto-scroll container with scrollable content
-    /// The content_change_callback will be called when content size changes
-    pub fn render<T: AutoScrollable>(
-        &self,
-        content: impl IntoElement + 'static,
-        entity_id: gpui::EntityId,
-        content_change_callback: impl Fn(f32) + 'static,
-    ) -> impl IntoElement {
+impl<T: Render> Render for AutoScrollContainer<T> {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().clone();
+
         // Clone handles for closures
         let content_size_rc = self.content_size.clone();
         let viewport_size_rc = self.viewport_size.clone();
+        let content_entity = self.content_entity.clone();
 
         div()
             .on_children_prepainted({
@@ -322,18 +316,20 @@ impl AutoScrollContainer {
                         // Wrapper for content to measure their content size
                         div()
                             .on_children_prepainted({
-                                // Listener for content_size
-                                let content_size_rc = content_size_rc.clone();
-                                move |bounds_vec: Vec<Bounds<Pixels>>, _window, _app| {
-                                    if let Some(first_child_bounds) = bounds_vec.first() {
-                                        let new_content_size = first_child_bounds.size;
-                                        if content_size_rc.get() != new_content_size {
-                                            trace!("content size changed: {:?}", new_content_size);
-                                            content_size_rc.set(new_content_size);
-                                            // This is where content height changes are detected.
-                                            let new_height = new_content_size.height.0;
-                                            content_change_callback(new_height);
-                                        }
+                                let view_entity = view.clone();
+                                move |bounds_vec, _window, app| {
+                                    if let Some(text_view_bounds) = bounds_vec.first() {
+                                        let new_content_size = text_view_bounds.size;
+                                        view_entity.update(app, |view, cx_update| {
+                                            if view.content_size != new_content_size {
+                                                view.content_size = new_content_size;
+                                                println!(
+                                                    "New content_size: {:?}",
+                                                    new_content_size
+                                                );
+                                                cx_update.notify();
+                                            }
+                                        });
                                     }
                                 }
                             })
@@ -342,7 +338,7 @@ impl AutoScrollContainer {
                                 self.content_id
                             )))
                             .w_full() // Important for correct height calculation
-                            .child(content),
+                            .child(content_entity.clone()), // Use the content entity
                     ),
             )
             .child(
@@ -354,7 +350,7 @@ impl AutoScrollContainer {
                     .bottom_0()
                     .w(px(12.))
                     .child(Scrollbar::vertical(
-                        entity_id,
+                        view.entity_id(),
                         self.scrollbar_state.clone(),
                         self.scroll_handle.clone(),
                         self.content_size.get(),
