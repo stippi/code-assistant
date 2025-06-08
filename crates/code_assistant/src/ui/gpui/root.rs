@@ -1,3 +1,4 @@
+use super::auto_scroll::AutoScrollContainer;
 use super::file_icons;
 use super::memory::MemoryView;
 use super::messages::MessagesView;
@@ -17,7 +18,7 @@ use std::sync::{Arc, Mutex};
 pub struct RootView {
     pub text_input: Entity<InputState>,
     memory_view: Entity<MemoryView>,
-    messages_view: Entity<MessagesView>,
+    auto_scroll_container: Entity<AutoScrollContainer<MessagesView>>,
     recent_keystrokes: Vec<gpui::Keystroke>,
     focus_handle: FocusHandle,
     input_value: Arc<Mutex<Option<String>>>,
@@ -38,10 +39,14 @@ impl RootView {
         input_requested: Arc<Mutex<bool>>,
         streaming_state: Arc<Mutex<StreamingState>>,
     ) -> Self {
+        // Create the auto-scroll container that wraps the messages view
+        let auto_scroll_container =
+            cx.new(|_cx| AutoScrollContainer::new("messages", messages_view));
+
         Self {
             text_input,
             memory_view,
-            messages_view,
+            auto_scroll_container,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
             input_value,
@@ -239,8 +244,8 @@ impl Render for RootView {
                             .flex_shrink() // Allow shrinking if needed
                             .overflow_hidden() // Prevent overflow
                             .child(
-                                // Messages display area - use the MessagesView
-                                self.messages_view.clone(),
+                                // Messages display area - use the AutoScrollContainer wrapping MessagesView
+                                self.auto_scroll_container.clone(),
                             )
                             // Input area at the bottom
                             .child(
