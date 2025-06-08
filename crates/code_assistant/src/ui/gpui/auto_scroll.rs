@@ -51,6 +51,10 @@ pub struct AutoScrollContainer<T: Render> {
     was_at_bottom_before_update: Rc<Cell<bool>>,
     autoscroll_task: Rc<RefCell<Option<Task<()>>>>,
 
+    // Manual scroll interruption detection
+    last_set_scroll_position: Rc<Cell<f32>>,
+    manual_scroll_detected: Rc<Cell<bool>>,
+
     // Content change detection
     last_content_height: Rc<Cell<f32>>,
 
@@ -62,6 +66,9 @@ pub struct AutoScrollContainer<T: Render> {
 
     // Content entity
     content_entity: Entity<T>,
+
+    // Callback for manual scroll detection
+    on_manual_scroll: Option<Box<dyn Fn() + 'static>>,
 }
 
 impl<T: Render> AutoScrollContainer<T> {
@@ -84,11 +91,23 @@ impl<T: Render> AutoScrollContainer<T> {
             autoscroll_active: Rc::new(Cell::new(false)),
             was_at_bottom_before_update: Rc::new(Cell::new(false)),
             autoscroll_task: Rc::new(RefCell::new(None)),
+            last_set_scroll_position: Rc::new(Cell::new(0.0)),
+            manual_scroll_detected: Rc::new(Cell::new(false)),
             last_content_height: Rc::new(Cell::new(0.0)),
             config,
             content_id: content_id.into(),
             content_entity,
+            on_manual_scroll: None,
         }
+    }
+
+    /// Set a callback that will be called when manual scrolling is detected
+    pub fn on_manual_scroll<F>(mut self, callback: F) -> Self
+    where
+        F: Fn() + 'static,
+    {
+        self.on_manual_scroll = Some(Box::new(callback));
+        self
     }
 
     /// Get the scroll handle for external access if needed
@@ -140,6 +159,39 @@ impl<T: Render> AutoScrollContainer<T> {
         (current_scroll_offset_y - max_scroll_offset_y).abs() <= tolerance
     }
 
+    /// Check if manual scrolling has occurred by comparing expected vs actual position
+    fn check_for_manual_scroll(&self) -> bool {
+        let current_position = self.scroll_handle.offset().y.0;
+        let last_set_position = self.last_set_scroll_position.get();
+
+        // Allow for small floating point differences
+        let tolerance = 1.0;
+        let position_changed_unexpectedly =
+            (current_position - last_set_position).abs() > tolerance;
+
+        if position_changed_unexpectedly {
+            debug!(
+                "Manual scroll detected: expected {}, actual {}",
+                last_set_position, current_position
+            );
+            return true;
+        }
+
+        false
+    }
+
+    /// Handle manual scroll detection
+    pub fn on_manual_scroll_detected(&self) {
+        debug!("Manual scroll detected, stopping auto-scroll");
+        self.autoscroll_active.set(false);
+        self.manual_scroll_detected.set(true);
+
+        // Call the callback if set
+        if let Some(ref callback) = self.on_manual_scroll {
+            callback();
+        }
+    }
+
     /// Start the auto-scroll animation task
     fn start_autoscroll_task(&self, cx: &mut Context<Self>) {
         // Cancel existing task if any
@@ -151,10 +203,14 @@ impl<T: Render> AutoScrollContainer<T> {
         }
         debug!("Starting autoscroll task...");
 
+        // Reset manual scroll detection
+        self.manual_scroll_detected.set(false);
+
         let scroll_handle_orig = self.scroll_handle.clone();
         let autoscroll_active_orig = self.autoscroll_active.clone();
         let content_size_rc = self.content_size.clone();
         let viewport_size_rc = self.viewport_size.clone();
+        let last_set_scroll_position_rc = self.last_set_scroll_position.clone();
         let config = self.config.clone();
 
         let task = cx.spawn(async move |weak_entity, async_app_cx| {
@@ -171,9 +227,16 @@ impl<T: Render> AutoScrollContainer<T> {
                 let scroll_handle_for_update = scroll_handle_orig.clone();
                 let content_size_for_update = content_size_rc.clone();
                 let viewport_size_for_update = viewport_size_rc.clone();
+                let last_set_position_for_update = last_set_scroll_position_rc.clone();
 
-                let update_result = weak_entity.update(async_app_cx, move |_view, model_cx| {
+                let update_result = weak_entity.update(async_app_cx, move |view, model_cx| {
                     if !autoscroll_active_for_update.get() {
+                        return false; // Stop task
+                    }
+
+                    // Check for manual scroll interruption
+                    if view.check_for_manual_scroll() {
+                        view.on_manual_scroll_detected();
                         return false; // Stop task
                     }
 
@@ -203,6 +266,7 @@ impl<T: Render> AutoScrollContainer<T> {
                             x: px(0.0),
                             y: target_y_px,
                         });
+                        last_set_position_for_update.set(target_y_px.0);
                         autoscroll_active_for_update.set(false);
                         return false; // Stop task
                     }
@@ -236,6 +300,10 @@ impl<T: Render> AutoScrollContainer<T> {
                         x: px(0.0),
                         y: new_y_calculated_px,
                     });
+
+                    // Remember the position we just set
+                    last_set_position_for_update.set(new_y_calculated_px.0);
+
                     model_cx.notify();
                     true // Continue task
                 });
@@ -266,6 +334,10 @@ impl<T: Render> AutoScrollContainer<T> {
 
         // Content grew (new content added)
         if new_height > old_height + 1.0 {
+            // Reset manual scroll detection when new content arrives
+            // This allows auto-scroll to resume even after manual interruption
+            self.manual_scroll_detected.set(false);
+
             // Decide if we need to autoscroll based on new logic
             if self.was_at_bottom_before_update.get() || self.autoscroll_active.get() {
                 self.autoscroll_active.set(true);
@@ -275,6 +347,16 @@ impl<T: Render> AutoScrollContainer<T> {
                 self.autoscroll_active.set(false);
                 trace!("ContentChange: autoscroll_active set to false.");
             }
+        }
+        // Content shrank (e.g., collapsed tool blocks) - update our expected position
+        else if new_height < old_height - 1.0 {
+            // Update our expected scroll position to account for content shrinking
+            let current_position = self.scroll_handle.offset().y.0;
+            self.last_set_scroll_position.set(current_position);
+            trace!(
+                "ContentChange: content shrank, updated expected position to: {}",
+                current_position
+            );
         }
     }
 }
@@ -307,6 +389,16 @@ impl<T: Render> Render for AutoScrollContainer<T> {
             .min_h_0() // Minimum height to ensure scrolling works
             .relative() // For absolute positioning of scrollbar
             .overflow_hidden() // Crucial for stable viewport measurement
+            // Add scroll wheel listener to detect manual scrolling
+            .on_scroll_wheel({
+                let view_entity = view.clone();
+                move |_event, _window, app| {
+                    println!("Scroll wheel event detected in AutoScrollContainer");
+                    view_entity.update(app, |view, _cx| {
+                        view.on_manual_scroll_detected();
+                    });
+                }
+            })
             .child(
                 // Child 1: The actual scrolling viewport
                 div()
