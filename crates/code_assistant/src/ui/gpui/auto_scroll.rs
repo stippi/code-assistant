@@ -53,7 +53,6 @@ pub struct AutoScrollContainer<T: Render> {
 
     // Manual scroll interruption detection
     last_set_scroll_position: Rc<Cell<f32>>,
-    manual_scroll_detected: Rc<Cell<bool>>,
 
     // Content change detection
     last_content_height: Rc<Cell<f32>>,
@@ -66,9 +65,6 @@ pub struct AutoScrollContainer<T: Render> {
 
     // Content entity
     content_entity: Entity<T>,
-
-    // Callback for manual scroll detection
-    on_manual_scroll: Option<Box<dyn Fn() + 'static>>,
 }
 
 impl<T: Render> AutoScrollContainer<T> {
@@ -92,22 +88,11 @@ impl<T: Render> AutoScrollContainer<T> {
             was_at_bottom_before_update: Rc::new(Cell::new(false)),
             autoscroll_task: Rc::new(RefCell::new(None)),
             last_set_scroll_position: Rc::new(Cell::new(0.0)),
-            manual_scroll_detected: Rc::new(Cell::new(false)),
             last_content_height: Rc::new(Cell::new(0.0)),
             config,
             content_id: content_id.into(),
             content_entity,
-            on_manual_scroll: None,
         }
-    }
-
-    /// Set a callback that will be called when manual scrolling is detected
-    pub fn on_manual_scroll<F>(mut self, callback: F) -> Self
-    where
-        F: Fn() + 'static,
-    {
-        self.on_manual_scroll = Some(Box::new(callback));
-        self
     }
 
     /// Get the scroll handle for external access if needed
@@ -184,12 +169,6 @@ impl<T: Render> AutoScrollContainer<T> {
     pub fn on_manual_scroll_detected(&self) {
         debug!("Manual scroll detected, stopping auto-scroll");
         self.autoscroll_active.set(false);
-        self.manual_scroll_detected.set(true);
-
-        // Call the callback if set
-        if let Some(ref callback) = self.on_manual_scroll {
-            callback();
-        }
     }
 
     /// Start the auto-scroll animation task
@@ -203,8 +182,10 @@ impl<T: Render> AutoScrollContainer<T> {
         }
         debug!("Starting autoscroll task...");
 
-        // Reset manual scroll detection
-        self.manual_scroll_detected.set(false);
+        // Initialize expected position to current position to avoid false positives
+        let current_position = self.scroll_handle.offset().y.0;
+        self.last_set_scroll_position.set(current_position);
+        debug!("Task started with initial position: {}", current_position);
 
         let scroll_handle_orig = self.scroll_handle.clone();
         let autoscroll_active_orig = self.autoscroll_active.clone();
@@ -334,14 +315,15 @@ impl<T: Render> AutoScrollContainer<T> {
 
         // Content grew (new content added)
         if new_height > old_height + 1.0 {
-            // Reset manual scroll detection when new content arrives
-            // This allows auto-scroll to resume even after manual interruption
-            self.manual_scroll_detected.set(false);
-
             // Decide if we need to autoscroll based on new logic
             if self.was_at_bottom_before_update.get() || self.autoscroll_active.get() {
+                // CRITICAL: Reset the expected position to current position before starting
+                // This prevents immediate interruption due to stale position data
+                let current_position = self.scroll_handle.offset().y.0;
+                self.last_set_scroll_position.set(current_position);
+
                 self.autoscroll_active.set(true);
-                trace!("ContentChange: autoscroll_active set to true, starting task.");
+                trace!("ContentChange: autoscroll_active set to true, starting task. Current position: {}", current_position);
                 self.start_autoscroll_task(cx);
             } else {
                 self.autoscroll_active.set(false);
@@ -389,16 +371,6 @@ impl<T: Render> Render for AutoScrollContainer<T> {
             .min_h_0() // Minimum height to ensure scrolling works
             .relative() // For absolute positioning of scrollbar
             .overflow_hidden() // Crucial for stable viewport measurement
-            // Add scroll wheel listener to detect manual scrolling
-            .on_scroll_wheel({
-                let view_entity = view.clone();
-                move |_event, _window, app| {
-                    println!("Scroll wheel event detected in AutoScrollContainer");
-                    view_entity.update(app, |view, _cx| {
-                        view.on_manual_scroll_detected();
-                    });
-                }
-            })
             .child(
                 // Child 1: The actual scrolling viewport
                 div()

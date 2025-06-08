@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex};
 pub struct RootView {
     pub text_input: Entity<InputState>,
     memory_view: Entity<MemoryView>,
-    messages_view: Entity<MessagesView>,
     auto_scroll_container: Entity<AutoScrollContainer<MessagesView>>,
     recent_keystrokes: Vec<gpui::Keystroke>,
     focus_handle: FocusHandle,
@@ -42,12 +41,11 @@ impl RootView {
     ) -> Self {
         // Create the auto-scroll container that wraps the messages view
         let auto_scroll_container =
-            cx.new(|_cx| AutoScrollContainer::new("messages", messages_view.clone()));
+            cx.new(|_cx| AutoScrollContainer::new("messages", messages_view));
 
         Self {
             text_input,
             memory_view,
-            messages_view,
             auto_scroll_container,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
