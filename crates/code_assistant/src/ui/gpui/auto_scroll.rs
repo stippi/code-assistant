@@ -92,26 +92,31 @@ impl<T: Render> AutoScrollContainer<T> {
     }
 
     /// Get the scroll handle for external access if needed
+    #[allow(dead_code)]
     pub fn scroll_handle(&self) -> &ScrollHandle {
         &self.scroll_handle
     }
 
     /// Get the current content size
+    #[allow(dead_code)]
     pub fn content_size(&self) -> Size<Pixels> {
         self.content_size.get()
     }
 
     /// Get the current viewport size
+    #[allow(dead_code)]
     pub fn viewport_size(&self) -> Size<Pixels> {
         self.viewport_size.get()
     }
 
     /// Check if auto-scroll is currently active
+    #[allow(dead_code)]
     pub fn is_autoscroll_active(&self) -> bool {
         self.autoscroll_active.get()
     }
 
     /// Manually trigger auto-scroll (useful for programmatic scrolling)
+    #[allow(dead_code)]
     pub fn trigger_autoscroll(&self, cx: &mut Context<Self>) {
         self.autoscroll_active.set(true);
         self.start_autoscroll_task(cx);
