@@ -172,18 +172,50 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
+
+          # Install X11 and XCB development libraries
           sudo apt-get install -y \
+            build-essential \
+            pkg-config \
             libx11-dev \
             libx11-xcb-dev \
             libxcb1-dev \
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
+            libxcb-render0-dev \
+            libxcb-render-util0-dev \
+            libxcb-randr0-dev \
+            libxcb-image0-dev \
+            libxcb-util-dev \
+            libxcb-cursor-dev \
+            libxcb-keysyms1-dev \
+            libxcb-icccm4-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev \
-            pkg-config
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev
+
+          # Debug output
+          echo "=== Checking X11-xcb availability ==="
+          pkg-config --exists x11-xcb && echo "✓ x11-xcb pkg-config found" || echo "✗ x11-xcb pkg-config missing"
+          pkg-config --libs x11-xcb 2>/dev/null && echo "✓ x11-xcb libs available" || echo "✗ x11-xcb libs not found"
+
+          echo "=== Library search ==="
+          find /usr -name "*X11-xcb*" 2>/dev/null | head -5 || echo "No X11-xcb files found"
+          ldconfig -p | grep -i x11 | grep -i xcb || echo "X11-xcb not in ldconfig"
+
+          echo "=== Environment for build ==="
+          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig:$PKG_CONFIG_PATH"
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
 
       - name: Build
         uses: actions-rs/cargo@v1
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
         with:
           command: build
           args: --release --target ${{ matrix.target }}
