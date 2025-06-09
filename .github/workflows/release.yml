@@ -141,7 +141,14 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev
+          sudo apt-get install -y \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            pkg-config
 
       - name: Build
         uses: actions-rs/cargo@v1
