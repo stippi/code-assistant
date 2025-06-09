@@ -47,18 +47,42 @@ jobs:
             NEW_VERSION=$(echo "${{ github.event.inputs.version }}" | sed 's/^v//')
 
             # Version validation
-            CURRENT_MAJOR=$(echo ${{ steps.cargo_version.outputs.current_version }} | cut -d. -f1)
-            CURRENT_MINOR=$(echo ${{ steps.cargo_version.outputs.current_version }} | cut -d. -f2)
-            CURRENT_PATCH=$(echo ${{ steps.cargo_version.outputs.current_version }} | cut -d. -f3)
-            NEW_MAJOR=$(echo $NEW_VERSION | cut -d. -f1)
-            NEW_MINOR=$(echo $NEW_VERSION | cut -d. -f2)
-            NEW_PATCH=$(echo $NEW_VERSION | cut -d. -f3)
+            CURRENT_VERSION="${{ steps.cargo_version.outputs.current_version }}"
 
-            if [[ $NEW_MAJOR -lt $CURRENT_MAJOR ||
-                  ($NEW_MAJOR -eq $CURRENT_MAJOR && $NEW_MINOR -lt $CURRENT_MINOR) ||
-                  ($NEW_MAJOR -eq $CURRENT_MAJOR && $NEW_MINOR -eq $CURRENT_MINOR && $NEW_PATCH -lt $CURRENT_PATCH) ]]; then
-              echo "Error: Provided version ($NEW_VERSION) is less than current version (${{ steps.cargo_version.outputs.current_version }})"
-              exit 1
+            if [[ "$NEW_VERSION" == "$CURRENT_VERSION" ]]; then
+              echo "Re-releasing same version ($NEW_VERSION). Will delete existing tag/release if present."
+
+              # Check if tag exists and delete it
+              if git ls-remote --tags origin | grep -q "refs/tags/v$NEW_VERSION"; then
+                echo "Deleting existing tag v$NEW_VERSION"
+                git push origin --delete "v$NEW_VERSION" || true
+              fi
+
+              # Check if release exists and delete it
+              EXISTING_RELEASE=$(curl -s -H "Authorization: Bearer ${{ secrets.GH_PUSH_TOKEN }}" \
+                "https://api.github.com/repos/${{ github.repository }}/releases/tags/v$NEW_VERSION" | \
+                grep -o '"id":[0-9]*' | cut -d: -f2 || echo "")
+
+              if [[ -n "$EXISTING_RELEASE" && "$EXISTING_RELEASE" != "null" ]]; then
+                echo "Deleting existing release for v$NEW_VERSION (ID: $EXISTING_RELEASE)"
+                curl -s -X DELETE -H "Authorization: Bearer ${{ secrets.GH_PUSH_TOKEN }}" \
+                  "https://api.github.com/repos/${{ github.repository }}/releases/$EXISTING_RELEASE"
+              fi
+            else
+              # Only validate if it's a different version
+              CURRENT_MAJOR=$(echo $CURRENT_VERSION | cut -d. -f1)
+              CURRENT_MINOR=$(echo $CURRENT_VERSION | cut -d. -f2)
+              CURRENT_PATCH=$(echo $CURRENT_VERSION | cut -d. -f3)
+              NEW_MAJOR=$(echo $NEW_VERSION | cut -d. -f1)
+              NEW_MINOR=$(echo $NEW_VERSION | cut -d. -f2)
+              NEW_PATCH=$(echo $NEW_VERSION | cut -d. -f3)
+
+              if [[ $NEW_MAJOR -lt $CURRENT_MAJOR ||
+                    ($NEW_MAJOR -eq $CURRENT_MAJOR && $NEW_MINOR -lt $CURRENT_MINOR) ||
+                    ($NEW_MAJOR -eq $CURRENT_MAJOR && $NEW_MINOR -eq $CURRENT_MINOR && $NEW_PATCH -lt $CURRENT_PATCH) ]]; then
+                echo "Error: Provided version ($NEW_VERSION) is less than current version ($CURRENT_VERSION)"
+                exit 1
+              fi
             fi
             echo "Used provided version"
           fi
@@ -82,8 +106,14 @@ jobs:
         run: |
           # Stage all changes
           git add crates/*/Cargo.toml Cargo.lock
-          git commit -m "Bump version to ${{ steps.release_version.outputs.new_version }}"
-          git push
+
+          # Check if there are any changes to commit
+          if git diff --staged --quiet; then
+            echo "No version changes to commit (version already up to date)"
+          else
+            git commit -m "Bump version to ${{ steps.release_version.outputs.new_version }}"
+            git push
+          fi
 
       - name: Create Release
         id: create_release
@@ -106,6 +136,7 @@ jobs:
   build:
     needs: prepare-version
     strategy:
+      fail-fast: false  # Don't cancel other builds if one fails
       matrix:
         include:
           - os: ubuntu-latest
@@ -179,3 +210,17 @@ jobs:
         with:
           tag_name: v${{ needs.prepare-version.outputs.new_version }}
           files: release/code-assistant-${{ matrix.name }}.zip
+
+  finalize-release:
+    needs: [prepare-version, build]
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+      - name: Publish Release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+        with:
+          tag_name: v${{ needs.prepare-version.outputs.new_version }}
+          draft: false
