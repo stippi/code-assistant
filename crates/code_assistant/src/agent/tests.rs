@@ -13,7 +13,12 @@ use std::path::PathBuf;
 
 /// Create a test SessionManager with a temporary directory
 fn create_test_session_manager() -> SessionManager {
-    let temp_dir = std::env::temp_dir().join(format!("code_assistant_test_{}", std::process::id()));
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!("code_assistant_test_{}_{}", std::process::id(), timestamp));
     let persistence = FileStatePersistence::new(temp_dir);
     SessionManager::new(persistence)
 }

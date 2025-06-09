@@ -2,6 +2,7 @@ use crate::tools::core::{AnyOutput, ToolRegistry};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::debug;
 
 /// Represents a tool request from the LLM, derived from ContentBlock::ToolUse
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,9 +52,22 @@ impl Clone for ToolExecution {
 impl ToolExecution {
     /// Serialize the tool execution to a storable format
     pub fn serialize(&self) -> Result<crate::persistence::SerializedToolExecution> {
+        // Try to serialize the result, but fallback to a simple representation if it fails
+        let result_json = match self.result.to_json() {
+            Ok(json) => json,
+            Err(e) => {
+                debug!("Failed to serialize tool result, using fallback: {}", e);
+                serde_json::json!({
+                    "error": "Failed to serialize result",
+                    "success": self.result.is_success(),
+                    "details": format!("{}", e)
+                })
+            }
+        };
+
         Ok(crate::persistence::SerializedToolExecution {
             tool_request: self.tool_request.clone(),
-            result_json: self.result.to_json()?,
+            result_json,
             tool_name: self.tool_request.name.clone(),
         })
     }

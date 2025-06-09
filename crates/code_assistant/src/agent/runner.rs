@@ -98,6 +98,17 @@ impl Agent {
 
     /// Save the current state (message history and tool executions)
     fn save_state(&mut self) -> Result<()> {
+        // Create a session if none exists (e.g., in tests or edge cases)
+        if self.session_manager.current_session_id().is_none() {
+            let task_name = if !self.working_memory.current_task.is_empty() {
+                Some(self.working_memory.current_task.clone())
+            } else {
+                None
+            };
+            let session_id = self.session_manager.create_session(task_name)?;
+            debug!("Auto-created session {} for saving state", session_id);
+        }
+
         self.session_manager.save_session(
             self.message_history.clone(),
             self.tool_executions.clone(),
