@@ -1,7 +1,7 @@
 use crate::agent::tool_description_generator::generate_tool_documentation;
 use crate::agent::types::{ToolExecution, ToolRequest};
 use crate::config::ProjectManager;
-use crate::persistence::StatePersistence;
+use crate::session::SessionManager;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{parse_tool_xml, TOOL_TAG_PREFIX};
 use crate::types::*;
@@ -40,7 +40,7 @@ pub struct Agent {
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
-    state_persistence: Box<dyn StatePersistence>,
+    session_manager: SessionManager,
     // Store all messages exchanged
     message_history: Vec<Message>,
     // Path provided during agent initialization
@@ -77,7 +77,7 @@ impl Agent {
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         ui: Box<dyn UserInterface>,
-        state_persistence: Box<dyn StatePersistence>,
+        session_manager: SessionManager,
         init_path: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -87,7 +87,7 @@ impl Agent {
             project_manager,
             ui: Arc::new(ui),
             command_executor,
-            state_persistence,
+            session_manager,
             message_history: Vec::new(),
             init_path,
             initial_project: None,
@@ -96,11 +96,14 @@ impl Agent {
         }
     }
 
-    /// Save the current state (message history)
+    /// Save the current state (message history and tool executions)
     fn save_state(&mut self) -> Result<()> {
-        self.state_persistence.save_state(
-            self.working_memory.current_task.clone(),
+        self.session_manager.save_session(
             self.message_history.clone(),
+            self.tool_executions.clone(),
+            self.working_memory.clone(),
+            self.init_path.clone(),
+            self.initial_project.clone(),
         )?;
         Ok(())
     }
@@ -184,7 +187,6 @@ impl Agent {
 
         for tool_request in tool_requests {
             if tool_request.name == "complete_task" {
-                self.state_persistence.cleanup()?;
                 debug!("Task completed");
                 return Ok(LoopFlow::Break);
             }
@@ -343,36 +345,66 @@ impl Agent {
         self.run_agent_loop().await
     }
 
-    /// Continue from a saved state
-    pub async fn start_from_state(&mut self) -> Result<()> {
-        if let Some(state) = self.state_persistence.load_state()? {
-            debug!("Continuing task: {}", state.task);
+    /// Load state from session manager (replaces start_from_state)
+    pub async fn load_from_session_state(&mut self, session_state: crate::session::SessionState) -> Result<()> {
+        // Restore all state components
+        self.message_history = session_state.messages;
+        self.tool_executions = session_state.tool_executions;
+        self.working_memory = session_state.working_memory;
+        self.init_path = session_state.init_path;
+        self.initial_project = session_state.initial_project;
 
-            // Initialize working memory
-            self.init_working_memory(state.task.clone())?;
+        debug!("Restored {} messages and {} tool executions",
+               self.message_history.len(),
+               self.tool_executions.len());
 
-            // Restore message history
-            self.message_history = state.messages;
-            debug!("Restored {} previous messages", self.message_history.len());
+        // Restore working memory file trees and project state
+        self.restore_working_memory_state().await?;
 
-            // Load current state of files into memory - will create file trees as needed
-            self.load_current_files_to_memory().await?;
+        // Notify UI of restored state
+        self.ui.display(UIMessage::Action(format!(
+            "Loaded chat session with {} messages and {} tool executions",
+            self.message_history.len(),
+            self.tool_executions.len()
+        ))).await?;
 
-            self.ui
-                .display(UIMessage::Action(format!(
-                    "Continuing task: {}, loaded {} previous messages",
-                    state.task,
-                    self.message_history.len()
-                )))
-                .await?;
+        let _ = self.ui.update_memory(&self.working_memory).await;
 
-            // Notify UI of loaded working memory
-            let _ = self.ui.update_memory(&self.working_memory).await;
+        self.run_agent_loop().await
+    }
 
-            self.run_agent_loop().await
-        } else {
-            anyhow::bail!("No saved state found")
+    /// Restore working memory state after loading from session
+    async fn restore_working_memory_state(&mut self) -> Result<()> {
+        // If there's an initial project, make sure it's in the list
+        if let Some(project_name) = &self.initial_project {
+            // Create file tree for the project if not already present
+            if !self.working_memory.file_trees.contains_key(project_name) {
+                match self.project_manager.get_explorer_for_project(project_name) {
+                    Ok(mut explorer) => {
+                        match explorer.create_initial_tree(2) {
+                            Ok(tree) => {
+                                self.working_memory
+                                    .file_trees
+                                    .insert(project_name.clone(), tree);
+                            }
+                            Err(e) => {
+                                debug!("Error creating file tree for project {}: {}", project_name, e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Error getting explorer for project {}: {}", project_name, e);
+                    }
+                }
+            }
+
+            // Add to available projects if not already there
+            if !self.working_memory.available_projects.contains(project_name) {
+                self.working_memory.available_projects.push(project_name.clone());
+            }
         }
+
+        Ok(())
     }
 
     /// Initialize file trees for available projects

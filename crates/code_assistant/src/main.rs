@@ -3,6 +3,7 @@ mod config;
 mod explorer;
 mod mcp;
 mod persistence;
+mod session;
 mod tools;
 mod types;
 mod ui;
@@ -13,6 +14,7 @@ mod tests;
 
 use crate::agent::Agent;
 use crate::mcp::MCPServer;
+use crate::session::SessionManager;
 use crate::types::ToolMode;
 use crate::ui::terminal::TerminalUI;
 use crate::ui::UserInterface;
@@ -26,7 +28,7 @@ use llm::{
     AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, OpenRouterClient,
     VertexClient,
 };
-use persistence::FileStatePersistence;
+use crate::persistence::FileStatePersistence;
 use std::io;
 use std::path::PathBuf;
 use tracing_subscriber::fmt::SubscriberBuilder;
@@ -99,6 +101,18 @@ struct Args {
     /// Fast playback mode - ignore chunk timing when playing recordings
     #[arg(long)]
     fast_playback: bool,
+
+    /// Resume a specific chat session by ID
+    #[arg(long)]
+    chat_id: Option<String>,
+
+    /// List available chat sessions
+    #[arg(long)]
+    list_chats: bool,
+
+    /// Delete a specific chat session by ID
+    #[arg(long)]
+    delete_chat: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -266,7 +280,8 @@ async fn run_mcp_server(verbose: bool) -> Result<()> {
 async fn run_agent_terminal(
     path: PathBuf,
     task: Option<String>,
-    continue_task: bool,
+    session_manager: SessionManager,
+    session_state: Option<crate::session::SessionState>,
     provider: LLMProviderType,
     model: Option<String>,
     base_url: Option<String>,
@@ -282,7 +297,6 @@ async fn run_agent_terminal(
     let project_manager = Box::new(DefaultProjectManager::new());
     let user_interface = Box::new(TerminalUI::new());
     let command_executor = Box::new(DefaultCommandExecutor);
-    let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
 
     // Setup LLM client with the specified provider
     let llm_client = create_llm_client(
@@ -297,20 +311,20 @@ async fn run_agent_terminal(
     .await
     .context("Failed to initialize LLM client")?;
 
-    // Initialize agent
+    // Initialize agent with session manager
     let mut agent = Agent::new(
         llm_client,
         tools_type,
         project_manager,
         command_executor,
         user_interface,
-        state_persistence,
+        session_manager,
         Some(root_path.clone()),
     );
 
-    // Get task either from state file or argument
-    if continue_task {
-        agent.start_from_state().await
+    // Start either from session state or with new task
+    if let Some(session_state) = session_state {
+        agent.load_from_session_state(session_state).await
     } else {
         agent.start_with_task(task.unwrap()).await
     }
@@ -319,7 +333,8 @@ async fn run_agent_terminal(
 fn run_agent_gpui(
     path: PathBuf,
     task: Option<String>,
-    continue_task: bool,
+    session_manager: SessionManager,
+    session_state: Option<crate::session::SessionState>,
     provider: LLMProviderType,
     model: Option<String>,
     base_url: Option<String>,
@@ -337,7 +352,6 @@ fn run_agent_gpui(
     let project_manager = Box::new(DefaultProjectManager::new());
     let user_interface: Box<dyn UserInterface> = Box::new(gui.clone());
     let command_executor = Box::new(DefaultCommandExecutor);
-    let state_persistence = Box::new(FileStatePersistence::new(root_path.clone()));
 
     // Start the agent in a separate thread using a standard thread
     // We need to move all the necessary components into this thread
@@ -360,20 +374,20 @@ fn run_agent_gpui(
             .await
             .expect("Failed to initialize LLM client");
 
-            // Initialize agent
+            // Initialize agent with session manager
             let mut agent = Agent::new(
                 llm_client,
                 tools_type,
                 project_manager,
                 command_executor,
                 user_interface,
-                state_persistence,
+                session_manager,
                 Some(root_path.clone()),
             );
 
-            // Get task either from state file, argument, or GUI
-            if continue_task {
-                agent.start_from_state().await.unwrap();
+            // Start either from session state, task, or GUI input
+            if let Some(session_state) = session_state {
+                agent.load_from_session_state(session_state).await.unwrap();
             } else if let Some(task_str) = task {
                 agent.start_with_task(task_str).await.unwrap();
             } else {
@@ -412,23 +426,43 @@ async fn run_agent(args: Args) -> Result<()> {
         anyhow::bail!("Path '{}' is not a directory", path.display());
     }
 
-    // Validate parameters
-    if continue_task && task.is_some() {
-        anyhow::bail!(
-            "Cannot specify both --task and --continue. The task will be loaded from the saved state."
-        );
-    }
+    // Create session manager for chat functionality
+    let persistence = FileStatePersistence::new(path.clone());
+    let mut session_manager = SessionManager::new(persistence);
 
-    if !continue_task && task.is_none() && !use_gui {
-        anyhow::bail!("In agent mode, either --task, --continue, or --ui must be specified");
-    }
+    // Handle chat session logic
+    let (session_task, session_state) = if let Some(chat_id) = args.chat_id {
+        // Load specific chat session
+        let session_state = session_manager.load_session(&chat_id)?;
+        println!("Loaded chat session: {}", chat_id);
+        (None, Some(session_state))
+    } else if continue_task {
+        // Try to continue from latest session
+        if let Some(latest_id) = session_manager.get_latest_session_id()? {
+            let session_state = session_manager.load_session(&latest_id)?;
+            println!("Continuing latest chat session: {}", latest_id);
+            (None, Some(session_state))
+        } else {
+            anyhow::bail!("No chat sessions found to continue from. Please start with a task.");
+        }
+    } else {
+        // Create new session with task
+        if task.is_some() {
+            let new_session_id = session_manager.create_session(None)?;
+            println!("Created new chat session: {}", new_session_id);
+            (task, None)
+        } else {
+            anyhow::bail!("Please provide a task to start a new chat session.");
+        }
+    };
 
     // Run in either GUI or terminal mode
     if use_gui {
         run_agent_gpui(
             path,
-            task,
-            continue_task,
+            session_task,
+            session_manager,
+            session_state,
             provider,
             model,
             base_url,
@@ -441,8 +475,9 @@ async fn run_agent(args: Args) -> Result<()> {
     } else {
         run_agent_terminal(
             path,
-            task,
-            continue_task,
+            session_task,
+            session_manager,
+            session_state,
             provider,
             model,
             base_url,
@@ -456,10 +491,74 @@ async fn run_agent(args: Args) -> Result<()> {
     }
 }
 
+/// List all available chat sessions
+async fn handle_list_chats(root_path: &PathBuf) -> Result<()> {
+    let persistence = FileStatePersistence::new(root_path.clone());
+    let session_manager = SessionManager::new(persistence);
+
+    let sessions = session_manager.list_sessions()?;
+    if sessions.is_empty() {
+        println!("No chat sessions found.");
+    } else {
+        println!("Available chat sessions:");
+        for session in sessions {
+            println!("  {} - {} ({} messages, created {})",
+                session.id,
+                session.name,
+                session.message_count,
+                crate::persistence::format_time(session.created_at)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Delete a specific chat session
+async fn handle_delete_chat(root_path: &PathBuf, session_id: &str) -> Result<()> {
+    let persistence = FileStatePersistence::new(root_path.clone());
+    let mut session_manager = SessionManager::new(persistence);
+
+    // Check if session exists first
+    let sessions = session_manager.list_sessions()?;
+    if !sessions.iter().any(|s| s.id == session_id) {
+        anyhow::bail!("Chat session '{}' not found", session_id);
+    }
+
+    session_manager.delete_session(session_id)?;
+    println!("Chat session '{}' deleted successfully.", session_id);
+    Ok(())
+}
+
+/// Handle chat-related command line operations
+async fn handle_chat_commands(args: &Args) -> Result<bool> {
+    let default_path = PathBuf::from(".");
+    let root_path = args.path.as_ref().unwrap_or(&default_path);
+
+    // Handle list chats command
+    if args.list_chats {
+        handle_list_chats(root_path).await?;
+        return Ok(true);
+    }
+
+    // Handle delete chat command
+    if let Some(session_id) = &args.delete_chat {
+        handle_delete_chat(root_path, session_id).await?;
+        return Ok(true);
+    }
+
+    // Other chat commands would be handled in main function
+    Ok(false)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse command line arguments
     let args = Args::parse();
+
+    // Handle chat-related commands first
+    if handle_chat_commands(&args).await? {
+        return Ok(()); // Chat command was handled, exit
+    }
 
     match args.mode {
         // Server mode
