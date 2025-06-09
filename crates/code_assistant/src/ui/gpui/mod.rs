@@ -152,8 +152,7 @@ impl Gpui {
 
             // Initialize gpui-component modules
             theme::init_themes(cx);
-            gpui_component::input::init(cx);
-            gpui_component::drawer::init(cx);
+            gpui_component::init(cx);
 
             // Spawn task to receive UiEvents
             let rx = gpui_clone.event_receiver.lock().unwrap().clone();

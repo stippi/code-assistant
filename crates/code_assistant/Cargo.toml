@@ -19,7 +19,7 @@ rustyline = "12.0.0"
 crossterm = "0.27.0"
 
 # GPUI related
-gpui = { git = "https://github.com/huacnlee/zed.git", branch = "webview" }
+gpui = { git = "https://github.com/zed-industries/zed.git" }
 gpui-component = { git = "https://github.com/longbridge/gpui-component.git" }
 smallvec = "1.14"
 rust-embed = { version = "8.4", features = ["include-exclude"] }
