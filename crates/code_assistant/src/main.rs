@@ -190,7 +190,7 @@ async fn create_llm_client(
         LLMProviderType::Vertex => {
             let api_key = std::env::var("GOOGLE_API_KEY")
                 .context("GOOGLE_API_KEY environment variable not set")?;
-            let model_name = model.unwrap_or_else(|| "gemini-2.5-pro-preview-05-06".to_string());
+            let model_name = model.unwrap_or_else(|| "gemini-2.5-pro-preview-06-05".to_string());
             let base_url = base_url.unwrap_or(VertexClient::default_base_url());
 
             if let Some(path) = record_path {
