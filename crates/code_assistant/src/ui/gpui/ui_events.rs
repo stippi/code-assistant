@@ -39,7 +39,7 @@ pub enum UiEvent {
     /// Update the working memory view
     UpdateMemory { memory: WorkingMemory },
     /// Set all messages at once (for session loading, clears existing)
-    SetMessages { messages: Vec<MessageData> },
+    SetMessages { messages: Vec<MessageData>, session_id: Option<String> },
     /// Streaming started for a request
     StreamingStarted(u64),
     /// Streaming stopped for a request

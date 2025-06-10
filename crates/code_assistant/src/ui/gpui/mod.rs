@@ -425,7 +425,12 @@ impl Gpui {
                 }
                 cx.refresh().expect("Failed to refresh windows");
             }
-            UiEvent::SetMessages { messages } => {
+            UiEvent::SetMessages { messages, session_id } => {
+                // Update current session ID if provided
+                if let Some(session_id) = session_id {
+                    *self.current_session_id.lock().unwrap() = Some(session_id);
+                }
+
                 // Clear existing messages
                 {
                     let mut queue = self.message_queue.lock().unwrap();

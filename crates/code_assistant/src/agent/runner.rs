@@ -410,7 +410,7 @@ impl Agent {
         self.restore_working_memory_state().await?;
 
         // Generate UI fragments from session messages
-        self.send_session_messages_to_ui(&session_state.messages).await?;
+        self.send_session_messages_to_ui(&session_state.messages, session_id).await?;
 
         // Update memory in UI
         let _ = self.ui.update_memory(&self.working_memory).await;
@@ -918,7 +918,7 @@ impl Agent {
     }
 
     /// Convert session messages to UI fragments and send SetMessages event
-    async fn send_session_messages_to_ui(&mut self, messages: &[llm::Message]) -> Result<()> {
+    async fn send_session_messages_to_ui(&mut self, messages: &[llm::Message], session_id: &str) -> Result<()> {
         use crate::ui::streaming::create_stream_processor;
         use crate::ui::gpui::ui_events::{MessageData, UiEvent};
         use crate::ui::gpui::elements::MessageRole;
@@ -941,19 +941,30 @@ impl Agent {
         let mut processor = create_stream_processor(self.tool_mode, dummy_ui);
 
         let mut messages_data = Vec::new();
-        for message in messages {
-            if let Ok(fragments) = processor.extract_fragments_from_message(message) {
-                let role = match message.role {
-                    llm::MessageRole::User => MessageRole::User,
-                    llm::MessageRole::Assistant => MessageRole::Assistant,
-                };
-                messages_data.push(MessageData { role, fragments });
+        tracing::info!("Processing {} messages for UI", messages.len());
+
+        for (i, message) in messages.iter().enumerate() {
+            match processor.extract_fragments_from_message(message) {
+                Ok(fragments) => {
+                    let role = match message.role {
+                        llm::MessageRole::User => MessageRole::User,
+                        llm::MessageRole::Assistant => MessageRole::Assistant,
+                    };
+                    tracing::info!("Message {}: Extracted {} fragments", i, fragments.len());
+                    messages_data.push(MessageData { role, fragments });
+                }
+                Err(e) => {
+                    tracing::error!("Message {}: Failed to extract fragments: {}", i, e);
+                }
             }
         }
 
+        tracing::info!("Sending {} message containers to UI", messages_data.len());
+
         // Send SetMessages event to UI
         self.ui.display(crate::ui::UIMessage::UiEvent(UiEvent::SetMessages {
-            messages: messages_data
+            messages: messages_data,
+            session_id: Some(session_id.to_string()),
         })).await?;
 
         Ok(())

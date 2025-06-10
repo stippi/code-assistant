@@ -420,6 +420,7 @@ fn run_agent_gpui(
                         }
                         ui::gpui::ChatManagementEvent::LoadSession { session_id } => {
                             // Send command to agent to switch session
+                            // Agent will handle UI updates directly via SetMessages
                             if let Some(sender) = agent_command_sender.as_ref() {
                                 if let Err(e) = sender.try_send(crate::agent::AgentCommand::SwitchToSession {
                                     session_id: session_id.clone()
@@ -429,7 +430,8 @@ fn run_agent_gpui(
                                         message: format!("Failed to switch session: {}", e),
                                     }
                                 } else {
-                                    ui::gpui::ChatManagementResponse::SessionLoaded { session_id }
+                                    // Don't send immediate response - agent will update UI directly
+                                    continue;
                                 }
                             } else {
                                 ui::gpui::ChatManagementResponse::Error {
