@@ -81,6 +81,7 @@ pub struct Gpui {
     event_sender: Arc<Mutex<async_channel::Sender<UiEvent>>>,
     event_receiver: Arc<Mutex<async_channel::Receiver<UiEvent>>>,
     event_task: Arc<Mutex<Option<Box<dyn Any + Send + Sync>>>>,
+    session_event_task: Arc<Mutex<Option<Box<dyn Any + Send + Sync>>>>,
     current_request_id: Arc<Mutex<u64>>,
     current_tool_counter: Arc<Mutex<u64>>,
     last_xml_tool_id: Arc<Mutex<String>>,
@@ -105,6 +106,7 @@ impl Gpui {
         let input_requested = Arc::new(Mutex::new(false));
         let working_memory = Arc::new(Mutex::new(None));
         let event_task = Arc::new(Mutex::new(None));
+        let session_event_task = Arc::new(Mutex::new(None));
         let current_request_id = Arc::new(Mutex::new(0));
         let current_tool_counter = Arc::new(Mutex::new(0));
         let last_xml_tool_id = Arc::new(Mutex::new(String::new()));
@@ -149,6 +151,7 @@ impl Gpui {
             event_sender,
             event_receiver,
             event_task,
+            session_event_task,
             current_request_id,
             current_tool_counter,
             last_xml_tool_id,
@@ -250,8 +253,7 @@ impl Gpui {
 
             // Store the chat response task as well
             {
-                let mut task_guard = gpui_clone.event_task.lock().unwrap();
-                // We'll just override the previous task for simplicity
+                let mut task_guard = gpui_clone.session_event_task.lock().unwrap();
                 *task_guard = Some(Box::new(chat_response_task));
             }
 
