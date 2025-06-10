@@ -218,62 +218,170 @@ The current system only supports **building messages through streaming** (Displa
 
 **Current Message Flow:**
 ```
-Streaming: DisplayFragment → UI Event → MessageContainer creation/updates
+Streaming: LLM Chunks → StreamProcessor → DisplayFragments → UI Events → MessageContainer
 ```
 
 **Needed for Session Loading:**
 ```
-Session Load: Stored Messages → Bulk UI Update → Replace MessageContainer list
+Session Load: Stored Messages → StreamProcessor.extract_fragments → DisplayFragments → UI Events → MessageContainer
 ```
 
-### **Approaches to Consider**
+### **🎯 Recommended Approach: StreamProcessor Trait Extension**
 
-#### **Option 1: New UiEvent for Bulk Loading**
-- Add `UiEvent::LoadSessionMessages { messages: Vec<UIMessage> }`
-- Clear existing message_queue and rebuild from stored messages
-- **Pro**: Clean separation, explicit intent
-- **Con**: Complex Entity management, need to recreate all MessageContainers
+The key insight is that **stored messages need the same processing pipeline** as streaming messages. Both JSON and XML modes have complex parsing logic that we want to reuse.
 
-#### **Option 2: Clear + Replay Pattern**
-- Add `UiEvent::ClearMessages`
-- Then send normal DisplayMessage events for each stored message
-- **Pro**: Reuses existing message creation logic
-- **Con**: Many events for large sessions, not atomic
+**Current Problem:**
+- **JSON Mode**: `ContentBlock::ToolUse` needs parsing into `DisplayFragment::ToolName + ToolParameter`
+- **XML Mode**: `ContentBlock::Text` with `<tool:name><param:value>` needs XML parsing into DisplayFragments
 
-#### **Option 3: MessagesView Enhancement**
-- Add `load_messages()` method directly to MessagesView
-- Handle Entity creation/destruction internally
-- **Pro**: Encapsulated in component, efficient
-- **Con**: Bypasses event system, harder to test
+**Solution: Extend StreamProcessorTrait**
+```rust
+pub trait StreamProcessorTrait: Send + Sync {
+    fn new(ui: Arc<Box<dyn UserInterface>>) -> Self where Self: Sized;
+    fn process(&mut self, chunk: &StreamingChunk) -> Result<(), UIError>;
 
-### **Key Technical Challenges**
+    // NEW: Extract fragments without sending to UI
+    fn extract_fragments_from_message(&mut self, message: &Message) -> Result<Vec<DisplayFragment>, UIError>;
+}
+```
 
-1. **Entity Lifecycle Management**
-   - MessageContainer entities need proper creation/destruction
-   - GPUI Entity references must be updated correctly
-   - Memory cleanup for old messages
+### **Implementation Strategy**
 
-2. **Message Serialization Round-trip**
-   - Convert stored ChatSession messages back to UIMessage format
-   - Restore tool execution states, parameters, outputs
-   - Handle message roles and formatting correctly
+#### **Phase 1: StreamProcessor Enhancement**
+**Files to modify:**
+- `crates/code_assistant/src/ui/streaming/mod.rs` - Add trait method
+- `crates/code_assistant/src/ui/streaming/json_processor.rs` - Implement for JSON mode
+- `crates/code_assistant/src/ui/streaming/xml_processor.rs` - Implement for XML mode
 
-3. **State Synchronization**
-   - Working memory state loading
-   - Tool execution status restoration
-   - Session-specific configuration (current task, etc.)
+**JSON Implementation:**
+```rust
+// JsonStreamProcessor::extract_fragments_from_message()
+match &message.content {
+    MessageContent::Structured(blocks) => {
+        for block in blocks {
+            ContentBlock::ToolUse { id, name, input } => {
+                fragments.push(DisplayFragment::ToolName { name, id });
+                // Parse input JSON to ToolParameter fragments
+            }
+            ContentBlock::Text { text } => fragments.push(DisplayFragment::PlainText(text)),
+            ContentBlock::Thinking { thinking, .. } => fragments.push(DisplayFragment::ThinkingText(thinking)),
+        }
+    }
+}
+```
 
-4. **Performance Considerations**
-   - Large sessions with many messages/tools
-   - Efficient UI updates without blocking
-   - Memory usage for loaded sessions
+**XML Implementation:**
+```rust
+// XmlStreamProcessor::extract_fragments_from_message()
+// Use existing process_text_with_tags() logic but collect fragments instead of sending to UI
+```
+
+#### **Phase 2: New UI Events**
+**Files to modify:**
+- `crates/code_assistant/src/ui/gpui/ui_events.rs` - Add new events
+- `crates/code_assistant/src/ui/gpui/mod.rs` - Handle new events
+
+**New Events:**
+```rust
+pub enum UiEvent {
+    // Existing events...
+
+    // Clear all messages and load new ones
+    LoadSessionFragments { fragments: Vec<DisplayFragment> },
+
+    // Clear messages only
+    ClearMessages,
+}
+```
+
+#### **Phase 3: SessionManager Integration**
+**Files to modify:**
+- `crates/code_assistant/src/session/mod.rs` - Add load_session_fragments method
+- `crates/code_assistant/src/main.rs` - Handle LoadChatSession event properly
+
+**Session Loading Flow:**
+```rust
+// In chat management task (main.rs)
+ChatManagementEvent::LoadSession { session_id } => {
+    let session = session_manager.load_session(&session_id)?;
+    let tool_mode = agent.get_tool_mode(); // Need access to current tool mode
+    let mut processor = create_stream_processor(tool_mode, dummy_ui);
+
+    let mut all_fragments = Vec::new();
+    for message in session.messages {
+        let fragments = processor.extract_fragments_from_message(&message)?;
+        all_fragments.extend(fragments);
+    }
+
+    ChatManagementResponse::SessionFragmentsReady { session_id, fragments: all_fragments }
+}
+```
+
+#### **Phase 4: UI MessageContainer Management**
+**Files to modify:**
+- `crates/code_assistant/src/ui/gpui/mod.rs` - process LoadSessionFragments event
+- `crates/code_assistant/src/ui/gpui/messages.rs` - Add clear_messages method
+
+**Entity Lifecycle:**
+```rust
+// In process_ui_event_async()
+UiEvent::LoadSessionFragments { fragments } => {
+    // Clear existing message queue
+    self.message_queue.lock().unwrap().clear();
+
+    // Process fragments as if they were streaming
+    for fragment in fragments {
+        self.process_display_fragment(fragment);
+    }
+}
+```
+
+### **Key Benefits of This Approach**
+
+1. **Zero Code Duplication**: Reuses existing JSON/XML parsing logic
+2. **Consistent Behavior**: Session loading looks identical to live streaming
+3. **Tool Mode Agnostic**: Works for both JSON and XML automatically
+4. **Clean Architecture**: Separates fragment extraction from UI sending
+5. **Easy Testing**: Can test fragment extraction independently
+
+### **Technical Challenges & Solutions**
+
+1. **Tool Mode Detection**: Need to know which StreamProcessor to use
+   - **Solution**: Store tool_mode in ChatSession metadata or get from Agent
+
+2. **Fragment Ordering**: Ensure fragments are processed in correct order
+   - **Solution**: Messages are ordered, fragments within message are ordered
+
+3. **Entity Management**: Proper MessageContainer lifecycle
+   - **Solution**: Clear existing entities, rebuild from fragments
+
+4. **State Synchronization**: Working memory, current session, etc.
+   - **Solution**: Separate events for different state aspects
 
 ### **Implementation Priority**
-1. **Complete CreateNewChatSession flow** (minor fix needed)
-2. **Design session loading architecture** (choose approach)
-3. **Implement message clearing/loading** (core feature)
-4. **Add session switching UI feedback** (loading states, etc.)
-5. **Test with large sessions** (performance validation)
+1. **Complete CreateNewChatSession flow** (minor agent-side fix needed)
+2. **Extend StreamProcessorTrait** (add extract_fragments_from_message method)
+3. **Implement JSON/XML fragment extraction** (reuse existing parsing logic)
+4. **Add LoadSessionFragments UI event** (clear + rebuild message containers)
+5. **Integrate with SessionManager** (modify chat management task)
+6. **Test with real sessions** (both JSON and XML mode sessions)
+
+### **Files Overview for Implementation**
+
+**Core Stream Processing:**
+- `crates/code_assistant/src/ui/streaming/mod.rs` - Trait definition
+- `crates/code_assistant/src/ui/streaming/json_processor.rs` - JSON implementation
+- `crates/code_assistant/src/ui/streaming/xml_processor.rs` - XML implementation
+
+**UI Events & Processing:**
+- `crates/code_assistant/src/ui/gpui/ui_events.rs` - Event definitions
+- `crates/code_assistant/src/ui/gpui/mod.rs` - Event processing logic
+- `crates/code_assistant/src/ui/gpui/messages.rs` - MessageContainer management
+
+**Session Management:**
+- `crates/code_assistant/src/session/mod.rs` - Session loading logic
+- `crates/code_assistant/src/main.rs` - Chat management task (agent thread)
+- `crates/code_assistant/src/persistence.rs` - ChatSession structure (if needed)
 
 ### **Enhancement Tasks (Future Sessions)**
 
