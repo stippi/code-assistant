@@ -3,7 +3,7 @@ pub mod auto_scroll;
 pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_renderer;
-mod elements;
+pub mod elements;
 pub mod file_icons;
 mod memory;
 mod messages;
@@ -15,7 +15,7 @@ pub mod theme;
 pub mod ui_events;
 
 use crate::persistence::ChatMetadata;
-use crate::session::SessionManager;
+
 use crate::types::WorkingMemory;
 use crate::ui::gpui::{
     content_renderer::ContentRenderer,
@@ -36,7 +36,7 @@ use gpui_component::Root;
 pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
-use std::any::Any;
+
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -425,6 +425,30 @@ impl Gpui {
                 }
                 cx.refresh().expect("Failed to refresh windows");
             }
+            UiEvent::SetMessages { messages } => {
+                // Clear existing messages
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    queue.clear();
+                }
+
+                // Create new message containers from the message data
+                for message_data in messages {
+                    let container = cx.new(|cx| MessageContainer::with_role(message_data.role, cx))
+                        .expect("Failed to create message container");
+
+                    // Process all fragments for this message
+                    self.process_fragments_for_container(&container, message_data.fragments, cx);
+
+                    // Add container to queue
+                    {
+                        let mut queue = self.message_queue.lock().unwrap();
+                        queue.push(container);
+                    }
+                }
+
+                cx.refresh().expect("Failed to refresh windows");
+            }
             UiEvent::StreamingStarted(request_id) => {
                 let mut queue = self.message_queue.lock().unwrap();
 
@@ -507,6 +531,53 @@ impl Gpui {
                 // Refresh all windows to trigger re-render with new chat data
                 tracing::info!("UI: Refreshing windows for chat list update");
                 cx.refresh().expect("Failed to refresh windows");
+            }
+        }
+    }
+
+    /// Process display fragments and add them to a message container
+    fn process_fragments_for_container(
+        &self,
+        container: &Entity<MessageContainer>,
+        fragments: Vec<DisplayFragment>,
+        cx: &mut gpui::AsyncApp,
+    ) {
+        for fragment in fragments {
+            match fragment {
+                DisplayFragment::PlainText(text) => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_or_append_to_text_block(text, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ThinkingText(text) => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_or_append_to_thinking_block(text, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ToolName { name, id } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_tool_use_block(name, id, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ToolParameter {
+                    name,
+                    value,
+                    tool_id,
+                } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_or_update_tool_parameter(tool_id, name, value, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ToolEnd { id } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.end_tool_use(id, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
             }
         }
     }
@@ -613,6 +684,10 @@ impl UserInterface for Gpui {
                     content: msg,
                     role: MessageRole::User,
                 });
+            }
+            UIMessage::UiEvent(event) => {
+                // Forward UI events directly to the event processing
+                self.push_event(event);
             }
         }
 

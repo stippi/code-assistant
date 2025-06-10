@@ -22,6 +22,79 @@ impl MessagesView {
             focus_handle: cx.focus_handle(),
         }
     }
+
+    /// Set all messages at once (clears existing messages and creates new ones)
+    pub fn set_messages(
+        &self,
+        messages: Vec<crate::ui::gpui::ui_events::MessageData>,
+        cx: &mut Context<Self>,
+    ) {
+        // Clear existing messages
+        {
+            let mut queue = self.message_queue.lock().unwrap();
+            queue.clear();
+        }
+
+        // Create new message containers from the message data
+        for message_data in messages {
+            let container = cx.new(|cx| MessageContainer::with_role(message_data.role, cx));
+
+            // Process all fragments for this message
+            self.process_fragments_for_container(&container, message_data.fragments, cx);
+
+            // Add container to queue
+            {
+                let mut queue = self.message_queue.lock().unwrap();
+                queue.push(container);
+            }
+        }
+
+        cx.notify();
+    }
+
+    /// Process display fragments and add them to a message container
+    fn process_fragments_for_container(
+        &self,
+        container: &Entity<MessageContainer>,
+        fragments: Vec<crate::ui::DisplayFragment>,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::ui::DisplayFragment;
+
+        for fragment in fragments {
+            match fragment {
+                DisplayFragment::PlainText(text) => {
+                    container.update(cx, |container, cx| {
+                        container.add_or_append_to_text_block(text, cx);
+                    });
+                }
+                DisplayFragment::ThinkingText(text) => {
+                    container.update(cx, |container, cx| {
+                        container.add_or_append_to_thinking_block(text, cx);
+                    });
+                }
+                DisplayFragment::ToolName { name, id } => {
+                    container.update(cx, |container, cx| {
+                        container.add_tool_use_block(name, id, cx);
+                    });
+                }
+                DisplayFragment::ToolParameter {
+                    name,
+                    value,
+                    tool_id,
+                } => {
+                    container.update(cx, |container, cx| {
+                        container.add_or_update_tool_parameter(tool_id, name, value, cx);
+                    });
+                }
+                DisplayFragment::ToolEnd { id } => {
+                    container.update(cx, |container, cx| {
+                        container.end_tool_use(id, cx);
+                    });
+                }
+            }
+        }
+    }
 }
 
 impl Focusable for MessagesView {

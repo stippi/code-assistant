@@ -388,9 +388,14 @@ fn run_agent_gpui(
                 Some(root_path.clone()),
             );
 
+            // Create agent command channel for session switching
+            let (agent_command_tx, agent_command_rx) = async_channel::unbounded::<crate::agent::AgentCommand>();
+            agent.set_command_receiver(agent_command_rx);
+
             // Clone necessary data for chat management task
             let chat_event_rx_clone = chat_event_rx.clone();
             let chat_response_tx_clone = chat_response_tx.clone();
+            let agent_command_sender = Some(agent_command_tx);
 
             // Spawn task to handle chat management events
             // Keep the task handle to prevent it from being dropped
@@ -414,8 +419,23 @@ fn run_agent_gpui(
                             }
                         }
                         ui::gpui::ChatManagementEvent::LoadSession { session_id } => {
-                            // TODO: Implement session loading properly
-                            ui::gpui::ChatManagementResponse::SessionLoaded { session_id }
+                            // Send command to agent to switch session
+                            if let Some(sender) = agent_command_sender.as_ref() {
+                                if let Err(e) = sender.try_send(crate::agent::AgentCommand::SwitchToSession {
+                                    session_id: session_id.clone()
+                                }) {
+                                    tracing::error!("Failed to send switch session command: {}", e);
+                                    ui::gpui::ChatManagementResponse::Error {
+                                        message: format!("Failed to switch session: {}", e),
+                                    }
+                                } else {
+                                    ui::gpui::ChatManagementResponse::SessionLoaded { session_id }
+                                }
+                            } else {
+                                ui::gpui::ChatManagementResponse::Error {
+                                    message: "Agent command channel not available".to_string(),
+                                }
+                            }
                         }
                         ui::gpui::ChatManagementEvent::CreateNewSession { name } => {
                             let persistence =

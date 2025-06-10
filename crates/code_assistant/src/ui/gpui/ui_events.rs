@@ -1,7 +1,14 @@
 use crate::persistence::ChatMetadata;
 use crate::types::WorkingMemory;
 use crate::ui::gpui::elements::MessageRole;
-use crate::ui::ToolStatus;
+use crate::ui::{DisplayFragment, ToolStatus};
+
+/// Data for a complete message with its display fragments
+#[derive(Debug, Clone)]
+pub struct MessageData {
+    pub role: MessageRole,
+    pub fragments: Vec<DisplayFragment>,
+}
 
 /// Events for UI updates from the agent thread
 #[derive(Debug, Clone)]
@@ -31,6 +38,8 @@ pub enum UiEvent {
     EndTool { id: String },
     /// Update the working memory view
     UpdateMemory { memory: WorkingMemory },
+    /// Set all messages at once (for session loading, clears existing)
+    SetMessages { messages: Vec<MessageData> },
     /// Streaming started for a request
     StreamingStarted(u64),
     /// Streaming stopped for a request

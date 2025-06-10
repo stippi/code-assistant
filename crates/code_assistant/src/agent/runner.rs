@@ -19,6 +19,13 @@ use tracing::debug;
 
 use super::ToolMode;
 
+/// Commands that can be sent to the agent from external sources
+#[derive(Debug)]
+pub enum AgentCommand {
+    /// Switch to a different session
+    SwitchToSession { session_id: String },
+}
+
 // System messages
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
 const SYSTEM_MESSAGE_TOOLS: &str = include_str!("../../resources/system_message_tools.md");
@@ -41,6 +48,8 @@ pub struct Agent {
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
     session_manager: SessionManager,
+    // Command receiver for external commands (like session switching)
+    command_receiver: Option<async_channel::Receiver<AgentCommand>>,
     // Store all messages exchanged
     message_history: Vec<Message>,
     // Path provided during agent initialization
@@ -57,6 +66,11 @@ impl Agent {
     /// Get a reference to the session manager
     pub fn session_manager(&self) -> &SessionManager {
         &self.session_manager
+    }
+
+    /// Set the command receiver for external commands
+    pub fn set_command_receiver(&mut self, receiver: async_channel::Receiver<AgentCommand>) {
+        self.command_receiver = Some(receiver);
     }
 
     /// Formats an error, particularly ToolErrors, into a user-friendly string.
@@ -93,6 +107,7 @@ impl Agent {
             ui: Arc::new(ui),
             command_executor,
             session_manager,
+            command_receiver: None,
             message_history: Vec::new(),
             init_path,
             initial_project: None,
@@ -240,6 +255,21 @@ impl Agent {
         let mut request_counter: u64 = 0;
 
         loop {
+            // Check for incoming commands first
+            if let Some(command_receiver) = &self.command_receiver {
+                // Use try_recv to not block if no commands are waiting
+                if let Ok(command) = command_receiver.try_recv() {
+                    match command {
+                        AgentCommand::SwitchToSession { session_id } => {
+                            tracing::info!("Agent: Switching to session {}", session_id);
+                            if let Err(e) = self.switch_to_session(&session_id).await {
+                                tracing::error!("Failed to switch to session {}: {}", session_id, e);
+                            }
+                            continue; // Skip normal agent processing for this iteration
+                        }
+                    }
+                }
+            }
             let messages = self.prepare_messages();
             if self.message_history.is_empty() {
                 // This ensures that on the very first run, the initial task (user message)
@@ -359,6 +389,33 @@ impl Agent {
         let _ = self.ui.update_memory(&self.working_memory).await;
 
         self.run_agent_loop().await
+    }
+
+    /// Switch to a different session by loading it and updating UI
+    pub async fn switch_to_session(&mut self, session_id: &str) -> Result<()> {
+        // Load session from session manager
+        let session_state = self.session_manager.load_session(session_id)?;
+
+        // Set state like load_from_session_state
+        self.message_history = session_state.messages.clone();
+        self.tool_executions = session_state.tool_executions;
+        self.working_memory = session_state.working_memory;
+        self.init_path = session_state.init_path;
+        self.initial_project = session_state.initial_project;
+
+        debug!("Switched to session {} with {} messages and {} tool executions",
+               session_id, session_state.messages.len(), self.tool_executions.len());
+
+        // Restore working memory file trees and project state
+        self.restore_working_memory_state().await?;
+
+        // Generate UI fragments from session messages
+        self.send_session_messages_to_ui(&session_state.messages).await?;
+
+        // Update memory in UI
+        let _ = self.ui.update_memory(&self.working_memory).await;
+
+        Ok(())
     }
 
     /// Load state from session manager (replaces start_from_state)
@@ -858,6 +915,48 @@ impl Agent {
         self.tool_executions.push(tool_execution);
 
         Ok(success)
+    }
+
+    /// Convert session messages to UI fragments and send SetMessages event
+    async fn send_session_messages_to_ui(&mut self, messages: &[llm::Message]) -> Result<()> {
+        use crate::ui::streaming::create_stream_processor;
+        use crate::ui::gpui::ui_events::{MessageData, UiEvent};
+        use crate::ui::gpui::elements::MessageRole;
+
+        // Create dummy UI for stream processor
+        struct DummyUI;
+        #[async_trait::async_trait]
+        impl crate::ui::UserInterface for DummyUI {
+            async fn display(&self, _message: crate::ui::UIMessage) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn get_input(&self) -> Result<String, crate::ui::UIError> { Ok("".to_string()) }
+            fn display_fragment(&self, _fragment: &crate::ui::DisplayFragment) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn update_memory(&self, _memory: &crate::types::WorkingMemory) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn update_tool_status(&self, _tool_id: &str, _status: crate::ui::ToolStatus, _message: Option<String>, _output: Option<String>) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> { Ok(0) }
+            async fn end_llm_request(&self, _request_id: u64, _cancelled: bool) -> Result<(), crate::ui::UIError> { Ok(()) }
+            fn should_streaming_continue(&self) -> bool { true }
+        }
+
+        let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
+        let mut processor = create_stream_processor(self.tool_mode, dummy_ui);
+
+        let mut messages_data = Vec::new();
+        for message in messages {
+            if let Ok(fragments) = processor.extract_fragments_from_message(message) {
+                let role = match message.role {
+                    llm::MessageRole::User => MessageRole::User,
+                    llm::MessageRole::Assistant => MessageRole::Assistant,
+                };
+                messages_data.push(MessageData { role, fragments });
+            }
+        }
+
+        // Send SetMessages event to UI
+        self.ui.display(crate::ui::UIMessage::UiEvent(UiEvent::SetMessages {
+            messages: messages_data
+        })).await?;
+
+        Ok(())
     }
 }
 

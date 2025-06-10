@@ -189,7 +189,7 @@ impl Focusable for ChatSidebar {
 }
 
 impl Render for ChatSidebar {
-    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.is_collapsed {
             // Collapsed view - narrow bar with toggle button
             div()
