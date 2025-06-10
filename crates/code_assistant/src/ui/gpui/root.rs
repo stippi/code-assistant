@@ -118,9 +118,13 @@ impl RootView {
 
     // Trigger refresh of chat list on startup
     pub fn refresh_chat_list(&mut self, cx: &mut Context<Self>) {
+        tracing::info!("RootView: Requesting chat list refresh");
         // Request session list from agent via Gpui global
         if let Some(sender) = cx.try_global::<UiEventSender>() {
-            let _ = sender.0.send(UiEvent::RefreshChatList);
+            tracing::info!("RootView: Sending RefreshChatList event");
+            let _ = sender.0.try_send(UiEvent::RefreshChatList);
+        } else {
+            tracing::warn!("RootView: No UiEventSender global available");
         }
     }
 

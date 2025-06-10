@@ -97,7 +97,7 @@ impl Render for ChatListItem {
                 move |_, _window, cx| {
                     // Emit event to load this chat session
                     if let Some(sender) = cx.try_global::<UiEventSender>() {
-                        let _ = sender.0.send(UiEvent::LoadChatSession {
+                        let _ = sender.0.try_send(UiEvent::LoadChatSession {
                             session_id: session_id.clone(),
                         });
                     }
@@ -171,9 +171,13 @@ impl ChatSidebar {
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
+        tracing::info!("ChatSidebar: New chat button clicked");
         // Emit event to create a new chat session
         if let Some(sender) = cx.try_global::<UiEventSender>() {
-            let _ = sender.0.send(UiEvent::CreateNewChatSession { name: None });
+            tracing::info!("ChatSidebar: Sending CreateNewChatSession event");
+            let _ = sender.0.try_send(UiEvent::CreateNewChatSession { name: None });
+        } else {
+            tracing::warn!("ChatSidebar: No UiEventSender global available");
         }
     }
 }
@@ -325,7 +329,7 @@ impl Render for ChatSidebar {
                                                     cx.try_global::<UiEventSender>()
                                                 {
                                                     let _ =
-                                                        sender.0.send(UiEvent::LoadChatSession {
+                                                        sender.0.try_send(UiEvent::LoadChatSession {
                                                             session_id: session_id.clone(),
                                                         });
                                                 }

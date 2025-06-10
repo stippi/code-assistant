@@ -80,8 +80,8 @@ pub struct Gpui {
     working_memory: Arc<Mutex<Option<WorkingMemory>>>,
     event_sender: Arc<Mutex<async_channel::Sender<UiEvent>>>,
     event_receiver: Arc<Mutex<async_channel::Receiver<UiEvent>>>,
-    event_task: Arc<Mutex<Option<Box<dyn Any + Send + Sync>>>>,
-    session_event_task: Arc<Mutex<Option<Box<dyn Any + Send + Sync>>>>,
+    event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
+    session_event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
     current_request_id: Arc<Mutex<u64>>,
     current_tool_counter: Arc<Mutex<u64>>,
     last_xml_tool_id: Arc<Mutex<String>>,
@@ -105,8 +105,8 @@ impl Gpui {
         let input_value = Arc::new(Mutex::new(None));
         let input_requested = Arc::new(Mutex::new(false));
         let working_memory = Arc::new(Mutex::new(None));
-        let event_task = Arc::new(Mutex::new(None));
-        let session_event_task = Arc::new(Mutex::new(None));
+        let event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
+        let session_event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let current_request_id = Arc::new(Mutex::new(0));
         let current_tool_counter = Arc::new(Mutex::new(0));
         let last_xml_tool_id = Arc::new(Mutex::new(String::new()));
@@ -203,22 +203,30 @@ impl Gpui {
             // Spawn task to receive UiEvents
             let rx = gpui_clone.event_receiver.lock().unwrap().clone();
             let async_gpui_clone = gpui_clone.clone();
-            let task = cx.spawn(async move |cx: &mut AsyncApp| loop {
-                let result = rx.recv().await;
-                match result {
-                    Ok(received_event) => {
-                        async_gpui_clone.process_ui_event_async(received_event, cx);
-                    }
-                    Err(err) => {
-                        warn!("Receive error: {}", err);
+            tracing::info!("Starting UI event processing task");
+            let task = cx.spawn(async move |cx: &mut AsyncApp| {
+                tracing::info!("UI event processing task is running");
+                loop {
+                    tracing::debug!("Waiting for UI event...");
+                    let result = rx.recv().await;
+                    match result {
+                        Ok(received_event) => {
+                            tracing::info!("UI event processing: Received event: {:?}", received_event);
+                            async_gpui_clone.process_ui_event_async(received_event, cx);
+                        }
+                        Err(err) => {
+                            warn!("Receive error: {}", err);
+                            break;
+                        }
                     }
                 }
+                tracing::warn!("UI event processing task ended");
             });
 
             // Store the task in our Gpui instance
             {
                 let mut task_guard = gpui_clone.event_task.lock().unwrap();
-                *task_guard = Some(Box::new(task));
+                *task_guard = Some(task);
             }
 
             // Spawn task to handle chat management responses from agent
@@ -254,7 +262,7 @@ impl Gpui {
             // Store the chat response task as well
             {
                 let mut task_guard = gpui_clone.session_event_task.lock().unwrap();
-                *task_guard = Some(Box::new(chat_response_task));
+                *task_guard = Some(chat_response_task);
             }
 
             // Create memory view with our shared working memory
@@ -464,31 +472,40 @@ impl Gpui {
             }
             // Chat management events - forward to agent thread
             UiEvent::LoadChatSession { session_id } => {
+                tracing::info!("UI: LoadChatSession event for session_id: {}", session_id);
                 if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(ChatManagementEvent::LoadSession { session_id });
                 }
             }
             UiEvent::CreateNewChatSession { name } => {
+                tracing::info!("UI: CreateNewChatSession event with name: {:?}", name);
                 if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(ChatManagementEvent::CreateNewSession { name });
                 }
             }
             UiEvent::DeleteChatSession { session_id } => {
+                tracing::info!("UI: DeleteChatSession event for session_id: {}", session_id);
                 if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(ChatManagementEvent::DeleteSession { session_id });
                 }
             }
             UiEvent::RefreshChatList => {
+                tracing::info!("UI: RefreshChatList event received");
                 if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
+                    tracing::info!("UI: Sending ListSessions to agent");
                     let _ = sender.try_send(ChatManagementEvent::ListSessions);
+                } else {
+                    tracing::warn!("UI: No chat event sender available for RefreshChatList");
                 }
             }
             UiEvent::UpdateChatList { sessions } => {
+                tracing::info!("UI: UpdateChatList event received with {} sessions", sessions.len());
                 // Update local cache
                 *self.chat_sessions.lock().unwrap() = sessions.clone();
-                let current_session_id = self.current_session_id.lock().unwrap().clone();
+                let _current_session_id = self.current_session_id.lock().unwrap().clone();
 
                 // Refresh all windows to trigger re-render with new chat data
+                tracing::info!("UI: Refreshing windows for chat list update");
                 cx.refresh().expect("Failed to refresh windows");
             }
         }
@@ -534,6 +551,7 @@ impl Gpui {
 
     // Handle chat management responses from agent
     fn handle_chat_response(&self, response: ChatManagementResponse, _cx: &mut AsyncApp) {
+        tracing::info!("UI: Received chat management response: {:?}", response);
         match response {
             ChatManagementResponse::SessionLoaded { session_id } => {
                 *self.current_session_id.lock().unwrap() = Some(session_id);

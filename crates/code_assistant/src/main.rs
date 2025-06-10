@@ -393,8 +393,11 @@ fn run_agent_gpui(
             let chat_response_tx_clone = chat_response_tx.clone();
 
             // Spawn task to handle chat management events
-            tokio::spawn(async move {
+            // Keep the task handle to prevent it from being dropped
+            let _chat_management_task = tokio::spawn(async move {
+                tracing::info!("Chat management task started");
                 while let Ok(event) = chat_event_rx_clone.recv().await {
+                    tracing::info!("Chat management event received: {:?}", event);
                     let response = match event {
                         ui::gpui::ChatManagementEvent::ListSessions => {
                             // Create a new session manager for this operation
@@ -448,6 +451,7 @@ fn run_agent_gpui(
                         }
                     };
 
+                    tracing::info!("Sending chat management response: {:?}", response);
                     let _ = chat_response_tx_clone.send(response).await;
                 }
             });
