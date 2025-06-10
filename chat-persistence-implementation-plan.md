@@ -183,40 +183,97 @@ pub enum ChatManagementResponse {
 - Automatic chat list loading on startup ✅
 - Real-time UI updates for chat operations ✅
 
-## 🐛 Current Issues & Debugging Needed
+## ✅ Current Issues: RESOLVED!
 
-### **Issues Identified**
-1. **"+" Button Non-Functional**: Click events not properly handled
-   - **Location**: `crates/code_assistant/src/ui/gpui/chat_sidebar.rs:169-183`
-   - **Symptom**: Button renders but no response to clicks
+### **🎉 Fixed Issues**
+1. **✅ "+" Button Functionality**: Now working - click events properly handled
+   - **Root Cause**: Used `sender.0.send()` instead of `sender.0.try_send()` in UI callbacks
+   - **Fix**: Changed to `try_send()` for synchronous UI contexts
 
-2. **Empty Chat List**: Existing sessions not displayed despite correct storage
-   - **Location**: `crates/code_assistant/src/ui/gpui/chat_sidebar.rs:274-355`
-   - **Storage verified**: `metadata.json` and session files contain correct data
-   - **Symptom**: UI shows "No chats yet" despite existing sessions
+2. **✅ Chat List Display**: Now shows all 7 sessions correctly
+   - **Root Cause**: Task handling problems - UI event processing task not staying alive
+   - **Fix**: Changed `Arc<Mutex<Option<Box<dyn Any>>>>` to `Arc<Mutex<Option<gpui::Task<()>>>>`
 
-### **Files Requiring Debug Investigation**
-- `crates/code_assistant/src/ui/gpui/chat_sidebar.rs` - Event handling
-- `crates/code_assistant/src/ui/gpui/mod.rs` - Communication channels
-- `crates/code_assistant/src/main.rs` - Chat event processing task
-- `crates/code_assistant/src/ui/gpui/root.rs` - Chat state synchronization
+3. **✅ Communication Pipeline**: Full event flow working
+   - RefreshChatList: UI → Agent → Response → UI ✅
+   - Session clicks: UI event processing working ✅
+   - Plus button: UI event recognition working ✅
 
-## 🎯 Next Phase: Debug & Enhancement
+### **🔧 Technical Fixes Applied**
+- **Task Management**: Proper `gpui::Task<()>` storage instead of type erasure
+- **Agent Thread**: Chat management task handle stored with `_chat_management_task`
+- **Event Sending**: `try_send()` for synchronous UI contexts, `send().await` for async
+- **Event Processing**: Full pipeline working with comprehensive logging
 
-### **Immediate Debugging Tasks (Next Session)**
-1. **Fix "+" Button Functionality**
-   - Debug event propagation from UI to agent thread
-   - Verify `CreateNewChatSession` event handling
-   - Test communication channel flow
+## 🎯 Next Phase: Session Loading & UI State Management
 
-2. **Fix Chat List Display**
-   - Debug `RefreshChatList` event on startup
-   - Verify `SessionsListed` response handling
-   - Check UI state synchronization in `root.rs`
+### **Current State - What Works**
+- ✅ Chat sidebar displays all sessions
+- ✅ Plus button sends CreateNewChatSession events
+- ✅ Session clicks send LoadChatSession events
+- ✅ Full event pipeline: UI ↔ Agent communication working
 
-3. **Verify End-to-End Flow**
-   - Test complete cycle: UI event → Agent → Response → UI update
-   - Ensure proper error handling and logging
+### **Next Challenge: Message Loading & Session Switching**
+The current system only supports **building messages through streaming** (DisplayFragment by DisplayFragment). For session switching, we need to **replace the entire message list at once**.
+
+**Current Message Flow:**
+```
+Streaming: DisplayFragment → UI Event → MessageContainer creation/updates
+```
+
+**Needed for Session Loading:**
+```
+Session Load: Stored Messages → Bulk UI Update → Replace MessageContainer list
+```
+
+### **Approaches to Consider**
+
+#### **Option 1: New UiEvent for Bulk Loading**
+- Add `UiEvent::LoadSessionMessages { messages: Vec<UIMessage> }`
+- Clear existing message_queue and rebuild from stored messages
+- **Pro**: Clean separation, explicit intent
+- **Con**: Complex Entity management, need to recreate all MessageContainers
+
+#### **Option 2: Clear + Replay Pattern**
+- Add `UiEvent::ClearMessages`
+- Then send normal DisplayMessage events for each stored message
+- **Pro**: Reuses existing message creation logic
+- **Con**: Many events for large sessions, not atomic
+
+#### **Option 3: MessagesView Enhancement**
+- Add `load_messages()` method directly to MessagesView
+- Handle Entity creation/destruction internally
+- **Pro**: Encapsulated in component, efficient
+- **Con**: Bypasses event system, harder to test
+
+### **Key Technical Challenges**
+
+1. **Entity Lifecycle Management**
+   - MessageContainer entities need proper creation/destruction
+   - GPUI Entity references must be updated correctly
+   - Memory cleanup for old messages
+
+2. **Message Serialization Round-trip**
+   - Convert stored ChatSession messages back to UIMessage format
+   - Restore tool execution states, parameters, outputs
+   - Handle message roles and formatting correctly
+
+3. **State Synchronization**
+   - Working memory state loading
+   - Tool execution status restoration
+   - Session-specific configuration (current task, etc.)
+
+4. **Performance Considerations**
+   - Large sessions with many messages/tools
+   - Efficient UI updates without blocking
+   - Memory usage for loaded sessions
+
+### **Implementation Priority**
+1. **Complete CreateNewChatSession flow** (minor fix needed)
+2. **Design session loading architecture** (choose approach)
+3. **Implement message clearing/loading** (core feature)
+4. **Add session switching UI feedback** (loading states, etc.)
+5. **Test with large sessions** (performance validation)
 
 ### **Enhancement Tasks (Future Sessions)**
 
