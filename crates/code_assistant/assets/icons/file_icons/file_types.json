@@ -389,6 +389,12 @@
     },
     "stop": {
       "icon": "icons/stop.svg"
+    },
+    "message_bubbles": {
+      "icon": "icons/message_bubbles.svg"
+    },
+    "plus": {
+      "icon": "icons/plus.svg"
     }
   }
 }
