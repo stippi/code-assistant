@@ -104,17 +104,17 @@ let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
 let temp_dir = std::env::temp_dir().join(format!("code_assistant_test_{}_{}", std::process::id(), timestamp));
 ```
 
-## 🚀 Remaining Implementation
+## 🚀 Current Implementation Status
 
-### **Phase 5: UI Integration - Chat Sidebar (NEXT)**
+### **✅ Phase 5: UI Integration - Chat Sidebar (COMPLETED)**
 
-#### 5.1 GPUI Chat Components
+#### 5.1 GPUI Chat Components ✅
+**Implemented in**: `crates/code_assistant/src/ui/gpui/chat_sidebar.rs`
 ```rust
-// New components needed:
 pub struct ChatSidebar {
     sessions: Vec<ChatMetadata>,
-    selected_session: Option<String>,
-    session_manager: Arc<Mutex<SessionManager>>,
+    selected_session_id: Option<String>,
+    is_collapsed: bool,
 }
 
 pub struct ChatListItem {
@@ -123,9 +123,9 @@ pub struct ChatListItem {
 }
 ```
 
-#### 5.2 UI Event System Extensions
+#### 5.2 UI Event System Extensions ✅
+**Implemented in**: `crates/code_assistant/src/ui/gpui/ui_events.rs`
 ```rust
-// New events for chat operations:
 pub enum UiEvent {
     LoadChatSession { session_id: String },
     CreateNewChatSession { name: Option<String> },
@@ -136,77 +136,118 @@ pub enum UiEvent {
 }
 ```
 
-#### 5.3 Layout Integration
-- **Left sidebar**: Chat sessions list (collapsible)
-- **Center**: Existing message area
-- **Right sidebar**: Working memory (existing)
+#### 5.3 Layout Integration ✅
+**Implemented in**: `crates/code_assistant/src/ui/gpui/root.rs`
+- **Left sidebar**: Chat sessions list (260px, collapsible) ✅
+- **Center**: Messages and input area (flexible width) ✅
+- **Right sidebar**: Working memory (260px, collapsible) ✅
+- **Window size**: Expanded to 1400x700px for 3-column layout ✅
 
-#### 5.4 Real-time Updates
+#### 5.4 Bidirectional Communication ✅
+**Implemented in**: `crates/code_assistant/src/ui/gpui/mod.rs`
 ```rust
-// Session Manager should notify UI of changes:
-impl SessionManager {
-    pub fn set_ui_update_callback(&mut self, callback: Box<dyn Fn(Vec<ChatMetadata>)>) {
-        self.ui_callback = Some(callback);
-    }
+// Chat management events between UI and Agent threads
+pub enum ChatManagementEvent {
+    LoadSession { session_id: String },
+    CreateNewSession { name: Option<String> },
+    DeleteSession { session_id: String },
+    ListSessions,
+}
 
-    // Call callback after save_session, create_session, delete_session
+pub enum ChatManagementResponse {
+    SessionLoaded { session_id: String },
+    SessionCreated { session_id: String, name: String },
+    SessionDeleted { session_id: String },
+    SessionsListed { sessions: Vec<ChatMetadata> },
+    Error { message: String },
 }
 ```
 
-### **Phase 6: Application Integration (FINAL)**
+### **🔄 Phase 6: Application Integration (PARTIALLY COMPLETED)**
 
-#### 6.1 Main Application Coordination
-```rust
-// Updated main application structure:
-struct App {
-    session_manager: Arc<Mutex<SessionManager>>,
-    agent: Option<Agent>,
-    ui: Arc<dyn UserInterface>,
-}
+#### 6.1 Main Application Coordination ✅
+**Implemented in**: `crates/code_assistant/src/main.rs` (lines ~350-430)
+- Chat communication channels setup ✅
+- Separate task for chat management events ✅
+- Integration with existing Agent thread ✅
 
-impl App {
-    pub fn handle_chat_event(&mut self, event: UiEvent) -> Result<()> {
-        match event {
-            UiEvent::LoadChatSession { session_id } => {
-                let session_state = self.session_manager.lock().unwrap().load_session(&session_id)?;
-                if let Some(agent) = &mut self.agent {
-                    agent.load_from_session_state(session_state).await?;
-                }
-            }
-            // ... other events
-        }
-    }
-}
-```
+#### 6.2 Thread Communication ✅
+**Implemented in**: `crates/code_assistant/src/ui/gpui/mod.rs`
+- **UI Thread**: Handles UI events and chat responses ✅
+- **Agent Thread**: Processes chat management events ✅
+- **Communication**: async_channel for bidirectional messaging ✅
 
-#### 6.2 Thread Communication
-- **Main UI Thread**: Handles UI events and updates
-- **Agent Thread**: Runs agent loop and processes messages
-- **SessionManager**: Shared between threads via Arc<Mutex<>>
+#### 6.3 UI Controls ✅
+**Implemented in**: `crates/code_assistant/src/ui/gpui/root.rs`
+- Chat sidebar toggle button in titlebar (💬 icon) ✅
+- Automatic chat list loading on startup ✅
+- Real-time UI updates for chat operations ✅
 
-#### 6.3 Session Transition Handling
-```rust
-// Clean session switching:
-impl App {
-    async fn switch_to_session(&mut self, session_id: String) -> Result<()> {
-        // 1. Save current session if any
-        if let Some(agent) = &mut self.agent {
-            agent.save_current_session()?;
-        }
+## 🐛 Current Issues & Debugging Needed
 
-        // 2. Load new session
-        let session_state = self.session_manager.lock().unwrap().load_session(&session_id)?;
+### **Issues Identified**
+1. **"+" Button Non-Functional**: Click events not properly handled
+   - **Location**: `crates/code_assistant/src/ui/gpui/chat_sidebar.rs:169-183`
+   - **Symptom**: Button renders but no response to clicks
 
-        // 3. Apply to agent
-        if let Some(agent) = &mut self.agent {
-            agent.load_from_session_state(session_state).await?;
-        }
+2. **Empty Chat List**: Existing sessions not displayed despite correct storage
+   - **Location**: `crates/code_assistant/src/ui/gpui/chat_sidebar.rs:274-355`
+   - **Storage verified**: `metadata.json` and session files contain correct data
+   - **Symptom**: UI shows "No chats yet" despite existing sessions
 
-        // 4. Update UI
-        self.ui.refresh_chat_list().await?;
-    }
-}
-```
+### **Files Requiring Debug Investigation**
+- `crates/code_assistant/src/ui/gpui/chat_sidebar.rs` - Event handling
+- `crates/code_assistant/src/ui/gpui/mod.rs` - Communication channels
+- `crates/code_assistant/src/main.rs` - Chat event processing task
+- `crates/code_assistant/src/ui/gpui/root.rs` - Chat state synchronization
+
+## 🎯 Next Phase: Debug & Enhancement
+
+### **Immediate Debugging Tasks (Next Session)**
+1. **Fix "+" Button Functionality**
+   - Debug event propagation from UI to agent thread
+   - Verify `CreateNewChatSession` event handling
+   - Test communication channel flow
+
+2. **Fix Chat List Display**
+   - Debug `RefreshChatList` event on startup
+   - Verify `SessionsListed` response handling
+   - Check UI state synchronization in `root.rs`
+
+3. **Verify End-to-End Flow**
+   - Test complete cycle: UI event → Agent → Response → UI update
+   - Ensure proper error handling and logging
+
+### **Enhancement Tasks (Future Sessions)**
+
+#### Storage Architecture Improvements
+1. **Global Session Storage**
+   - **Current**: Sessions stored in current working directory
+   - **Target**: Global storage location (e.g., `~/.code-assistant/sessions/`)
+   - **Files to modify**:
+     - `crates/code_assistant/src/persistence.rs`
+     - `crates/code_assistant/src/main.rs`
+
+2. **Enhanced Session Metadata**
+   - **Current project path** persistence in session
+   - **LLM provider and model** storage per session
+   - **Session-specific configurations**
+   - **Files to modify**:
+     - `crates/code_assistant/src/persistence.rs` (ChatSession struct)
+     - `crates/code_assistant/src/session/mod.rs`
+
+#### Advanced Features
+3. **Session Management Features**
+   - Delete session functionality
+   - Session renaming
+   - Session duplication
+   - Session export/import
+
+4. **UI Enhancements**
+   - Session context menu (right-click)
+   - Drag & drop session reordering
+   - Session search/filter
+   - Recent sessions quick access
 
 ## 🧪 Testing Strategy
 
@@ -229,24 +270,27 @@ impl App {
 
 ## 📋 Implementation Checklist
 
-### **Phase 5: UI Integration**
-- [ ] Create ChatSidebar component
-- [ ] Implement ChatListItem component
-- [ ] Add chat-related UiEvents
-- [ ] Integrate with existing GPUI layout
-- [ ] Add session switching functionality
-- [ ] Implement real-time session list updates
+### **✅ Phase 5: UI Integration (COMPLETED)**
+- [x] Create ChatSidebar component (`crates/code_assistant/src/ui/gpui/chat_sidebar.rs`)
+- [x] Implement ChatListItem component (inline in ChatSidebar)
+- [x] Add chat-related UiEvents (`crates/code_assistant/src/ui/gpui/ui_events.rs`)
+- [x] Integrate with existing GPUI layout (`crates/code_assistant/src/ui/gpui/root.rs`)
+- [x] Add session switching functionality (events implemented)
+- [x] Implement real-time session list updates (communication channels)
 
-### **Phase 6: Application Integration**
-- [ ] Update main application to coordinate SessionManager
-- [ ] Implement thread-safe session switching
-- [ ] Add proper error handling for UI operations
+### **🔄 Phase 6: Application Integration (DEBUGGING NEEDED)**
+- [x] Update main application to coordinate SessionManager (`crates/code_assistant/src/main.rs`)
+- [x] Implement thread-safe session communication (async channels)
+- [x] Add proper error handling for UI operations (ChatManagementResponse::Error)
+- [🐛] **DEBUG NEEDED**: Event propagation and UI state sync
 - [ ] Add session transition animations/feedback
 - [ ] Comprehensive testing
 
-### **Polish and Testing**
-- [ ] Add session export/import functionality
-- [ ] Implement session search and filtering
+### **🎯 Enhancement Tasks (FUTURE)**
+- [ ] Global session storage architecture
+- [ ] Enhanced session metadata (project path, LLM provider/model)
+- [ ] Session delete functionality
+- [ ] Session search and filtering
 - [ ] Add keyboard shortcuts for session management
 - [ ] Performance optimization for large session lists
 - [ ] Documentation updates
@@ -256,9 +300,9 @@ impl App {
 1. **✅ Automatic Persistence**: Every conversation automatically saved as chat session
 2. **✅ CLI Management**: Full session management via command line
 3. **✅ State Restoration**: Complete restoration of messages, tools, and working memory
-4. **🔄 UI Integration**: Intuitive chat sidebar with session management
-5. **🔄 Seamless Switching**: Smooth transitions between chat sessions
-6. **🔄 Error Recovery**: Robust handling of session corruption or errors
+4. **🔄 UI Integration**: Chat sidebar visible but needs debugging for functionality
+5. **❌ Seamless Switching**: Not yet functional - requires debugging
+6. **🔄 Error Recovery**: Basic error handling implemented, needs testing
 
 ## 📝 Notes and Lessons Learned
 
@@ -277,5 +321,26 @@ impl App {
 - **No --new-chat flag**: Simpler mental model without explicit new chat creation
 - **Smart defaults**: Continue latest session when no specific session specified
 - **Consistent CLI**: All chat operations follow same pattern
+
+## 📁 Key File Locations
+
+### **Core Chat Persistence**
+- `crates/code_assistant/src/session/mod.rs` - SessionManager implementation
+- `crates/code_assistant/src/persistence.rs` - ChatSession, ChatMetadata structs
+- `crates/code_assistant/src/agent/runner.rs` - Agent integration with sessions
+
+### **UI Components**
+- `crates/code_assistant/src/ui/gpui/chat_sidebar.rs` - Chat sidebar component
+- `crates/code_assistant/src/ui/gpui/root.rs` - Main layout with 3-column design
+- `crates/code_assistant/src/ui/gpui/ui_events.rs` - UI event definitions
+- `crates/code_assistant/src/ui/gpui/mod.rs` - Main GPUI implementation & communication
+
+### **Integration**
+- `crates/code_assistant/src/main.rs` - Application entry point & thread setup
+- `crates/code_assistant/src/ui/gpui/file_icons.rs` - Icon constants (MESSAGE_BUBBLES, PLUS)
+
+### **Assets**
+- `crates/code_assistant/assets/icons/message_bubbles.svg` - Chat sidebar icon
+- `crates/code_assistant/assets/icons/plus.svg` - New chat button icon
 
 This updated plan reflects the current implementation state and provides clear next steps for completing the chat persistence feature.
