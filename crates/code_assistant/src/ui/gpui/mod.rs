@@ -1,5 +1,6 @@
 pub mod assets;
 pub mod auto_scroll;
+pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_renderer;
 mod elements;
@@ -13,6 +14,8 @@ pub mod simple_renderers;
 pub mod theme;
 pub mod ui_events;
 
+use crate::persistence::ChatMetadata;
+use crate::session::SessionManager;
 use crate::types::WorkingMemory;
 use crate::ui::gpui::{
     content_renderer::ContentRenderer,
@@ -43,6 +46,31 @@ use elements::MessageContainer;
 
 actions!(code_assistant, [CloseWindow]);
 
+// Global UI event sender for chat components
+#[derive(Clone)]
+pub struct UiEventSender(pub async_channel::Sender<UiEvent>);
+
+impl Global for UiEventSender {}
+
+// Chat management event for communication with agent thread
+#[derive(Debug, Clone)]
+pub enum ChatManagementEvent {
+    LoadSession { session_id: String },
+    CreateNewSession { name: Option<String> },
+    DeleteSession { session_id: String },
+    ListSessions,
+}
+
+// Response from agent to UI for chat management
+#[derive(Debug, Clone)]
+pub enum ChatManagementResponse {
+    SessionLoaded { session_id: String },
+    SessionCreated { session_id: String, name: String },
+    SessionDeleted { session_id: String },
+    SessionsListed { sessions: Vec<ChatMetadata> },
+    Error { message: String },
+}
+
 // Our main UI struct that implements the UserInterface trait
 #[derive(Clone)]
 pub struct Gpui {
@@ -59,6 +87,12 @@ pub struct Gpui {
     #[allow(dead_code)]
     parameter_renderers: Arc<ParameterRendererRegistry>, // TODO: Needed?!
     streaming_state: Arc<Mutex<StreamingState>>,
+    // Chat management communication
+    chat_event_sender: Arc<Mutex<Option<async_channel::Sender<ChatManagementEvent>>>>,
+    chat_response_receiver: Arc<Mutex<Option<async_channel::Receiver<ChatManagementResponse>>>>,
+    // Current chat state
+    current_session_id: Arc<Mutex<Option<String>>>,
+    chat_sessions: Arc<Mutex<Vec<ChatMetadata>>>,
 }
 
 // Implement Global trait for Gpui
@@ -120,6 +154,10 @@ impl Gpui {
             last_xml_tool_id,
             parameter_renderers,
             streaming_state,
+            chat_event_sender: Arc::new(Mutex::new(None)),
+            chat_response_receiver: Arc::new(Mutex::new(None)),
+            current_session_id: Arc::new(Mutex::new(None)),
+            chat_sessions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -137,6 +175,11 @@ impl Gpui {
         app.run(move |cx| {
             // Register our Gpui instance as a global
             cx.set_global(gpui_clone.clone());
+
+            // Register UI event sender as global for chat components
+            cx.set_global(UiEventSender(
+                gpui_clone.event_sender.lock().unwrap().clone(),
+            ));
 
             // Setup window close listener
             cx.bind_keys([gpui::KeyBinding::new("cmd-w", CloseWindow, None)]);
@@ -175,12 +218,49 @@ impl Gpui {
                 *task_guard = Some(Box::new(task));
             }
 
+            // Spawn task to handle chat management responses from agent
+            let chat_gpui_clone = gpui_clone.clone();
+            let chat_response_task = cx.spawn(async move |cx: &mut AsyncApp| {
+                // Wait a bit for the communication channels to be set up
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                loop {
+                    // Check if we have a response receiver
+                    let receiver_opt = chat_gpui_clone
+                        .chat_response_receiver
+                        .lock()
+                        .unwrap()
+                        .clone();
+                    if let Some(receiver) = receiver_opt {
+                        match receiver.recv().await {
+                            Ok(response) => {
+                                chat_gpui_clone.handle_chat_response(response, cx);
+                            }
+                            Err(_) => {
+                                // Channel closed, break the loop
+                                break;
+                            }
+                        }
+                    } else {
+                        // No receiver yet, wait and try again
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            });
+
+            // Store the chat response task as well
+            {
+                let mut task_guard = gpui_clone.event_task.lock().unwrap();
+                // We'll just override the previous task for simplicity
+                *task_guard = Some(Box::new(chat_response_task));
+            }
+
             // Create memory view with our shared working memory
             let memory_view = cx.new(|cx| MemoryView::new(working_memory.clone(), cx));
 
-            // Create window with larger size to accommodate both views
+            // Create window with larger size to accommodate chat sidebar, messages, and memory view
             let bounds =
-                gpui::Bounds::centered(None, gpui::size(gpui::px(1000.0), gpui::px(650.0)), cx);
+                gpui::Bounds::centered(None, gpui::size(gpui::px(1400.0), gpui::px(700.0)), cx);
             // Open window with titlebar
             let window_result = cx.open_window(
                 gpui::WindowOptions {
@@ -380,7 +460,56 @@ impl Gpui {
                     }
                 }
             }
+            // Chat management events - forward to agent thread
+            UiEvent::LoadChatSession { session_id } => {
+                if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(ChatManagementEvent::LoadSession { session_id });
+                }
+            }
+            UiEvent::CreateNewChatSession { name } => {
+                if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(ChatManagementEvent::CreateNewSession { name });
+                }
+            }
+            UiEvent::DeleteChatSession { session_id } => {
+                if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(ChatManagementEvent::DeleteSession { session_id });
+                }
+            }
+            UiEvent::RefreshChatList => {
+                if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(ChatManagementEvent::ListSessions);
+                }
+            }
+            UiEvent::UpdateChatList { sessions } => {
+                // Update local cache
+                *self.chat_sessions.lock().unwrap() = sessions.clone();
+                let current_session_id = self.current_session_id.lock().unwrap().clone();
+
+                // Refresh all windows to trigger re-render with new chat data
+                cx.refresh().expect("Failed to refresh windows");
+            }
         }
+    }
+
+    // Setup chat management communication channels
+    pub fn setup_chat_communication(
+        &self,
+    ) -> (
+        async_channel::Receiver<ChatManagementEvent>,
+        async_channel::Sender<ChatManagementResponse>,
+    ) {
+        let (event_tx, event_rx) = async_channel::unbounded::<ChatManagementEvent>();
+        let (response_tx, response_rx) = async_channel::unbounded::<ChatManagementResponse>();
+
+        // Store the sender for UI to agent communication
+        *self.chat_event_sender.lock().unwrap() = Some(event_tx);
+
+        // Store the receiver for agent to UI communication
+        *self.chat_response_receiver.lock().unwrap() = Some(response_rx.clone());
+
+        // Return the opposite ends for the agent thread
+        (event_rx, response_tx)
     }
 
     // Helper to add an event to the queue
@@ -390,6 +519,60 @@ impl Gpui {
         if let Err(err) = sender.try_send(event) {
             warn!("Failed to send event via channel: {}", err);
         }
+    }
+
+    // Get current chat state for UI components
+    pub fn get_chat_sessions(&self) -> Vec<ChatMetadata> {
+        self.chat_sessions.lock().unwrap().clone()
+    }
+
+    pub fn get_current_session_id(&self) -> Option<String> {
+        self.current_session_id.lock().unwrap().clone()
+    }
+
+    // Handle chat management responses from agent
+    fn handle_chat_response(&self, response: ChatManagementResponse, _cx: &mut AsyncApp) {
+        match response {
+            ChatManagementResponse::SessionLoaded { session_id } => {
+                *self.current_session_id.lock().unwrap() = Some(session_id);
+                // Clear messages for the new session
+                self.message_queue.lock().unwrap().clear();
+            }
+            ChatManagementResponse::SessionCreated {
+                session_id,
+                name: _,
+            } => {
+                *self.current_session_id.lock().unwrap() = Some(session_id);
+                // Refresh the session list
+                if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(ChatManagementEvent::ListSessions);
+                }
+            }
+            ChatManagementResponse::SessionDeleted { session_id: _ } => {
+                // Refresh the session list
+                if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(ChatManagementEvent::ListSessions);
+                }
+            }
+            ChatManagementResponse::SessionsListed { sessions } => {
+                *self.chat_sessions.lock().unwrap() = sessions.clone();
+                self.push_event(UiEvent::UpdateChatList { sessions });
+            }
+            ChatManagementResponse::Error { message } => {
+                warn!("Chat management error: {}", message);
+            }
+        }
+    }
+
+    // Update chat state from agent responses
+    pub fn update_chat_state(&self, session_id: Option<String>, sessions: Vec<ChatMetadata>) {
+        *self.current_session_id.lock().unwrap() = session_id;
+        *self.chat_sessions.lock().unwrap() = sessions;
+
+        // Trigger UI update
+        self.push_event(UiEvent::UpdateChatList {
+            sessions: self.chat_sessions.lock().unwrap().clone(),
+        });
     }
 }
 

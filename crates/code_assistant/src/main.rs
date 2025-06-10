@@ -14,6 +14,7 @@ mod tests;
 
 use crate::agent::Agent;
 use crate::mcp::MCPServer;
+use crate::persistence::FileStatePersistence;
 use crate::session::SessionManager;
 use crate::types::ToolMode;
 use crate::ui::terminal::TerminalUI;
@@ -28,7 +29,6 @@ use llm::{
     AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, OpenRouterClient,
     VertexClient,
 };
-use crate::persistence::FileStatePersistence;
 use std::io;
 use std::path::PathBuf;
 use tracing_subscriber::fmt::SubscriberBuilder;
@@ -347,6 +347,9 @@ fn run_agent_gpui(
     // Create shared state between GUI and Agent thread
     let gui = ui::gpui::Gpui::new();
 
+    // Setup chat communication channels
+    let (chat_event_rx, chat_response_tx) = gui.setup_chat_communication();
+
     // Setup dynamic types
     let root_path = path.canonicalize()?;
     let project_manager = Box::new(DefaultProjectManager::new());
@@ -384,6 +387,70 @@ fn run_agent_gpui(
                 session_manager,
                 Some(root_path.clone()),
             );
+
+            // Clone necessary data for chat management task
+            let chat_event_rx_clone = chat_event_rx.clone();
+            let chat_response_tx_clone = chat_response_tx.clone();
+
+            // Spawn task to handle chat management events
+            tokio::spawn(async move {
+                while let Ok(event) = chat_event_rx_clone.recv().await {
+                    let response = match event {
+                        ui::gpui::ChatManagementEvent::ListSessions => {
+                            // Create a new session manager for this operation
+                            let persistence =
+                                crate::persistence::FileStatePersistence::new(root_path.clone());
+                            let session_manager = crate::session::SessionManager::new(persistence);
+                            match session_manager.list_sessions() {
+                                Ok(sessions) => {
+                                    ui::gpui::ChatManagementResponse::SessionsListed { sessions }
+                                }
+                                Err(e) => ui::gpui::ChatManagementResponse::Error {
+                                    message: e.to_string(),
+                                },
+                            }
+                        }
+                        ui::gpui::ChatManagementEvent::LoadSession { session_id } => {
+                            // TODO: Implement session loading properly
+                            ui::gpui::ChatManagementResponse::SessionLoaded { session_id }
+                        }
+                        ui::gpui::ChatManagementEvent::CreateNewSession { name } => {
+                            let persistence =
+                                crate::persistence::FileStatePersistence::new(root_path.clone());
+                            let mut session_manager =
+                                crate::session::SessionManager::new(persistence);
+                            match session_manager.create_session(name) {
+                                Ok(session_id) => {
+                                    let display_name = format!("Chat {}", &session_id[5..13]);
+                                    ui::gpui::ChatManagementResponse::SessionCreated {
+                                        session_id,
+                                        name: display_name,
+                                    }
+                                }
+                                Err(e) => ui::gpui::ChatManagementResponse::Error {
+                                    message: e.to_string(),
+                                },
+                            }
+                        }
+                        ui::gpui::ChatManagementEvent::DeleteSession { session_id } => {
+                            let persistence =
+                                crate::persistence::FileStatePersistence::new(root_path.clone());
+                            let mut session_manager =
+                                crate::session::SessionManager::new(persistence);
+                            match session_manager.delete_session(&session_id) {
+                                Ok(_) => {
+                                    ui::gpui::ChatManagementResponse::SessionDeleted { session_id }
+                                }
+                                Err(e) => ui::gpui::ChatManagementResponse::Error {
+                                    message: e.to_string(),
+                                },
+                            }
+                        }
+                    };
+
+                    let _ = chat_response_tx_clone.send(response).await;
+                }
+            });
 
             // Start either from session state, task, or GUI input
             if let Some(session_state) = session_state {
@@ -502,7 +569,8 @@ async fn handle_list_chats(root_path: &PathBuf) -> Result<()> {
     } else {
         println!("Available chat sessions:");
         for session in sessions {
-            println!("  {} - {} ({} messages, created {})",
+            println!(
+                "  {} - {} ({} messages, created {})",
                 session.id,
                 session.name,
                 session.message_count,

@@ -1,3 +1,4 @@
+use crate::persistence::ChatMetadata;
 use crate::types::WorkingMemory;
 use crate::ui::gpui::elements::MessageRole;
 use crate::ui::ToolStatus;
@@ -34,4 +35,14 @@ pub enum UiEvent {
     StreamingStarted(u64),
     /// Streaming stopped for a request
     StreamingStopped { id: u64, cancelled: bool },
+    /// Chat session management events
+    LoadChatSession { session_id: String },
+    /// Create a new chat session
+    CreateNewChatSession { name: Option<String> },
+    /// Delete a chat session
+    DeleteChatSession { session_id: String },
+    /// Refresh the chat list from session manager
+    RefreshChatList,
+    /// Update the chat list display
+    UpdateChatList { sessions: Vec<ChatMetadata> },
 }

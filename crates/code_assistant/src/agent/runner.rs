@@ -54,6 +54,11 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Get a reference to the session manager
+    pub fn session_manager(&self) -> &SessionManager {
+        &self.session_manager
+    }
+
     /// Formats an error, particularly ToolErrors, into a user-friendly string.
     fn format_error_for_user(error: &anyhow::Error) -> String {
         if let Some(tool_error) = error.downcast_ref::<ToolError>() {

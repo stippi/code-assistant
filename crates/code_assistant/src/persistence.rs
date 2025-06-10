@@ -43,7 +43,7 @@ pub struct SerializedToolExecution {
 }
 
 /// Metadata for a chat session (used for listing)
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct ChatMetadata {
     pub id: String,
     pub name: String,
@@ -134,7 +134,8 @@ impl FileStatePersistence {
         }
 
         let content = std::fs::read_to_string(metadata_path)?;
-        let mut metadata_list: Vec<ChatMetadata> = serde_json::from_str(&content).unwrap_or_default();
+        let mut metadata_list: Vec<ChatMetadata> =
+            serde_json::from_str(&content).unwrap_or_default();
 
         // Sort by updated_at in descending order (newest first)
         metadata_list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -154,7 +155,8 @@ impl FileStatePersistence {
         let metadata_path = self.metadata_file_path()?;
         if metadata_path.exists() {
             let content = std::fs::read_to_string(&metadata_path)?;
-            let mut metadata_list: Vec<ChatMetadata> = serde_json::from_str(&content).unwrap_or_default();
+            let mut metadata_list: Vec<ChatMetadata> =
+                serde_json::from_str(&content).unwrap_or_default();
 
             metadata_list.retain(|m| m.id != session_id);
 
@@ -193,7 +195,7 @@ pub fn extract_name_from_first_message(messages: &[Message]) -> String {
                 if text.len() <= max_len {
                     text.clone()
                 } else {
-                    format!("{}...", &text[..max_len-3])
+                    format!("{}...", &text[..max_len - 3])
                 }
             }
             MessageContent::Structured(_) => "New Chat".to_string(),
