@@ -171,4 +171,152 @@ mod tests {
         let fragments = test_ui.get_fragments();
         assert_fragments_match(&expected_fragments, &fragments);
     }
+
+    // Tests for the new extract_fragments_from_message method
+    #[test]
+    fn test_extract_fragments_from_text_message_with_xml_tags() {
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let mut processor = XmlStreamProcessor::new(ui_arc);
+
+        // Create a message with text content containing XML-style tags
+        let message = llm::Message {
+            role: llm::MessageRole::Assistant,
+            content: llm::MessageContent::Text(
+                "I'll help you. <thinking>Let me plan this.</thinking> Here's what I'll do: <tool:read_files><param:path>main.rs</param:path></tool:read_files>".to_string()
+            ),
+        };
+
+        let fragments = processor.extract_fragments_from_message(&message).unwrap();
+
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("I'll help you.".to_string()),
+            DisplayFragment::ThinkingText("Let me plan this.".to_string()),
+            DisplayFragment::PlainText("Here's what I'll do:".to_string()),
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "xml_tool_id".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "main.rs".to_string(),
+                tool_id: "xml_tool_id".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "xml_tool_id".to_string(),
+            },
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_extract_fragments_from_structured_message_converted_to_xml_style() {
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let mut processor = XmlStreamProcessor::new(ui_arc);
+
+        // Create a message with structured content including tool use
+        // This tests conversion from JSON ToolUse to XML-style fragments
+        let tool_input = serde_json::json!({
+            "project": "code-assistant",
+            "paths": ["src/main.rs", "Cargo.toml"]
+        });
+
+        let message = llm::Message {
+            role: llm::MessageRole::Assistant,
+            content: llm::MessageContent::Structured(vec![
+                llm::ContentBlock::Text {
+                    text: "I'll search the files.".to_string()
+                },
+                llm::ContentBlock::ToolUse {
+                    id: "search_456".to_string(),
+                    name: "search_files".to_string(),
+                    input: tool_input,
+                },
+            ]),
+        };
+
+        let fragments = processor.extract_fragments_from_message(&message).unwrap();
+
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("I'll search the files.".to_string()),
+            DisplayFragment::ToolName {
+                name: "search_files".to_string(),
+                id: "search_456".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "project".to_string(),
+                value: "code-assistant".to_string(),
+                tool_id: "search_456".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "paths".to_string(),
+                value: "[\"src/main.rs\",\"Cargo.toml\"]".to_string(),
+                tool_id: "search_456".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "search_456".to_string(),
+            },
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_extract_fragments_from_mixed_structured_message() {
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let mut processor = XmlStreamProcessor::new(ui_arc);
+
+        // Create a message with mixed content blocks
+        let message = llm::Message {
+            role: llm::MessageRole::Assistant,
+            content: llm::MessageContent::Structured(vec![
+                llm::ContentBlock::Thinking {
+                    thinking: "I should write a file.".to_string(),
+                    signature: "sig".to_string(),
+                },
+                llm::ContentBlock::Text {
+                    text: "Let me create the file. <thinking>What content should I write?</thinking> I'll write something useful.".to_string()
+                },
+                llm::ContentBlock::ToolUse {
+                    id: "write_789".to_string(),
+                    name: "write_file".to_string(),
+                    input: serde_json::json!({
+                        "path": "test.txt",
+                        "content": "Hello XML world!"
+                    }),
+                },
+            ]),
+        };
+
+        let fragments = processor.extract_fragments_from_message(&message).unwrap();
+
+        let expected_fragments = vec![
+            DisplayFragment::ThinkingText("I should write a file.".to_string()),
+            DisplayFragment::PlainText("Let me create the file.".to_string()),
+            DisplayFragment::ThinkingText("What content should I write?".to_string()),
+            DisplayFragment::PlainText("I'll write something useful.".to_string()),
+            DisplayFragment::ToolName {
+                name: "write_file".to_string(),
+                id: "write_789".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "test.txt".to_string(),
+                tool_id: "write_789".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "content".to_string(),
+                value: "Hello XML world!".to_string(),
+                tool_id: "write_789".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "write_789".to_string(),
+            },
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
 }
