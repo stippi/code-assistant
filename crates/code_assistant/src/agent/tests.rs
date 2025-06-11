@@ -153,7 +153,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
-        create_test_session_manager(),
+        Box::new(MockStatePersistence::new()),
         Some(PathBuf::from("./test_path")),
     );
 
@@ -263,7 +263,7 @@ async fn test_parse_error_handling() -> Result<()> {
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
-        create_test_session_manager(),
+        Box::new(MockStatePersistence::new()),
         Some(PathBuf::from("./test_path")),
     );
 

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use async_trait::async_trait;
 
-use crate::agent::Agent;
+use crate::agent::{Agent, SessionManagerStatePersistence};
 use crate::persistence::{ChatMetadata, ChatSession, FileStatePersistence, generate_session_id};
 use crate::session::instance::SessionInstance;
 use crate::types::{ToolMode, WorkingMemory};
@@ -206,6 +206,7 @@ impl MultiSessionManager {
 
         // Create a new agent for this session
         let session_manager_for_agent = crate::session::SessionManager::new(self.persistence.clone());
+        let state_storage = Box::new(SessionManagerStatePersistence::new(session_manager_for_agent));
 
         let mut agent = crate::agent::Agent::new(
             llm_provider,
@@ -213,12 +214,9 @@ impl MultiSessionManager {
             project_manager,
             command_executor,
             ui.clone(),
-            session_manager_for_agent,
+            state_storage,
             self.agent_config.init_path.clone(),
         );
-
-        // Set SessionInstance references for fragment routing
-        agent.set_session_instance_refs(fragment_buffer, is_ui_active);
 
         // Load the session state into the agent
         let session_state = {

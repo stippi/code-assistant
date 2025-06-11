@@ -1,7 +1,7 @@
+use crate::agent::state_storage::AgentStatePersistence;
 use crate::agent::tool_description_generator::generate_tool_documentation;
 use crate::agent::types::{ToolExecution, ToolRequest};
 use crate::config::ProjectManager;
-use crate::session::SessionManager;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{parse_tool_xml, TOOL_TAG_PREFIX};
 use crate::types::*;
@@ -41,7 +41,7 @@ pub struct Agent {
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
-    session_manager: SessionManager,
+    state_storage: Box<dyn AgentStatePersistence>,
     // Store all messages exchanged
     message_history: Vec<Message>,
     // Path provided during agent initialization
@@ -52,17 +52,9 @@ pub struct Agent {
     tool_executions: Vec<crate::agent::types::ToolExecution>,
     // Cached system message
     cached_system_message: OnceLock<String>,
-    // Reference to the SessionInstance for fragment routing (V2 architecture)
-    session_instance_buffer: Option<Arc<Mutex<VecDeque<DisplayFragment>>>>,
-    session_is_ui_active: Option<Arc<Mutex<bool>>>,
 }
 
 impl Agent {
-    /// Get a reference to the session manager
-    pub fn session_manager(&self) -> &SessionManager {
-        &self.session_manager
-    }
-
     /// Formats an error, particularly ToolErrors, into a user-friendly string.
     fn format_error_for_user(error: &anyhow::Error) -> String {
         if let Some(tool_error) = error.downcast_ref::<ToolError>() {
@@ -86,7 +78,7 @@ impl Agent {
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         ui: Arc<Box<dyn UserInterface>>,
-        session_manager: SessionManager,
+        state_storage: Box<dyn AgentStatePersistence>,
         init_path: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -96,31 +88,18 @@ impl Agent {
             project_manager,
             ui,
             command_executor,
-            session_manager,
+            state_storage,
             message_history: Vec::new(),
             init_path,
             initial_project: None,
             tool_executions: Vec::new(),
             cached_system_message: OnceLock::new(),
-            session_instance_buffer: None,
-            session_is_ui_active: None,
         }
     }
 
     /// Save the current state (message history and tool executions)
     fn save_state(&mut self) -> Result<()> {
-        // Create a session if none exists (e.g., in tests or edge cases)
-        if self.session_manager.current_session_id().is_none() {
-            let task_name = if !self.working_memory.current_task.is_empty() {
-                Some(self.working_memory.current_task.clone())
-            } else {
-                None
-            };
-            let session_id = self.session_manager.create_session(task_name)?;
-            debug!("Auto-created session {} for saving state", session_id);
-        }
-
-        self.session_manager.save_session(
+        self.state_storage.save_agent_state(
             self.message_history.clone(),
             self.tool_executions.clone(),
             self.working_memory.clone(),
@@ -139,30 +118,6 @@ impl Agent {
 
     pub async fn get_input_from_ui(&self) -> Result<String> {
         self.ui.get_input().await.map_err(|e| e.into())
-    }
-
-    /// Set a new UI interface (used for BufferingUI in new architecture)
-    pub fn set_ui(&mut self, ui: Arc<Box<dyn UserInterface>>) {
-        self.ui = ui;
-    }
-
-    /// Set SessionInstance references for V2 fragment routing
-    pub fn set_session_instance_refs(
-        &mut self,
-        fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
-        is_ui_active: Arc<Mutex<bool>>,
-    ) {
-        self.session_instance_buffer = Some(fragment_buffer);
-        self.session_is_ui_active = Some(is_ui_active);
-    }
-
-    /// Create a routing UI wrapper for this agent that handles fragment buffering
-    pub fn create_routing_ui(&self) -> Arc<Box<dyn UserInterface>> {
-        Arc::new(Box::new(RoutingUserInterface {
-            agent_fragment_buffer: self.session_instance_buffer.clone(),
-            agent_is_ui_active: self.session_is_ui_active.clone(),
-            real_ui: self.ui.clone(),
-        }))
     }
 
     /// Run a single iteration of the agent loop without waiting for user input
@@ -243,6 +198,35 @@ impl Agent {
     /// Get the tool mode
     pub fn get_tool_mode(&self) -> ToolMode {
         self.tool_mode
+    }
+
+    /// Load state from session state (for backward compatibility)
+    pub async fn load_from_session_state(
+        &mut self,
+        session_state: crate::session::SessionState,
+    ) -> Result<()> {
+        // Restore all state components
+        self.message_history = session_state.messages;
+        self.tool_executions = session_state.tool_executions;
+        self.working_memory = session_state.working_memory;
+        self.init_path = session_state.init_path;
+        self.initial_project = session_state.initial_project;
+
+        // Restore working memory file trees and project state
+        self.restore_working_memory_state().await?;
+
+        // Notify UI of restored state
+        self.ui
+            .display(UIMessage::Action(format!(
+                "Loaded chat session with {} messages and {} tool executions",
+                self.message_history.len(),
+                self.tool_executions.len()
+            )))
+            .await?;
+
+        let _ = self.ui.update_memory(&self.working_memory).await;
+
+        self.run_agent_loop().await
     }
 
     /// Handles the interaction with the LLM to get the next assistant message.
@@ -468,73 +452,6 @@ impl Agent {
         self.append_message(user_msg)?;
 
         // Notify UI of initial working memory
-        let _ = self.ui.update_memory(&self.working_memory).await;
-
-        self.run_agent_loop().await
-    }
-
-    /// Switch to a different session by loading it and updating UI
-    pub async fn switch_to_session(&mut self, session_id: &str) -> Result<()> {
-        // Load session from session manager
-        let session_state = self.session_manager.load_session(session_id)?;
-
-        // Set state like load_from_session_state
-        self.message_history = session_state.messages.clone();
-        self.tool_executions = session_state.tool_executions;
-        self.working_memory = session_state.working_memory;
-        self.init_path = session_state.init_path;
-        self.initial_project = session_state.initial_project;
-
-        debug!(
-            "Switched to session {} with {} messages and {} tool executions",
-            session_id,
-            session_state.messages.len(),
-            self.tool_executions.len()
-        );
-
-        // Restore working memory file trees and project state
-        self.restore_working_memory_state().await?;
-
-        // Generate UI fragments from session messages
-        self.send_session_messages_to_ui(&session_state.messages, session_id)
-            .await?;
-
-        // Update memory in UI
-        let _ = self.ui.update_memory(&self.working_memory).await;
-
-        Ok(())
-    }
-
-    /// Load state from session manager (replaces start_from_state)
-    pub async fn load_from_session_state(
-        &mut self,
-        session_state: crate::session::SessionState,
-    ) -> Result<()> {
-        // Restore all state components
-        self.message_history = session_state.messages;
-        self.tool_executions = session_state.tool_executions;
-        self.working_memory = session_state.working_memory;
-        self.init_path = session_state.init_path;
-        self.initial_project = session_state.initial_project;
-
-        debug!(
-            "Restored {} messages and {} tool executions",
-            self.message_history.len(),
-            self.tool_executions.len()
-        );
-
-        // Restore working memory file trees and project state
-        self.restore_working_memory_state().await?;
-
-        // Notify UI of restored state
-        self.ui
-            .display(UIMessage::Action(format!(
-                "Loaded chat session with {} messages and {} tool executions",
-                self.message_history.len(),
-                self.tool_executions.len()
-            )))
-            .await?;
-
         let _ = self.ui.update_memory(&self.working_memory).await;
 
         self.run_agent_loop().await
@@ -796,20 +713,13 @@ impl Agent {
             debug!("{}", indented);
         }
 
-        // Create a StreamProcessor with routing UI if session instance refs are available
-        let routing_ui =
-            if self.session_instance_buffer.is_some() && self.session_is_ui_active.is_some() {
-                self.create_routing_ui()
-            } else {
-                Arc::clone(&self.ui)
-            };
-
+        // Create a StreamProcessor with the UI
         let processor = Arc::new(Mutex::new(create_stream_processor(
             self.tool_mode,
-            routing_ui.clone(),
+            self.ui.clone(),
         )));
 
-        let ui_for_callback = routing_ui.clone();
+        let ui_for_callback = self.ui.clone();
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
             // Check if streaming should continue
             if !ui_for_callback.should_streaming_continue() {
@@ -1023,180 +933,6 @@ impl Agent {
         self.tool_executions.push(tool_execution);
 
         Ok(success)
-    }
-
-    /// Convert session messages to UI fragments and send SetMessages event
-    async fn send_session_messages_to_ui(
-        &mut self,
-        messages: &[llm::Message],
-        session_id: &str,
-    ) -> Result<()> {
-        use crate::ui::gpui::elements::MessageRole;
-        use crate::ui::gpui::ui_events::{MessageData, UiEvent};
-        use crate::ui::streaming::create_stream_processor;
-
-        // Create dummy UI for stream processor
-        struct DummyUI;
-        #[async_trait::async_trait]
-        impl crate::ui::UserInterface for DummyUI {
-            async fn display(
-                &self,
-                _message: crate::ui::UIMessage,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            async fn get_input(&self) -> Result<String, crate::ui::UIError> {
-                Ok("".to_string())
-            }
-            fn display_fragment(
-                &self,
-                _fragment: &crate::ui::DisplayFragment,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            async fn update_memory(
-                &self,
-                _memory: &crate::types::WorkingMemory,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            async fn update_tool_status(
-                &self,
-                _tool_id: &str,
-                _status: crate::ui::ToolStatus,
-                _message: Option<String>,
-                _output: Option<String>,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> {
-                Ok(0)
-            }
-            async fn end_llm_request(
-                &self,
-                _request_id: u64,
-                _cancelled: bool,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            fn should_streaming_continue(&self) -> bool {
-                true
-            }
-        }
-
-        let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
-        let mut processor = create_stream_processor(self.tool_mode, dummy_ui);
-
-        let mut messages_data = Vec::new();
-        tracing::info!("Processing {} messages for UI", messages.len());
-
-        for (i, message) in messages.iter().enumerate() {
-            match processor.extract_fragments_from_message(message) {
-                Ok(fragments) => {
-                    let role = match message.role {
-                        llm::MessageRole::User => MessageRole::User,
-                        llm::MessageRole::Assistant => MessageRole::Assistant,
-                    };
-                    tracing::info!("Message {}: Extracted {} fragments", i, fragments.len());
-                    messages_data.push(MessageData { role, fragments });
-                }
-                Err(e) => {
-                    tracing::error!("Message {}: Failed to extract fragments: {}", i, e);
-                }
-            }
-        }
-
-        tracing::info!("Sending {} message containers to UI", messages_data.len());
-
-        // Send SetMessages event to UI
-        self.ui
-            .display(crate::ui::UIMessage::UiEvent(UiEvent::SetMessages {
-                messages: messages_data,
-                session_id: Some(session_id.to_string()),
-            }))
-            .await?;
-
-        Ok(())
-    }
-}
-
-/// A UserInterface wrapper that routes fragments through the Agent's buffering logic
-struct RoutingUserInterface {
-    agent_fragment_buffer: Option<Arc<Mutex<VecDeque<DisplayFragment>>>>,
-    agent_is_ui_active: Option<Arc<Mutex<bool>>>,
-    real_ui: Arc<Box<dyn UserInterface>>,
-}
-
-#[async_trait]
-impl UserInterface for RoutingUserInterface {
-    async fn display(&self, message: crate::ui::UIMessage) -> Result<(), crate::ui::UIError> {
-        self.real_ui.display(message).await
-    }
-
-    async fn get_input(&self) -> Result<String, crate::ui::UIError> {
-        self.real_ui.get_input().await
-    }
-
-    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), crate::ui::UIError> {
-        // Route through the same logic as Agent::route_fragment
-
-        // Always buffer in SessionInstance (if references are available)
-        if let Some(buffer) = &self.agent_fragment_buffer {
-            if let Ok(mut buf) = buffer.lock() {
-                buf.push_back(fragment.clone());
-
-                // Keep buffer size reasonable
-                while buf.len() > 1000 {
-                    buf.pop_front();
-                }
-            }
-        }
-
-        // If UI is active, also send directly to UI
-        if let Some(ui_active) = &self.agent_is_ui_active {
-            if let Ok(active) = ui_active.lock() {
-                if *active {
-                    return self.real_ui.display_fragment(fragment);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn update_tool_status(
-        &self,
-        tool_id: &str,
-        status: crate::ui::ToolStatus,
-        message: Option<String>,
-        output: Option<String>,
-    ) -> Result<(), crate::ui::UIError> {
-        self.real_ui
-            .update_tool_status(tool_id, status, message, output)
-            .await
-    }
-
-    async fn update_memory(
-        &self,
-        memory: &crate::types::WorkingMemory,
-    ) -> Result<(), crate::ui::UIError> {
-        self.real_ui.update_memory(memory).await
-    }
-
-    async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> {
-        self.real_ui.begin_llm_request().await
-    }
-
-    async fn end_llm_request(
-        &self,
-        request_id: u64,
-        cancelled: bool,
-    ) -> Result<(), crate::ui::UIError> {
-        self.real_ui.end_llm_request(request_id, cancelled).await
-    }
-
-    fn should_streaming_continue(&self) -> bool {
-        self.real_ui.should_streaming_continue()
     }
 }
 

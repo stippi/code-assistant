@@ -12,7 +12,7 @@ mod utils;
 #[cfg(test)]
 mod tests;
 
-use crate::agent::Agent;
+use crate::agent::{Agent, SessionManagerStatePersistence};
 use crate::mcp::MCPServer;
 use crate::persistence::FileStatePersistence;
 use crate::session::SessionManager;
@@ -317,14 +317,15 @@ async fn run_agent_terminal(
     .await
     .context("Failed to initialize LLM client")?;
 
-    // Initialize agent with session manager
+    // Initialize agent with session manager wrapped in StatePersistence
+    let state_storage = Box::new(SessionManagerStatePersistence::new(session_manager));
     let mut agent = Agent::new(
         llm_client,
         tools_type,
         project_manager,
         command_executor,
         user_interface,
-        session_manager,
+        state_storage,
         Some(root_path.clone()),
     );
 
@@ -383,14 +384,15 @@ fn run_agent_gpui(
             .await
             .expect("Failed to initialize LLM client");
 
-            // Initialize agent with session manager
+            // Initialize agent with session manager wrapped in StatePersistence
+            let state_storage = Box::new(SessionManagerStatePersistence::new(session_manager));
             let mut agent = Agent::new(
                 llm_client,
                 tools_type,
                 project_manager,
                 command_executor,
                 user_interface,
-                session_manager,
+                state_storage,
                 Some(root_path.clone()),
             );
 
