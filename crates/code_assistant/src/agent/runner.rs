@@ -95,7 +95,7 @@ impl Agent {
         tool_mode: ToolMode,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
-        ui: Box<dyn UserInterface>,
+        ui: Arc<Box<dyn UserInterface>>,
         session_manager: SessionManager,
         init_path: Option<PathBuf>,
     ) -> Self {
@@ -104,7 +104,7 @@ impl Agent {
             llm_provider,
             tool_mode,
             project_manager,
-            ui: Arc::new(ui),
+            ui,
             command_executor,
             session_manager,
             command_receiver: None,

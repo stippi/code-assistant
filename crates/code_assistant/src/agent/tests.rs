@@ -146,7 +146,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         ToolMode::Native,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
-        Box::new(MockUI::default()),
+        Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
         create_test_session_manager(),
         Some(PathBuf::from("./test_path")),
     );
@@ -256,7 +256,7 @@ async fn test_parse_error_handling() -> Result<()> {
         ToolMode::Native,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
-        Box::new(MockUI::default()),
+        Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
         create_test_session_manager(),
         Some(PathBuf::from("./test_path")),
     );

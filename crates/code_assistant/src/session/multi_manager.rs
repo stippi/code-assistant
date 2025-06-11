@@ -105,14 +105,15 @@ impl MultiSessionManager {
 
     /// Set the UI-active session
     pub async fn set_active_session(&mut self, session_id: String) -> Result<()> {
-        // Ensure the session exists in active sessions
-        {
+        // Check if session exists
+        let session_exists = {
             let active_sessions = self.active_sessions.lock().unwrap();
-            if !active_sessions.contains_key(&session_id) {
-                // Try to load it
-                drop(active_sessions); // Release lock before calling load_session
-                self.load_session(&session_id).await?;
-            }
+            active_sessions.contains_key(&session_id)
+        };
+
+        // Load session if it doesn't exist
+        if !session_exists {
+            self.load_session(&session_id).await?;
         }
 
         // Set as active
@@ -131,36 +132,94 @@ impl MultiSessionManager {
 
     /// Start an agent for a session with a user message
     /// This is the key method - agents run on-demand for specific messages
-    /// For now, simplified version without complex threading
     pub async fn start_agent_for_message(
         &mut self,
         session_id: &str,
         user_message: String,
-        _llm_provider: Box<dyn LLMProvider>,
-        _project_manager: Box<dyn ProjectManager>,
-        _command_executor: Box<dyn CommandExecutor>,
-        _ui: Arc<Box<dyn UserInterface>>,
+        llm_provider: Box<dyn LLMProvider>,
+        project_manager: Box<dyn ProjectManager>,
+        command_executor: Box<dyn CommandExecutor>,
+        ui: Arc<Box<dyn UserInterface>>,
     ) -> Result<()> {
-        // Add user message to session
-        {
+        let _message_id = {
             let mut active_sessions = self.active_sessions.lock().unwrap();
             let session_instance = active_sessions
                 .get_mut(session_id)
                 .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
 
+            // Add user message to session
             let user_msg = Message {
                 role: llm::MessageRole::User,
                 content: llm::MessageContent::Text(user_message.clone()),
             };
             session_instance.add_message(user_msg);
 
+            // Generate message ID for this interaction
             let message_id = session_instance.get_last_message_id();
-            session_instance.start_streaming(message_id);
-        }
+            session_instance.start_streaming(message_id.clone());
 
-        // TODO: Implement actual agent spawning
-        // For now, just acknowledge the message was received
-        tracing::info!("User message received for session {}: {}", session_id, user_message);
+            message_id
+        };
+
+        // Create a new agent for this session
+        let session_manager_for_agent = crate::session::SessionManager::new(self.persistence.clone());
+
+        let mut agent = crate::agent::Agent::new(
+            llm_provider,
+            self.agent_config.tool_mode,
+            project_manager,
+            command_executor,
+            ui.clone(),
+            session_manager_for_agent,
+            self.agent_config.init_path.clone(),
+        );
+
+        // Load the session state into the agent
+        let session_state = {
+            let active_sessions = self.active_sessions.lock().unwrap();
+            let session_instance = active_sessions.get(session_id).unwrap();
+
+            crate::session::SessionState {
+                messages: session_instance.messages().to_vec(),
+                tool_executions: session_instance.session.tool_executions.iter().map(|se| se.deserialize()).collect::<Result<Vec<_>>>()?,
+                working_memory: session_instance.session.working_memory.clone(),
+                init_path: session_instance.session.init_path.clone(),
+                initial_project: session_instance.session.initial_project.clone(),
+            }
+        };
+
+        agent.load_from_session_state(session_state).await?;
+
+        // Spawn the agent task
+        let session_id_clone = session_id.to_string();
+        let active_sessions_clone = self.active_sessions.clone();
+
+        let task_handle = tokio::spawn(async move {
+            tracing::info!("🚀 V2: Starting agent for session {}", session_id_clone);
+            // Run the agent once for this message
+            let result = agent.run_single_iteration().await;
+
+            // Mark streaming as complete
+            {
+                let mut active_sessions = active_sessions_clone.lock().unwrap();
+                if let Some(session_instance) = active_sessions.get_mut(&session_id_clone) {
+                    session_instance.stop_streaming();
+                }
+            }
+
+            tracing::info!("✅ V2: Agent completed for session {}", session_id_clone);
+            result
+        });
+
+        // Store the task handle (but not the agent, as it's moved into the task)
+        {
+            let mut active_sessions = self.active_sessions.lock().unwrap();
+            let session_instance = active_sessions
+                .get_mut(session_id)
+                .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+
+            session_instance.task_handle = Some(task_handle);
+        }
 
         Ok(())
     }

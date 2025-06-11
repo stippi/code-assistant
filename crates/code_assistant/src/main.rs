@@ -33,6 +33,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::fmt::SubscriberBuilder;
+use rand;
 
 #[derive(ValueEnum, Debug, Clone)]
 enum LLMProviderType {
@@ -300,7 +301,7 @@ async fn run_agent_terminal(
     // Setup dynamic types
     let root_path = path.canonicalize()?;
     let project_manager = Box::new(DefaultProjectManager::new());
-    let user_interface = Box::new(TerminalUI::new());
+    let user_interface = Arc::new(Box::new(TerminalUI::new()) as Box<dyn UserInterface>);
     let command_executor = Box::new(DefaultCommandExecutor);
 
     // Setup LLM client with the specified provider
@@ -358,7 +359,7 @@ fn run_agent_gpui(
     // Setup dynamic types
     let root_path = path.canonicalize()?;
     let project_manager = Box::new(DefaultProjectManager::new());
-    let user_interface: Box<dyn UserInterface> = Box::new(gui.clone());
+    let user_interface: Arc<Box<dyn UserInterface>> = Arc::new(Box::new(gui.clone()));
     let command_executor = Box::new(DefaultCommandExecutor);
 
     // Start the agent in a separate thread using a standard thread
@@ -671,14 +672,14 @@ fn run_agent_gpui_v2(
     task: Option<String>,
     _session_manager: SessionManager, // Old single session manager (keep for compatibility)
     _session_state: Option<crate::session::SessionState>,
-    _provider: LLMProviderType,
-    _model: Option<String>,
-    _base_url: Option<String>,
-    _num_ctx: usize,
+    provider: LLMProviderType,
+    model: Option<String>,
+    base_url: Option<String>,
+    num_ctx: usize,
     tools_type: ToolMode,
-    _record: Option<PathBuf>,
-    _playback: Option<PathBuf>,
-    _fast_playback: bool,
+    record: Option<PathBuf>,
+    playback: Option<PathBuf>,
+    fast_playback: bool,
 ) -> Result<()> {
     use crate::session::{MultiSessionManager, AgentConfig};
 
@@ -707,74 +708,149 @@ fn run_agent_gpui_v2(
     gui.setup_v2_communication(user_message_tx.clone(), session_event_tx, session_response_rx);
 
     // Start the backend thread with new architecture
-    let _multi_session_manager = multi_session_manager.clone();
+    let multi_session_manager_clone = multi_session_manager.clone();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
         runtime.block_on(async {
             // Handle session management events
-            // TODO: Re-implement with proper threading after fixing Send issues
-            let session_event_task = tokio::spawn(async move {
-                while let Ok(event) = session_event_rx.recv().await {
-                    tracing::info!("🎯 V2: Session management event: {:?}", event);
+            let session_event_task = {
+                let multi_session_manager = multi_session_manager_clone.clone();
+                let session_response_tx = session_response_tx.clone();
 
-                    // For now, just send dummy responses
-                    let response = match event {
-                        ui::gpui::ChatManagementEvent::ListSessions => {
-                            tracing::info!("🎯 V2: ListSessions requested");
-                            ui::gpui::ChatManagementResponse::SessionsListed { sessions: vec![] }
-                        }
-                        ui::gpui::ChatManagementEvent::CreateNewSession { name } => {
-                            tracing::info!("🎯 V2: CreateNewSession requested: {:?}", name);
-                            let session_id = "test_session_123".to_string();
-                            let display_name = name.unwrap_or("New Session".to_string());
-                            ui::gpui::ChatManagementResponse::SessionCreated { session_id, name: display_name }
-                        }
-                        ui::gpui::ChatManagementEvent::LoadSession { session_id } => {
-                            tracing::info!("🎯 V2: LoadSession requested: {}", session_id);
-                            ui::gpui::ChatManagementResponse::SessionLoaded { session_id, messages: vec![] }
-                        }
-                        ui::gpui::ChatManagementEvent::DeleteSession { session_id } => {
-                            tracing::info!("🎯 V2: DeleteSession requested: {}", session_id);
-                            ui::gpui::ChatManagementResponse::SessionDeleted { session_id }
-                        }
-                    };
+                tokio::spawn(async move {
+                    while let Ok(event) = session_event_rx.recv().await {
+                        tracing::info!("🎯 V2: Session management event: {:?}", event);
 
-                    let _ = session_response_tx.send(response).await;
-                }
-            });
+                        let response = match event {
+                            ui::gpui::ChatManagementEvent::ListSessions => {
+                                let manager = multi_session_manager.lock().unwrap();
+                                match manager.list_all_sessions() {
+                                    Ok(sessions) => {
+                                        tracing::info!("🎯 V2: Found {} sessions", sessions.len());
+                                        ui::gpui::ChatManagementResponse::SessionsListed { sessions }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("🚨 V2: Failed to list sessions: {}", e);
+                                        ui::gpui::ChatManagementResponse::Error { message: e.to_string() }
+                                    }
+                                }
+                            }
+                            ui::gpui::ChatManagementEvent::CreateNewSession { name } => {
+                                // Clone the manager for the async operation
+                                let manager_clone = multi_session_manager.clone();
+                                let result: Result<String> = {
+                                    let mut manager = manager_clone.lock().unwrap();
+                                    // Release lock before await by using blocking operation
+                                    // For now, use a dummy session ID generation
+                                    let session_id = format!("chat_{:x}_{:x}",
+                                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+                                        rand::random::<u16>()
+                                    );
+                                    Ok(session_id)
+                                };
+
+                                match result {
+                                    Ok(session_id) => {
+                                        let display_name = format!("Chat {}", &session_id[5..13]);
+                                        tracing::info!("🎯 V2: Created session {}", session_id);
+                                        ui::gpui::ChatManagementResponse::SessionCreated { session_id, name: display_name }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("🚨 V2: Failed to create session: {}", e);
+                                        ui::gpui::ChatManagementResponse::Error { message: e.to_string() }
+                                    }
+                                }
+                            }
+                            ui::gpui::ChatManagementEvent::LoadSession { session_id } => {
+                                // For now, return dummy response until persistence is properly integrated
+                                tracing::info!("🎯 V2: LoadSession requested: {}", session_id);
+                                ui::gpui::ChatManagementResponse::SessionLoaded {
+                                    session_id,
+                                    messages: vec![]
+                                }
+                            }
+                            ui::gpui::ChatManagementEvent::DeleteSession { session_id } => {
+                                // For now, return dummy response
+                                tracing::info!("🎯 V2: DeleteSession requested: {}", session_id);
+                                ui::gpui::ChatManagementResponse::SessionDeleted { session_id }
+                            }
+                        };
+
+                        let _ = session_response_tx.send(response).await;
+                    }
+                })
+            };
 
             // Handle user messages (start agents on demand)
-            // TODO: Implement proper agent spawning after fixing Send trait issues
             let user_message_task = {
+                let multi_session_manager = multi_session_manager_clone.clone();
+                let gui_clone = gui.clone();
+
                 tokio::spawn(async move {
                     while let Ok((message, session_id)) = user_message_rx.recv().await {
                         tracing::info!("🚀 V2: User message for session {}: {}", session_id, message);
 
-                        // TODO: Create and spawn agent here
-                        // For now, just log the message
-                        tracing::info!("🎯 V2: Would process message '{}' in session {}", message, session_id);
+                        // Create components for the agent
+                        let project_manager = Box::new(DefaultProjectManager::new());
+                        let command_executor = Box::new(DefaultCommandExecutor);
+                        let user_interface = Arc::new(Box::new(gui_clone.clone()) as Box<dyn UserInterface>);
+
+                        // Create LLM client
+                        let llm_client = match create_llm_client(
+                            provider,
+                            model.clone(),
+                            base_url.clone(),
+                            num_ctx,
+                            record.clone(),
+                            playback.clone(),
+                            fast_playback,
+                        ).await {
+                            Ok(client) => client,
+                            Err(e) => {
+                                tracing::error!("🚨 V2: Failed to create LLM client: {}", e);
+                                continue;
+                            }
+                        };
+
+                        // Start agent for this message
+                        // For now, just log instead of actual agent spawning to avoid mutex issues
+                        tracing::info!("🎯 V2: Would start agent for session {} with message: {}", session_id, message);
+                        // TODO: Implement proper agent spawning without mutex across await
                     }
                 })
             };
 
             // Monitor agent completions
-            // TODO: Implement proper completion monitoring after fixing agent spawning
-            let completion_monitor_task = tokio::spawn(async move {
-                tracing::info!("🔄 V2: Completion monitor started");
-                // Simplified monitor for now
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    tracing::debug!("🔄 V2: Monitoring agent completions...");
-                }
-            });
+            let completion_monitor_task = {
+                let multi_session_manager = multi_session_manager_clone.clone();
+
+                tokio::spawn(async move {
+                    tracing::info!("🔄 V2: Completion monitor started");
+                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+
+                    loop {
+                        interval.tick().await;
+
+                        let mut manager = multi_session_manager.lock().unwrap();
+                        if let Ok(completed_sessions) = manager.check_agent_completions().await {
+                            for session_id in completed_sessions {
+                                tracing::info!("✅ V2: Agent completed for session: {}", session_id);
+                                // Could send notifications to UI here
+                            }
+                        }
+                        drop(manager);
+                    }
+                })
+            };
 
             // Handle initial task or session state if provided
             if let Some(task_str) = task {
                 tracing::info!("🚀 V2: Initial task provided: {}", task_str);
-                // TODO: Create initial session and send task
-                let test_session_id = "initial_session_123".to_string();
-                let _ = user_message_tx.send((task_str, test_session_id)).await;
+                // Create dummy session ID and send task
+                let session_id = format!("initial_session_{:x}", rand::random::<u32>());
+                let _ = user_message_tx.send((task_str, session_id.clone())).await;
+                tracing::info!("🎯 V2: Sent initial task to session: {}", session_id);
             }
 
             // Keep all tasks running
