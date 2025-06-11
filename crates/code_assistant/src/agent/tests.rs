@@ -7,9 +7,11 @@ use crate::tests::mocks::{
     create_command_executor_mock, create_test_response, MockProjectManager, MockUI,
 };
 use crate::types::*;
+use crate::UserInterface;
 use anyhow::Result;
 use llm::types::*;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Create a test SessionManager with a temporary directory
 fn create_test_session_manager() -> SessionManager {
@@ -18,7 +20,11 @@ fn create_test_session_manager() -> SessionManager {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let temp_dir = std::env::temp_dir().join(format!("code_assistant_test_{}_{}", std::process::id(), timestamp));
+    let temp_dir = std::env::temp_dir().join(format!(
+        "code_assistant_test_{}_{}",
+        std::process::id(),
+        timestamp
+    ));
     let persistence = FileStatePersistence::new(temp_dir);
     SessionManager::new(persistence)
 }
