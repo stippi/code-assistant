@@ -31,6 +31,7 @@ use llm::{
 };
 use std::io;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tracing_subscriber::fmt::SubscriberBuilder;
 
 #[derive(ValueEnum, Debug, Clone)]
@@ -113,6 +114,10 @@ struct Args {
     /// Delete a specific chat session by ID
     #[arg(long)]
     delete_chat: Option<String>,
+
+    /// Use the new V2 session-based architecture (experimental)
+    #[arg(long)]
+    use_v2_architecture: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -506,6 +511,7 @@ async fn run_agent(args: Args) -> Result<()> {
     let num_ctx = args.num_ctx.unwrap_or(8192);
     let tools_type = args.tools_type.unwrap_or(ToolMode::Xml);
     let use_gui = args.ui;
+    let use_v2_architecture = args.use_v2_architecture;
 
     // Setup logging based on verbose flag
     setup_logging(verbose, true);
@@ -547,20 +553,39 @@ async fn run_agent(args: Args) -> Result<()> {
 
     // Run in either GUI or terminal mode
     if use_gui {
-        run_agent_gpui(
-            path,
-            session_task,
-            session_manager,
-            session_state,
-            provider,
-            model,
-            base_url,
-            num_ctx,
-            tools_type,
-            args.record.clone(),
-            args.playback.clone(),
-            args.fast_playback,
-        )
+        if use_v2_architecture {
+            println!("🚀 Starting with V2 Session-Based Architecture");
+            run_agent_gpui_v2(
+                path,
+                session_task,
+                session_manager,
+                session_state,
+                provider,
+                model,
+                base_url,
+                num_ctx,
+                tools_type,
+                args.record.clone(),
+                args.playback.clone(),
+                args.fast_playback,
+            )
+        } else {
+            println!("📱 Starting with V1 Architecture");
+            run_agent_gpui(
+                path,
+                session_task,
+                session_manager,
+                session_state,
+                provider,
+                model,
+                base_url,
+                num_ctx,
+                tools_type,
+                args.record.clone(),
+                args.playback.clone(),
+                args.fast_playback,
+            )
+        }
     } else {
         run_agent_terminal(
             path,
@@ -638,6 +663,133 @@ async fn handle_chat_commands(args: &Args) -> Result<bool> {
 
     // Other chat commands would be handled in main function
     Ok(false)
+}
+
+/// V2 Implementation using MultiSessionManager architecture
+fn run_agent_gpui_v2(
+    path: PathBuf,
+    task: Option<String>,
+    _session_manager: SessionManager, // Old single session manager (keep for compatibility)
+    _session_state: Option<crate::session::SessionState>,
+    _provider: LLMProviderType,
+    _model: Option<String>,
+    _base_url: Option<String>,
+    _num_ctx: usize,
+    tools_type: ToolMode,
+    _record: Option<PathBuf>,
+    _playback: Option<PathBuf>,
+    _fast_playback: bool,
+) -> Result<()> {
+    use crate::session::{MultiSessionManager, AgentConfig};
+
+    // Create shared state between GUI and backend
+    let gui = ui::gpui::Gpui::new();
+
+    // Setup new communication channels for the new architecture
+    let (user_message_tx, user_message_rx) = async_channel::unbounded::<(String, String)>(); // (message, session_id)
+    let (session_event_tx, session_event_rx) = async_channel::unbounded::<ui::gpui::ChatManagementEvent>();
+    let (session_response_tx, session_response_rx) = async_channel::unbounded::<ui::gpui::ChatManagementResponse>();
+
+    // Setup dynamic types for MultiSessionManager
+    let root_path = path.canonicalize()?;
+    let persistence = crate::persistence::FileStatePersistence::new(root_path.clone());
+
+    let agent_config = AgentConfig {
+        tool_mode: tools_type,
+        init_path: Some(root_path.clone()),
+        initial_project: None,
+    };
+
+    // Create the new MultiSessionManager
+    let multi_session_manager = Arc::new(Mutex::new(MultiSessionManager::new(persistence, agent_config)));
+
+    // Setup GUI communication (modified for new architecture)
+    gui.setup_v2_communication(user_message_tx.clone(), session_event_tx, session_response_rx);
+
+    // Start the backend thread with new architecture
+    let _multi_session_manager = multi_session_manager.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        runtime.block_on(async {
+            // Handle session management events
+            // TODO: Re-implement with proper threading after fixing Send issues
+            let session_event_task = tokio::spawn(async move {
+                while let Ok(event) = session_event_rx.recv().await {
+                    tracing::info!("🎯 V2: Session management event: {:?}", event);
+
+                    // For now, just send dummy responses
+                    let response = match event {
+                        ui::gpui::ChatManagementEvent::ListSessions => {
+                            tracing::info!("🎯 V2: ListSessions requested");
+                            ui::gpui::ChatManagementResponse::SessionsListed { sessions: vec![] }
+                        }
+                        ui::gpui::ChatManagementEvent::CreateNewSession { name } => {
+                            tracing::info!("🎯 V2: CreateNewSession requested: {:?}", name);
+                            let session_id = "test_session_123".to_string();
+                            let display_name = name.unwrap_or("New Session".to_string());
+                            ui::gpui::ChatManagementResponse::SessionCreated { session_id, name: display_name }
+                        }
+                        ui::gpui::ChatManagementEvent::LoadSession { session_id } => {
+                            tracing::info!("🎯 V2: LoadSession requested: {}", session_id);
+                            ui::gpui::ChatManagementResponse::SessionLoaded { session_id, messages: vec![] }
+                        }
+                        ui::gpui::ChatManagementEvent::DeleteSession { session_id } => {
+                            tracing::info!("🎯 V2: DeleteSession requested: {}", session_id);
+                            ui::gpui::ChatManagementResponse::SessionDeleted { session_id }
+                        }
+                    };
+
+                    let _ = session_response_tx.send(response).await;
+                }
+            });
+
+            // Handle user messages (start agents on demand)
+            // TODO: Implement proper agent spawning after fixing Send trait issues
+            let user_message_task = {
+                tokio::spawn(async move {
+                    while let Ok((message, session_id)) = user_message_rx.recv().await {
+                        tracing::info!("🚀 V2: User message for session {}: {}", session_id, message);
+
+                        // TODO: Create and spawn agent here
+                        // For now, just log the message
+                        tracing::info!("🎯 V2: Would process message '{}' in session {}", message, session_id);
+                    }
+                })
+            };
+
+            // Monitor agent completions
+            // TODO: Implement proper completion monitoring after fixing agent spawning
+            let completion_monitor_task = tokio::spawn(async move {
+                tracing::info!("🔄 V2: Completion monitor started");
+                // Simplified monitor for now
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    tracing::debug!("🔄 V2: Monitoring agent completions...");
+                }
+            });
+
+            // Handle initial task or session state if provided
+            if let Some(task_str) = task {
+                tracing::info!("🚀 V2: Initial task provided: {}", task_str);
+                // TODO: Create initial session and send task
+                let test_session_id = "initial_session_123".to_string();
+                let _ = user_message_tx.send((task_str, test_session_id)).await;
+            }
+
+            // Keep all tasks running
+            let _ = tokio::try_join!(
+                session_event_task,
+                user_message_task,
+                completion_monitor_task
+            );
+        });
+    });
+
+    // Run the GUI in the main thread
+    gui.run_app();
+
+    Ok(())
 }
 
 #[tokio::main]
