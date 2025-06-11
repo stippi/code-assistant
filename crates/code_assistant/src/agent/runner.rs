@@ -5,7 +5,7 @@ use crate::session::SessionManager;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{parse_tool_xml, TOOL_TAG_PREFIX};
 use crate::types::*;
-use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface, DisplayFragment};
+use crate::ui::{streaming::create_stream_processor, DisplayFragment, UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -19,13 +19,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tracing::debug;
 
 use super::ToolMode;
-
-/// Commands that can be sent to the agent from external sources
-#[derive(Debug)]
-pub enum AgentCommand {
-    /// Switch to a different session
-    SwitchToSession { session_id: String },
-}
 
 // System messages
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
@@ -49,8 +42,6 @@ pub struct Agent {
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
     session_manager: SessionManager,
-    // Command receiver for external commands (like session switching)
-    command_receiver: Option<async_channel::Receiver<AgentCommand>>,
     // Store all messages exchanged
     message_history: Vec<Message>,
     // Path provided during agent initialization
@@ -70,11 +61,6 @@ impl Agent {
     /// Get a reference to the session manager
     pub fn session_manager(&self) -> &SessionManager {
         &self.session_manager
-    }
-
-    /// Set the command receiver for external commands
-    pub fn set_command_receiver(&mut self, receiver: async_channel::Receiver<AgentCommand>) {
-        self.command_receiver = Some(receiver);
     }
 
     /// Formats an error, particularly ToolErrors, into a user-friendly string.
@@ -111,7 +97,6 @@ impl Agent {
             ui,
             command_executor,
             session_manager,
-            command_receiver: None,
             message_history: Vec::new(),
             init_path,
             initial_project: None,
@@ -500,14 +485,19 @@ impl Agent {
         self.init_path = session_state.init_path;
         self.initial_project = session_state.initial_project;
 
-        debug!("Switched to session {} with {} messages and {} tool executions",
-               session_id, session_state.messages.len(), self.tool_executions.len());
+        debug!(
+            "Switched to session {} with {} messages and {} tool executions",
+            session_id,
+            session_state.messages.len(),
+            self.tool_executions.len()
+        );
 
         // Restore working memory file trees and project state
         self.restore_working_memory_state().await?;
 
         // Generate UI fragments from session messages
-        self.send_session_messages_to_ui(&session_state.messages, session_id).await?;
+        self.send_session_messages_to_ui(&session_state.messages, session_id)
+            .await?;
 
         // Update memory in UI
         let _ = self.ui.update_memory(&self.working_memory).await;
@@ -516,7 +506,10 @@ impl Agent {
     }
 
     /// Load state from session manager (replaces start_from_state)
-    pub async fn load_from_session_state(&mut self, session_state: crate::session::SessionState) -> Result<()> {
+    pub async fn load_from_session_state(
+        &mut self,
+        session_state: crate::session::SessionState,
+    ) -> Result<()> {
         // Restore all state components
         self.message_history = session_state.messages;
         self.tool_executions = session_state.tool_executions;
@@ -524,19 +517,23 @@ impl Agent {
         self.init_path = session_state.init_path;
         self.initial_project = session_state.initial_project;
 
-        debug!("Restored {} messages and {} tool executions",
-               self.message_history.len(),
-               self.tool_executions.len());
+        debug!(
+            "Restored {} messages and {} tool executions",
+            self.message_history.len(),
+            self.tool_executions.len()
+        );
 
         // Restore working memory file trees and project state
         self.restore_working_memory_state().await?;
 
         // Notify UI of restored state
-        self.ui.display(UIMessage::Action(format!(
-            "Loaded chat session with {} messages and {} tool executions",
-            self.message_history.len(),
-            self.tool_executions.len()
-        ))).await?;
+        self.ui
+            .display(UIMessage::Action(format!(
+                "Loaded chat session with {} messages and {} tool executions",
+                self.message_history.len(),
+                self.tool_executions.len()
+            )))
+            .await?;
 
         let _ = self.ui.update_memory(&self.working_memory).await;
 
@@ -550,18 +547,19 @@ impl Agent {
             // Create file tree for the project if not already present
             if !self.working_memory.file_trees.contains_key(project_name) {
                 match self.project_manager.get_explorer_for_project(project_name) {
-                    Ok(mut explorer) => {
-                        match explorer.create_initial_tree(2) {
-                            Ok(tree) => {
-                                self.working_memory
-                                    .file_trees
-                                    .insert(project_name.clone(), tree);
-                            }
-                            Err(e) => {
-                                debug!("Error creating file tree for project {}: {}", project_name, e);
-                            }
+                    Ok(mut explorer) => match explorer.create_initial_tree(2) {
+                        Ok(tree) => {
+                            self.working_memory
+                                .file_trees
+                                .insert(project_name.clone(), tree);
                         }
-                    }
+                        Err(e) => {
+                            debug!(
+                                "Error creating file tree for project {}: {}",
+                                project_name, e
+                            );
+                        }
+                    },
                     Err(e) => {
                         debug!("Error getting explorer for project {}: {}", project_name, e);
                     }
@@ -569,8 +567,14 @@ impl Agent {
             }
 
             // Add to available projects if not already there
-            if !self.working_memory.available_projects.contains(project_name) {
-                self.working_memory.available_projects.push(project_name.clone());
+            if !self
+                .working_memory
+                .available_projects
+                .contains(project_name)
+            {
+                self.working_memory
+                    .available_projects
+                    .push(project_name.clone());
             }
         }
 
@@ -793,11 +797,12 @@ impl Agent {
         }
 
         // Create a StreamProcessor with routing UI if session instance refs are available
-        let routing_ui = if self.session_instance_buffer.is_some() && self.session_is_ui_active.is_some() {
-            self.create_routing_ui()
-        } else {
-            Arc::clone(&self.ui)
-        };
+        let routing_ui =
+            if self.session_instance_buffer.is_some() && self.session_is_ui_active.is_some() {
+                self.create_routing_ui()
+            } else {
+                Arc::clone(&self.ui)
+            };
 
         let processor = Arc::new(Mutex::new(create_stream_processor(
             self.tool_mode,
@@ -1021,23 +1026,62 @@ impl Agent {
     }
 
     /// Convert session messages to UI fragments and send SetMessages event
-    async fn send_session_messages_to_ui(&mut self, messages: &[llm::Message], session_id: &str) -> Result<()> {
-        use crate::ui::streaming::create_stream_processor;
-        use crate::ui::gpui::ui_events::{MessageData, UiEvent};
+    async fn send_session_messages_to_ui(
+        &mut self,
+        messages: &[llm::Message],
+        session_id: &str,
+    ) -> Result<()> {
         use crate::ui::gpui::elements::MessageRole;
+        use crate::ui::gpui::ui_events::{MessageData, UiEvent};
+        use crate::ui::streaming::create_stream_processor;
 
         // Create dummy UI for stream processor
         struct DummyUI;
         #[async_trait::async_trait]
         impl crate::ui::UserInterface for DummyUI {
-            async fn display(&self, _message: crate::ui::UIMessage) -> Result<(), crate::ui::UIError> { Ok(()) }
-            async fn get_input(&self) -> Result<String, crate::ui::UIError> { Ok("".to_string()) }
-            fn display_fragment(&self, _fragment: &crate::ui::DisplayFragment) -> Result<(), crate::ui::UIError> { Ok(()) }
-            async fn update_memory(&self, _memory: &crate::types::WorkingMemory) -> Result<(), crate::ui::UIError> { Ok(()) }
-            async fn update_tool_status(&self, _tool_id: &str, _status: crate::ui::ToolStatus, _message: Option<String>, _output: Option<String>) -> Result<(), crate::ui::UIError> { Ok(()) }
-            async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> { Ok(0) }
-            async fn end_llm_request(&self, _request_id: u64, _cancelled: bool) -> Result<(), crate::ui::UIError> { Ok(()) }
-            fn should_streaming_continue(&self) -> bool { true }
+            async fn display(
+                &self,
+                _message: crate::ui::UIMessage,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            async fn get_input(&self) -> Result<String, crate::ui::UIError> {
+                Ok("".to_string())
+            }
+            fn display_fragment(
+                &self,
+                _fragment: &crate::ui::DisplayFragment,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            async fn update_memory(
+                &self,
+                _memory: &crate::types::WorkingMemory,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            async fn update_tool_status(
+                &self,
+                _tool_id: &str,
+                _status: crate::ui::ToolStatus,
+                _message: Option<String>,
+                _output: Option<String>,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> {
+                Ok(0)
+            }
+            async fn end_llm_request(
+                &self,
+                _request_id: u64,
+                _cancelled: bool,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            fn should_streaming_continue(&self) -> bool {
+                true
+            }
         }
 
         let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
@@ -1065,10 +1109,12 @@ impl Agent {
         tracing::info!("Sending {} message containers to UI", messages_data.len());
 
         // Send SetMessages event to UI
-        self.ui.display(crate::ui::UIMessage::UiEvent(UiEvent::SetMessages {
-            messages: messages_data,
-            session_id: Some(session_id.to_string()),
-        })).await?;
+        self.ui
+            .display(crate::ui::UIMessage::UiEvent(UiEvent::SetMessages {
+                messages: messages_data,
+                session_id: Some(session_id.to_string()),
+            }))
+            .await?;
 
         Ok(())
     }
@@ -1125,10 +1171,15 @@ impl UserInterface for RoutingUserInterface {
         message: Option<String>,
         output: Option<String>,
     ) -> Result<(), crate::ui::UIError> {
-        self.real_ui.update_tool_status(tool_id, status, message, output).await
+        self.real_ui
+            .update_tool_status(tool_id, status, message, output)
+            .await
     }
 
-    async fn update_memory(&self, memory: &crate::types::WorkingMemory) -> Result<(), crate::ui::UIError> {
+    async fn update_memory(
+        &self,
+        memory: &crate::types::WorkingMemory,
+    ) -> Result<(), crate::ui::UIError> {
         self.real_ui.update_memory(memory).await
     }
 
@@ -1136,7 +1187,11 @@ impl UserInterface for RoutingUserInterface {
         self.real_ui.begin_llm_request().await
     }
 
-    async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), crate::ui::UIError> {
+    async fn end_llm_request(
+        &self,
+        request_id: u64,
+        cancelled: bool,
+    ) -> Result<(), crate::ui::UIError> {
         self.real_ui.end_llm_request(request_id, cancelled).await
     }
 
