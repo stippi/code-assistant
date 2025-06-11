@@ -7,6 +7,13 @@ use crate::agent::ToolExecution;
 use crate::persistence::{ChatMetadata, ChatSession, FileStatePersistence, generate_session_id};
 use crate::types::WorkingMemory;
 
+// New session management architecture
+pub mod instance;
+pub mod multi_manager;
+
+pub use instance::SessionInstance;
+pub use multi_manager::{MultiSessionManager, AgentConfig};
+
 /// Manages chat sessions independently from the Agent
 pub struct SessionManager {
     persistence: FileStatePersistence,

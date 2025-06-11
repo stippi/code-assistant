@@ -93,6 +93,9 @@ pub struct Gpui {
     chat_event_sender: Arc<Mutex<Option<async_channel::Sender<ChatManagementEvent>>>>,
     chat_response_receiver: Arc<Mutex<Option<async_channel::Receiver<ChatManagementResponse>>>>,
 
+    // V2 architecture: User message communication
+    user_message_sender: Arc<Mutex<Option<async_channel::Sender<(String, String)>>>>,
+
     // Current chat state
     current_session_id: Arc<Mutex<Option<String>>>,
     chat_sessions: Arc<Mutex<Vec<ChatMetadata>>>,
@@ -161,6 +164,7 @@ impl Gpui {
             streaming_state,
             chat_event_sender: Arc::new(Mutex::new(None)),
             chat_response_receiver: Arc::new(Mutex::new(None)),
+            user_message_sender: Arc::new(Mutex::new(None)),
 
             current_session_id: Arc::new(Mutex::new(None)),
             chat_sessions: Arc::new(Mutex::new(Vec::new())),
@@ -540,6 +544,59 @@ impl Gpui {
                 tracing::info!("UI: Refreshing windows for chat list update");
                 cx.refresh().expect("Failed to refresh windows");
             }
+            // New v2 architecture events
+            UiEvent::LoadSessionFragments { fragments, session_id } => {
+                tracing::info!("UI: LoadSessionFragments event for session {}", session_id);
+
+                // Set as active session
+                *self.current_session_id.lock().unwrap() = Some(session_id);
+
+                // Clear existing messages
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    queue.clear();
+                }
+
+                // Create a single assistant container for all fragments
+                if !fragments.is_empty() {
+                    let container = cx.new(|cx| MessageContainer::with_role(MessageRole::Assistant, cx))
+                        .expect("Failed to create message container");
+
+                    // Process all fragments
+                    self.process_fragments_for_container(&container, fragments, cx);
+
+                    // Add to queue
+                    {
+                        let mut queue = self.message_queue.lock().unwrap();
+                        queue.push(container);
+                    }
+                }
+
+                cx.refresh().expect("Failed to refresh windows");
+            }
+            UiEvent::ClearMessages => {
+                tracing::info!("UI: ClearMessages event");
+                let mut queue = self.message_queue.lock().unwrap();
+                queue.clear();
+                cx.refresh().expect("Failed to refresh windows");
+            }
+            UiEvent::SendUserMessage { message, session_id } => {
+                tracing::info!("UI: SendUserMessage event for session {}: {}", session_id, message);
+                if let Some(sender) = self.user_message_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send((message, session_id));
+                } else {
+                    tracing::warn!("UI: No user message sender available");
+                }
+            }
+            UiEvent::ConnectToActiveSession { session_id } => {
+                tracing::info!("UI: ConnectToActiveSession event for session {}", session_id);
+                // Set as active session
+                *self.current_session_id.lock().unwrap() = Some(session_id.clone());
+
+                // Request buffered fragments from MultiSessionManager
+                // This would need to be implemented in the backend
+                tracing::info!("UI: TODO - Request buffered fragments for session {}", session_id);
+            }
         }
     }
 
@@ -610,6 +667,19 @@ impl Gpui {
         (event_rx, response_tx)
     }
 
+    // Setup communication channels for the new v2 architecture
+    pub fn setup_v2_communication(
+        &self,
+        user_message_tx: async_channel::Sender<(String, String)>,
+        session_event_tx: async_channel::Sender<ChatManagementEvent>,
+        session_response_rx: async_channel::Receiver<ChatManagementResponse>,
+    ) {
+        // Store channels for UI use
+        *self.chat_event_sender.lock().unwrap() = Some(session_event_tx);
+        *self.chat_response_receiver.lock().unwrap() = Some(session_response_rx);
+        *self.user_message_sender.lock().unwrap() = Some(user_message_tx);
+    }
+
     // Helper to add an event to the queue
     fn push_event(&self, event: UiEvent) {
         let sender = self.event_sender.lock().unwrap().clone();
@@ -626,6 +696,21 @@ impl Gpui {
 
     pub fn get_current_session_id(&self) -> Option<String> {
         self.current_session_id.lock().unwrap().clone()
+    }
+
+    // Send a user message to the active session (v2 architecture)
+    pub fn send_user_message_to_active_session(&self, message: String) -> Result<(), String> {
+        let session_id = self.get_current_session_id()
+            .ok_or_else(|| "No active session".to_string())?;
+
+        let sender = self.user_message_sender.lock().unwrap();
+        if let Some(ref tx) = *sender {
+            tx.try_send((message, session_id))
+                .map_err(|e| format!("Failed to send message: {}", e))?;
+            Ok(())
+        } else {
+            Err("User message sender not initialized".to_string())
+        }
     }
 
     // Handle chat management responses from agent

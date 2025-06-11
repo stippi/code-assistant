@@ -150,6 +150,91 @@ impl Agent {
         self.ui.get_input().await.map_err(|e| e.into())
     }
 
+    /// Set a new UI interface (used for BufferingUI in new architecture)
+    pub fn set_ui(&mut self, ui: Arc<Box<dyn UserInterface>>) {
+        self.ui = ui;
+    }
+
+    /// Run a single iteration of the agent loop without waiting for user input
+    /// This is used in the new on-demand agent architecture
+    pub async fn run_single_iteration(&mut self) -> Result<()> {
+        let mut request_counter: u64 = 0;
+
+        // Clear any pending user input requests since this is on-demand
+        self.message_history.retain(|msg| {
+            !matches!(msg.role, MessageRole::User) || !msg.content.to_string().trim().is_empty()
+        });
+
+        loop {
+            let messages = self.prepare_messages();
+            if self.message_history.is_empty() {
+                self.message_history = messages.clone();
+            }
+            request_counter += 1;
+
+            // 1. Obtain LLM response (includes adding assistant message to history)
+            let llm_response = self.obtain_llm_response(messages).await?;
+
+            // 2. Extract tool requests from LLM response and determine the next flow action
+            let (tool_requests, flow) = self
+                .extract_tool_requests_from_response(&llm_response, request_counter)
+                .await?;
+
+            // 3. Act based on the flow instruction
+            match flow {
+                LoopFlow::GetUserInput => {
+                    // In on-demand mode, we don't wait for user input
+                    // Instead, we complete this iteration and wait for the next message
+                    debug!("Agent iteration complete - waiting for next user message");
+                    break;
+                }
+                LoopFlow::Continue => {
+                    if !tool_requests.is_empty() {
+                        // Tools were requested, manage their execution
+                        match self.manage_tool_execution(&tool_requests).await? {
+                            LoopFlow::Continue => { /* Continue to the next iteration */ }
+                            LoopFlow::GetUserInput => {
+                                // Complete iteration instead of waiting for input
+                                debug!("Tool execution complete - waiting for next user message");
+                                break;
+                            }
+                            LoopFlow::Break => {
+                                // Task completed (e.g., via complete_task tool)
+                                debug!("Task completed");
+                                break;
+                            }
+                        }
+                    } else {
+                        // No tools and Continue flow means we should stop and wait for user input
+                        debug!("No tools requested - waiting for next user message");
+                        break;
+                    }
+                }
+                LoopFlow::Break => {
+                    // Task completed
+                    debug!("Agent loop break requested");
+                    break;
+                }
+            }
+
+            // Notify UI of working memory change at the end of each cycle
+            let _ = self.ui.update_memory(&self.working_memory).await;
+        }
+
+        // Save state after iteration
+        self.save_state()?;
+
+        // Final memory update
+        let _ = self.ui.update_memory(&self.working_memory).await;
+
+        Ok(())
+    }
+
+    /// Get the tool mode
+    pub fn get_tool_mode(&self) -> ToolMode {
+        self.tool_mode
+    }
+
     /// Handles the interaction with the LLM to get the next assistant message.
     /// Appends the assistant's message to the history only if it has content.
     async fn obtain_llm_response(&mut self, messages: Vec<Message>) -> Result<llm::LLMResponse> {

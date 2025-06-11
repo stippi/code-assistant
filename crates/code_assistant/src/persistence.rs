@@ -52,6 +52,7 @@ pub struct ChatMetadata {
     pub message_count: usize,
 }
 
+#[derive(Clone)]
 pub struct FileStatePersistence {
     root_dir: PathBuf,
 }
