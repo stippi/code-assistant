@@ -240,12 +240,70 @@ impl MultiSessionManager {
     pub async fn check_agent_completions(&mut self) -> Result<Vec<String>> {
         let mut completed_sessions = Vec::new();
 
-        {
-            let mut active_sessions = self.active_sessions.lock().unwrap();
-            for (session_id, session_instance) in active_sessions.iter_mut() {
-                session_instance.check_task_completion().await?;
-                if session_instance.agent_completed {
-                    completed_sessions.push(session_id.clone());
+        // First, collect session IDs that have finished tasks (synchronous check)
+        let finished_session_ids: Vec<String> = {
+            let active_sessions = self.active_sessions.lock().unwrap();
+            active_sessions
+                .iter()
+                .filter(|(_, session_instance)| session_instance.is_task_finished())
+                .map(|(session_id, _)| session_id.clone())
+                .collect()
+        };
+
+        // Now handle the finished tasks one by one (avoiding lock across await)
+        for session_id in finished_session_ids {
+            // Check if the session still exists and needs completion processing
+            let needs_processing = {
+                let active_sessions = self.active_sessions.lock().unwrap();
+                active_sessions.get(&session_id)
+                    .map(|instance| instance.is_task_finished() && !instance.agent_completed)
+                    .unwrap_or(false)
+            };
+
+            if needs_processing {
+                // Process completion without holding the lock
+                let completion_result = {
+                    // Extract the task handle without holding the lock across await
+                    let task_handle = {
+                        let mut active_sessions = self.active_sessions.lock().unwrap();
+                        if let Some(session_instance) = active_sessions.get_mut(&session_id) {
+                            session_instance.task_handle.take()
+                        } else {
+                            None
+                        }
+                    }; // Lock released here
+
+                    // Process the completed task outside the lock
+                    if let Some(handle) = task_handle {
+                        if handle.is_finished() {
+                            match handle.await {
+                                Ok(agent_result) => {
+                                    match agent_result {
+                                        Ok(_) => (true, None),
+                                        Err(e) => (true, Some(e.to_string())),
+                                    }
+                                }
+                                Err(join_error) => (true, Some(format!("Task join error: {}", join_error))),
+                            }
+                        } else {
+                            (false, None)
+                        }
+                    } else {
+                        (false, None)
+                    }
+                };
+
+                // Update session state based on completion result
+                let (completed, error) = completion_result;
+                if completed {
+                    let mut active_sessions = self.active_sessions.lock().unwrap();
+                    if let Some(session_instance) = active_sessions.get_mut(&session_id) {
+                        session_instance.agent_completed = true;
+                        session_instance.last_agent_error = error;
+                        session_instance.is_streaming = false;
+                        session_instance.streaming_message_id = None;
+                    }
+                    completed_sessions.push(session_id);
                 }
             }
         }

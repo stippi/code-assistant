@@ -55,6 +55,15 @@ impl SessionInstance {
         self.task_handle.is_some() && !self.agent_completed
     }
 
+    /// Check if task is finished (synchronous, no await)
+    pub fn is_task_finished(&self) -> bool {
+        if let Some(handle) = &self.task_handle {
+            handle.is_finished()
+        } else {
+            true // No task means finished
+        }
+    }
+
     /// Check if the task handle is finished
     pub async fn check_task_completion(&mut self) -> Result<()> {
         if let Some(handle) = &mut self.task_handle {
