@@ -1,5 +1,5 @@
 use anyhow::Result;
-use llm::{Message, MessageContent};
+use llm::Message;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -185,25 +185,6 @@ pub fn generate_session_id() -> String {
     let random_part = (timestamp % 10000) + (std::process::id() as u64 % 1000);
 
     format!("chat_{:x}_{:x}", timestamp, random_part)
-}
-
-/// Extract a name from the first message of a conversation
-pub fn extract_name_from_first_message(messages: &[Message]) -> String {
-    if let Some(first_message) = messages.first() {
-        match &first_message.content {
-            MessageContent::Text(text) => {
-                let max_len = 50;
-                if text.len() <= max_len {
-                    text.clone()
-                } else {
-                    format!("{}...", &text[..max_len - 3])
-                }
-            }
-            MessageContent::Structured(_) => "New Chat".to_string(),
-        }
-    } else {
-        "Empty Chat".to_string()
-    }
 }
 
 /// Format a SystemTime for display
