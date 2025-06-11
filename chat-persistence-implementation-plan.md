@@ -289,45 +289,56 @@ cargo check --tests  ✅ Success (25 warnings, 0 errors)
 - Dead code (V1 architecture components being phased out)
 - Unused variants (V2 UI events waiting for integration)
 
-## 🎯 **CURRENT STATUS: Compilation Fixed, Integration Needed**
+## 🎯 **CURRENT STATUS: V2 Architecture Functional but Agents Disabled**
 
-### **✅ MAJOR ACHIEVEMENT: All Compiler Errors Fixed! 🎉**
+### **✅ MAJOR ACHIEVEMENT: V2 Architecture CLI-Activatable! 🎉**
 
 **Date:** June 11, 2025
 **Status:** ✅ Compiles successfully (0 errors, 34 warnings)
 
-#### **🔧 Critical Fixes Applied:**
-1. **`provider` moved value** → Fixed with `provider.clone()` in `crates/code_assistant/src/main.rs:803`
-2. **`gui` moved value** → Fixed with `gui_for_thread = gui.clone()` in `crates/code_assistant/src/main.rs:690`
-3. **MutexGuard Send issues** → Fixed by releasing locks before `await` points in:
-   - `crates/code_assistant/src/main.rs:839-845` (completion monitoring temporarily disabled)
-   - `crates/code_assistant/src/session/multi_manager.rs:258-284` (proper lock scope management)
+#### **🚀 What Actually Works Now:**
+1. **V2 Architecture Activation** → `--use-v2-architecture` flag routes to `run_agent_gpui_v2()`
+2. **Session Management** → Create/list/delete sessions via UI events fully functional
+3. **UI Communication** → `setup_v2_communication()` properly stores channels
+4. **Thread Architecture** → 3 tokio tasks handle session events, user messages, completion monitoring
+
+#### **🔧 Intentional Runtime Disabling:**
+1. **Agent Spawning** → Disabled in `main.rs:821` (mutex/trait object issues)
+2. **Completion Monitoring** → Disabled in `main.rs:844-847` (mutex across await issues)
+3. **Input Routing** → Not yet connected to user_message_tx pipeline
 
 ### **🚧 REMAINING IMPLEMENTATION TASKS**
 
 #### **PHASE 1: V2 Architecture Activation (CRITICAL PRIORITY)**
 
-##### **1.1 Add V2 Architecture Flag**
+##### **1.1 V2 Architecture Flag (COMPLETED ✅)**
 **File:** `crates/code_assistant/src/main.rs`
-**Lines:** ~400-450 (in `run_agent_gpui()` function)
+**Lines:** 119 (CLI definition), 555-570 (routing logic)
 ```rust
-// NEEDED: Add command line argument for --use-v2-architecture
-// NEEDED: Route to run_agent_gpui_v2() when flag is enabled
-if enable_v2_architecture {
-    return run_agent_gpui_v2(...);  // This function exists but needs activation
+// ✅ ALREADY IMPLEMENTED:
+#[arg(long)]
+use_v2_architecture: bool,
+
+// ✅ ALREADY IMPLEMENTED:
+if use_v2_architecture {
+    println!("🚀 Starting with V2 Session-Based Architecture");
+    run_agent_gpui_v2(...);  // Function exists and is called
 } else {
     // Current V1 implementation
 }
 ```
 
 ##### **1.2 Complete Agent Spawning**
-**File:** `crates/code_assistant/src/session/multi_manager.rs`
-**Lines:** 135-200 (in `start_agent_for_message()`)
-**Status:** 🚨 **CURRENTLY COMMENTED OUT**
+**File:** `crates/code_assistant/src/main.rs`
+**Lines:** 821-822 (in user_message_task)
+**Status:** 🚨 **INTENTIONALLY DISABLED**
 ```rust
-// TODO: Uncomment and fix agent creation
-// let mut agent = Agent::new(...);
-// Resolve UI trait object cloning issues
+// Current state: Agent spawning logic replaced with logging
+tracing::info!("🎯 V2: Would start agent for session {} with message: {}", session_id, message);
+// TODO: Implement proper agent spawning without mutex across await
+
+// Note: start_agent_for_message() in MultiSessionManager is FULLY IMPLEMENTED
+// but not called due to mutex/trait object sharing issues across tokio tasks
 ```
 
 ##### **1.3 Wire UI Input Events**
@@ -339,19 +350,21 @@ if enable_v2_architecture {
 // NEEDED: Route through user_message_tx channel
 ```
 
-##### **1.4 Implement Setup V2 Communication**
+##### **1.4 Setup V2 Communication (COMPLETED ✅)**
 **File:** `crates/code_assistant/src/ui/gpui/mod.rs`
-**Lines:** ~720+ (add new method)
-**Status:** ❌ **METHOD DOES NOT EXIST**
+**Lines:** 669-675 (method implementation)
+**Status:** ✅ **METHOD EXISTS AND IS USED**
 ```rust
-// NEEDED: Implement setup_v2_communication() method
+// ✅ ALREADY IMPLEMENTED:
 pub fn setup_v2_communication(
     &self,
     user_message_tx: async_channel::Sender<(String, String)>,
     session_event_tx: async_channel::Sender<ChatManagementEvent>,
-    session_response_rx: async_channel::Receiver<ChatManagementResponse>
+    session_response_rx: async_channel::Receiver<ChatManagementResponse>,
 ) {
-    // Store channels in UI state
+    *self.chat_event_sender.lock().unwrap() = Some(session_event_tx);
+    *self.chat_response_receiver.lock().unwrap() = Some(session_response_rx);
+    *self.user_message_sender.lock().unwrap() = Some(user_message_tx);
 }
 ```
 
@@ -359,12 +372,16 @@ pub fn setup_v2_communication(
 
 ##### **2.1 Re-enable Completion Monitoring**
 **File:** `crates/code_assistant/src/main.rs`
-**Lines:** 839-845
-**Status:** ⚠️ **TEMPORARILY DISABLED**
+**Lines:** 844-847 (in completion_monitor_task)
+**Status:** ⚠️ **INTENTIONALLY DISABLED DUE TO MUTEX ISSUES**
 ```rust
-// PROBLEM: Currently disabled to fix Send issues
-// NEEDED: Implement proper async completion checking without MutexGuard across await
-let completed_sessions: Vec<String> = Vec::new(); // TODO: Fix this
+// CURRENT STATE: Commented out to fix compilation
+// For now, skip completion checking to fix compilation
+// TODO: Implement proper completion checking without mutex across await
+let completed_sessions: Vec<String> = Vec::new();
+
+// UNDERLYING ISSUE: MultiSessionManager.check_agent_completions()
+// exists but can't be called due to Mutex<MultiSessionManager> across await
 ```
 
 ##### **2.2 Fragment Display Pipeline**
@@ -395,10 +412,21 @@ let completed_sessions: Vec<String> = Vec::new(); // TODO: Fix this
 ### **🐛 UNRESOLVED PROBLEMS**
 
 #### **CRITICAL Issues:**
-1. **Agent Spawning Disabled** - `start_agent_for_message()` commented out due to UI trait object issues
-2. **V2 Architecture Inactive** - No way to enable the new architecture from CLI
-3. **UI Events Not Routed** - Input events don't reach MultiSessionManager
-4. **Completion Monitoring Broken** - Agent completion checking disabled
+1. **Agent Spawning Disabled** - Intentionally disabled in `main.rs:821` to avoid mutex across await issues
+   - **Technical Cause**: `Arc<Box<dyn UserInterface>>` sharing across tokio spawn boundaries
+   - **Impact**: No agents respond to user messages in V2 architecture
+
+2. **UI Events Not Routed** - Input events don't reach MultiSessionManager via user_message_tx
+   - **Technical Cause**: Input field Enter key not connected to `send_user_message_to_active_session()`
+   - **Impact**: Typing messages does nothing in V2 architecture
+
+3. **Completion Monitoring Broken** - Agent completion checking disabled in `main.rs:844-847`
+   - **Technical Cause**: `Mutex<MultiSessionManager>` can't be held across `.await` points
+   - **Impact**: No feedback when agents complete tasks
+
+4. **Session Content Display Missing** - Session clicks don't show fragment content
+   - **Technical Cause**: Fragment extraction works but UI display pipeline incomplete
+   - **Impact**: Sessions show in sidebar but clicking them shows empty content
 
 #### **HIGH Priority Issues:**
 1. **Fragment Buffering Untested** - No verification that fragments are properly buffered
@@ -426,50 +454,57 @@ let completed_sessions: Vec<String> = Vec::new(); // TODO: Fix this
 
 ### **⚡ IMMEDIATE NEXT STEPS (Priority Order)**
 
-#### **Step 1: Enable V2 Architecture (15 minutes)**
+#### **Step 1: Test V2 Architecture Activation (5 minutes) ✅ READY**
 ```bash
-# Add CLI flag to main.rs and route to run_agent_gpui_v2()
-```
-
-#### **Step 2: Implement setup_v2_communication() (30 minutes)**
-```bash
-# Create the missing method in ui/gpui/mod.rs
-```
-
-#### **Step 3: Fix Agent Spawning (45 minutes)**
-```bash
-# Uncomment and resolve UI trait issues in multi_manager.rs
-```
-
-#### **Step 4: Wire Input Events (30 minutes)**
-```bash
-# Connect input field to user_message_tx in root.rs
-```
-
-#### **Step 5: Test Basic Flow (15 minutes)**
-```bash
+# V2 architecture can already be activated!
 cargo run --bin code-assistant -- --ui --use-v2-architecture --task "Test message"
+# Expected: UI opens, sessions list, but no agent responses (agents disabled)
+```
+
+#### **Step 2: Fix Agent Spawning (45 minutes) 🔥 CRITICAL**
+```bash
+# Replace logging with actual agent spawning in main.rs:821
+# Resolve Arc<Box<dyn UserInterface>> sharing across tokio tasks
+```
+
+#### **Step 3: Wire Input Events (30 minutes)**
+```bash
+# Connect input field Enter key to user_message_tx in root.rs
+# Route through send_user_message_to_active_session()
+```
+
+#### **Step 4: Fix Completion Monitoring (30 minutes)**
+```bash
+# Enable completion checking in main.rs:844-847 without mutex across await
+```
+
+#### **Step 5: Test End-to-End Flow (15 minutes)**
+```bash
+# After fixes: Type message → Agent responds → Message appears in UI
 ```
 
 ### **🎯 SUCCESS CRITERIA FOR NEXT MILESTONE**
 
 **Minimum Viable V2 (Next Session Goals):**
-- ✅ Can enable V2 architecture via `--use-v2-architecture` flag
-- ✅ Typing message + Enter creates new session and starts agent
-- ✅ Agent responds and message appears in UI
-- ✅ Can click between sessions and see different message histories
+- ✅ Can enable V2 architecture via `--use-v2-architecture` flag (WORKING)
+- ❌ Typing message + Enter creates new session and starts agent (INPUT NOT WIRED)
+- ❌ Agent responds and message appears in UI (AGENTS DISABLED)
+- ❌ Can click between sessions and see different message histories (NO CONTENT DISPLAY)
+
+**Current Status Check:**
+```bash
+# What works now:
+cargo run --bin code-assistant -- --ui --use-v2-architecture --task "Hello"
+# ✅ UI opens with chat sidebar
+# ✅ Sessions are listed if they exist
+# ✅ Chat management events are processed
+# ❌ Typing "Hello world" and pressing Enter does nothing
+# ❌ No agent responses (agents disabled for compilation)
+# ❌ Session clicks don't show content
+```
 
 **Definition of Done:**
-```bash
-# This should work:
-cargo run --bin code-assistant -- --ui --use-v2-architecture --task "Hello"
-# 1. UI opens with chat sidebar
-# 2. Type "Hello world" and press Enter
-# 3. New session appears in sidebar
-# 4. Agent responds with greeting
-# 5. Create second session with "+" button
-# 6. Switch between sessions shows different conversations
-```
+- All above items work + agents actually respond to messages
 
 ## 📊 IMPLEMENTATION STATUS MATRIX
 
@@ -478,11 +513,11 @@ cargo run --bin code-assistant -- --ui --use-v2-architecture --task "Hello"
 | **Session Management** | ✅ Complete | 100% | None |
 | **Fragment Buffering** | ✅ Complete | 100% | None |
 | **UI Components** | ✅ Complete | 100% | None |
-| **V2 Architecture** | ⚠️ Inactive | 95% | No activation method |
-| **Agent Spawning** | ❌ Disabled | 80% | UI trait object issues |
-| **UI Communication** | ❌ Missing | 60% | No setup method |
-| **Input Handling** | ❌ Disconnected | 40% | No event routing |
-| **Session Display** | ❌ Broken | 30% | No fragment display |
+| **V2 Architecture** | ✅ CLI-Activatable | 98% | Agents disabled in runtime |
+| **Agent Spawning** | ❌ Disabled | 95% | Mutex across await issues |
+| **UI Communication** | ✅ Implemented | 90% | setup_v2_communication() works |
+| **Input Handling** | ❌ Disconnected | 40% | Enter key not routed |
+| **Session Display** | ❌ Missing | 30% | No fragment display pipeline |
 
 ### **🏆 ACHIEVEMENT SUMMARY**
 
@@ -492,13 +527,13 @@ cargo run --bin code-assistant -- --ui --use-v2-architecture --task "Hello"
 - 🎨 **Beautiful UI** - Chat sidebar, session list, modern 3-column layout
 - 💾 **Robust Persistence** - Full session save/restore with working memory
 
-**What's 95% Done (Just Needs Activation):**
-- 🔧 **V2 Architecture** - Complete implementation waiting for CLI flag
-- 🤖 **Agent System** - On-demand spawning system ready (needs uncommenting)
-- 📡 **Communication** - Event channels implemented (needs method)
-- ⚡ **Stream Processing** - Fragment conversion ready (needs wiring)
+**What's 95% Done (Just Needs Fixes):**
+- 🔧 **V2 Architecture** - CLI activatable, runs but agents disabled
+- 🤖 **Agent System** - MultiSessionManager fully implemented (runtime disabled)
+- 📡 **Communication** - Event channels and setup_v2_communication() working
+- ⚡ **Stream Processing** - Fragment conversion implemented (needs UI wiring)
 
-**Next Milestone:** First working message in V2 architecture! 🎯
+**Next Milestone:** Re-enable agent spawning for first working V2 message! 🎯
 
 ## 🎪 INTEGRATION READINESS SCORE: 8.5/10
 
@@ -562,10 +597,11 @@ cargo run --bin code-assistant -- --ui --use-v2-architecture --task "Hello"
 - [x] **UI Components** - Chat sidebar, session list, layout ✅
 
 ### **🔄 Phase 6: Integration (IN PROGRESS)**
-- [x] **V2 Architecture Foundation** - Complete but inactive 🔄
+- [x] **V2 Architecture Foundation** - Complete and CLI-activatable ✅
 - [x] **Communication Channels** - Async channels implemented ✅
-- [❌] **V2 Activation Method** - Missing CLI flag ❌
-- [❌] **Agent Spawning** - Commented out due to trait issues ❌
+- [x] **V2 Activation Method** - CLI flag `--use-v2-architecture` exists ✅
+- [x] **V2 Communication Setup** - `setup_v2_communication()` method implemented ✅
+- [❌] **Agent Spawning** - Intentionally disabled due to mutex issues ❌
 - [❌] **UI Event Routing** - Events fire but not connected ❌
 - [❌] **Input Message Flow** - Enter key not wired ❌
 
