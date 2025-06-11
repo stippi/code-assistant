@@ -5,14 +5,15 @@ use crate::session::SessionManager;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{parse_tool_xml, TOOL_TAG_PREFIX};
 use crate::types::*;
-use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface};
+use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface, DisplayFragment};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
+use async_trait::async_trait;
 use llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
     StreamingChunk,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing::debug;
@@ -60,6 +61,9 @@ pub struct Agent {
     tool_executions: Vec<crate::agent::types::ToolExecution>,
     // Cached system message
     cached_system_message: OnceLock<String>,
+    // Reference to the SessionInstance for fragment routing (V2 architecture)
+    session_instance_buffer: Option<Arc<Mutex<VecDeque<DisplayFragment>>>>,
+    session_is_ui_active: Option<Arc<Mutex<bool>>>,
 }
 
 impl Agent {
@@ -113,6 +117,8 @@ impl Agent {
             initial_project: None,
             tool_executions: Vec::new(),
             cached_system_message: OnceLock::new(),
+            session_instance_buffer: None,
+            session_is_ui_active: None,
         }
     }
 
@@ -153,6 +159,25 @@ impl Agent {
     /// Set a new UI interface (used for BufferingUI in new architecture)
     pub fn set_ui(&mut self, ui: Arc<Box<dyn UserInterface>>) {
         self.ui = ui;
+    }
+
+    /// Set SessionInstance references for V2 fragment routing
+    pub fn set_session_instance_refs(
+        &mut self,
+        fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
+        is_ui_active: Arc<Mutex<bool>>,
+    ) {
+        self.session_instance_buffer = Some(fragment_buffer);
+        self.session_is_ui_active = Some(is_ui_active);
+    }
+
+    /// Create a routing UI wrapper for this agent that handles fragment buffering
+    pub fn create_routing_ui(&self) -> Arc<Box<dyn UserInterface>> {
+        Arc::new(Box::new(RoutingUserInterface {
+            agent_fragment_buffer: self.session_instance_buffer.clone(),
+            agent_is_ui_active: self.session_is_ui_active.clone(),
+            real_ui: self.ui.clone(),
+        }))
     }
 
     /// Run a single iteration of the agent loop without waiting for user input
@@ -767,16 +792,22 @@ impl Agent {
             debug!("{}", indented);
         }
 
-        // Create a StreamProcessor and use it to process streaming chunks
-        let ui = Arc::clone(&self.ui);
+        // Create a StreamProcessor with routing UI if session instance refs are available
+        let routing_ui = if self.session_instance_buffer.is_some() && self.session_is_ui_active.is_some() {
+            self.create_routing_ui()
+        } else {
+            Arc::clone(&self.ui)
+        };
+
         let processor = Arc::new(Mutex::new(create_stream_processor(
             self.tool_mode,
-            ui.clone(),
+            routing_ui.clone(),
         )));
 
+        let ui_for_callback = routing_ui.clone();
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
             // Check if streaming should continue
-            if !ui.should_streaming_continue() {
+            if !ui_for_callback.should_streaming_continue() {
                 debug!("Streaming should stop - user requested cancellation");
                 return Err(anyhow::anyhow!("Streaming cancelled by user"));
             }
@@ -1040,6 +1071,77 @@ impl Agent {
         })).await?;
 
         Ok(())
+    }
+}
+
+/// A UserInterface wrapper that routes fragments through the Agent's buffering logic
+struct RoutingUserInterface {
+    agent_fragment_buffer: Option<Arc<Mutex<VecDeque<DisplayFragment>>>>,
+    agent_is_ui_active: Option<Arc<Mutex<bool>>>,
+    real_ui: Arc<Box<dyn UserInterface>>,
+}
+
+#[async_trait]
+impl UserInterface for RoutingUserInterface {
+    async fn display(&self, message: crate::ui::UIMessage) -> Result<(), crate::ui::UIError> {
+        self.real_ui.display(message).await
+    }
+
+    async fn get_input(&self) -> Result<String, crate::ui::UIError> {
+        self.real_ui.get_input().await
+    }
+
+    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), crate::ui::UIError> {
+        // Route through the same logic as Agent::route_fragment
+
+        // Always buffer in SessionInstance (if references are available)
+        if let Some(buffer) = &self.agent_fragment_buffer {
+            if let Ok(mut buf) = buffer.lock() {
+                buf.push_back(fragment.clone());
+
+                // Keep buffer size reasonable
+                while buf.len() > 1000 {
+                    buf.pop_front();
+                }
+            }
+        }
+
+        // If UI is active, also send directly to UI
+        if let Some(ui_active) = &self.agent_is_ui_active {
+            if let Ok(active) = ui_active.lock() {
+                if *active {
+                    return self.real_ui.display_fragment(fragment);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn update_tool_status(
+        &self,
+        tool_id: &str,
+        status: crate::ui::ToolStatus,
+        message: Option<String>,
+        output: Option<String>,
+    ) -> Result<(), crate::ui::UIError> {
+        self.real_ui.update_tool_status(tool_id, status, message, output).await
+    }
+
+    async fn update_memory(&self, memory: &crate::types::WorkingMemory) -> Result<(), crate::ui::UIError> {
+        self.real_ui.update_memory(memory).await
+    }
+
+    async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> {
+        self.real_ui.begin_llm_request().await
+    }
+
+    async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), crate::ui::UIError> {
+        self.real_ui.end_llm_request(request_id, cancelled).await
+    }
+
+    fn should_streaming_continue(&self) -> bool {
+        self.real_ui.should_streaming_continue()
     }
 }
 

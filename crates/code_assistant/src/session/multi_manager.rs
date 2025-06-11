@@ -39,6 +39,13 @@ pub struct AgentConfig {
     pub initial_project: Option<String>,
 }
 
+/// Data returned when switching sessions
+pub struct SessionSwitchData {
+    pub session_id: String,
+    pub messages: Vec<Message>,
+    pub buffered_fragments: Vec<DisplayFragment>,
+}
+
 impl MultiSessionManager {
     /// Create a new MultiSessionManager
     pub fn new(persistence: FileStatePersistence, agent_config: AgentConfig) -> Self {
@@ -103,8 +110,21 @@ impl MultiSessionManager {
         Ok(messages)
     }
 
-    /// Set the UI-active session
-    pub async fn set_active_session(&mut self, session_id: String) -> Result<()> {
+    /// Set the UI-active session and return data for UI update
+    pub async fn set_active_session(&mut self, session_id: String) -> Result<SessionSwitchData> {
+        // Deactivate old session
+        {
+            let active_id = self.active_session_id.lock().unwrap();
+            if let Some(old_id) = active_id.as_ref() {
+                if old_id != &session_id {
+                    let mut active_sessions = self.active_sessions.lock().unwrap();
+                    if let Some(old_session) = active_sessions.get_mut(old_id) {
+                        old_session.set_ui_active(false);
+                    }
+                }
+            }
+        }
+
         // Check if session exists
         let session_exists = {
             let active_sessions = self.active_sessions.lock().unwrap();
@@ -116,13 +136,31 @@ impl MultiSessionManager {
             self.load_session(&session_id).await?;
         }
 
+        // Activate new session and collect data
+        let session_data = {
+            let mut active_sessions = self.active_sessions.lock().unwrap();
+            let session_instance = active_sessions.get_mut(&session_id).unwrap();
+
+            session_instance.set_ui_active(true);
+
+            SessionSwitchData {
+                session_id: session_id.clone(),
+                messages: session_instance.session.messages.clone(),
+                buffered_fragments: if session_instance.is_streaming {
+                    session_instance.get_buffered_fragments(false) // Don't clear buffer
+                } else {
+                    Vec::new() // No agent running = no buffered fragments
+                }
+            }
+        };
+
         // Set as active
         {
             let mut active_id = self.active_session_id.lock().unwrap();
             *active_id = Some(session_id);
         }
 
-        Ok(())
+        Ok(session_data)
     }
 
     /// Get the currently UI-active session ID
@@ -141,7 +179,8 @@ impl MultiSessionManager {
         command_executor: Box<dyn CommandExecutor>,
         ui: Arc<Box<dyn UserInterface>>,
     ) -> Result<()> {
-        let _message_id = {
+        // Prepare session and get references for agent
+        let (message_id, fragment_buffer, is_ui_active) = {
             let mut active_sessions = self.active_sessions.lock().unwrap();
             let session_instance = active_sessions
                 .get_mut(session_id)
@@ -158,7 +197,11 @@ impl MultiSessionManager {
             let message_id = session_instance.get_last_message_id();
             session_instance.start_streaming(message_id.clone());
 
-            message_id
+            // Get references for agent
+            let fragment_buffer = session_instance.get_fragment_buffer();
+            let is_ui_active = Arc::new(Mutex::new(session_instance.is_ui_active()));
+
+            (message_id, fragment_buffer, is_ui_active)
         };
 
         // Create a new agent for this session
@@ -173,6 +216,9 @@ impl MultiSessionManager {
             session_manager_for_agent,
             self.agent_config.init_path.clone(),
         );
+
+        // Set SessionInstance references for fragment routing
+        agent.set_session_instance_refs(fragment_buffer, is_ui_active);
 
         // Load the session state into the agent
         let session_state = {

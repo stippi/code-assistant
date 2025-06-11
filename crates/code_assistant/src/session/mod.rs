@@ -12,7 +12,7 @@ pub mod instance;
 pub mod multi_manager;
 
 pub use instance::SessionInstance;
-pub use multi_manager::{MultiSessionManager, AgentConfig};
+pub use multi_manager::{MultiSessionManager, AgentConfig, SessionSwitchData};
 
 /// Manages chat sessions independently from the Agent
 pub struct SessionManager {

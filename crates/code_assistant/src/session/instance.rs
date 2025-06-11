@@ -26,6 +26,10 @@ pub struct SessionInstance {
     /// Whether this session is currently streaming
     pub is_streaming: bool,
 
+    /// Whether this session is currently connected to the UI
+    /// (only the active session should be true)
+    pub is_ui_active: bool,
+
     /// The ID of the currently streaming message (if any)
     pub streaming_message_id: Option<String>,
 
@@ -44,6 +48,7 @@ impl SessionInstance {
             task_handle: None,
             fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
             is_streaming: false,
+            is_ui_active: false,
             streaming_message_id: None,
             agent_completed: false,
             last_agent_error: None,
@@ -175,5 +180,20 @@ impl SessionInstance {
     /// Get the last message ID for streaming identification
     pub fn get_last_message_id(&self) -> String {
         format!("msg_{}_{}", self.session.id, self.session.messages.len())
+    }
+
+    /// Set UI active state for this session
+    pub fn set_ui_active(&mut self, active: bool) {
+        self.is_ui_active = active;
+    }
+
+    /// Check if this session is currently connected to the UI
+    pub fn is_ui_active(&self) -> bool {
+        self.is_ui_active
+    }
+
+    /// Get fragment buffer reference for agent access
+    pub fn get_fragment_buffer(&self) -> Arc<Mutex<VecDeque<DisplayFragment>>> {
+        self.fragment_buffer.clone()
     }
 }
