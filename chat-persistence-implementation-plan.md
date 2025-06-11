@@ -205,16 +205,158 @@ pub enum ChatManagementResponse {
 - **Event Sending**: `try_send()` for synchronous UI contexts, `send().await` for async
 - **Event Processing**: Full pipeline working with comprehensive logging
 
-## 🎯 Next Phase: Session Loading & UI State Management
+## 🎯 Current Implementation Status: Session Loading Communication Fixed
 
-### **Current State - What Works**
+### **✅ Architecture Problem Solved: Agent Blocking During Input Wait**
+
+**Previous Problem**: Agent's `run_agent_loop()` was blocked when waiting for user input via `get_input()`, so `SwitchToSession` commands never reached the agent.
+
+**Solution Implemented**:
+- **Removed agent command processing from agent loop** - no more `try_recv()` calls that never execute
+- **Session loading moved to Chat Management Task** - bypasses agent completely during loading
+- **Simplified communication flow**: UI → Chat Management → SessionManager → UI
+
+**New Flow:**
+```
+UI Click → LoadChatSession → Chat Management Task → load_session() → SessionLoaded Response → UI
+```
+
+### **✅ What Works Now**
 - ✅ Chat sidebar displays all sessions
 - ✅ Plus button sends CreateNewChatSession events
 - ✅ Session clicks send LoadChatSession events
-- ✅ Full event pipeline: UI ↔ Agent communication working
+- ✅ **Communication works even when agent waits for input**
+- ✅ Session loading succeeds (logs show "Loaded session X with N messages")
+- ✅ Old messages clear from UI
+- ✅ Session becomes active in sidebar
 
-### **Next Challenge: Message Loading & Session Switching**
-The current system only supports **building messages through streaming** (DisplayFragment by DisplayFragment). For session switching, we need to **replace the entire message list at once**.
+### **🚨 Critical Problem Identified: Agent State Desynchronization**
+
+**Current Issue**: Session loading only updates the UI, but **Agent's message_history remains unchanged**.
+
+**Result**:
+- ✅ UI shows new session messages (when implemented)
+- ❌ Agent still has old session's message_history
+- ❌ New user messages get appended to wrong conversation
+- ❌ Agent context is completely wrong
+
+**Required Fix**: Agent state must be synchronized when session changes.
+
+### **✅ Session Loading Implementation Status (Partially Complete)**
+
+**What's Implemented:**
+1. ✅ **UI Communication Fixed** - LoadChatSession works even when agent waits for input
+2. ✅ **Session Loading in Chat Management Task** - Bypasses agent completely during loading
+3. ✅ **SetMessages Event Generation** - `create_fragments_from_messages()` implemented in UI
+4. ✅ **Fragment Creation Working** - Reuses StreamProcessor logic via `extract_fragments_from_message()`
+5. ✅ **UI Message Display** - Loaded session messages now appear in UI correctly
+
+**Current Files Modified:**
+- `main.rs` (lines 421+): Chat Management Task loads sessions directly
+- `ui/gpui/mod.rs` (lines 630+): `handle_chat_response()` processes loaded messages
+- `ui/gpui/mod.rs` (lines 696+): `create_fragments_from_messages()` converts messages to fragments
+- `ui/gpui/mod.rs` (lines 68): `ChatManagementResponse::SessionLoaded` includes messages
+
+**New Architecture Flow:**
+```
+UI Click → LoadChatSession → Chat Management Task → SessionManager.load_session()
+→ SessionLoaded{messages} → UI.create_fragments_from_messages() → SetMessages → UI Display
+```
+
+### **🚨 Critical Problem: Agent State Desynchronization**
+
+**Issue**: UI shows correct messages from loaded session, but **Agent still has old session state**.
+
+**Specific Problems:**
+- ❌ Agent's `message_history` still contains old conversation
+- ❌ Agent's `tool_executions` from wrong session
+- ❌ Agent's `working_memory` from wrong session
+- ❌ Next user input gets appended to wrong conversation
+- ❌ Agent has completely wrong context for responses
+
+**Result**: UI and Agent are completely out of sync after session switch.
+
+### **🔮 Revolutionary Idea: Session-Based Agent Management**
+
+**Current Architecture Problem:**
+- Single Agent instance with mutable state
+- Complex state synchronization required
+- Agent loop blocks on input wait
+- Session switching requires state juggling
+
+**New Proposed Architecture:**
+```rust
+struct SessionManager {
+    sessions: HashMap<String, SessionInstance>,
+    active_session_id: Option<String>,
+}
+
+struct SessionInstance {
+    agent: Option<Agent>,
+    task_handle: Option<JoinHandle<()>>,
+    state: SessionState,
+    is_streaming: bool,
+}
+```
+
+**Paradigm Shift: "Session Switching" → "Session Activation"**
+
+**New Flow:**
+1. **User Input** → SessionManager identifies target session
+2. **Append Message** to session.state.messages
+3. **Spawn Agent Loop** for this specific session (if not already running)
+4. **Agent runs** until completion/error/stop → **terminates cleanly**
+5. **No input wait blocking** - agent loops just end
+6. **Session Switch** = activate different SessionInstance
+
+**Revolutionary Benefits:**
+- ✅ **Perfect State Isolation** - each session has its own Agent with own message_history
+- ✅ **No State Synchronization** - no need to update agent state on session switch
+- ✅ **No Blocking Issues** - agent loops terminate instead of waiting for input
+- ✅ **True Parallel Streaming** - multiple sessions can stream simultaneously
+- ✅ **Clean Session Switching** - just change active_session_id
+- ✅ **Automatic Persistence** - session state managed by SessionInstance
+
+**Advanced Features Possible:**
+- Multiple sessions streaming in background
+- UI switches between active streams
+- Background sessions continue processing
+- Per-session LLM provider/model settings
+- Session pause/resume functionality
+
+**Implementation Strategy:**
+1. **SessionManager Enhancement** - manage Agent lifecycle per session
+2. **Agent Lifecycle** - spawn/terminate pattern instead of persistent loop
+3. **UI Events Enhanced** - include session_id in all streaming events
+4. **Session Activation** - UI activates session rather than loading state
+
+**Stream Switching Solution:**
+```rust
+// UI receives events with session context
+UiEvent::StreamFragment { session_id, fragment }
+
+// UI only processes events from active session
+if session_id == self.active_session_id {
+    self.display_fragment(fragment);
+}
+```
+
+This architecture eliminates the entire class of state synchronization problems and enables much more powerful session management.
+
+### **🎯 Next Session Roadmap**
+
+**Option A: Fix Current Architecture**
+- Implement Agent state synchronization
+- Handle the complexity of state updates
+- Still have blocking and single-session limitations
+
+**Option B: Implement Session-Based Agent Management** ⭐ **RECOMMENDED**
+- Revolutionary architecture upgrade
+- Solves all current problems elegantly
+- Enables advanced features like parallel streaming
+- Much cleaner and more maintainable code
+
+The Session-Based approach is significantly better long-term and solves the root architectural issues rather than patching symptoms.
 
 **Current Message Flow:**
 ```

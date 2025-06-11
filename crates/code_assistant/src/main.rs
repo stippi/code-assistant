@@ -388,14 +388,9 @@ fn run_agent_gpui(
                 Some(root_path.clone()),
             );
 
-            // Create agent command channel for session switching
-            let (agent_command_tx, agent_command_rx) = async_channel::unbounded::<crate::agent::AgentCommand>();
-            agent.set_command_receiver(agent_command_rx);
-
             // Clone necessary data for chat management task
             let chat_event_rx_clone = chat_event_rx.clone();
             let chat_response_tx_clone = chat_response_tx.clone();
-            let agent_command_sender = Some(agent_command_tx);
 
             // Spawn task to handle chat management events
             // Keep the task handle to prevent it from being dropped
@@ -419,23 +414,24 @@ fn run_agent_gpui(
                             }
                         }
                         ui::gpui::ChatManagementEvent::LoadSession { session_id } => {
-                            // Send command to agent to switch session
-                            // Agent will handle UI updates directly via SetMessages
-                            if let Some(sender) = agent_command_sender.as_ref() {
-                                if let Err(e) = sender.try_send(crate::agent::AgentCommand::SwitchToSession {
-                                    session_id: session_id.clone()
-                                }) {
-                                    tracing::error!("Failed to send switch session command: {}", e);
-                                    ui::gpui::ChatManagementResponse::Error {
-                                        message: format!("Failed to switch session: {}", e),
+                            // Load session and send fragments directly to UI
+                            let persistence = crate::persistence::FileStatePersistence::new(root_path.clone());
+                            let mut session_manager = crate::session::SessionManager::new(persistence);
+
+                            match session_manager.load_session(&session_id) {
+                                Ok(session_state) => {
+                                    tracing::info!("Loaded session {} with {} messages", session_id, session_state.messages.len());
+
+                                    ui::gpui::ChatManagementResponse::SessionLoaded {
+                                        session_id,
+                                        messages: session_state.messages
                                     }
-                                } else {
-                                    // Don't send immediate response - agent will update UI directly
-                                    continue;
                                 }
-                            } else {
-                                ui::gpui::ChatManagementResponse::Error {
-                                    message: "Agent command channel not available".to_string(),
+                                Err(e) => {
+                                    tracing::error!("Failed to load session {}: {}", session_id, e);
+                                    ui::gpui::ChatManagementResponse::Error {
+                                        message: format!("Failed to load session: {}", e),
+                                    }
                                 }
                             }
                         }

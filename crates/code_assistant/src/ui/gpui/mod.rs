@@ -15,8 +15,8 @@ pub mod theme;
 pub mod ui_events;
 
 use crate::persistence::ChatMetadata;
-
 use crate::types::WorkingMemory;
+use crate::ui::gpui::ui_events::MessageData;
 use crate::ui::gpui::{
     content_renderer::ContentRenderer,
     diff_renderer::DiffParameterRenderer,
@@ -28,6 +28,7 @@ use crate::ui::gpui::{
 use crate::ui::{
     async_trait, DisplayFragment, StreamingState, ToolStatus, UIError, UIMessage, UserInterface,
 };
+use llm;
 use assets::Assets;
 use async_channel;
 use gpui::{actions, px, AppContext, AsyncApp, Entity, Global, Point};
@@ -64,7 +65,7 @@ pub enum ChatManagementEvent {
 // Response from agent to UI for chat management
 #[derive(Debug, Clone)]
 pub enum ChatManagementResponse {
-    SessionLoaded { session_id: String },
+    SessionLoaded { session_id: String, messages: Vec<llm::Message> },
     SessionCreated { session_id: String, name: String },
     SessionDeleted { session_id: String },
     SessionsListed { sessions: Vec<ChatMetadata> },
@@ -91,6 +92,7 @@ pub struct Gpui {
     // Chat management communication
     chat_event_sender: Arc<Mutex<Option<async_channel::Sender<ChatManagementEvent>>>>,
     chat_response_receiver: Arc<Mutex<Option<async_channel::Receiver<ChatManagementResponse>>>>,
+
     // Current chat state
     current_session_id: Arc<Mutex<Option<String>>>,
     chat_sessions: Arc<Mutex<Vec<ChatMetadata>>>,
@@ -159,6 +161,7 @@ impl Gpui {
             streaming_state,
             chat_event_sender: Arc::new(Mutex::new(None)),
             chat_response_receiver: Arc::new(Mutex::new(None)),
+
             current_session_id: Arc::new(Mutex::new(None)),
             chat_sessions: Arc::new(Mutex::new(Vec::new())),
         }
@@ -629,10 +632,24 @@ impl Gpui {
     fn handle_chat_response(&self, response: ChatManagementResponse, _cx: &mut AsyncApp) {
         tracing::info!("UI: Received chat management response: {:?}", response);
         match response {
-            ChatManagementResponse::SessionLoaded { session_id } => {
-                *self.current_session_id.lock().unwrap() = Some(session_id);
-                // Clear messages for the new session
-                self.message_queue.lock().unwrap().clear();
+            ChatManagementResponse::SessionLoaded { session_id, messages } => {
+                *self.current_session_id.lock().unwrap() = Some(session_id.clone());
+
+                // Create fragments from loaded messages and send SetMessages event
+                match self.create_fragments_from_messages(&messages) {
+                    Ok(message_data) => {
+                        tracing::info!("Created {} message containers from loaded session", message_data.len());
+                        self.push_event(UiEvent::SetMessages {
+                            messages: message_data,
+                            session_id: Some(session_id)
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create fragments from messages: {}", e);
+                        // Fallback: just clear messages
+                        self.message_queue.lock().unwrap().clear();
+                    }
+                }
             }
             ChatManagementResponse::SessionCreated {
                 session_id,
@@ -670,6 +687,56 @@ impl Gpui {
             sessions: self.chat_sessions.lock().unwrap().clone(),
         });
     }
+
+
+}
+
+impl Gpui {
+    // Create message data from loaded session messages using StreamProcessor
+    fn create_fragments_from_messages(&self, messages: &[llm::Message]) -> Result<Vec<MessageData>, UIError> {
+        use crate::ui::streaming::create_stream_processor;
+
+        // Create dummy UI for stream processor (same as in Agent)
+        struct DummyUI;
+        #[async_trait::async_trait]
+        impl crate::ui::UserInterface for DummyUI {
+            async fn display(&self, _message: crate::ui::UIMessage) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn get_input(&self) -> Result<String, crate::ui::UIError> { Ok("".to_string()) }
+            fn display_fragment(&self, _fragment: &crate::ui::DisplayFragment) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn update_memory(&self, _memory: &crate::types::WorkingMemory) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn update_tool_status(&self, _tool_id: &str, _status: crate::ui::ToolStatus, _message: Option<String>, _output: Option<String>) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> { Ok(0) }
+            async fn end_llm_request(&self, _request_id: u64, _cancelled: bool) -> Result<(), crate::ui::UIError> { Ok(()) }
+            fn should_streaming_continue(&self) -> bool { true }
+        }
+
+        let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
+
+        // Use Native mode as default - TODO: Get actual tool mode from somewhere
+        let mut processor = create_stream_processor(crate::types::ToolMode::Native, dummy_ui);
+
+        let mut messages_data = Vec::new();
+        tracing::info!("Processing {} messages for UI fragments", messages.len());
+
+        for (i, message) in messages.iter().enumerate() {
+            match processor.extract_fragments_from_message(message) {
+                Ok(fragments) => {
+                    let role = match message.role {
+                        llm::MessageRole::User => MessageRole::User,
+                        llm::MessageRole::Assistant => MessageRole::Assistant,
+                    };
+                    tracing::info!("Message {}: Extracted {} fragments", i, fragments.len());
+                    messages_data.push(MessageData { role, fragments });
+                }
+                Err(e) => {
+                    tracing::error!("Message {}: Failed to extract fragments: {}", i, e);
+                }
+            }
+        }
+
+        tracing::info!("Created {} message containers", messages_data.len());
+        Ok(messages_data)
+    }
 }
 
 #[async_trait]
@@ -706,8 +773,9 @@ impl UserInterface for Gpui {
             *requested = true;
         }
 
-        // Wait for input
+        // Wait for input or commands
         loop {
+            // Check for user input
             {
                 let mut input = self.input_value.lock().unwrap();
                 if let Some(value) = input.take() {
@@ -717,6 +785,9 @@ impl UserInterface for Gpui {
                     return Ok(value);
                 }
             }
+
+
+
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }

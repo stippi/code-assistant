@@ -255,21 +255,8 @@ impl Agent {
         let mut request_counter: u64 = 0;
 
         loop {
-            // Check for incoming commands first
-            if let Some(command_receiver) = &self.command_receiver {
-                // Use try_recv to not block if no commands are waiting
-                if let Ok(command) = command_receiver.try_recv() {
-                    match command {
-                        AgentCommand::SwitchToSession { session_id } => {
-                            tracing::info!("Agent: Switching to session {}", session_id);
-                            if let Err(e) = self.switch_to_session(&session_id).await {
-                                tracing::error!("Failed to switch to session {}: {}", session_id, e);
-                            }
-                            continue; // Skip normal agent processing for this iteration
-                        }
-                    }
-                }
-            }
+            // Commands are now processed by main.rs chat management task
+            // This avoids blocking when agent waits for input
             let messages = self.prepare_messages();
             if self.message_history.is_empty() {
                 // This ensures that on the very first run, the initial task (user message)
