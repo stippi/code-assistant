@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::agent::types::ToolExecution;
 use crate::session::SessionManager;
-use crate::types::WorkingMemory;
+use crate::types::{ToolMode, WorkingMemory};
 
 /// Trait for persisting agent state
 /// This abstracts away the storage mechanism from the Agent implementation
@@ -60,11 +60,12 @@ impl AgentStatePersistence for MockStatePersistence {
 /// This allows existing SessionManager code to work with the new Agent interface
 pub struct SessionManagerStatePersistence {
     session_manager: SessionManager,
+    tool_mode: ToolMode,
 }
 
 impl SessionManagerStatePersistence {
-    pub fn new(session_manager: SessionManager) -> Self {
-        Self { session_manager }
+    pub fn new(session_manager: SessionManager, tool_mode: ToolMode) -> Self {
+        Self { session_manager, tool_mode }
     }
     
     pub fn session_manager(&self) -> &SessionManager {
@@ -92,7 +93,7 @@ impl AgentStatePersistence for SessionManagerStatePersistence {
             } else {
                 None
             };
-            let _session_id = self.session_manager.create_session(task_name)?;
+            let _session_id = self.session_manager.create_session(task_name, self.tool_mode)?;
         }
 
         self.session_manager.save_session(

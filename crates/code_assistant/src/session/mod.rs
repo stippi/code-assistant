@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use crate::agent::ToolExecution;
 use crate::persistence::{ChatMetadata, ChatSession, FileStatePersistence, generate_session_id};
-use crate::types::WorkingMemory;
+use crate::types::{ToolMode, WorkingMemory};
 
 // New session management architecture
 pub mod instance;
@@ -39,7 +39,7 @@ impl SessionManager {
     }
 
     /// Create a new chat session and return its ID
-    pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
+    pub fn create_session(&mut self, name: Option<String>, tool_mode: ToolMode) -> Result<String> {
         let session_id = generate_session_id();
         let session_name = name.unwrap_or_else(|| format!("Chat {}", &session_id[5..13])); // Show part of ID
 
@@ -53,6 +53,7 @@ impl SessionManager {
             working_memory: WorkingMemory::default(),
             init_path: None,
             initial_project: None,
+            tool_mode,
         };
 
         self.persistence.save_chat_session(&session)?;

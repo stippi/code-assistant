@@ -318,7 +318,7 @@ async fn run_agent_terminal(
     .context("Failed to initialize LLM client")?;
 
     // Initialize agent with session manager wrapped in StatePersistence
-    let state_storage = Box::new(SessionManagerStatePersistence::new(session_manager));
+    let state_storage = Box::new(SessionManagerStatePersistence::new(session_manager, tools_type));
     let mut agent = Agent::new(
         llm_client,
         tools_type,
@@ -385,7 +385,7 @@ fn run_agent_gpui(
             .expect("Failed to initialize LLM client");
 
             // Initialize agent with session manager wrapped in StatePersistence
-            let state_storage = Box::new(SessionManagerStatePersistence::new(session_manager));
+            let state_storage = Box::new(SessionManagerStatePersistence::new(session_manager, tools_type));
             let mut agent = Agent::new(
                 llm_client,
                 tools_type,
@@ -448,7 +448,7 @@ fn run_agent_gpui(
                                 crate::persistence::FileStatePersistence::new(root_path.clone());
                             let mut session_manager =
                                 crate::session::SessionManager::new(persistence);
-                            match session_manager.create_session(name) {
+                            match session_manager.create_session(name, tools_type) {
                                 Ok(session_id) => {
                                     let display_name = format!("Chat {}", &session_id[5..13]);
                                     ui::gpui::ChatManagementResponse::SessionCreated {
@@ -546,7 +546,7 @@ async fn run_agent(args: Args) -> Result<()> {
     } else {
         // Create new session with task
         if task.is_some() {
-            let new_session_id = session_manager.create_session(None)?;
+            let new_session_id = session_manager.create_session(None, tools_type)?;
             println!("Created new chat session: {}", new_session_id);
             (task, None)
         } else {

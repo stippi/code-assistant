@@ -72,6 +72,7 @@ impl MultiSessionManager {
             working_memory: WorkingMemory::default(),
             init_path: self.agent_config.init_path.clone(),
             initial_project: self.agent_config.initial_project.clone(),
+            tool_mode: self.agent_config.tool_mode,
         };
 
         // Save to persistence
@@ -110,8 +111,8 @@ impl MultiSessionManager {
         Ok(messages)
     }
 
-    /// Set the UI-active session and return data for UI update
-    pub async fn set_active_session(&mut self, session_id: String) -> Result<SessionSwitchData> {
+    /// Set the UI-active session and return events for UI update  
+    pub async fn set_active_session(&mut self, session_id: String) -> Result<Vec<crate::ui::gpui::ui_events::UiEvent>> {
         // Deactivate old session
         {
             let active_id = self.active_session_id.lock().unwrap();
@@ -136,22 +137,15 @@ impl MultiSessionManager {
             self.load_session(&session_id).await?;
         }
 
-        // Activate new session and collect data
-        let session_data = {
+        // Activate new session and generate UI events
+        let ui_events = {
             let mut active_sessions = self.active_sessions.lock().unwrap();
             let session_instance = active_sessions.get_mut(&session_id).unwrap();
 
             session_instance.set_ui_active(true);
 
-            SessionSwitchData {
-                session_id: session_id.clone(),
-                messages: session_instance.session.messages.clone(),
-                buffered_fragments: if session_instance.is_streaming {
-                    session_instance.get_buffered_fragments(false) // Don't clear buffer
-                } else {
-                    Vec::new() // No agent running = no buffered fragments
-                }
-            }
+            // Generate UI events for connecting to this session
+            session_instance.generate_session_connect_events()?
         };
 
         // Set as active
@@ -160,7 +154,7 @@ impl MultiSessionManager {
             *active_id = Some(session_id);
         }
 
-        Ok(session_data)
+        Ok(ui_events)
     }
 
     /// Get the currently UI-active session ID
@@ -206,7 +200,7 @@ impl MultiSessionManager {
 
         // Create a new agent for this session
         let session_manager_for_agent = crate::session::SessionManager::new(self.persistence.clone());
-        let state_storage = Box::new(SessionManagerStatePersistence::new(session_manager_for_agent));
+        let state_storage = Box::new(SessionManagerStatePersistence::new(session_manager_for_agent, self.agent_config.tool_mode));
 
         let mut agent = crate::agent::Agent::new(
             llm_provider,
@@ -410,6 +404,21 @@ impl MultiSessionManager {
     /// Get the latest session ID for auto-resuming
     pub fn get_latest_session_id(&self) -> Result<Option<String>> {
         self.persistence.get_latest_session_id()
+    }
+
+    /// Helper method to send UI events for session connection
+    /// This method sends multiple UI events over the channel to properly connect to a session
+    pub async fn send_session_connect_events(
+        ui_events: Vec<crate::ui::gpui::ui_events::UiEvent>,
+        ui_event_sender: &async_channel::Sender<crate::ui::UIMessage>,
+    ) -> Result<()> {
+        for event in ui_events {
+            ui_event_sender
+                .send(crate::ui::UIMessage::UiEvent(event))
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to send UI event: {}", e))?;
+        }
+        Ok(())
     }
 }
 

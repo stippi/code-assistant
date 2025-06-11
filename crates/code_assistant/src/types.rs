@@ -236,7 +236,7 @@ pub struct SearchResult {
 }
 
 /// Specifies the tool integration mode
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ToolMode {
     /// Native tools via API
     Native,

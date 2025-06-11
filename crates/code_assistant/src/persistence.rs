@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
 
 use crate::agent::ToolRequest;
-use crate::types::WorkingMemory;
+use crate::types::{ToolMode, WorkingMemory};
 
 /// A complete chat session with all its data
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -29,6 +29,8 @@ pub struct ChatSession {
     pub init_path: Option<PathBuf>,
     /// Initial project name
     pub initial_project: Option<String>,
+    /// Tool mode used for this session (XML or Native)
+    pub tool_mode: ToolMode,
 }
 
 /// Serialized representation of a tool execution

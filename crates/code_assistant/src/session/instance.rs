@@ -5,8 +5,12 @@ use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 
 // Agent instances are created on-demand, no need to import
-use crate::ui::DisplayFragment;
+use crate::ui::{DisplayFragment, UIError, UIMessage, UserInterface};
+use crate::ui::gpui::ui_events::{UiEvent, MessageData};
+use crate::ui::gpui::elements::MessageRole;
+use crate::ui::streaming::create_stream_processor;
 use crate::persistence::ChatSession;
+use async_trait::async_trait;
 
 /// Represents a single session instance with its own agent and state
 pub struct SessionInstance {
@@ -28,7 +32,7 @@ pub struct SessionInstance {
 
     /// Whether this session is currently connected to the UI
     /// (only the active session should be true)
-    pub is_ui_active: bool,
+    pub is_ui_active: Arc<Mutex<bool>>,
 
     /// The ID of the currently streaming message (if any)
     pub streaming_message_id: Option<String>,
@@ -48,7 +52,7 @@ impl SessionInstance {
             task_handle: None,
             fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
             is_streaming: false,
-            is_ui_active: false,
+            is_ui_active: Arc::new(Mutex::new(false)),
             streaming_message_id: None,
             agent_completed: false,
             last_agent_error: None,
@@ -184,16 +188,213 @@ impl SessionInstance {
 
     /// Set UI active state for this session
     pub fn set_ui_active(&mut self, active: bool) {
-        self.is_ui_active = active;
+        if let Ok(mut ui_active) = self.is_ui_active.lock() {
+            *ui_active = active;
+        }
     }
 
     /// Check if this session is currently connected to the UI
     pub fn is_ui_active(&self) -> bool {
-        self.is_ui_active
+        self.is_ui_active.lock().map(|active| *active).unwrap_or(false)
     }
 
     /// Get fragment buffer reference for agent access
     pub fn get_fragment_buffer(&self) -> Arc<Mutex<VecDeque<DisplayFragment>>> {
         self.fragment_buffer.clone()
+    }
+
+    /// Create a ProxyUI for this session that handles fragment buffering
+    pub fn create_proxy_ui(&self, real_ui: Arc<Box<dyn UserInterface>>) -> Arc<Box<dyn UserInterface>> {
+        Arc::new(Box::new(ProxyUI::new(
+            real_ui,
+            self.fragment_buffer.clone(),
+            self.is_ui_active.clone(),
+        )))
+    }
+
+    /// Generate UI events for connecting to this session
+    /// Returns both the session messages and any buffered fragments from current streaming
+    pub fn generate_session_connect_events(&self) -> Result<Vec<UiEvent>, anyhow::Error> {
+        let mut events = Vec::new();
+
+        // First event: Set all session messages
+        if !self.session.messages.is_empty() {
+            let messages_data = self.convert_messages_to_ui_data(self.session.tool_mode)?;
+            events.push(UiEvent::SetMessages {
+                messages: messages_data,
+                session_id: Some(self.session.id.clone()),
+            });
+        } else {
+            // Clear messages if session is empty
+            events.push(UiEvent::ClearMessages);
+        }
+
+        // Second event: Load buffered fragments if currently streaming
+        if self.is_streaming {
+            let buffered_fragments = self.get_buffered_fragments(false); // Don't clear buffer
+            if !buffered_fragments.is_empty() {
+                events.push(UiEvent::LoadSessionFragments {
+                    fragments: buffered_fragments,
+                    session_id: self.session.id.clone(),
+                });
+            }
+        }
+
+        Ok(events)
+    }
+
+    /// Convert session messages to UI MessageData format
+    fn convert_messages_to_ui_data(&self, tool_mode: crate::types::ToolMode) -> Result<Vec<MessageData>, anyhow::Error> {
+        // Create dummy UI for stream processor
+        struct DummyUI;
+        #[async_trait::async_trait]
+        impl crate::ui::UserInterface for DummyUI {
+            async fn display(&self, _message: crate::ui::UIMessage) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn get_input(&self) -> Result<String, crate::ui::UIError> { Ok("".to_string()) }
+            fn display_fragment(&self, _fragment: &crate::ui::DisplayFragment) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn update_memory(&self, _memory: &crate::types::WorkingMemory) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn update_tool_status(&self, _tool_id: &str, _status: crate::ui::ToolStatus, _message: Option<String>, _output: Option<String>) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> { Ok(0) }
+            async fn end_llm_request(&self, _request_id: u64, _cancelled: bool) -> Result<(), crate::ui::UIError> { Ok(()) }
+            fn should_streaming_continue(&self) -> bool { true }
+        }
+
+        let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
+        let mut processor = create_stream_processor(tool_mode, dummy_ui);
+
+        let mut messages_data = Vec::new();
+
+        for message in &self.session.messages {
+            match processor.extract_fragments_from_message(message) {
+                Ok(fragments) => {
+                    let role = match message.role {
+                        llm::MessageRole::User => MessageRole::User,
+                        llm::MessageRole::Assistant => MessageRole::Assistant,
+                    };
+                    messages_data.push(MessageData { role, fragments });
+                }
+                Err(e) => {
+                    tracing::error!("Failed to extract fragments from message: {}", e);
+                    // Continue with other messages even if one fails
+                }
+            }
+        }
+
+        Ok(messages_data)
+    }
+}
+
+/// ProxyUI that buffers fragments and conditionally forwards to real UI
+struct ProxyUI {
+    real_ui: Arc<Box<dyn UserInterface>>,
+    fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
+    is_session_active: Arc<Mutex<bool>>,
+}
+
+impl ProxyUI {
+    pub fn new(
+        real_ui: Arc<Box<dyn UserInterface>>,
+        fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
+        is_session_active: Arc<Mutex<bool>>,
+    ) -> Self {
+        Self {
+            real_ui,
+            fragment_buffer,
+            is_session_active,
+        }
+    }
+
+    /// Check if this session is currently active
+    fn is_active(&self) -> bool {
+        self.is_session_active.lock().map(|active| *active).unwrap_or(false)
+    }
+}
+
+#[async_trait]
+impl UserInterface for ProxyUI {
+    async fn display(&self, message: UIMessage) -> Result<(), UIError> {
+        if self.is_active() {
+            self.real_ui.display(message).await
+        } else {
+            Ok(()) // NOP if session not active
+        }
+    }
+
+    async fn get_input(&self) -> Result<String, UIError> {
+        if self.is_active() {
+            self.real_ui.get_input().await
+        } else {
+            Ok(String::new()) // Return empty string if session not active
+        }
+    }
+
+    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
+        // Always buffer fragments
+        if let Ok(mut buffer) = self.fragment_buffer.lock() {
+            buffer.push_back(fragment.clone());
+
+            // Keep buffer size reasonable
+            while buffer.len() > 1000 {
+                buffer.pop_front();
+            }
+        }
+
+        // Only forward to real UI if session is active
+        if self.is_active() {
+            self.real_ui.display_fragment(fragment)
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn update_memory(&self, memory: &crate::types::WorkingMemory) -> Result<(), UIError> {
+        if self.is_active() {
+            self.real_ui.update_memory(memory).await
+        } else {
+            Ok(()) // NOP if session not active
+        }
+    }
+
+    async fn update_tool_status(
+        &self,
+        tool_id: &str,
+        status: crate::ui::ToolStatus,
+        message: Option<String>,
+        output: Option<String>,
+    ) -> Result<(), UIError> {
+        if self.is_active() {
+            self.real_ui.update_tool_status(tool_id, status, message, output).await
+        } else {
+            Ok(()) // NOP if session not active
+        }
+    }
+
+    async fn begin_llm_request(&self) -> Result<u64, UIError> {
+        // Clear fragment buffer at start of new LLM request
+        if let Ok(mut buffer) = self.fragment_buffer.lock() {
+            buffer.clear();
+        }
+
+        if self.is_active() {
+            self.real_ui.begin_llm_request().await
+        } else {
+            Ok(0) // Return dummy request ID if session not active
+        }
+    }
+
+    async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError> {
+        if self.is_active() {
+            self.real_ui.end_llm_request(request_id, cancelled).await
+        } else {
+            Ok(()) // NOP if session not active
+        }
+    }
+
+    fn should_streaming_continue(&self) -> bool {
+        if self.is_active() {
+            self.real_ui.should_streaming_continue()
+        } else {
+            true // Don't interrupt streaming if session becomes inactive
+        }
     }
 }
