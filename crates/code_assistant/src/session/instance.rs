@@ -265,6 +265,23 @@ impl SessionInstance {
         let mut messages_data = Vec::new();
 
         for message in &self.session.messages {
+            // Filter out tool-result user messages (they have empty content or structured content)
+            if message.role == llm::MessageRole::User {
+                match &message.content {
+                    llm::MessageContent::Text(text) if text.trim().is_empty() => {
+                        // Skip empty user messages (tool results in XML mode)
+                        continue;
+                    }
+                    llm::MessageContent::Structured(_) => {
+                        // Skip structured user messages (tool results)
+                        continue;
+                    }
+                    _ => {
+                        // This is a real user message, process it
+                    }
+                }
+            }
+            
             match processor.extract_fragments_from_message(message) {
                 Ok(fragments) => {
                     let role = match message.role {

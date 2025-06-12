@@ -467,24 +467,31 @@ async fn handle_backend_events(
             ui::gpui::BackendEvent::LoadSession { session_id } => {
                 tracing::info!("🎯 V2: LoadSession requested: {}", session_id);
 
-                // Clone the manager reference for the async call
-                let manager_clone = multi_session_manager.clone();
-                let load_result = {
-                    let mut manager = manager_clone.lock().unwrap();
-                    manager.load_session(&session_id)
+                // Use set_active_session to get properly processed UI events (same as initial connection)
+                let ui_events_result = {
+                    let mut manager = multi_session_manager.lock().unwrap();
+                    manager.set_active_session(session_id.clone()).await
                 };
 
-                // Handle result without locks
-                match load_result {
-                    Ok(messages) => {
-                        tracing::info!("🎯 V2: Session loaded with {} messages", messages.len());
-                        ui::gpui::BackendResponse::SessionLoaded {
-                            session_id,
-                            messages,
+                // Handle result and send UI events directly
+                match ui_events_result {
+                    Ok(ui_events) => {
+                        tracing::info!("🎯 V2: Session connected with {} UI events", ui_events.len());
+                        
+                        // Send all UI events to update the interface
+                        for event in ui_events {
+                            let ui_message = crate::ui::UIMessage::UiEvent(event);
+                            if let Err(e) = gui.display(ui_message).await {
+                                tracing::error!("Failed to send UI event: {}", e);
+                            }
                         }
+                        
+                        // DON'T return a response - UI events already handled the update
+                        // This prevents the duplicate message processing in handle_backend_response
+                        continue;
                     }
                     Err(e) => {
-                        tracing::error!("🚨 V2: Failed to load session {}: {}", session_id, e);
+                        tracing::error!("🚨 V2: Failed to connect to session {}: {}", session_id, e);
                         ui::gpui::BackendResponse::Error {
                             message: e.to_string(),
                         }
