@@ -347,26 +347,18 @@ async fn run_agent(args: Args) -> Result<()> {
         anyhow::bail!("Path '{}' is not a directory", path.display());
     }
 
-    // Create legacy session manager for terminal mode compatibility
-    let persistence = FileStatePersistence::new(path.clone());
-    let mut session_manager = LegacySessionManager::new(persistence);
-
-    // Handle chat session logic (simplified - no CLI session management)
-    let (session_task, session_state) = if task.is_some() {
-        let new_session_id = session_manager.create_session(None, tools_type)?;
-        println!("Created new chat session: {}", new_session_id);
-        (task, None)
-    } else {
-        anyhow::bail!("Please provide a task to start a new chat session.");
-    };
-
     // Run in either GUI or terminal mode
     if use_gui {
+        // GUI mode - V2 architecture handles session creation
+        if task.is_none() {
+            anyhow::bail!("Please provide a task to start a new chat session.");
+        }
+        
         run_agent_gpui_v2(
-            path,
-            session_task,
-            session_manager,
-            session_state,
+            path.clone(),
+            task,
+            LegacySessionManager::new(FileStatePersistence::new(path)), // dummy for compatibility
+            None,
             provider,
             model,
             base_url,
@@ -377,6 +369,18 @@ async fn run_agent(args: Args) -> Result<()> {
             args.fast_playback,
         )
     } else {
+        // Terminal mode - create legacy session manager
+        let persistence = FileStatePersistence::new(path.clone());
+        let mut session_manager = LegacySessionManager::new(persistence);
+
+        // Handle chat session logic for terminal mode
+        let (session_task, session_state) = if task.is_some() {
+            let new_session_id = session_manager.create_session(None, tools_type)?;
+            println!("Created new chat session: {}", new_session_id);
+            (task, None)
+        } else {
+            anyhow::bail!("Please provide a task to start a new chat session.");
+        };
         run_agent_terminal(
             path,
             session_task,
