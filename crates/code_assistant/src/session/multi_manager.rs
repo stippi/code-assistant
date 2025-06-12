@@ -180,8 +180,12 @@ impl MultiSessionManager {
         let _is_ui_active = Arc::new(Mutex::new(session_instance.is_ui_active()));
 
         // Create a new agent for this session
-        let session_manager_for_agent =
+        let mut session_manager_for_agent =
             crate::session::SessionManager::new(self.persistence.clone());
+        
+        // CRITICAL: Set the current session ID so the agent doesn't create a new session
+        session_manager_for_agent.set_current_session(session_id.to_string());
+        
         let state_storage = Box::new(SessionManagerStatePersistence::new(
             session_manager_for_agent,
             self.agent_config.tool_mode,

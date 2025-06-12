@@ -819,78 +819,58 @@ async fn handle_backend_events(
                     message
                 );
 
-                // Clone values for the spawned task
-                let provider_clone = provider.clone();
-                let model_clone = model.clone();
-                let base_url_clone = base_url.clone();
-                let record_clone = record.clone();
-                let playback_clone = playback.clone();
-                let gui_clone = gui.clone();
-                let root_path_clone = root_path.clone();
-
-                // Now create and run agent without any locks
-                tokio::spawn(async move {
+                // Use MultiSessionManager.start_agent_for_message() instead of creating a separate agent
+                let result = {
                     // Create components for the agent
                     let project_manager = Box::new(DefaultProjectManager::new());
                     let command_executor = Box::new(DefaultCommandExecutor);
-                    let user_interface = Arc::new(Box::new(gui_clone) as Box<dyn UserInterface>);
+                    let user_interface = Arc::new(Box::new(gui.clone()) as Box<dyn UserInterface>);
 
                     // Create LLM client
-                    let llm_client = match create_llm_client(
-                        provider_clone,
-                        model_clone,
-                        base_url_clone,
+                    let llm_client = create_llm_client(
+                        provider.clone(),
+                        model.clone(),
+                        base_url.clone(),
                         num_ctx,
-                        record_clone,
-                        playback_clone,
+                        record.clone(),
+                        playback.clone(),
                         fast_playback,
                     )
-                    .await
-                    {
-                        Ok(client) => client,
+                    .await;
+
+                    match llm_client {
+                        Ok(client) => {
+                            // Use the MultiSessionManager to start the agent properly
+                            let mut manager = multi_session_manager.lock().unwrap();
+                            manager.start_agent_for_message(
+                                &session_id,
+                                message.clone(),
+                                client,
+                                project_manager,
+                                command_executor,
+                                user_interface,
+                            ).await
+                        }
                         Err(e) => {
                             tracing::error!("🚨 V2: Failed to create LLM client: {}", e);
-                            return;
+                            Err(e)
                         }
-                    };
-
-                    // Create session manager for agent
-                    let persistence =
-                        crate::persistence::FileStatePersistence::new(root_path_clone.clone());
-                    let session_manager = crate::session::SessionManager::new(persistence);
-                    let state_storage =
-                        Box::new(crate::agent::SessionManagerStatePersistence::new(
-                            session_manager,
-                            crate::types::ToolMode::Xml, // Default for now
-                        ));
-
-                    // Create and run agent
-                    let mut agent = crate::agent::Agent::new(
-                        llm_client,
-                        crate::types::ToolMode::Xml, // Default for now
-                        project_manager,
-                        command_executor,
-                        user_interface,
-                        state_storage,
-                        Some(root_path_clone),
-                    );
-
-                    // Add user message and run agent
-                    tracing::info!(
-                        "🎯 V2: Starting agent for session {} with message: {}",
-                        session_id,
-                        message
-                    );
-
-                    if let Err(e) = agent.start_with_task(message).await {
-                        tracing::error!("🚨 V2: Agent failed: {}", e);
-                    } else {
-                        tracing::info!("✅ V2: Agent completed for session {}", session_id);
                     }
-                });
+                };
 
-                // No response needed for SendUserMessage - agent communicates via UI
-                continue;
+                match result {
+                    Ok(_) => {
+                        tracing::info!("✅ V2: Agent started for session {}", session_id);
+                        // No response needed for SendUserMessage - agent communicates via UI
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::error!("🚨 V2: Failed to start agent for session {}: {}", session_id, e);
+                        ui::gpui::BackendResponse::Error {
+                            message: format!("Failed to start agent: {}", e),
+                        }
+                    }
+                }
             }
         };
 

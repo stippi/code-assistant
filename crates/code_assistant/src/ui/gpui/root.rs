@@ -160,9 +160,23 @@ impl RootView {
         self.text_input.update(cx, |text_input, cx| {
             let content = text_input.value().to_string();
             if !content.is_empty() {
-                // Store input in the shared value
-                let mut input_value = self.input_value.lock().unwrap();
-                *input_value = Some(content);
+                // V1 mode: Store input in the shared value if input is requested
+                let is_input_requested = *self.input_requested.lock().unwrap();
+                if is_input_requested {
+                    let mut input_value = self.input_value.lock().unwrap();
+                    *input_value = Some(content.clone());
+                }
+
+                // V2 mode: Send user message event if we have an active session
+                if let Some(session_id) = &self.current_session_id {
+                    if let Some(sender) = cx.try_global::<UiEventSender>() {
+                        tracing::info!("RootView: Sending user message to session {}: {}", session_id, content);
+                        let _ = sender.0.try_send(UiEvent::SendUserMessage {
+                            message: content.clone(),
+                            session_id: session_id.clone(),
+                        });
+                    }
+                }
 
                 // Clear the input field
                 text_input.set_value("", window, cx);
@@ -388,14 +402,16 @@ impl Render for RootView {
                                         // Create button based on streaming state
                                         match current_streaming_state {
                                             StreamingState::Idle => {
-                                                // Show send button, enabled only if input is requested
+                                                // Show send button, enabled if input requested OR if we have an active session (V2 mode)
+                                                let is_enabled = is_input_requested || current_session_id.is_some();
+                                                
                                                 let mut button = div()
                                                     .size(px(40.))
                                                     .rounded_sm()
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
-                                                    .cursor(if is_input_requested {
+                                                    .cursor(if is_enabled {
                                                         CursorStyle::PointingHand
                                                     } else {
                                                         CursorStyle::OperationNotAllowed
@@ -404,7 +420,7 @@ impl Render for RootView {
                                                         &file_icons::get()
                                                             .get_type_icon(file_icons::SEND),
                                                         22.0,
-                                                        if is_input_requested {
+                                                        if is_enabled {
                                                             cx.theme().primary
                                                         } else {
                                                             cx.theme().muted_foreground
@@ -412,7 +428,7 @@ impl Render for RootView {
                                                         ">",
                                                     ));
 
-                                                if is_input_requested {
+                                                if is_enabled {
                                                     button = button
                                                         .hover(|s| s.bg(cx.theme().muted))
                                                         .on_mouse_up(
