@@ -169,7 +169,7 @@ impl SessionManager {
             role: llm::MessageRole::User,
             content: llm::MessageContent::Text(user_message.clone()),
         };
-        session_instance.add_message(user_msg);
+        session_instance.add_message(user_msg.clone());
 
         // Generate message ID for this interaction
         let _message_id = session_instance.get_last_message_id();
@@ -218,12 +218,12 @@ impl SessionManager {
 
         agent.load_from_session_state(session_state).await?;
 
-        // Spawn the agent task
+        // Spawn the agent task - same as UI message handling
         let session_id_clone = session_id.to_string();
 
         let task_handle = tokio::spawn(async move {
             tracing::info!("🚀 V2: Starting agent for session {}", session_id_clone);
-            // Run the agent once for this message
+            // Run the agent once for this message (same as UI messages)
             let result = agent.run_single_iteration().await;
 
             tracing::info!("✅ V2: Agent completed for session {}", session_id_clone);

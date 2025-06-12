@@ -195,11 +195,6 @@ impl Agent {
         Ok(())
     }
 
-    /// Get the tool mode
-    pub fn get_tool_mode(&self) -> ToolMode {
-        self.tool_mode
-    }
-
     /// Load state from session state (for backward compatibility)
     pub async fn load_from_session_state(
         &mut self,
@@ -215,18 +210,9 @@ impl Agent {
         // Restore working memory file trees and project state
         self.restore_working_memory_state().await?;
 
-        // Notify UI of restored state
-        self.ui
-            .display(UIMessage::Action(format!(
-                "Loaded chat session with {} messages and {} tool executions",
-                self.message_history.len(),
-                self.tool_executions.len()
-            )))
-            .await?;
-
         let _ = self.ui.update_memory(&self.working_memory).await;
 
-        self.run_agent_loop().await
+        Ok(())
     }
 
     /// Handles the interaction with the LLM to get the next assistant message.

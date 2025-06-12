@@ -56,7 +56,7 @@ struct Args {
     #[arg(long, default_value = ".")]
     path: Option<PathBuf>,
 
-    /// Task to perform on the codebase (required in agent mode unless --continue is used, optional with --ui)
+    /// Task to perform on the codebase (required in terminal mode, optional with --ui)
     #[arg(short, long)]
     task: Option<String>,
 
@@ -349,14 +349,10 @@ async fn run_agent(args: Args) -> Result<()> {
 
     // Run in either GUI or terminal mode
     if use_gui {
-        // GUI mode - V2 architecture handles session creation
-        if task.is_none() {
-            anyhow::bail!("Please provide a task to start a new chat session.");
-        }
-        
+        // GUI mode - V2 architecture handles session management
         run_agent_gpui_v2(
             path.clone(),
-            task,
+            task, // Can be None - will connect to latest session instead
             LegacySessionManager::new(FileStatePersistence::new(path)), // dummy for compatibility
             None,
             provider,
@@ -642,11 +638,10 @@ fn run_agent_gpui_v2(
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
         runtime.block_on(async {
-            // If we have an initial task, create a session and start the agent
             if let Some(initial_task) = task_clone {
+                // Task provided - create new session and start agent
                 tracing::info!("🚀 V2: Creating initial session with task: {}", initial_task);
                 
-                // Create new session
                 let session_id = {
                     let mut manager = multi_session_manager.lock().unwrap();
                     manager.create_session(None).unwrap()
@@ -654,7 +649,22 @@ fn run_agent_gpui_v2(
                 
                 tracing::info!("✅ V2: Created initial session: {}", session_id);
                 
-                // Start agent with the initial task
+                // Connect session to UI and start agent
+                let ui_events = {
+                    let mut manager = multi_session_manager.lock().unwrap();
+                    manager.set_active_session(session_id.clone()).await.unwrap_or_else(|e| {
+                        tracing::error!("Failed to set active session: {}", e);
+                        Vec::new()
+                    })
+                };
+                
+                for event in ui_events {
+                    let ui_message = crate::ui::UIMessage::UiEvent(event);
+                    if let Err(e) = gui_for_thread.display(ui_message).await {
+                        tracing::error!("Failed to send UI event: {}", e);
+                    }
+                }
+                
                 let project_manager = Box::new(DefaultProjectManager::new());
                 let command_executor = Box::new(DefaultCommandExecutor);
                 let user_interface = Arc::new(Box::new(gui_for_thread.clone()) as Box<dyn UserInterface>);
@@ -682,6 +692,35 @@ fn run_agent_gpui_v2(
                 }
                 
                 tracing::info!("🎯 V2: Started agent for initial session");
+            } else {
+                // No task - connect to latest existing session
+                tracing::info!("🔄 V2: No task provided, connecting to latest session");
+                
+                let latest_session_id = {
+                    let manager = multi_session_manager.lock().unwrap();
+                    manager.get_latest_session_id().unwrap_or(None)
+                };
+                
+                if let Some(session_id) = latest_session_id {
+                    tracing::info!("📋 V2: Connecting to existing session: {}", session_id);
+                    
+                    let ui_events = {
+                        let mut manager = multi_session_manager.lock().unwrap();
+                        manager.set_active_session(session_id.clone()).await.unwrap_or_else(|e| {
+                            tracing::error!("Failed to set active session: {}", e);
+                            Vec::new()
+                        })
+                    };
+                    
+                    for event in ui_events {
+                        let ui_message = crate::ui::UIMessage::UiEvent(event);
+                        if let Err(e) = gui_for_thread.display(ui_message).await {
+                            tracing::error!("Failed to send UI event: {}", e);
+                        }
+                    }
+                } else {
+                    tracing::info!("📝 V2: No existing sessions found - UI will start empty");
+                }
             }
             
             handle_backend_events(
