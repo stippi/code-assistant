@@ -10,6 +10,15 @@ pub struct MessageData {
     pub fragments: Vec<DisplayFragment>,
 }
 
+/// Tool execution result data for UI updates
+#[derive(Debug, Clone)]
+pub struct ToolResultData {
+    pub tool_id: String,
+    pub status: ToolStatus,
+    pub message: Option<String>,
+    pub output: Option<String>,
+}
+
 /// Events for UI updates from the agent thread
 #[derive(Debug, Clone)]
 pub enum UiEvent {
@@ -39,7 +48,11 @@ pub enum UiEvent {
     /// Update the working memory view
     UpdateMemory { memory: WorkingMemory },
     /// Set all messages at once (for session loading, clears existing)
-    SetMessages { messages: Vec<MessageData>, session_id: Option<String> },
+    SetMessages { 
+        messages: Vec<MessageData>, 
+        session_id: Option<String>,
+        tool_results: Vec<ToolResultData>,
+    },
     /// Streaming started for a request
     StreamingStarted(u64),
     /// Streaming stopped for a request

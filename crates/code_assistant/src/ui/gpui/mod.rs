@@ -436,7 +436,7 @@ impl Gpui {
                 }
                 cx.refresh().expect("Failed to refresh windows");
             }
-            UiEvent::SetMessages { messages, session_id } => {
+            UiEvent::SetMessages { messages, session_id, tool_results } => {
                 // Update current session ID if provided
                 if let Some(session_id) = session_id {
                     *self.current_session_id.lock().unwrap() = Some(session_id);
@@ -460,6 +460,23 @@ impl Gpui {
                     {
                         let mut queue = self.message_queue.lock().unwrap();
                         queue.push(container);
+                    }
+                }
+
+                // Apply tool results to update tool blocks with their execution results
+                for tool_result in tool_results {
+                    let queue = self.message_queue.lock().unwrap();
+                    for message_container in queue.iter() {
+                        cx.update_entity(message_container, |message_container, cx| {
+                            message_container.update_tool_status(
+                                &tool_result.tool_id,
+                                tool_result.status,
+                                tool_result.message.clone(),
+                                tool_result.output.clone(),
+                                cx,
+                            );
+                        })
+                        .expect("Failed to update entity");
                     }
                 }
 
@@ -738,7 +755,8 @@ impl Gpui {
                         tracing::info!("Created {} message containers from loaded session", message_data.len());
                         self.push_event(UiEvent::SetMessages {
                             messages: message_data,
-                            session_id: Some(session_id)
+                            session_id: Some(session_id),
+                            tool_results: Vec::new(), // No tool results available in this legacy path
                         });
                     }
                     Err(e) => {

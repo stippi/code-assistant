@@ -217,12 +217,15 @@ impl SessionInstance {
     pub fn generate_session_connect_events(&self) -> Result<Vec<UiEvent>, anyhow::Error> {
         let mut events = Vec::new();
 
-        // First event: Set all session messages
+        // First event: Set all session messages with tool results
         if !self.session.messages.is_empty() {
             let messages_data = self.convert_messages_to_ui_data(self.session.tool_mode)?;
+            let tool_results = self.convert_tool_executions_to_ui_data()?;
+            
             events.push(UiEvent::SetMessages {
                 messages: messages_data,
                 session_id: Some(self.session.id.clone()),
+                tool_results,
             });
         } else {
             // Clear messages if session is empty
@@ -298,6 +301,39 @@ impl SessionInstance {
         }
 
         Ok(messages_data)
+    }
+
+    /// Convert tool executions to UI tool result data
+    fn convert_tool_executions_to_ui_data(&self) -> Result<Vec<crate::ui::gpui::ui_events::ToolResultData>, anyhow::Error> {
+        use crate::tools::core::ResourcesTracker;
+        
+        let mut tool_results = Vec::new();
+        let mut resources_tracker = ResourcesTracker::new();
+
+        for serialized_execution in &self.session.tool_executions {
+            // Deserialize the tool execution
+            let execution = serialized_execution.deserialize()?;
+            
+            // Generate status and output from result
+            let success = execution.result.is_success();
+            let status = if success {
+                crate::ui::ToolStatus::Success
+            } else {
+                crate::ui::ToolStatus::Error
+            };
+            
+            let short_output = execution.result.as_render().status();
+            let output = execution.result.as_render().render(&mut resources_tracker);
+            
+            tool_results.push(crate::ui::gpui::ui_events::ToolResultData {
+                tool_id: execution.tool_request.id,
+                status,
+                message: Some(short_output),
+                output: Some(output),
+            });
+        }
+
+        Ok(tool_results)
     }
 }
 
