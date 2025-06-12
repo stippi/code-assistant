@@ -1,17 +1,17 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use llm::Message;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use async_trait::async_trait;
 
 use crate::agent::{Agent, SessionManagerStatePersistence};
-use crate::persistence::{ChatMetadata, ChatSession, FileStatePersistence, generate_session_id};
+use crate::config::ProjectManager;
+use crate::persistence::{generate_session_id, ChatMetadata, ChatSession, FileStatePersistence};
 use crate::session::instance::SessionInstance;
 use crate::types::{ToolMode, WorkingMemory};
 use crate::ui::{DisplayFragment, UserInterface};
-use crate::config::ProjectManager;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
 
@@ -58,7 +58,7 @@ impl MultiSessionManager {
     }
 
     /// Create a new session and return its ID
-    pub async fn create_session(&mut self, name: Option<String>) -> Result<String> {
+    pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
         let session_id = generate_session_id();
         let session_name = name.unwrap_or_else(|| format!("Chat {}", &session_id[5..13]));
 
@@ -91,9 +91,10 @@ impl MultiSessionManager {
     }
 
     /// Load a session from persistence and make it active
-    pub async fn load_session(&mut self, session_id: &str) -> Result<Vec<Message>> {
+    pub fn load_session(&mut self, session_id: &str) -> Result<Vec<Message>> {
         // Load from persistence
-        let session = self.persistence
+        let session = self
+            .persistence
             .load_chat_session(session_id)?
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
 
@@ -111,8 +112,11 @@ impl MultiSessionManager {
         Ok(messages)
     }
 
-    /// Set the UI-active session and return events for UI update  
-    pub async fn set_active_session(&mut self, session_id: String) -> Result<Vec<crate::ui::gpui::ui_events::UiEvent>> {
+    /// Set the UI-active session and return events for UI update
+    pub async fn set_active_session(
+        &mut self,
+        session_id: String,
+    ) -> Result<Vec<crate::ui::gpui::ui_events::UiEvent>> {
         // Deactivate old session
         {
             let active_id = self.active_session_id.lock().unwrap();
@@ -134,7 +138,7 @@ impl MultiSessionManager {
 
         // Load session if it doesn't exist
         if !session_exists {
-            self.load_session(&session_id).await?;
+            self.load_session(&session_id)?;
         }
 
         // Activate new session and generate UI events
@@ -199,8 +203,12 @@ impl MultiSessionManager {
         };
 
         // Create a new agent for this session
-        let session_manager_for_agent = crate::session::SessionManager::new(self.persistence.clone());
-        let state_storage = Box::new(SessionManagerStatePersistence::new(session_manager_for_agent, self.agent_config.tool_mode));
+        let session_manager_for_agent =
+            crate::session::SessionManager::new(self.persistence.clone());
+        let state_storage = Box::new(SessionManagerStatePersistence::new(
+            session_manager_for_agent,
+            self.agent_config.tool_mode,
+        ));
 
         let mut agent = crate::agent::Agent::new(
             llm_provider,
@@ -219,7 +227,12 @@ impl MultiSessionManager {
 
             crate::session::SessionState {
                 messages: session_instance.messages().to_vec(),
-                tool_executions: session_instance.session.tool_executions.iter().map(|se| se.deserialize()).collect::<Result<Vec<_>>>()?,
+                tool_executions: session_instance
+                    .session
+                    .tool_executions
+                    .iter()
+                    .map(|se| se.deserialize())
+                    .collect::<Result<Vec<_>>>()?,
                 working_memory: session_instance.session.working_memory.clone(),
                 init_path: session_instance.session.init_path.clone(),
                 initial_project: session_instance.session.initial_project.clone(),
@@ -293,7 +306,8 @@ impl MultiSessionManager {
             // Check if the session still exists and needs completion processing
             let needs_processing = {
                 let active_sessions = self.active_sessions.lock().unwrap();
-                active_sessions.get(&session_id)
+                active_sessions
+                    .get(&session_id)
                     .map(|instance| instance.is_task_finished() && !instance.agent_completed)
                     .unwrap_or(false)
             };
@@ -315,13 +329,13 @@ impl MultiSessionManager {
                     if let Some(handle) = task_handle {
                         if handle.is_finished() {
                             match handle.await {
-                                Ok(agent_result) => {
-                                    match agent_result {
-                                        Ok(_) => (true, None),
-                                        Err(e) => (true, Some(e.to_string())),
-                                    }
+                                Ok(agent_result) => match agent_result {
+                                    Ok(_) => (true, None),
+                                    Err(e) => (true, Some(e.to_string())),
+                                },
+                                Err(join_error) => {
+                                    (true, Some(format!("Task join error: {}", join_error)))
                                 }
-                                Err(join_error) => (true, Some(format!("Task join error: {}", join_error))),
                             }
                         } else {
                             (false, None)
@@ -363,7 +377,8 @@ impl MultiSessionManager {
     /// Check if a session is currently streaming
     pub fn is_session_streaming(&self, session_id: &str) -> bool {
         let active_sessions = self.active_sessions.lock().unwrap();
-        active_sessions.get(session_id)
+        active_sessions
+            .get(session_id)
             .map(|instance| instance.is_streaming)
             .unwrap_or(false)
     }
@@ -396,7 +411,8 @@ impl MultiSessionManager {
     pub async fn save_session(&mut self, session_id: &str) -> Result<()> {
         let active_sessions = self.active_sessions.lock().unwrap();
         if let Some(session_instance) = active_sessions.get(session_id) {
-            self.persistence.save_chat_session(&session_instance.session)?;
+            self.persistence
+                .save_chat_session(&session_instance.session)?;
         }
         Ok(())
     }

@@ -53,24 +53,32 @@ pub struct UiEventSender(pub async_channel::Sender<UiEvent>);
 
 impl Global for UiEventSender {}
 
-// Chat management event for communication with agent thread
+// Unified event type for all UI→Backend communication  
 #[derive(Debug, Clone)]
-pub enum ChatManagementEvent {
+pub enum BackendEvent {
+    // Session management
     LoadSession { session_id: String },
     CreateNewSession { name: Option<String> },
     DeleteSession { session_id: String },
     ListSessions,
+    
+    // Agent operations
+    SendUserMessage { session_id: String, message: String },
 }
 
-// Response from agent to UI for chat management
+// Response from backend to UI
 #[derive(Debug, Clone)]
-pub enum ChatManagementResponse {
+pub enum BackendResponse {
     SessionLoaded { session_id: String, messages: Vec<llm::Message> },
     SessionCreated { session_id: String, name: String },
     SessionDeleted { session_id: String },
     SessionsListed { sessions: Vec<ChatMetadata> },
     Error { message: String },
 }
+
+// Legacy aliases for compatibility during transition
+pub type ChatManagementEvent = BackendEvent;
+pub type ChatManagementResponse = BackendResponse;
 
 // Our main UI struct that implements the UserInterface trait
 #[derive(Clone)]
@@ -89,12 +97,9 @@ pub struct Gpui {
     #[allow(dead_code)]
     parameter_renderers: Arc<ParameterRendererRegistry>, // TODO: Needed?!
     streaming_state: Arc<Mutex<StreamingState>>,
-    // Chat management communication
-    chat_event_sender: Arc<Mutex<Option<async_channel::Sender<ChatManagementEvent>>>>,
-    chat_response_receiver: Arc<Mutex<Option<async_channel::Receiver<ChatManagementResponse>>>>,
-
-    // V2 architecture: User message communication
-    user_message_sender: Arc<Mutex<Option<async_channel::Sender<(String, String)>>>>,
+    // Unified backend communication
+    backend_event_sender: Arc<Mutex<Option<async_channel::Sender<BackendEvent>>>>,
+    backend_response_receiver: Arc<Mutex<Option<async_channel::Receiver<BackendResponse>>>>,
 
     // Current chat state
     current_session_id: Arc<Mutex<Option<String>>>,
@@ -162,9 +167,8 @@ impl Gpui {
             last_xml_tool_id,
             parameter_renderers,
             streaming_state,
-            chat_event_sender: Arc::new(Mutex::new(None)),
-            chat_response_receiver: Arc::new(Mutex::new(None)),
-            user_message_sender: Arc::new(Mutex::new(None)),
+            backend_event_sender: Arc::new(Mutex::new(None)),
+            backend_response_receiver: Arc::new(Mutex::new(None)),
 
             current_session_id: Arc::new(Mutex::new(None)),
             chat_sessions: Arc::new(Mutex::new(Vec::new())),
@@ -245,14 +249,14 @@ impl Gpui {
                 loop {
                     // Check if we have a response receiver
                     let receiver_opt = chat_gpui_clone
-                        .chat_response_receiver
+                        .backend_response_receiver
                         .lock()
                         .unwrap()
                         .clone();
                     if let Some(receiver) = receiver_opt {
                         match receiver.recv().await {
                             Ok(response) => {
-                                chat_gpui_clone.handle_chat_response(response, cx);
+                                chat_gpui_clone.handle_backend_response(response, cx);
                             }
                             Err(_) => {
                                 // Channel closed, break the loop
@@ -506,32 +510,32 @@ impl Gpui {
                     }
                 }
             }
-            // Chat management events - forward to agent thread
+            // Chat management events - forward to backend thread
             UiEvent::LoadChatSession { session_id } => {
                 tracing::info!("UI: LoadChatSession event for session_id: {}", session_id);
-                if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(ChatManagementEvent::LoadSession { session_id });
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::LoadSession { session_id });
                 }
             }
             UiEvent::CreateNewChatSession { name } => {
                 tracing::info!("UI: CreateNewChatSession event with name: {:?}", name);
-                if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(ChatManagementEvent::CreateNewSession { name });
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::CreateNewSession { name });
                 }
             }
             UiEvent::DeleteChatSession { session_id } => {
                 tracing::info!("UI: DeleteChatSession event for session_id: {}", session_id);
-                if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(ChatManagementEvent::DeleteSession { session_id });
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::DeleteSession { session_id });
                 }
             }
             UiEvent::RefreshChatList => {
                 tracing::info!("UI: RefreshChatList event received");
-                if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
-                    tracing::info!("UI: Sending ListSessions to agent");
-                    let _ = sender.try_send(ChatManagementEvent::ListSessions);
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    tracing::info!("UI: Sending ListSessions to backend");
+                    let _ = sender.try_send(BackendEvent::ListSessions);
                 } else {
-                    tracing::warn!("UI: No chat event sender available for RefreshChatList");
+                    tracing::warn!("UI: No backend event sender available for RefreshChatList");
                 }
             }
             UiEvent::UpdateChatList { sessions } => {
@@ -582,10 +586,10 @@ impl Gpui {
             }
             UiEvent::SendUserMessage { message, session_id } => {
                 tracing::info!("UI: SendUserMessage event for session {}: {}", session_id, message);
-                if let Some(sender) = self.user_message_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send((message, session_id));
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::SendUserMessage { session_id, message });
                 } else {
-                    tracing::warn!("UI: No user message sender available");
+                    tracing::warn!("UI: No backend event sender available");
                 }
             }
             UiEvent::ConnectToActiveSession { session_id } => {
@@ -648,36 +652,44 @@ impl Gpui {
     }
 
     // Setup chat management communication channels
+    /// Setup unified backend communication channels
+    /// Returns channels for backend thread to receive events and send responses
+    pub fn setup_backend_communication(
+        &self,
+    ) -> (
+        async_channel::Receiver<BackendEvent>,
+        async_channel::Sender<BackendResponse>,
+    ) {
+        let (event_tx, event_rx) = async_channel::unbounded::<BackendEvent>();
+        let (response_tx, response_rx) = async_channel::unbounded::<BackendResponse>();
+
+        // Store channels for UI use
+        *self.backend_event_sender.lock().unwrap() = Some(event_tx);
+        *self.backend_response_receiver.lock().unwrap() = Some(response_rx);
+
+        // Return the backend ends
+        (event_rx, response_tx)
+    }
+
+    // Legacy methods for compatibility during transition
     pub fn setup_chat_communication(
         &self,
     ) -> (
         async_channel::Receiver<ChatManagementEvent>,
         async_channel::Sender<ChatManagementResponse>,
     ) {
-        let (event_tx, event_rx) = async_channel::unbounded::<ChatManagementEvent>();
-        let (response_tx, response_rx) = async_channel::unbounded::<ChatManagementResponse>();
-
-        // Store the sender for UI to agent communication
-        *self.chat_event_sender.lock().unwrap() = Some(event_tx);
-
-        // Store the receiver for agent to UI communication
-        *self.chat_response_receiver.lock().unwrap() = Some(response_rx.clone());
-
-        // Return the opposite ends for the agent thread
-        (event_rx, response_tx)
+        self.setup_backend_communication()
     }
 
-    // Setup communication channels for the new v2 architecture
     pub fn setup_v2_communication(
         &self,
-        user_message_tx: async_channel::Sender<(String, String)>,
+        _user_message_tx: async_channel::Sender<(String, String)>,
         session_event_tx: async_channel::Sender<ChatManagementEvent>,
         session_response_rx: async_channel::Receiver<ChatManagementResponse>,
     ) {
-        // Store channels for UI use
-        *self.chat_event_sender.lock().unwrap() = Some(session_event_tx);
-        *self.chat_response_receiver.lock().unwrap() = Some(session_response_rx);
-        *self.user_message_sender.lock().unwrap() = Some(user_message_tx);
+        // For backward compatibility, but now we ignore the separate user_message_tx
+        *self.backend_event_sender.lock().unwrap() = Some(session_event_tx);
+        *self.backend_response_receiver.lock().unwrap() = Some(session_response_rx);
     }
 
     // Helper to add an event to the queue
@@ -698,26 +710,26 @@ impl Gpui {
         self.current_session_id.lock().unwrap().clone()
     }
 
-    // Send a user message to the active session (v2 architecture)
+    // Send a user message to the active session
     pub fn send_user_message_to_active_session(&self, message: String) -> Result<(), String> {
         let session_id = self.get_current_session_id()
             .ok_or_else(|| "No active session".to_string())?;
 
-        let sender = self.user_message_sender.lock().unwrap();
+        let sender = self.backend_event_sender.lock().unwrap();
         if let Some(ref tx) = *sender {
-            tx.try_send((message, session_id))
+            tx.try_send(BackendEvent::SendUserMessage { session_id, message })
                 .map_err(|e| format!("Failed to send message: {}", e))?;
             Ok(())
         } else {
-            Err("User message sender not initialized".to_string())
+            Err("Backend event sender not initialized".to_string())
         }
     }
 
-    // Handle chat management responses from agent
-    fn handle_chat_response(&self, response: ChatManagementResponse, _cx: &mut AsyncApp) {
+    // Handle backend responses
+    fn handle_backend_response(&self, response: BackendResponse, _cx: &mut AsyncApp) {
         tracing::info!("UI: Received chat management response: {:?}", response);
         match response {
-            ChatManagementResponse::SessionLoaded { session_id, messages } => {
+            BackendResponse::SessionLoaded { session_id, messages } => {
                 *self.current_session_id.lock().unwrap() = Some(session_id.clone());
 
                 // Create fragments from loaded messages and send SetMessages event
@@ -736,28 +748,28 @@ impl Gpui {
                     }
                 }
             }
-            ChatManagementResponse::SessionCreated {
+            BackendResponse::SessionCreated {
                 session_id,
                 name: _,
             } => {
                 *self.current_session_id.lock().unwrap() = Some(session_id);
                 // Refresh the session list
-                if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(ChatManagementEvent::ListSessions);
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::ListSessions);
                 }
             }
-            ChatManagementResponse::SessionDeleted { session_id: _ } => {
+            BackendResponse::SessionDeleted { session_id: _ } => {
                 // Refresh the session list
-                if let Some(sender) = self.chat_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(ChatManagementEvent::ListSessions);
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::ListSessions);
                 }
             }
-            ChatManagementResponse::SessionsListed { sessions } => {
+            BackendResponse::SessionsListed { sessions } => {
                 *self.chat_sessions.lock().unwrap() = sessions.clone();
                 self.push_event(UiEvent::UpdateChatList { sessions });
             }
-            ChatManagementResponse::Error { message } => {
-                warn!("Chat management error: {}", message);
+            BackendResponse::Error { message } => {
+                warn!("Backend error: {}", message);
             }
         }
     }

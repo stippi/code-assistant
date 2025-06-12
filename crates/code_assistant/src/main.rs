@@ -29,11 +29,11 @@ use llm::{
     AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, OpenRouterClient,
     VertexClient,
 };
+use rand;
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::fmt::SubscriberBuilder;
-use rand;
 
 #[derive(ValueEnum, Debug, Clone)]
 enum LLMProviderType {
@@ -318,7 +318,10 @@ async fn run_agent_terminal(
     .context("Failed to initialize LLM client")?;
 
     // Initialize agent with session manager wrapped in StatePersistence
-    let state_storage = Box::new(SessionManagerStatePersistence::new(session_manager, tools_type));
+    let state_storage = Box::new(SessionManagerStatePersistence::new(
+        session_manager,
+        tools_type,
+    ));
     let mut agent = Agent::new(
         llm_client,
         tools_type,
@@ -385,7 +388,10 @@ fn run_agent_gpui(
             .expect("Failed to initialize LLM client");
 
             // Initialize agent with session manager wrapped in StatePersistence
-            let state_storage = Box::new(SessionManagerStatePersistence::new(session_manager, tools_type));
+            let state_storage = Box::new(SessionManagerStatePersistence::new(
+                session_manager,
+                tools_type,
+            ));
             let mut agent = Agent::new(
                 llm_client,
                 tools_type,
@@ -423,16 +429,22 @@ fn run_agent_gpui(
                         }
                         ui::gpui::ChatManagementEvent::LoadSession { session_id } => {
                             // Load session and send fragments directly to UI
-                            let persistence = crate::persistence::FileStatePersistence::new(root_path.clone());
-                            let mut session_manager = crate::session::SessionManager::new(persistence);
+                            let persistence =
+                                crate::persistence::FileStatePersistence::new(root_path.clone());
+                            let mut session_manager =
+                                crate::session::SessionManager::new(persistence);
 
                             match session_manager.load_session(&session_id) {
                                 Ok(session_state) => {
-                                    tracing::info!("Loaded session {} with {} messages", session_id, session_state.messages.len());
+                                    tracing::info!(
+                                        "Loaded session {} with {} messages",
+                                        session_id,
+                                        session_state.messages.len()
+                                    );
 
                                     ui::gpui::ChatManagementResponse::SessionLoaded {
                                         session_id,
-                                        messages: session_state.messages
+                                        messages: session_state.messages,
                                     }
                                 }
                                 Err(e) => {
@@ -473,6 +485,16 @@ fn run_agent_gpui(
                                 Err(e) => ui::gpui::ChatManagementResponse::Error {
                                     message: e.to_string(),
                                 },
+                            }
+                        }
+                        ui::gpui::ChatManagementEvent::SendUserMessage {
+                            session_id: _,
+                            message: _,
+                        } => {
+                            // V1 doesn't support SendUserMessage - just return an error
+                            ui::gpui::ChatManagementResponse::Error {
+                                message: "SendUserMessage not supported in V1 architecture"
+                                    .to_string(),
                             }
                         }
                     };
@@ -557,7 +579,7 @@ async fn run_agent(args: Args) -> Result<()> {
     // Run in either GUI or terminal mode
     if use_gui {
         if use_v2_architecture {
-            println!("🚀 Starting with V2 Session-Based Architecture");
+            println!("Starting with V2 Session-Based Architecture");
             run_agent_gpui_v2(
                 path,
                 session_task,
@@ -573,7 +595,7 @@ async fn run_agent(args: Args) -> Result<()> {
                 args.fast_playback,
             )
         } else {
-            println!("📱 Starting with V1 Architecture");
+            println!("Starting with V1 Architecture");
             run_agent_gpui(
                 path,
                 session_task,
@@ -668,6 +690,221 @@ async fn handle_chat_commands(args: &Args) -> Result<bool> {
     Ok(false)
 }
 
+/// Simplified backend event handler that fixes mutex/await boundary issues
+async fn handle_backend_events(
+    backend_event_rx: async_channel::Receiver<ui::gpui::BackendEvent>,
+    backend_response_tx: async_channel::Sender<ui::gpui::BackendResponse>,
+    multi_session_manager: Arc<Mutex<crate::session::MultiSessionManager>>,
+    provider: LLMProviderType,
+    model: Option<String>,
+    base_url: Option<String>,
+    num_ctx: usize,
+    record: Option<PathBuf>,
+    playback: Option<PathBuf>,
+    fast_playback: bool,
+    gui: ui::gpui::Gpui,
+    root_path: PathBuf,
+) {
+    tracing::info!("🎯 V2: Backend event handler started");
+
+    while let Ok(event) = backend_event_rx.recv().await {
+        tracing::info!("🎯 V2: Backend event: {:?}", event);
+
+        let response = match event {
+            ui::gpui::BackendEvent::ListSessions => {
+                // Simple sync operation - no mutex across await
+                let sessions = {
+                    let manager = multi_session_manager.lock().unwrap();
+                    manager.list_all_sessions()
+                };
+                match sessions {
+                    Ok(sessions) => {
+                        tracing::info!("🎯 V2: Found {} sessions", sessions.len());
+                        ui::gpui::BackendResponse::SessionsListed { sessions }
+                    }
+                    Err(e) => {
+                        tracing::error!("🚨 V2: Failed to list sessions: {}", e);
+                        ui::gpui::BackendResponse::Error {
+                            message: e.to_string(),
+                        }
+                    }
+                }
+            }
+
+            ui::gpui::BackendEvent::CreateNewSession { name } => {
+                // Clone the manager reference for the async call
+                let manager_clone = multi_session_manager.clone();
+                let create_result = {
+                    let mut manager = manager_clone.lock().unwrap();
+                    manager.create_session(name.clone())
+                };
+
+                // Now handle result without any locks
+                match create_result {
+                    Ok(session_id) => {
+                        let display_name = format!("Chat {}", &session_id[5..13]);
+                        tracing::info!("🎯 V2: Created session {}", session_id);
+                        ui::gpui::BackendResponse::SessionCreated {
+                            session_id,
+                            name: display_name,
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("🚨 V2: Failed to create session: {}", e);
+                        ui::gpui::BackendResponse::Error {
+                            message: e.to_string(),
+                        }
+                    }
+                }
+            }
+
+            ui::gpui::BackendEvent::LoadSession { session_id } => {
+                tracing::info!("🎯 V2: LoadSession requested: {}", session_id);
+
+                // Clone the manager reference for the async call
+                let manager_clone = multi_session_manager.clone();
+                let load_result = {
+                    let mut manager = manager_clone.lock().unwrap();
+                    manager.load_session(&session_id)
+                };
+
+                // Handle result without locks
+                match load_result {
+                    Ok(messages) => {
+                        tracing::info!("🎯 V2: Session loaded with {} messages", messages.len());
+                        ui::gpui::BackendResponse::SessionLoaded {
+                            session_id,
+                            messages,
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("🚨 V2: Failed to load session {}: {}", session_id, e);
+                        ui::gpui::BackendResponse::Error {
+                            message: e.to_string(),
+                        }
+                    }
+                }
+            }
+
+            ui::gpui::BackendEvent::DeleteSession { session_id } => {
+                tracing::info!("🎯 V2: DeleteSession requested: {}", session_id);
+
+                // Clone the manager reference for the async call
+                let manager_clone = multi_session_manager.clone();
+                let delete_result = {
+                    let mut manager = manager_clone.lock().unwrap();
+                    manager.delete_session(&session_id)
+                };
+
+                match delete_result.await {
+                    Ok(_) => {
+                        tracing::info!("🎯 V2: Session deleted: {}", session_id);
+                        ui::gpui::BackendResponse::SessionDeleted { session_id }
+                    }
+                    Err(e) => {
+                        tracing::error!("🚨 V2: Failed to delete session {}: {}", session_id, e);
+                        ui::gpui::BackendResponse::Error {
+                            message: e.to_string(),
+                        }
+                    }
+                }
+            }
+
+            ui::gpui::BackendEvent::SendUserMessage {
+                session_id,
+                message,
+            } => {
+                tracing::info!(
+                    "🚀 V2: User message for session {}: {}",
+                    session_id,
+                    message
+                );
+
+                // Clone values for the spawned task
+                let provider_clone = provider.clone();
+                let model_clone = model.clone();
+                let base_url_clone = base_url.clone();
+                let record_clone = record.clone();
+                let playback_clone = playback.clone();
+                let gui_clone = gui.clone();
+                let root_path_clone = root_path.clone();
+
+                // Now create and run agent without any locks
+                tokio::spawn(async move {
+                    // Create components for the agent
+                    let project_manager = Box::new(DefaultProjectManager::new());
+                    let command_executor = Box::new(DefaultCommandExecutor);
+                    let user_interface = Arc::new(Box::new(gui_clone) as Box<dyn UserInterface>);
+
+                    // Create LLM client
+                    let llm_client = match create_llm_client(
+                        provider_clone,
+                        model_clone,
+                        base_url_clone,
+                        num_ctx,
+                        record_clone,
+                        playback_clone,
+                        fast_playback,
+                    )
+                    .await
+                    {
+                        Ok(client) => client,
+                        Err(e) => {
+                            tracing::error!("🚨 V2: Failed to create LLM client: {}", e);
+                            return;
+                        }
+                    };
+
+                    // Create session manager for agent
+                    let persistence =
+                        crate::persistence::FileStatePersistence::new(root_path_clone.clone());
+                    let session_manager = crate::session::SessionManager::new(persistence);
+                    let state_storage =
+                        Box::new(crate::agent::SessionManagerStatePersistence::new(
+                            session_manager,
+                            crate::types::ToolMode::Xml, // Default for now
+                        ));
+
+                    // Create and run agent
+                    let mut agent = crate::agent::Agent::new(
+                        llm_client,
+                        crate::types::ToolMode::Xml, // Default for now
+                        project_manager,
+                        command_executor,
+                        user_interface,
+                        state_storage,
+                        Some(root_path_clone),
+                    );
+
+                    // Add user message and run agent
+                    tracing::info!(
+                        "🎯 V2: Starting agent for session {} with message: {}",
+                        session_id,
+                        message
+                    );
+
+                    if let Err(e) = agent.start_with_task(message).await {
+                        tracing::error!("🚨 V2: Agent failed: {}", e);
+                    } else {
+                        tracing::info!("✅ V2: Agent completed for session {}", session_id);
+                    }
+                });
+
+                // No response needed for SendUserMessage - agent communicates via UI
+                continue;
+            }
+        };
+
+        // Send response back to UI
+        if let Err(e) = backend_response_tx.send(response).await {
+            tracing::error!("🚨 V2: Failed to send response: {}", e);
+            break;
+        }
+    }
+
+    tracing::info!("🎯 V2: Backend event handler stopped");
+}
+
 /// V2 Implementation using MultiSessionManager architecture
 fn run_agent_gpui_v2(
     path: PathBuf,
@@ -683,15 +920,13 @@ fn run_agent_gpui_v2(
     playback: Option<PathBuf>,
     fast_playback: bool,
 ) -> Result<()> {
-    use crate::session::{MultiSessionManager, AgentConfig};
+    use crate::session::{AgentConfig, MultiSessionManager};
 
     // Create shared state between GUI and backend
     let gui = ui::gpui::Gpui::new();
 
-    // Setup new communication channels for the new architecture
-    let (user_message_tx, user_message_rx) = async_channel::unbounded::<(String, String)>(); // (message, session_id)
-    let (session_event_tx, session_event_rx) = async_channel::unbounded::<ui::gpui::ChatManagementEvent>();
-    let (session_response_tx, session_response_rx) = async_channel::unbounded::<ui::gpui::ChatManagementResponse>();
+    // Setup unified backend communication
+    let (backend_event_rx, backend_response_tx) = gui.setup_backend_communication();
 
     // Setup dynamic types for MultiSessionManager
     let root_path = path.canonicalize()?;
@@ -704,202 +939,34 @@ fn run_agent_gpui_v2(
     };
 
     // Create the new MultiSessionManager
-    let multi_session_manager = Arc::new(Mutex::new(MultiSessionManager::new(persistence, agent_config)));
+    let multi_session_manager = Arc::new(Mutex::new(MultiSessionManager::new(
+        persistence,
+        agent_config,
+    )));
 
     // Clone GUI before moving it into thread
     let gui_for_thread = gui.clone();
 
-    // Setup GUI communication (modified for new architecture)
-    gui.setup_v2_communication(user_message_tx.clone(), session_event_tx, session_response_rx);
-
-    // Start the backend thread with new architecture
-    let multi_session_manager_clone = multi_session_manager.clone();
+    // Start the simplified backend thread
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
         runtime.block_on(async {
-            // Handle session management events
-            let session_event_task = {
-                let multi_session_manager = multi_session_manager_clone.clone();
-                let session_response_tx = session_response_tx.clone();
-
-                tokio::spawn(async move {
-                    while let Ok(event) = session_event_rx.recv().await {
-                        tracing::info!("🎯 V2: Session management event: {:?}", event);
-
-                        let response = match event {
-                            ui::gpui::ChatManagementEvent::ListSessions => {
-                                let manager = multi_session_manager.lock().unwrap();
-                                match manager.list_all_sessions() {
-                                    Ok(sessions) => {
-                                        tracing::info!("🎯 V2: Found {} sessions", sessions.len());
-                                        ui::gpui::ChatManagementResponse::SessionsListed { sessions }
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("🚨 V2: Failed to list sessions: {}", e);
-                                        ui::gpui::ChatManagementResponse::Error { message: e.to_string() }
-                                    }
-                                }
-                            }
-                            ui::gpui::ChatManagementEvent::CreateNewSession { name } => {
-                                // Clone the manager for the async operation
-                                let manager_clone = multi_session_manager.clone();
-                                let result: Result<String> = {
-                                    let mut manager = manager_clone.lock().unwrap();
-                                    // Release lock before await by using blocking operation
-                                    // For now, use a dummy session ID generation
-                                    let session_id = format!("chat_{:x}_{:x}",
-                                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
-                                        rand::random::<u16>()
-                                    );
-                                    Ok(session_id)
-                                };
-
-                                match result {
-                                    Ok(session_id) => {
-                                        let display_name = format!("Chat {}", &session_id[5..13]);
-                                        tracing::info!("🎯 V2: Created session {}", session_id);
-                                        ui::gpui::ChatManagementResponse::SessionCreated { session_id, name: display_name }
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("🚨 V2: Failed to create session: {}", e);
-                                        ui::gpui::ChatManagementResponse::Error { message: e.to_string() }
-                                    }
-                                }
-                            }
-                            ui::gpui::ChatManagementEvent::LoadSession { session_id } => {
-                                tracing::info!("🎯 V2: LoadSession requested: {}", session_id);
-
-                                // Clone the session_id and manager to avoid holding lock across await
-                                let manager_clone = multi_session_manager.clone();
-                                let session_id_clone = session_id.clone();
-
-                                // Execute set_active_session outside the spawn to avoid mutex over await
-                                let result: Result<crate::session::SessionSwitchData> = {
-                                    let _manager = manager_clone.lock().unwrap();
-                                    // For now, create a dummy result to avoid the await issue
-                                    // TODO: Properly implement session loading without mutex across await
-                                    Ok(crate::session::SessionSwitchData {
-                                        session_id: session_id_clone.clone(),
-                                        messages: Vec::new(), // Dummy data for now
-                                        buffered_fragments: Vec::new(),
-                                    })
-                                };
-
-                                match result {
-                                    Ok(session_data) => {
-                                        tracing::info!("🎯 V2: Session loaded with {} messages and {} buffered fragments",
-                                                     session_data.messages.len(), session_data.buffered_fragments.len());
-                                        ui::gpui::ChatManagementResponse::SessionLoaded {
-                                            session_id: session_data.session_id,
-                                            messages: session_data.messages
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("🚨 V2: Failed to load session {}: {}", session_id_clone, e);
-                                        ui::gpui::ChatManagementResponse::Error { message: e.to_string() }
-                                    }
-                                }
-                            }
-                            ui::gpui::ChatManagementEvent::DeleteSession { session_id } => {
-                                // For now, return dummy response
-                                tracing::info!("🎯 V2: DeleteSession requested: {}", session_id);
-                                ui::gpui::ChatManagementResponse::SessionDeleted { session_id }
-                            }
-                        };
-
-                        let _ = session_response_tx.send(response).await;
-                    }
-                })
-            };
-
-            // Handle user messages (start agents on demand)
-            let user_message_task = {
-                let multi_session_manager = multi_session_manager_clone.clone();
-                let gui_clone = gui_for_thread.clone();
-
-                tokio::spawn(async move {
-                    while let Ok((message, session_id)) = user_message_rx.recv().await {
-                        tracing::info!("🚀 V2: User message for session {}: {}", session_id, message);
-
-                        // Create components for the agent
-                        let project_manager = Box::new(DefaultProjectManager::new());
-                        let command_executor = Box::new(DefaultCommandExecutor);
-                        let user_interface = Arc::new(Box::new(gui_clone.clone()) as Box<dyn UserInterface>);
-
-                        // Create LLM client
-                        let llm_client = match create_llm_client(
-                            provider.clone(),
-                            model.clone(),
-                            base_url.clone(),
-                            num_ctx,
-                            record.clone(),
-                            playback.clone(),
-                            fast_playback,
-                        ).await {
-                            Ok(client) => client,
-                            Err(e) => {
-                                tracing::error!("🚨 V2: Failed to create LLM client: {}", e);
-                                continue;
-                            }
-                        };
-
-                        // Start agent for this message
-                        tracing::info!("🎯 V2: Starting agent for session {} with message: {}", session_id, message);
-
-                        // For now, just log to avoid mutex over await issue
-                        // TODO: Properly implement agent spawning without mutex across await
-                        tracing::info!("🎯 V2: Would start agent for session {} with message: {}", session_id, message);
-                        tracing::info!("✅ V2: Agent start simulated for session {}", session_id);
-                    }
-                })
-            };
-
-            // Monitor agent completions
-            let completion_monitor_task = {
-                let multi_session_manager = multi_session_manager_clone.clone();
-
-                tokio::spawn(async move {
-                    tracing::info!("🔄 V2: Completion monitor started");
-                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
-
-                    loop {
-                        interval.tick().await;
-
-                        // Get completed sessions without holding the lock across await
-                        let completed_sessions = {
-                            let mut manager = multi_session_manager.lock().unwrap();
-                            let manager_ref = &mut *manager;
-                            drop(manager); // Release lock before await
-                            // We need to restructure this differently since we can't borrow after drop
-                        };
-                        // For now, skip completion checking to fix compilation
-                        // TODO: Implement proper completion checking without mutex across await
-                        let completed_sessions: Vec<String> = Vec::new();
-
-                        for session_id in completed_sessions {
-                            tracing::info!("✅ V2: Agent completed for session: {}", session_id);
-                            // Could send notifications to UI here
-                        }
-                    }
-                })
-            };
-
-            // Handle initial task or session state if provided
-            if let Some(task_str) = task {
-                tracing::info!("🚀 V2: Initial task provided: {}", task_str);
-                // Create dummy session ID and send task
-                let session_id = format!("initial_session_{:x}", rand::random::<u32>());
-                let _ = user_message_tx.send((task_str, session_id.clone())).await;
-                tracing::info!("🎯 V2: Sent initial task to session: {}", session_id);
-            }
-
-            // Keep all tasks running
-            let _ = tokio::try_join!(
-                session_event_task,
-                user_message_task,
-                completion_monitor_task
-            );
+            handle_backend_events(
+                backend_event_rx,
+                backend_response_tx,
+                multi_session_manager,
+                provider,
+                model,
+                base_url,
+                num_ctx,
+                record,
+                playback,
+                fast_playback,
+                gui_for_thread,
+                root_path.clone(),
+            )
+            .await;
         });
     });
 
