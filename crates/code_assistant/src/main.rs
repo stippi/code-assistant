@@ -789,14 +789,13 @@ async fn handle_backend_events(
             ui::gpui::BackendEvent::DeleteSession { session_id } => {
                 tracing::info!("🎯 V2: DeleteSession requested: {}", session_id);
 
-                // Clone the manager reference for the async call
-                let manager_clone = multi_session_manager.clone();
+                // Now we can call delete_session directly since it's synchronous
                 let delete_result = {
-                    let mut manager = manager_clone.lock().unwrap();
+                    let mut manager = multi_session_manager.lock().unwrap();
                     manager.delete_session(&session_id)
                 };
 
-                match delete_result.await {
+                match delete_result {
                     Ok(_) => {
                         tracing::info!("🎯 V2: Session deleted: {}", session_id);
                         ui::gpui::BackendResponse::SessionDeleted { session_id }

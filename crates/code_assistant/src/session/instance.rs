@@ -151,7 +151,7 @@ impl SessionInstance {
     }
 
     /// Terminate the running agent
-    pub async fn terminate_agent(&mut self) {
+    pub fn terminate_agent(&mut self) {
         if let Some(handle) = self.task_handle.take() {
             handle.abort();
             self.is_streaming = false;
