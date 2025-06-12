@@ -15,7 +15,7 @@ mod tests;
 use crate::agent::{Agent, SessionManagerStatePersistence};
 use crate::mcp::MCPServer;
 use crate::persistence::FileStatePersistence;
-use crate::session::SessionManager;
+use crate::session::{LegacySessionManager, SessionManager};
 use crate::types::ToolMode;
 use crate::ui::terminal::TerminalUI;
 use crate::ui::UserInterface;
@@ -104,21 +104,6 @@ struct Args {
     #[arg(long)]
     fast_playback: bool,
 
-    /// Resume a specific chat session by ID
-    #[arg(long)]
-    chat_id: Option<String>,
-
-    /// List available chat sessions
-    #[arg(long)]
-    list_chats: bool,
-
-    /// Delete a specific chat session by ID
-    #[arg(long)]
-    delete_chat: Option<String>,
-
-    /// Use the new V2 session-based architecture (experimental)
-    #[arg(long)]
-    use_v2_architecture: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -286,7 +271,7 @@ async fn run_mcp_server(verbose: bool) -> Result<()> {
 async fn run_agent_terminal(
     path: PathBuf,
     task: Option<String>,
-    session_manager: SessionManager,
+    session_manager: LegacySessionManager,
     session_state: Option<crate::session::SessionState>,
     provider: LLMProviderType,
     model: Option<String>,
@@ -340,189 +325,6 @@ async fn run_agent_terminal(
     }
 }
 
-fn run_agent_gpui(
-    path: PathBuf,
-    task: Option<String>,
-    session_manager: SessionManager,
-    session_state: Option<crate::session::SessionState>,
-    provider: LLMProviderType,
-    model: Option<String>,
-    base_url: Option<String>,
-    num_ctx: usize,
-    tools_type: ToolMode,
-    record: Option<PathBuf>,
-    playback: Option<PathBuf>,
-    fast_playback: bool,
-) -> Result<()> {
-    // Create shared state between GUI and Agent thread
-    let gui = ui::gpui::Gpui::new();
-
-    // Setup chat communication channels
-    let (chat_event_rx, chat_response_tx) = gui.setup_chat_communication();
-
-    // Setup dynamic types
-    let root_path = path.canonicalize()?;
-    let project_manager = Box::new(DefaultProjectManager::new());
-    let user_interface: Arc<Box<dyn UserInterface>> = Arc::new(Box::new(gui.clone()));
-    let command_executor = Box::new(DefaultCommandExecutor);
-
-    // Start the agent in a separate thread using a standard thread
-    // We need to move all the necessary components into this thread
-    std::thread::spawn(move || {
-        // Create a new tokio runtime for this thread
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-
-        // Run the agent within this runtime
-        runtime.block_on(async {
-            // Setup LLM client inside the thread
-            let llm_client = create_llm_client(
-                provider,
-                model,
-                base_url,
-                num_ctx,
-                record,
-                playback,
-                fast_playback,
-            )
-            .await
-            .expect("Failed to initialize LLM client");
-
-            // Initialize agent with session manager wrapped in StatePersistence
-            let state_storage = Box::new(SessionManagerStatePersistence::new(
-                session_manager,
-                tools_type,
-            ));
-            let mut agent = Agent::new(
-                llm_client,
-                tools_type,
-                project_manager,
-                command_executor,
-                user_interface,
-                state_storage,
-                Some(root_path.clone()),
-            );
-
-            // Clone necessary data for chat management task
-            let chat_event_rx_clone = chat_event_rx.clone();
-            let chat_response_tx_clone = chat_response_tx.clone();
-
-            // Spawn task to handle chat management events
-            // Keep the task handle to prevent it from being dropped
-            let _chat_management_task = tokio::spawn(async move {
-                tracing::info!("Chat management task started");
-                while let Ok(event) = chat_event_rx_clone.recv().await {
-                    tracing::info!("Chat management event received: {:?}", event);
-                    let response = match event {
-                        ui::gpui::ChatManagementEvent::ListSessions => {
-                            // Create a new session manager for this operation
-                            let persistence =
-                                crate::persistence::FileStatePersistence::new(root_path.clone());
-                            let session_manager = crate::session::SessionManager::new(persistence);
-                            match session_manager.list_sessions() {
-                                Ok(sessions) => {
-                                    ui::gpui::ChatManagementResponse::SessionsListed { sessions }
-                                }
-                                Err(e) => ui::gpui::ChatManagementResponse::Error {
-                                    message: e.to_string(),
-                                },
-                            }
-                        }
-                        ui::gpui::ChatManagementEvent::LoadSession { session_id } => {
-                            // Load session and send fragments directly to UI
-                            let persistence =
-                                crate::persistence::FileStatePersistence::new(root_path.clone());
-                            let mut session_manager =
-                                crate::session::SessionManager::new(persistence);
-
-                            match session_manager.load_session(&session_id) {
-                                Ok(session_state) => {
-                                    tracing::info!(
-                                        "Loaded session {} with {} messages",
-                                        session_id,
-                                        session_state.messages.len()
-                                    );
-
-                                    ui::gpui::ChatManagementResponse::SessionLoaded {
-                                        session_id,
-                                        messages: session_state.messages,
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to load session {}: {}", session_id, e);
-                                    ui::gpui::ChatManagementResponse::Error {
-                                        message: format!("Failed to load session: {}", e),
-                                    }
-                                }
-                            }
-                        }
-                        ui::gpui::ChatManagementEvent::CreateNewSession { name } => {
-                            let persistence =
-                                crate::persistence::FileStatePersistence::new(root_path.clone());
-                            let mut session_manager =
-                                crate::session::SessionManager::new(persistence);
-                            match session_manager.create_session(name, tools_type) {
-                                Ok(session_id) => {
-                                    let display_name = format!("Chat {}", &session_id[5..13]);
-                                    ui::gpui::ChatManagementResponse::SessionCreated {
-                                        session_id,
-                                        name: display_name,
-                                    }
-                                }
-                                Err(e) => ui::gpui::ChatManagementResponse::Error {
-                                    message: e.to_string(),
-                                },
-                            }
-                        }
-                        ui::gpui::ChatManagementEvent::DeleteSession { session_id } => {
-                            let persistence =
-                                crate::persistence::FileStatePersistence::new(root_path.clone());
-                            let mut session_manager =
-                                crate::session::SessionManager::new(persistence);
-                            match session_manager.delete_session(&session_id) {
-                                Ok(_) => {
-                                    ui::gpui::ChatManagementResponse::SessionDeleted { session_id }
-                                }
-                                Err(e) => ui::gpui::ChatManagementResponse::Error {
-                                    message: e.to_string(),
-                                },
-                            }
-                        }
-                        ui::gpui::ChatManagementEvent::SendUserMessage {
-                            session_id: _,
-                            message: _,
-                        } => {
-                            // V1 doesn't support SendUserMessage - just return an error
-                            ui::gpui::ChatManagementResponse::Error {
-                                message: "SendUserMessage not supported in V1 architecture"
-                                    .to_string(),
-                            }
-                        }
-                    };
-
-                    tracing::info!("Sending chat management response: {:?}", response);
-                    let _ = chat_response_tx_clone.send(response).await;
-                }
-            });
-
-            // Start either from session state, task, or GUI input
-            if let Some(session_state) = session_state {
-                agent.load_from_session_state(session_state).await.unwrap();
-            } else if let Some(task_str) = task {
-                agent.start_with_task(task_str).await.unwrap();
-            } else {
-                // In GUI mode with no task, prompt the user for a task
-                let task_from_ui = agent.get_input_from_ui().await.unwrap();
-                agent.start_with_task(task_from_ui).await.unwrap();
-            }
-        });
-    });
-
-    // Run the GUI in the main thread - this will block until the application exits
-    gui.run_app();
-
-    // We return here when the GUI is closed
-    Ok(())
-}
 
 async fn run_agent(args: Args) -> Result<()> {
     // Get all the agent options from args
@@ -536,7 +338,6 @@ async fn run_agent(args: Args) -> Result<()> {
     let num_ctx = args.num_ctx.unwrap_or(8192);
     let tools_type = args.tools_type.unwrap_or(ToolMode::Xml);
     let use_gui = args.ui;
-    let use_v2_architecture = args.use_v2_architecture;
 
     // Setup logging based on verbose flag
     setup_logging(verbose, true);
@@ -546,71 +347,35 @@ async fn run_agent(args: Args) -> Result<()> {
         anyhow::bail!("Path '{}' is not a directory", path.display());
     }
 
-    // Create session manager for chat functionality
+    // Create legacy session manager for terminal mode compatibility
     let persistence = FileStatePersistence::new(path.clone());
-    let mut session_manager = SessionManager::new(persistence);
+    let mut session_manager = LegacySessionManager::new(persistence);
 
-    // Handle chat session logic
-    let (session_task, session_state) = if let Some(chat_id) = args.chat_id {
-        // Load specific chat session
-        let session_state = session_manager.load_session(&chat_id)?;
-        println!("Loaded chat session: {}", chat_id);
-        (None, Some(session_state))
-    } else if continue_task {
-        // Try to continue from latest session
-        if let Some(latest_id) = session_manager.get_latest_session_id()? {
-            let session_state = session_manager.load_session(&latest_id)?;
-            println!("Continuing latest chat session: {}", latest_id);
-            (None, Some(session_state))
-        } else {
-            anyhow::bail!("No chat sessions found to continue from. Please start with a task.");
-        }
+    // Handle chat session logic (simplified - no CLI session management)
+    let (session_task, session_state) = if task.is_some() {
+        let new_session_id = session_manager.create_session(None, tools_type)?;
+        println!("Created new chat session: {}", new_session_id);
+        (task, None)
     } else {
-        // Create new session with task
-        if task.is_some() {
-            let new_session_id = session_manager.create_session(None, tools_type)?;
-            println!("Created new chat session: {}", new_session_id);
-            (task, None)
-        } else {
-            anyhow::bail!("Please provide a task to start a new chat session.");
-        }
+        anyhow::bail!("Please provide a task to start a new chat session.");
     };
 
     // Run in either GUI or terminal mode
     if use_gui {
-        if use_v2_architecture {
-            println!("Starting with V2 Session-Based Architecture");
-            run_agent_gpui_v2(
-                path,
-                session_task,
-                session_manager,
-                session_state,
-                provider,
-                model,
-                base_url,
-                num_ctx,
-                tools_type,
-                args.record.clone(),
-                args.playback.clone(),
-                args.fast_playback,
-            )
-        } else {
-            println!("Starting with V1 Architecture");
-            run_agent_gpui(
-                path,
-                session_task,
-                session_manager,
-                session_state,
-                provider,
-                model,
-                base_url,
-                num_ctx,
-                tools_type,
-                args.record.clone(),
-                args.playback.clone(),
-                args.fast_playback,
-            )
-        }
+        run_agent_gpui_v2(
+            path,
+            session_task,
+            session_manager,
+            session_state,
+            provider,
+            model,
+            base_url,
+            num_ctx,
+            tools_type,
+            args.record.clone(),
+            args.playback.clone(),
+            args.fast_playback,
+        )
     } else {
         run_agent_terminal(
             path,
@@ -630,71 +395,12 @@ async fn run_agent(args: Args) -> Result<()> {
     }
 }
 
-/// List all available chat sessions
-async fn handle_list_chats(root_path: &PathBuf) -> Result<()> {
-    let persistence = FileStatePersistence::new(root_path.clone());
-    let session_manager = SessionManager::new(persistence);
-
-    let sessions = session_manager.list_sessions()?;
-    if sessions.is_empty() {
-        println!("No chat sessions found.");
-    } else {
-        println!("Available chat sessions:");
-        for session in sessions {
-            println!(
-                "  {} - {} ({} messages, created {})",
-                session.id,
-                session.name,
-                session.message_count,
-                crate::persistence::format_time(session.created_at)
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Delete a specific chat session
-async fn handle_delete_chat(root_path: &PathBuf, session_id: &str) -> Result<()> {
-    let persistence = FileStatePersistence::new(root_path.clone());
-    let mut session_manager = SessionManager::new(persistence);
-
-    // Check if session exists first
-    let sessions = session_manager.list_sessions()?;
-    if !sessions.iter().any(|s| s.id == session_id) {
-        anyhow::bail!("Chat session '{}' not found", session_id);
-    }
-
-    session_manager.delete_session(session_id)?;
-    println!("Chat session '{}' deleted successfully.", session_id);
-    Ok(())
-}
-
-/// Handle chat-related command line operations
-async fn handle_chat_commands(args: &Args) -> Result<bool> {
-    let default_path = PathBuf::from(".");
-    let root_path = args.path.as_ref().unwrap_or(&default_path);
-
-    // Handle list chats command
-    if args.list_chats {
-        handle_list_chats(root_path).await?;
-        return Ok(true);
-    }
-
-    // Handle delete chat command
-    if let Some(session_id) = &args.delete_chat {
-        handle_delete_chat(root_path, session_id).await?;
-        return Ok(true);
-    }
-
-    // Other chat commands would be handled in main function
-    Ok(false)
-}
 
 /// Simplified backend event handler that fixes mutex/await boundary issues
 async fn handle_backend_events(
     backend_event_rx: async_channel::Receiver<ui::gpui::BackendEvent>,
     backend_response_tx: async_channel::Sender<ui::gpui::BackendResponse>,
-    multi_session_manager: Arc<Mutex<crate::session::MultiSessionManager>>,
+    multi_session_manager: Arc<Mutex<crate::session::SessionManager>>,
     provider: LLMProviderType,
     model: Option<String>,
     base_url: Option<String>,
@@ -703,7 +409,7 @@ async fn handle_backend_events(
     playback: Option<PathBuf>,
     fast_playback: bool,
     gui: ui::gpui::Gpui,
-    root_path: PathBuf,
+    _root_path: PathBuf,
 ) {
     tracing::info!("🎯 V2: Backend event handler started");
 
@@ -888,7 +594,7 @@ async fn handle_backend_events(
 fn run_agent_gpui_v2(
     path: PathBuf,
     task: Option<String>,
-    _session_manager: SessionManager, // Old single session manager (keep for compatibility)
+    _legacy_session_manager: LegacySessionManager, // Old single session manager (keep for compatibility)
     _session_state: Option<crate::session::SessionState>,
     provider: LLMProviderType,
     model: Option<String>,
@@ -899,7 +605,7 @@ fn run_agent_gpui_v2(
     playback: Option<PathBuf>,
     fast_playback: bool,
 ) -> Result<()> {
-    use crate::session::{AgentConfig, MultiSessionManager};
+    use crate::session::{AgentConfig, SessionManager};
 
     // Create shared state between GUI and backend
     let gui = ui::gpui::Gpui::new();
@@ -917,20 +623,63 @@ fn run_agent_gpui_v2(
         initial_project: None,
     };
 
-    // Create the new MultiSessionManager
-    let multi_session_manager = Arc::new(Mutex::new(MultiSessionManager::new(
+    // Create the new SessionManager
+    let multi_session_manager = Arc::new(Mutex::new(SessionManager::new(
         persistence,
         agent_config,
     )));
 
     // Clone GUI before moving it into thread
     let gui_for_thread = gui.clone();
+    let task_clone = task.clone();
 
     // Start the simplified backend thread
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
         runtime.block_on(async {
+            // If we have an initial task, create a session and start the agent
+            if let Some(initial_task) = task_clone {
+                tracing::info!("🚀 V2: Creating initial session with task: {}", initial_task);
+                
+                // Create new session
+                let session_id = {
+                    let mut manager = multi_session_manager.lock().unwrap();
+                    manager.create_session(None).unwrap()
+                };
+                
+                tracing::info!("✅ V2: Created initial session: {}", session_id);
+                
+                // Start agent with the initial task
+                let project_manager = Box::new(DefaultProjectManager::new());
+                let command_executor = Box::new(DefaultCommandExecutor);
+                let user_interface = Arc::new(Box::new(gui_for_thread.clone()) as Box<dyn UserInterface>);
+                
+                let llm_client = create_llm_client(
+                    provider.clone(),
+                    model.clone(),
+                    base_url.clone(),
+                    num_ctx,
+                    record.clone(),
+                    playback.clone(),
+                    fast_playback,
+                ).await.expect("Failed to create LLM client");
+                
+                {
+                    let mut manager = multi_session_manager.lock().unwrap();
+                    manager.start_agent_for_message(
+                        &session_id,
+                        initial_task,
+                        llm_client,
+                        project_manager,
+                        command_executor,
+                        user_interface,
+                    ).await.expect("Failed to start agent with initial task");
+                }
+                
+                tracing::info!("🎯 V2: Started agent for initial session");
+            }
+            
             handle_backend_events(
                 backend_event_rx,
                 backend_response_tx,
@@ -960,10 +709,6 @@ async fn main() -> Result<()> {
     // Parse command line arguments
     let args = Args::parse();
 
-    // Handle chat-related commands first
-    if handle_chat_commands(&args).await? {
-        return Ok(()); // Chat command was handled, exit
-    }
 
     match args.mode {
         // Server mode

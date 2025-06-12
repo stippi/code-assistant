@@ -3,7 +3,7 @@ use llm::Message;
 use std::path::PathBuf;
 
 use crate::agent::types::ToolExecution;
-use crate::session::SessionManager;
+use crate::session::LegacySessionManager;
 use crate::types::{ToolMode, WorkingMemory};
 
 /// Trait for persisting agent state
@@ -56,23 +56,23 @@ impl AgentStatePersistence for MockStatePersistence {
     }
 }
 
-/// Wrapper that implements AgentStatePersistence for SessionManager
-/// This allows existing SessionManager code to work with the new Agent interface
+/// Wrapper that implements AgentStatePersistence for LegacySessionManager
+/// This allows existing V1 SessionManager code to work with the new Agent interface
 pub struct SessionManagerStatePersistence {
-    session_manager: SessionManager,
+    session_manager: LegacySessionManager,
     tool_mode: ToolMode,
 }
 
 impl SessionManagerStatePersistence {
-    pub fn new(session_manager: SessionManager, tool_mode: ToolMode) -> Self {
+    pub fn new(session_manager: LegacySessionManager, tool_mode: ToolMode) -> Self {
         Self { session_manager, tool_mode }
     }
     
-    pub fn session_manager(&self) -> &SessionManager {
+    pub fn session_manager(&self) -> &LegacySessionManager {
         &self.session_manager
     }
     
-    pub fn session_manager_mut(&mut self) -> &mut SessionManager {
+    pub fn session_manager_mut(&mut self) -> &mut LegacySessionManager {
         &mut self.session_manager
     }
 }

@@ -15,8 +15,8 @@ use crate::ui::{DisplayFragment, UserInterface};
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
 
-/// The new SessionManager that manages multiple active sessions with on-demand agents
-pub struct MultiSessionManager {
+/// The main SessionManager that manages multiple active sessions with on-demand agents
+pub struct SessionManager {
     /// Persistence layer for saving/loading sessions
     persistence: FileStatePersistence,
 
@@ -46,8 +46,8 @@ pub struct SessionSwitchData {
     pub buffered_fragments: Vec<DisplayFragment>,
 }
 
-impl MultiSessionManager {
-    /// Create a new MultiSessionManager
+impl SessionManager {
+    /// Create a new SessionManager
     pub fn new(persistence: FileStatePersistence, agent_config: AgentConfig) -> Self {
         Self {
             persistence,
@@ -179,9 +179,9 @@ impl MultiSessionManager {
         let _fragment_buffer = session_instance.get_fragment_buffer();
         let _is_ui_active = Arc::new(Mutex::new(session_instance.is_ui_active()));
 
-        // Create a new agent for this session
+        // Create a new legacy session manager for this agent
         let mut session_manager_for_agent =
-            crate::session::SessionManager::new(self.persistence.clone());
+            crate::session::LegacySessionManager::new(self.persistence.clone());
         
         // CRITICAL: Set the current session ID so the agent doesn't create a new session
         session_manager_for_agent.set_current_session(session_id.to_string());

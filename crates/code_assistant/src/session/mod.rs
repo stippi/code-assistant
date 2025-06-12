@@ -12,10 +12,11 @@ pub mod instance;
 pub mod multi_manager;
 
 pub use instance::SessionInstance;
-pub use multi_manager::{MultiSessionManager, AgentConfig, SessionSwitchData};
+// New main session manager (V2)
+pub use multi_manager::{SessionManager, AgentConfig, SessionSwitchData};
 
-/// Manages chat sessions independently from the Agent
-pub struct SessionManager {
+/// Legacy session manager (V1) - kept for compatibility with state_storage.rs
+pub struct LegacySessionManager {
     persistence: FileStatePersistence,
     current_session_id: Option<String>,
 }
@@ -30,7 +31,7 @@ pub struct SessionState {
     pub initial_project: Option<String>,
 }
 
-impl SessionManager {
+impl LegacySessionManager {
     pub fn new(persistence: FileStatePersistence) -> Self {
         Self {
             persistence,
