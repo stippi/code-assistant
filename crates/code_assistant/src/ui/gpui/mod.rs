@@ -1,8 +1,9 @@
 pub mod assets;
 pub mod auto_scroll;
+pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_renderer;
-mod elements;
+pub mod elements;
 pub mod file_icons;
 mod memory;
 mod messages;
@@ -13,7 +14,9 @@ pub mod simple_renderers;
 pub mod theme;
 pub mod ui_events;
 
+use crate::persistence::ChatMetadata;
 use crate::types::WorkingMemory;
+use crate::ui::gpui::ui_events::MessageData;
 use crate::ui::gpui::{
     content_renderer::ContentRenderer,
     diff_renderer::DiffParameterRenderer,
@@ -25,6 +28,7 @@ use crate::ui::gpui::{
 use crate::ui::{
     async_trait, DisplayFragment, StreamingState, ToolStatus, UIError, UIMessage, UserInterface,
 };
+use llm;
 use assets::Assets;
 use async_channel;
 use gpui::{actions, px, AppContext, AsyncApp, Entity, Global, Point};
@@ -33,7 +37,7 @@ use gpui_component::Root;
 pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
-use std::any::Any;
+
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -42,6 +46,39 @@ use tracing::warn;
 use elements::MessageContainer;
 
 actions!(code_assistant, [CloseWindow]);
+
+// Global UI event sender for chat components
+#[derive(Clone)]
+pub struct UiEventSender(pub async_channel::Sender<UiEvent>);
+
+impl Global for UiEventSender {}
+
+// Unified event type for all UI→Backend communication  
+#[derive(Debug, Clone)]
+pub enum BackendEvent {
+    // Session management
+    LoadSession { session_id: String },
+    CreateNewSession { name: Option<String> },
+    DeleteSession { session_id: String },
+    ListSessions,
+    
+    // Agent operations
+    SendUserMessage { session_id: String, message: String },
+}
+
+// Response from backend to UI
+#[derive(Debug, Clone)]
+pub enum BackendResponse {
+    SessionLoaded { session_id: String, messages: Vec<llm::Message> },
+    SessionCreated { session_id: String, name: String },
+    SessionDeleted { session_id: String },
+    SessionsListed { sessions: Vec<ChatMetadata> },
+    Error { message: String },
+}
+
+// Legacy aliases for compatibility during transition
+pub type ChatManagementEvent = BackendEvent;
+pub type ChatManagementResponse = BackendResponse;
 
 // Our main UI struct that implements the UserInterface trait
 #[derive(Clone)]
@@ -52,13 +89,21 @@ pub struct Gpui {
     working_memory: Arc<Mutex<Option<WorkingMemory>>>,
     event_sender: Arc<Mutex<async_channel::Sender<UiEvent>>>,
     event_receiver: Arc<Mutex<async_channel::Receiver<UiEvent>>>,
-    event_task: Arc<Mutex<Option<Box<dyn Any + Send + Sync>>>>,
+    event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
+    session_event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
     current_request_id: Arc<Mutex<u64>>,
     current_tool_counter: Arc<Mutex<u64>>,
     last_xml_tool_id: Arc<Mutex<String>>,
     #[allow(dead_code)]
     parameter_renderers: Arc<ParameterRendererRegistry>, // TODO: Needed?!
     streaming_state: Arc<Mutex<StreamingState>>,
+    // Unified backend communication
+    backend_event_sender: Arc<Mutex<Option<async_channel::Sender<BackendEvent>>>>,
+    backend_response_receiver: Arc<Mutex<Option<async_channel::Receiver<BackendResponse>>>>,
+
+    // Current chat state
+    current_session_id: Arc<Mutex<Option<String>>>,
+    chat_sessions: Arc<Mutex<Vec<ChatMetadata>>>,
 }
 
 // Implement Global trait for Gpui
@@ -70,7 +115,8 @@ impl Gpui {
         let input_value = Arc::new(Mutex::new(None));
         let input_requested = Arc::new(Mutex::new(false));
         let working_memory = Arc::new(Mutex::new(None));
-        let event_task = Arc::new(Mutex::new(None));
+        let event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
+        let session_event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let current_request_id = Arc::new(Mutex::new(0));
         let current_tool_counter = Arc::new(Mutex::new(0));
         let last_xml_tool_id = Arc::new(Mutex::new(String::new()));
@@ -115,11 +161,17 @@ impl Gpui {
             event_sender,
             event_receiver,
             event_task,
+            session_event_task,
             current_request_id,
             current_tool_counter,
             last_xml_tool_id,
             parameter_renderers,
             streaming_state,
+            backend_event_sender: Arc::new(Mutex::new(None)),
+            backend_response_receiver: Arc::new(Mutex::new(None)),
+
+            current_session_id: Arc::new(Mutex::new(None)),
+            chat_sessions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -137,6 +189,11 @@ impl Gpui {
         app.run(move |cx| {
             // Register our Gpui instance as a global
             cx.set_global(gpui_clone.clone());
+
+            // Register UI event sender as global for chat components
+            cx.set_global(UiEventSender(
+                gpui_clone.event_sender.lock().unwrap().clone(),
+            ));
 
             // Setup window close listener
             cx.bind_keys([gpui::KeyBinding::new("cmd-w", CloseWindow, None)]);
@@ -157,30 +214,74 @@ impl Gpui {
             // Spawn task to receive UiEvents
             let rx = gpui_clone.event_receiver.lock().unwrap().clone();
             let async_gpui_clone = gpui_clone.clone();
-            let task = cx.spawn(async move |cx: &mut AsyncApp| loop {
-                let result = rx.recv().await;
-                match result {
-                    Ok(received_event) => {
-                        async_gpui_clone.process_ui_event_async(received_event, cx);
-                    }
-                    Err(err) => {
-                        warn!("Receive error: {}", err);
+            tracing::info!("Starting UI event processing task");
+            let task = cx.spawn(async move |cx: &mut AsyncApp| {
+                tracing::info!("UI event processing task is running");
+                loop {
+                    tracing::debug!("Waiting for UI event...");
+                    let result = rx.recv().await;
+                    match result {
+                        Ok(received_event) => {
+                            tracing::info!("UI event processing: Received event: {:?}", received_event);
+                            async_gpui_clone.process_ui_event_async(received_event, cx);
+                        }
+                        Err(err) => {
+                            warn!("Receive error: {}", err);
+                            break;
+                        }
                     }
                 }
+                tracing::warn!("UI event processing task ended");
             });
 
             // Store the task in our Gpui instance
             {
                 let mut task_guard = gpui_clone.event_task.lock().unwrap();
-                *task_guard = Some(Box::new(task));
+                *task_guard = Some(task);
+            }
+
+            // Spawn task to handle chat management responses from agent
+            let chat_gpui_clone = gpui_clone.clone();
+            let chat_response_task = cx.spawn(async move |cx: &mut AsyncApp| {
+                // Wait a bit for the communication channels to be set up
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                loop {
+                    // Check if we have a response receiver
+                    let receiver_opt = chat_gpui_clone
+                        .backend_response_receiver
+                        .lock()
+                        .unwrap()
+                        .clone();
+                    if let Some(receiver) = receiver_opt {
+                        match receiver.recv().await {
+                            Ok(response) => {
+                                chat_gpui_clone.handle_backend_response(response, cx);
+                            }
+                            Err(_) => {
+                                // Channel closed, break the loop
+                                break;
+                            }
+                        }
+                    } else {
+                        // No receiver yet, wait and try again
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            });
+
+            // Store the chat response task as well
+            {
+                let mut task_guard = gpui_clone.session_event_task.lock().unwrap();
+                *task_guard = Some(chat_response_task);
             }
 
             // Create memory view with our shared working memory
             let memory_view = cx.new(|cx| MemoryView::new(working_memory.clone(), cx));
 
-            // Create window with larger size to accommodate both views
+            // Create window with larger size to accommodate chat sidebar, messages, and memory view
             let bounds =
-                gpui::Bounds::centered(None, gpui::size(gpui::px(1000.0), gpui::px(650.0)), cx);
+                gpui::Bounds::centered(None, gpui::size(gpui::px(1400.0), gpui::px(700.0)), cx);
             // Open window with titlebar
             let window_result = cx.open_window(
                 gpui::WindowOptions {
@@ -335,6 +436,35 @@ impl Gpui {
                 }
                 cx.refresh().expect("Failed to refresh windows");
             }
+            UiEvent::SetMessages { messages, session_id } => {
+                // Update current session ID if provided
+                if let Some(session_id) = session_id {
+                    *self.current_session_id.lock().unwrap() = Some(session_id);
+                }
+
+                // Clear existing messages
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    queue.clear();
+                }
+
+                // Create new message containers from the message data
+                for message_data in messages {
+                    let container = cx.new(|cx| MessageContainer::with_role(message_data.role, cx))
+                        .expect("Failed to create message container");
+
+                    // Process all fragments for this message
+                    self.process_fragments_for_container(&container, message_data.fragments, cx);
+
+                    // Add container to queue
+                    {
+                        let mut queue = self.message_queue.lock().unwrap();
+                        queue.push(container);
+                    }
+                }
+
+                cx.refresh().expect("Failed to refresh windows");
+            }
             UiEvent::StreamingStarted(request_id) => {
                 let mut queue = self.message_queue.lock().unwrap();
 
@@ -380,7 +510,186 @@ impl Gpui {
                     }
                 }
             }
+            // Chat management events - forward to backend thread
+            UiEvent::LoadChatSession { session_id } => {
+                tracing::info!("UI: LoadChatSession event for session_id: {}", session_id);
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::LoadSession { session_id });
+                }
+            }
+            UiEvent::CreateNewChatSession { name } => {
+                tracing::info!("UI: CreateNewChatSession event with name: {:?}", name);
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::CreateNewSession { name });
+                }
+            }
+            UiEvent::DeleteChatSession { session_id } => {
+                tracing::info!("UI: DeleteChatSession event for session_id: {}", session_id);
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::DeleteSession { session_id });
+                }
+            }
+            UiEvent::RefreshChatList => {
+                tracing::info!("UI: RefreshChatList event received");
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    tracing::info!("UI: Sending ListSessions to backend");
+                    let _ = sender.try_send(BackendEvent::ListSessions);
+                } else {
+                    tracing::warn!("UI: No backend event sender available for RefreshChatList");
+                }
+            }
+            UiEvent::UpdateChatList { sessions } => {
+                tracing::info!("UI: UpdateChatList event received with {} sessions", sessions.len());
+                // Update local cache
+                *self.chat_sessions.lock().unwrap() = sessions.clone();
+                let _current_session_id = self.current_session_id.lock().unwrap().clone();
+
+                // Refresh all windows to trigger re-render with new chat data
+                tracing::info!("UI: Refreshing windows for chat list update");
+                cx.refresh().expect("Failed to refresh windows");
+            }
+            // New v2 architecture events
+            UiEvent::LoadSessionFragments { fragments, session_id } => {
+                tracing::info!("UI: LoadSessionFragments event for session {}", session_id);
+
+                // Set as active session
+                *self.current_session_id.lock().unwrap() = Some(session_id);
+
+                // Clear existing messages
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    queue.clear();
+                }
+
+                // Create a single assistant container for all fragments
+                if !fragments.is_empty() {
+                    let container = cx.new(|cx| MessageContainer::with_role(MessageRole::Assistant, cx))
+                        .expect("Failed to create message container");
+
+                    // Process all fragments
+                    self.process_fragments_for_container(&container, fragments, cx);
+
+                    // Add to queue
+                    {
+                        let mut queue = self.message_queue.lock().unwrap();
+                        queue.push(container);
+                    }
+                }
+
+                cx.refresh().expect("Failed to refresh windows");
+            }
+            UiEvent::ClearMessages => {
+                tracing::info!("UI: ClearMessages event");
+                let mut queue = self.message_queue.lock().unwrap();
+                queue.clear();
+                cx.refresh().expect("Failed to refresh windows");
+            }
+            UiEvent::SendUserMessage { message, session_id } => {
+                tracing::info!("UI: SendUserMessage event for session {}: {}", session_id, message);
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::SendUserMessage { session_id, message });
+                } else {
+                    tracing::warn!("UI: No backend event sender available");
+                }
+            }
+            UiEvent::ConnectToActiveSession { session_id } => {
+                tracing::info!("UI: ConnectToActiveSession event for session {}", session_id);
+                // Set as active session
+                *self.current_session_id.lock().unwrap() = Some(session_id.clone());
+
+                // Request buffered fragments from MultiSessionManager
+                // This would need to be implemented in the backend
+                tracing::info!("UI: TODO - Request buffered fragments for session {}", session_id);
+            }
         }
+    }
+
+    /// Process display fragments and add them to a message container
+    fn process_fragments_for_container(
+        &self,
+        container: &Entity<MessageContainer>,
+        fragments: Vec<DisplayFragment>,
+        cx: &mut gpui::AsyncApp,
+    ) {
+        for fragment in fragments {
+            match fragment {
+                DisplayFragment::PlainText(text) => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_or_append_to_text_block(text, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ThinkingText(text) => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_or_append_to_thinking_block(text, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ToolName { name, id } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_tool_use_block(name, id, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ToolParameter {
+                    name,
+                    value,
+                    tool_id,
+                } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_or_update_tool_parameter(tool_id, name, value, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ToolEnd { id } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.end_tool_use(id, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
+        }
+    }
+
+    // Setup chat management communication channels
+    /// Setup unified backend communication channels
+    /// Returns channels for backend thread to receive events and send responses
+    pub fn setup_backend_communication(
+        &self,
+    ) -> (
+        async_channel::Receiver<BackendEvent>,
+        async_channel::Sender<BackendResponse>,
+    ) {
+        let (event_tx, event_rx) = async_channel::unbounded::<BackendEvent>();
+        let (response_tx, response_rx) = async_channel::unbounded::<BackendResponse>();
+
+        // Store channels for UI use
+        *self.backend_event_sender.lock().unwrap() = Some(event_tx);
+        *self.backend_response_receiver.lock().unwrap() = Some(response_rx);
+
+        // Return the backend ends
+        (event_rx, response_tx)
+    }
+
+    // Legacy methods for compatibility during transition
+    pub fn setup_chat_communication(
+        &self,
+    ) -> (
+        async_channel::Receiver<ChatManagementEvent>,
+        async_channel::Sender<ChatManagementResponse>,
+    ) {
+        self.setup_backend_communication()
+    }
+
+    pub fn setup_v2_communication(
+        &self,
+        _user_message_tx: async_channel::Sender<(String, String)>,
+        session_event_tx: async_channel::Sender<ChatManagementEvent>,
+        session_response_rx: async_channel::Receiver<ChatManagementResponse>,
+    ) {
+        // For backward compatibility, but now we ignore the separate user_message_tx
+        *self.backend_event_sender.lock().unwrap() = Some(session_event_tx);
+        *self.backend_response_receiver.lock().unwrap() = Some(session_response_rx);
     }
 
     // Helper to add an event to the queue
@@ -390,6 +699,140 @@ impl Gpui {
         if let Err(err) = sender.try_send(event) {
             warn!("Failed to send event via channel: {}", err);
         }
+    }
+
+    // Get current chat state for UI components
+    pub fn get_chat_sessions(&self) -> Vec<ChatMetadata> {
+        self.chat_sessions.lock().unwrap().clone()
+    }
+
+    pub fn get_current_session_id(&self) -> Option<String> {
+        self.current_session_id.lock().unwrap().clone()
+    }
+
+    // Send a user message to the active session
+    pub fn send_user_message_to_active_session(&self, message: String) -> Result<(), String> {
+        let session_id = self.get_current_session_id()
+            .ok_or_else(|| "No active session".to_string())?;
+
+        let sender = self.backend_event_sender.lock().unwrap();
+        if let Some(ref tx) = *sender {
+            tx.try_send(BackendEvent::SendUserMessage { session_id, message })
+                .map_err(|e| format!("Failed to send message: {}", e))?;
+            Ok(())
+        } else {
+            Err("Backend event sender not initialized".to_string())
+        }
+    }
+
+    // Handle backend responses
+    fn handle_backend_response(&self, response: BackendResponse, _cx: &mut AsyncApp) {
+        tracing::info!("UI: Received chat management response: {:?}", response);
+        match response {
+            BackendResponse::SessionLoaded { session_id, messages } => {
+                *self.current_session_id.lock().unwrap() = Some(session_id.clone());
+
+                // Create fragments from loaded messages and send SetMessages event
+                match self.create_fragments_from_messages(&messages) {
+                    Ok(message_data) => {
+                        tracing::info!("Created {} message containers from loaded session", message_data.len());
+                        self.push_event(UiEvent::SetMessages {
+                            messages: message_data,
+                            session_id: Some(session_id)
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create fragments from messages: {}", e);
+                        // Fallback: just clear messages
+                        self.message_queue.lock().unwrap().clear();
+                    }
+                }
+            }
+            BackendResponse::SessionCreated {
+                session_id,
+                name: _,
+            } => {
+                *self.current_session_id.lock().unwrap() = Some(session_id);
+                // Refresh the session list
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::ListSessions);
+                }
+            }
+            BackendResponse::SessionDeleted { session_id: _ } => {
+                // Refresh the session list
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::ListSessions);
+                }
+            }
+            BackendResponse::SessionsListed { sessions } => {
+                *self.chat_sessions.lock().unwrap() = sessions.clone();
+                self.push_event(UiEvent::UpdateChatList { sessions });
+            }
+            BackendResponse::Error { message } => {
+                warn!("Backend error: {}", message);
+            }
+        }
+    }
+
+    // Update chat state from agent responses
+    pub fn update_chat_state(&self, session_id: Option<String>, sessions: Vec<ChatMetadata>) {
+        *self.current_session_id.lock().unwrap() = session_id;
+        *self.chat_sessions.lock().unwrap() = sessions;
+
+        // Trigger UI update
+        self.push_event(UiEvent::UpdateChatList {
+            sessions: self.chat_sessions.lock().unwrap().clone(),
+        });
+    }
+
+
+}
+
+impl Gpui {
+    // Create message data from loaded session messages using StreamProcessor
+    fn create_fragments_from_messages(&self, messages: &[llm::Message]) -> Result<Vec<MessageData>, UIError> {
+        use crate::ui::streaming::create_stream_processor;
+
+        // Create dummy UI for stream processor (same as in Agent)
+        struct DummyUI;
+        #[async_trait::async_trait]
+        impl crate::ui::UserInterface for DummyUI {
+            async fn display(&self, _message: crate::ui::UIMessage) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn get_input(&self) -> Result<String, crate::ui::UIError> { Ok("".to_string()) }
+            fn display_fragment(&self, _fragment: &crate::ui::DisplayFragment) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn update_memory(&self, _memory: &crate::types::WorkingMemory) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn update_tool_status(&self, _tool_id: &str, _status: crate::ui::ToolStatus, _message: Option<String>, _output: Option<String>) -> Result<(), crate::ui::UIError> { Ok(()) }
+            async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> { Ok(0) }
+            async fn end_llm_request(&self, _request_id: u64, _cancelled: bool) -> Result<(), crate::ui::UIError> { Ok(()) }
+            fn should_streaming_continue(&self) -> bool { true }
+        }
+
+        let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
+
+        // Use Native mode as default - TODO: Get actual tool mode from somewhere
+        let mut processor = create_stream_processor(crate::types::ToolMode::Native, dummy_ui);
+
+        let mut messages_data = Vec::new();
+        tracing::info!("Processing {} messages for UI fragments", messages.len());
+
+        for (i, message) in messages.iter().enumerate() {
+            match processor.extract_fragments_from_message(message) {
+                Ok(fragments) => {
+                    let role = match message.role {
+                        llm::MessageRole::User => MessageRole::User,
+                        llm::MessageRole::Assistant => MessageRole::Assistant,
+                    };
+                    tracing::info!("Message {}: Extracted {} fragments", i, fragments.len());
+                    messages_data.push(MessageData { role, fragments });
+                }
+                Err(e) => {
+                    tracing::error!("Message {}: Failed to extract fragments: {}", i, e);
+                }
+            }
+        }
+
+        tracing::info!("Created {} message containers", messages_data.len());
+        Ok(messages_data)
     }
 }
 
@@ -411,6 +854,10 @@ impl UserInterface for Gpui {
                     role: MessageRole::User,
                 });
             }
+            UIMessage::UiEvent(event) => {
+                // Forward UI events directly to the event processing
+                self.push_event(event);
+            }
         }
 
         Ok(())
@@ -423,8 +870,9 @@ impl UserInterface for Gpui {
             *requested = true;
         }
 
-        // Wait for input
+        // Wait for input or commands
         loop {
+            // Check for user input
             {
                 let mut input = self.input_value.lock().unwrap();
                 if let Some(value) = input.take() {
@@ -434,6 +882,9 @@ impl UserInterface for Gpui {
                     return Ok(value);
                 }
             }
+
+
+
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }

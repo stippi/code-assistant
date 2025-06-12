@@ -1,18 +1,19 @@
+use crate::agent::state_storage::AgentStatePersistence;
 use crate::agent::tool_description_generator::generate_tool_documentation;
 use crate::agent::types::{ToolExecution, ToolRequest};
 use crate::config::ProjectManager;
-use crate::persistence::StatePersistence;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{parse_tool_xml, TOOL_TAG_PREFIX};
 use crate::types::*;
-use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface};
+use crate::ui::{streaming::create_stream_processor, DisplayFragment, UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
+use async_trait::async_trait;
 use llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
     StreamingChunk,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing::debug;
@@ -40,7 +41,7 @@ pub struct Agent {
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
-    state_persistence: Box<dyn StatePersistence>,
+    state_storage: Box<dyn AgentStatePersistence>,
     // Store all messages exchanged
     message_history: Vec<Message>,
     // Path provided during agent initialization
@@ -76,8 +77,8 @@ impl Agent {
         tool_mode: ToolMode,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
-        ui: Box<dyn UserInterface>,
-        state_persistence: Box<dyn StatePersistence>,
+        ui: Arc<Box<dyn UserInterface>>,
+        state_storage: Box<dyn AgentStatePersistence>,
         init_path: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -85,9 +86,9 @@ impl Agent {
             llm_provider,
             tool_mode,
             project_manager,
-            ui: Arc::new(ui),
+            ui,
             command_executor,
-            state_persistence,
+            state_storage,
             message_history: Vec::new(),
             init_path,
             initial_project: None,
@@ -96,11 +97,14 @@ impl Agent {
         }
     }
 
-    /// Save the current state (message history)
+    /// Save the current state (message history and tool executions)
     fn save_state(&mut self) -> Result<()> {
-        self.state_persistence.save_state(
-            self.working_memory.current_task.clone(),
+        self.state_storage.save_agent_state(
             self.message_history.clone(),
+            self.tool_executions.clone(),
+            self.working_memory.clone(),
+            self.init_path.clone(),
+            self.initial_project.clone(),
         )?;
         Ok(())
     }
@@ -114,6 +118,115 @@ impl Agent {
 
     pub async fn get_input_from_ui(&self) -> Result<String> {
         self.ui.get_input().await.map_err(|e| e.into())
+    }
+
+    /// Run a single iteration of the agent loop without waiting for user input
+    /// This is used in the new on-demand agent architecture
+    pub async fn run_single_iteration(&mut self) -> Result<()> {
+        let mut request_counter: u64 = 0;
+
+        // Clear any pending user input requests since this is on-demand
+        self.message_history.retain(|msg| {
+            !matches!(msg.role, MessageRole::User) || !msg.content.to_string().trim().is_empty()
+        });
+
+        loop {
+            let messages = self.prepare_messages();
+            if self.message_history.is_empty() {
+                self.message_history = messages.clone();
+            }
+            request_counter += 1;
+
+            // 1. Obtain LLM response (includes adding assistant message to history)
+            let llm_response = self.obtain_llm_response(messages).await?;
+
+            // 2. Extract tool requests from LLM response and determine the next flow action
+            let (tool_requests, flow) = self
+                .extract_tool_requests_from_response(&llm_response, request_counter)
+                .await?;
+
+            // 3. Act based on the flow instruction
+            match flow {
+                LoopFlow::GetUserInput => {
+                    // In on-demand mode, we don't wait for user input
+                    // Instead, we complete this iteration and wait for the next message
+                    debug!("Agent iteration complete - waiting for next user message");
+                    break;
+                }
+                LoopFlow::Continue => {
+                    if !tool_requests.is_empty() {
+                        // Tools were requested, manage their execution
+                        match self.manage_tool_execution(&tool_requests).await? {
+                            LoopFlow::Continue => { /* Continue to the next iteration */ }
+                            LoopFlow::GetUserInput => {
+                                // Complete iteration instead of waiting for input
+                                debug!("Tool execution complete - waiting for next user message");
+                                break;
+                            }
+                            LoopFlow::Break => {
+                                // Task completed (e.g., via complete_task tool)
+                                debug!("Task completed");
+                                break;
+                            }
+                        }
+                    } else {
+                        // No tools and Continue flow means we should stop and wait for user input
+                        debug!("No tools requested - waiting for next user message");
+                        break;
+                    }
+                }
+                LoopFlow::Break => {
+                    // Task completed
+                    debug!("Agent loop break requested");
+                    break;
+                }
+            }
+
+            // Notify UI of working memory change at the end of each cycle
+            let _ = self.ui.update_memory(&self.working_memory).await;
+        }
+
+        // Save state after iteration
+        self.save_state()?;
+
+        // Final memory update
+        let _ = self.ui.update_memory(&self.working_memory).await;
+
+        Ok(())
+    }
+
+    /// Get the tool mode
+    pub fn get_tool_mode(&self) -> ToolMode {
+        self.tool_mode
+    }
+
+    /// Load state from session state (for backward compatibility)
+    pub async fn load_from_session_state(
+        &mut self,
+        session_state: crate::session::SessionState,
+    ) -> Result<()> {
+        // Restore all state components
+        self.message_history = session_state.messages;
+        self.tool_executions = session_state.tool_executions;
+        self.working_memory = session_state.working_memory;
+        self.init_path = session_state.init_path;
+        self.initial_project = session_state.initial_project;
+
+        // Restore working memory file trees and project state
+        self.restore_working_memory_state().await?;
+
+        // Notify UI of restored state
+        self.ui
+            .display(UIMessage::Action(format!(
+                "Loaded chat session with {} messages and {} tool executions",
+                self.message_history.len(),
+                self.tool_executions.len()
+            )))
+            .await?;
+
+        let _ = self.ui.update_memory(&self.working_memory).await;
+
+        self.run_agent_loop().await
     }
 
     /// Handles the interaction with the LLM to get the next assistant message.
@@ -184,7 +297,6 @@ impl Agent {
 
         for tool_request in tool_requests {
             if tool_request.name == "complete_task" {
-                self.state_persistence.cleanup()?;
                 debug!("Task completed");
                 return Ok(LoopFlow::Break);
             }
@@ -222,6 +334,8 @@ impl Agent {
         let mut request_counter: u64 = 0;
 
         loop {
+            // Commands are now processed by main.rs chat management task
+            // This avoids blocking when agent waits for input
             let messages = self.prepare_messages();
             if self.message_history.is_empty() {
                 // This ensures that on the very first run, the initial task (user message)
@@ -343,36 +457,45 @@ impl Agent {
         self.run_agent_loop().await
     }
 
-    /// Continue from a saved state
-    pub async fn start_from_state(&mut self) -> Result<()> {
-        if let Some(state) = self.state_persistence.load_state()? {
-            debug!("Continuing task: {}", state.task);
+    /// Restore working memory state after loading from session
+    async fn restore_working_memory_state(&mut self) -> Result<()> {
+        // If there's an initial project, make sure it's in the list
+        if let Some(project_name) = &self.initial_project {
+            // Create file tree for the project if not already present
+            if !self.working_memory.file_trees.contains_key(project_name) {
+                match self.project_manager.get_explorer_for_project(project_name) {
+                    Ok(mut explorer) => match explorer.create_initial_tree(2) {
+                        Ok(tree) => {
+                            self.working_memory
+                                .file_trees
+                                .insert(project_name.clone(), tree);
+                        }
+                        Err(e) => {
+                            debug!(
+                                "Error creating file tree for project {}: {}",
+                                project_name, e
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        debug!("Error getting explorer for project {}: {}", project_name, e);
+                    }
+                }
+            }
 
-            // Initialize working memory
-            self.init_working_memory(state.task.clone())?;
-
-            // Restore message history
-            self.message_history = state.messages;
-            debug!("Restored {} previous messages", self.message_history.len());
-
-            // Load current state of files into memory - will create file trees as needed
-            self.load_current_files_to_memory().await?;
-
-            self.ui
-                .display(UIMessage::Action(format!(
-                    "Continuing task: {}, loaded {} previous messages",
-                    state.task,
-                    self.message_history.len()
-                )))
-                .await?;
-
-            // Notify UI of loaded working memory
-            let _ = self.ui.update_memory(&self.working_memory).await;
-
-            self.run_agent_loop().await
-        } else {
-            anyhow::bail!("No saved state found")
+            // Add to available projects if not already there
+            if !self
+                .working_memory
+                .available_projects
+                .contains(project_name)
+            {
+                self.working_memory
+                    .available_projects
+                    .push(project_name.clone());
+            }
         }
+
+        Ok(())
     }
 
     /// Initialize file trees for available projects
@@ -590,16 +713,16 @@ impl Agent {
             debug!("{}", indented);
         }
 
-        // Create a StreamProcessor and use it to process streaming chunks
-        let ui = Arc::clone(&self.ui);
+        // Create a StreamProcessor with the UI
         let processor = Arc::new(Mutex::new(create_stream_processor(
             self.tool_mode,
-            ui.clone(),
+            self.ui.clone(),
         )));
 
+        let ui_for_callback = self.ui.clone();
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
             // Check if streaming should continue
-            if !ui.should_streaming_continue() {
+            if !ui_for_callback.should_streaming_continue() {
                 debug!("Streaming should stop - user requested cancellation");
                 return Err(anyhow::anyhow!("Streaming cancelled by user"));
             }

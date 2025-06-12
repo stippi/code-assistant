@@ -1,14 +1,33 @@
 use super::*;
 use crate::agent::runner::parse_llm_response;
-use crate::persistence::MockStatePersistence;
+use crate::persistence::FileStatePersistence;
+use crate::session::SessionManager;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
     create_command_executor_mock, create_test_response, MockProjectManager, MockUI,
 };
 use crate::types::*;
+use crate::UserInterface;
 use anyhow::Result;
 use llm::types::*;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+/// Create a test SessionManager with a temporary directory
+fn create_test_session_manager() -> SessionManager {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!(
+        "code_assistant_test_{}_{}",
+        std::process::id(),
+        timestamp
+    ));
+    let persistence = FileStatePersistence::new(temp_dir);
+    SessionManager::new(persistence)
+}
 
 #[test]
 fn test_flexible_xml_parsing() -> Result<()> {
@@ -133,7 +152,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         ToolMode::Native,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
-        Box::new(MockUI::default()),
+        Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
         Box::new(MockStatePersistence::new()),
         Some(PathBuf::from("./test_path")),
     );
@@ -243,7 +262,7 @@ async fn test_parse_error_handling() -> Result<()> {
         ToolMode::Native,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
-        Box::new(MockUI::default()),
+        Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
         Box::new(MockStatePersistence::new()),
         Some(PathBuf::from("./test_path")),
     );

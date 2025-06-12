@@ -1054,4 +1054,148 @@ mod tests {
             raw_fragments
         );
     }
+
+    // Tests for the new extract_fragments_from_message method
+    #[test]
+    fn test_extract_fragments_from_text_message_with_thinking() {
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let mut processor = JsonStreamProcessor::new(ui_arc);
+
+        // Create a message with text content containing thinking tags
+        let message = llm::Message {
+            role: llm::MessageRole::Assistant,
+            content: llm::MessageContent::Text(
+                "Let me analyze this. <thinking>This is complex.</thinking> Here's my answer."
+                    .to_string(),
+            ),
+        };
+
+        let fragments = processor.extract_fragments_from_message(&message).unwrap();
+
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("Let me analyze this.".to_string()),
+            DisplayFragment::ThinkingText("This is complex.".to_string()),
+            DisplayFragment::PlainText("Here's my answer.".to_string()),
+        ];
+
+        print_fragments(&fragments);
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_extract_fragments_from_structured_message_with_tool_use() {
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let mut processor = JsonStreamProcessor::new(ui_arc);
+
+        // Create a message with structured content including tool use
+        let tool_input = serde_json::json!({
+            "project": "code-assistant",
+            "path": "src/main.rs"
+        });
+
+        let message = llm::Message {
+            role: llm::MessageRole::Assistant,
+            content: llm::MessageContent::Structured(vec![
+                llm::ContentBlock::Text {
+                    text: "I'll read the file for you.".to_string(),
+                },
+                llm::ContentBlock::ToolUse {
+                    id: "tool_123".to_string(),
+                    name: "read_files".to_string(),
+                    input: tool_input,
+                },
+            ]),
+        };
+
+        let fragments = processor.extract_fragments_from_message(&message).unwrap();
+
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("I'll read the file for you.".to_string()),
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "tool_123".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "project".to_string(),
+                value: "code-assistant".to_string(),
+                tool_id: "tool_123".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "src/main.rs".to_string(),
+                tool_id: "tool_123".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool_123".to_string(),
+            },
+        ];
+
+        print_fragments(&fragments);
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_extract_fragments_from_mixed_structured_message() {
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let mut processor = JsonStreamProcessor::new(ui_arc);
+
+        // Create a message with mixed content blocks
+        let message = llm::Message {
+            role: llm::MessageRole::Assistant,
+            content: llm::MessageContent::Structured(vec![
+                llm::ContentBlock::Thinking {
+                    thinking: "Let me think about this request.".to_string(),
+                    signature: "sig".to_string(),
+                },
+                llm::ContentBlock::Text {
+                    text: "I understand. <thinking>More thinking here.</thinking> Let me help."
+                        .to_string(),
+                },
+                llm::ContentBlock::ToolUse {
+                    id: "write_123".to_string(),
+                    name: "write_file".to_string(),
+                    input: serde_json::json!({
+                        "content": "Hello world!",
+                        "path": "hello.txt"
+                    }),
+                },
+                llm::ContentBlock::Text {
+                    text: "File has been written.".to_string(),
+                },
+            ]),
+        };
+
+        let fragments = processor.extract_fragments_from_message(&message).unwrap();
+
+        let expected_fragments = vec![
+            DisplayFragment::ThinkingText("Let me think about this request.".to_string()),
+            DisplayFragment::PlainText("I understand.".to_string()),
+            DisplayFragment::ThinkingText("More thinking here.".to_string()),
+            DisplayFragment::PlainText("Let me help.".to_string()),
+            DisplayFragment::ToolName {
+                name: "write_file".to_string(),
+                id: "write_123".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "content".to_string(),
+                value: "Hello world!".to_string(),
+                tool_id: "write_123".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "hello.txt".to_string(),
+                tool_id: "write_123".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "write_123".to_string(),
+            },
+            DisplayFragment::PlainText("File has been written.".to_string()),
+        ];
+
+        print_fragments(&fragments);
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
 }

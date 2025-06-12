@@ -4,6 +4,7 @@ pub mod terminal;
 use crate::types::WorkingMemory;
 use async_trait::async_trait;
 pub use streaming::DisplayFragment;
+pub use gpui::ui_events::UiEvent;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -27,12 +28,16 @@ pub enum UIMessage {
     Action(String),
     // User input messages
     UserInput(String),
+    // UI events for GPUI interface
+    UiEvent(UiEvent),
 }
 
 #[derive(Error, Debug)]
 pub enum UIError {
     #[error("IO error: {0}")]
     IOError(#[from] std::io::Error),
+    #[error("Input not supported in this UI mode")]
+    InputNotSupported,
     // #[error("Input cancelled")]
     // Cancelled,
     // #[error("Other UI error: {0}")]
