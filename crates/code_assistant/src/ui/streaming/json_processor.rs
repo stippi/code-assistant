@@ -183,7 +183,7 @@ impl StreamProcessorTrait for JsonStreamProcessor {
             MessageContent::Text(text) => {
                 // Process text for thinking tags, similar to process_text_with_thinking_tags
                 // but collect fragments instead of sending to UI
-                fragments.extend(self.extract_fragments_from_text(text)?);
+                fragments.extend(self.extract_fragments_from_text(text, message.request_id)?);
             }
             MessageContent::Structured(blocks) => {
                 for block in blocks {
@@ -193,7 +193,7 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                         }
                         ContentBlock::Text { text } => {
                             // Process text for any thinking tags
-                            fragments.extend(self.extract_fragments_from_text(text)?);
+                            fragments.extend(self.extract_fragments_from_text(text, message.request_id)?);
                         }
                         ContentBlock::ToolUse { id, name, input } => {
                             // Add tool name fragment
@@ -891,7 +891,7 @@ impl JsonStreamProcessor {
     }
 
     /// Extract fragments from text without sending to UI (used for session loading)
-    fn extract_fragments_from_text(&mut self, text: &str) -> Result<Vec<DisplayFragment>, UIError> {
+    fn extract_fragments_from_text(&mut self, text: &str, _request_id: Option<u64>) -> Result<Vec<DisplayFragment>, UIError> {
         let mut fragments = Vec::new();
 
         // Local state for processing this text

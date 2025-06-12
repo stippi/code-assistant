@@ -31,6 +31,7 @@ impl TestCase {
                 messages: vec![Message {
                     role: MessageRole::User,
                     content: MessageContent::Text("Hello".to_string()),
+                    request_id: None,
                 }],
                 system_prompt: "You are a helpful assistant.".to_string(),
                 tools: None,
@@ -58,6 +59,7 @@ impl TestCase {
                 messages: vec![Message {
                     role: MessageRole::User,
                     content: MessageContent::Text("What's the weather?".to_string()),
+                    request_id: None,
                 }],
                 system_prompt: "Use the weather tool.".to_string(),
                 tools: Some(vec![ToolDefinition {
@@ -814,6 +816,7 @@ async fn test_anthropic_rate_limit_retry() -> Result<()> {
         messages: vec![Message {
             role: MessageRole::User,
             content: MessageContent::Text("Hello".to_string()),
+            request_id: None,
         }],
         system_prompt: "You are a helpful assistant.".to_string(),
         tools: None,

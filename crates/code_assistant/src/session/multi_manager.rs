@@ -168,6 +168,7 @@ impl SessionManager {
         let user_msg = Message {
             role: llm::MessageRole::User,
             content: llm::MessageContent::Text(user_message.clone()),
+            request_id: None,
         };
         session_instance.add_message(user_msg.clone());
 

@@ -218,13 +218,14 @@ impl Agent {
     /// Handles the interaction with the LLM to get the next assistant message.
     /// Appends the assistant's message to the history only if it has content.
     async fn obtain_llm_response(&mut self, messages: Vec<Message>) -> Result<llm::LLMResponse> {
-        let llm_response = self.get_next_assistant_message(messages).await?;
+        let (llm_response, request_id) = self.get_next_assistant_message(messages).await?;
 
         // Only add to message history if there's actual content
         if !llm_response.content.is_empty() {
             self.append_message(Message {
                 role: MessageRole::Assistant,
                 content: MessageContent::Structured(llm_response.content.clone()),
+                request_id: Some(request_id),
             })?;
         }
 
@@ -254,6 +255,7 @@ impl Agent {
                 let error_msg = Message {
                     role: MessageRole::User,
                     content: MessageContent::Text(error_text),
+                    request_id: None,
                 };
                 self.append_message(error_msg)?;
                 Ok((Vec::new(), LoopFlow::Continue)) // Continue without user input on parsing errors
@@ -271,6 +273,7 @@ impl Agent {
         let user_msg = Message {
             role: MessageRole::User,
             content: MessageContent::Text(user_input.clone()),
+            request_id: None,
         };
         self.append_message(user_msg)?;
         Ok(())
@@ -310,6 +313,7 @@ impl Agent {
             let result_message = Message {
                 role: MessageRole::User,
                 content: MessageContent::Structured(content_blocks),
+                request_id: None,
             };
             self.append_message(result_message)?;
         }
@@ -434,6 +438,7 @@ impl Agent {
         let user_msg = Message {
             role: MessageRole::User,
             content: MessageContent::Text(task.clone()),
+            request_id: None,
         };
         self.append_message(user_msg)?;
 
@@ -650,6 +655,7 @@ impl Agent {
                         Message {
                             role: msg.role,
                             content: MessageContent::Text(text_content.trim().to_string()),
+                            request_id: msg.request_id,
                         }
                     }
                     // For non-structured content, keep as is
@@ -660,7 +666,10 @@ impl Agent {
     }
 
     /// Gets the next assistant message from the LLM provider.
-    async fn get_next_assistant_message(&self, messages: Vec<Message>) -> Result<llm::LLMResponse> {
+    async fn get_next_assistant_message(
+        &self,
+        messages: Vec<Message>,
+    ) -> Result<(llm::LLMResponse, u64)> {
         // Inform UI that a new LLM request is starting
         let request_id = self.ui.begin_llm_request().await?;
         debug!("Starting LLM request with ID: {}", request_id);
@@ -733,10 +742,13 @@ impl Agent {
                     // End LLM request with cancelled=true
                     let _ = self.ui.end_llm_request(request_id, true).await;
                     // Return empty response
-                    return Ok(llm::LLMResponse {
-                        content: Vec::new(),
-                        usage: llm::Usage::zero(),
-                    });
+                    return Ok((
+                        llm::LLMResponse {
+                            content: Vec::new(),
+                            usage: llm::Usage::zero(),
+                        },
+                        request_id,
+                    ));
                 }
 
                 // For other errors, still end the request but not cancelled
@@ -771,7 +783,7 @@ impl Agent {
         let _ = self.ui.end_llm_request(request_id, false).await;
         debug!("Completed LLM request with ID: {}", request_id);
 
-        Ok(response)
+        Ok((response, request_id))
     }
 
     /// Prepare messages for LLM request, dynamically rendering tool outputs
@@ -781,6 +793,7 @@ impl Agent {
             return vec![Message {
                 role: MessageRole::User,
                 content: MessageContent::Text(self.working_memory.current_task.clone()),
+                request_id: None,
             }];
         }
 
@@ -840,6 +853,7 @@ impl Agent {
                         let new_msg = Message {
                             role: msg.role.clone(),
                             content: MessageContent::Structured(new_blocks),
+                            request_id: msg.request_id,
                         };
                         messages.push(new_msg);
                     } else {

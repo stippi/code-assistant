@@ -185,6 +185,7 @@ mod tests {
             content: llm::MessageContent::Text(
                 "I'll help you. <thinking>Let me plan this.</thinking> Here's what I'll do: <tool:read_files><param:path>main.rs</param:path></tool:read_files>".to_string()
             ),
+            request_id: Some(1u64),
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -227,7 +228,7 @@ mod tests {
             role: llm::MessageRole::Assistant,
             content: llm::MessageContent::Structured(vec![
                 llm::ContentBlock::Text {
-                    text: "I'll search the files.".to_string()
+                    text: "I'll search the files.".to_string(),
                 },
                 llm::ContentBlock::ToolUse {
                     id: "search_456".to_string(),
@@ -235,6 +236,7 @@ mod tests {
                     input: tool_input,
                 },
             ]),
+            request_id: Some(1u64),
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -289,6 +291,7 @@ mod tests {
                     }),
                 },
             ]),
+            request_id: Some(1u64),
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();

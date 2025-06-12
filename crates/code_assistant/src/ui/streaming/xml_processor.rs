@@ -93,8 +93,8 @@ impl StreamProcessorTrait for XmlStreamProcessor {
 
         match &message.content {
             MessageContent::Text(text) => {
-                // Process text for XML tags
-                fragments.extend(self.extract_fragments_from_text(text)?);
+                // Process text for XML tags, using request_id for consistent tool ID generation
+                fragments.extend(self.extract_fragments_from_text(text, message.request_id)?);
             }
             MessageContent::Structured(blocks) => {
                 for block in blocks {
@@ -103,8 +103,8 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                             fragments.push(DisplayFragment::ThinkingText(thinking.clone()));
                         }
                         ContentBlock::Text { text } => {
-                            // Process text for XML tags
-                            fragments.extend(self.extract_fragments_from_text(text)?);
+                            // Process text for XML tags, using request_id for consistent tool ID generation
+                            fragments.extend(self.extract_fragments_from_text(text, message.request_id)?);
                         }
                         ContentBlock::ToolUse { id, name, input } => {
                             // Convert JSON ToolUse to XML-style fragments
@@ -524,7 +524,7 @@ impl XmlStreamProcessor {
     }
 
     /// Extract fragments from text without sending to UI (used for session loading)
-    fn extract_fragments_from_text(&mut self, text: &str) -> Result<Vec<DisplayFragment>, UIError> {
+    fn extract_fragments_from_text(&mut self, text: &str, request_id: Option<u64>) -> Result<Vec<DisplayFragment>, UIError> {
         let mut fragments = Vec::new();
 
         // Local state for processing this text (don't modify self.state)
@@ -534,6 +534,7 @@ impl XmlStreamProcessor {
         let mut local_tool_name = String::new();
         let mut local_tool_id = String::new();
         let mut local_param_name = String::new();
+        let mut tool_counter = 0u64;
 
         let mut current_pos = 0;
 
@@ -579,7 +580,15 @@ impl XmlStreamProcessor {
                             if let Some(tool_name) = tag_info {
                                 local_in_tool = true;
                                 local_tool_name = tool_name;
-                                local_tool_id = "xml_tool_id".to_string(); // XML tools use placeholder ID
+                                tool_counter += 1;
+                                
+                                // Generate consistent tool ID using request_id (same as live streaming)
+                                local_tool_id = if let Some(req_id) = request_id {
+                                    format!("tool-{}-{}", req_id, tool_counter)
+                                } else {
+                                    // Fallback for messages without request_id
+                                    String::new()
+                                };
 
                                 fragments.push(DisplayFragment::ToolName {
                                     name: local_tool_name.clone(),

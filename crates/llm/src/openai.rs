@@ -358,6 +358,7 @@ impl OpenAIClient {
                                 content: MessageContent::Structured(
                                     other_blocks.iter().map(|&b| b.clone()).collect(),
                                 ),
+                                request_id: None,
                             };
                             openai_messages.push(Self::convert_message(&user_message));
                         }

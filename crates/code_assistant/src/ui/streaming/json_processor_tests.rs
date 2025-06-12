@@ -1069,6 +1069,7 @@ mod tests {
                 "Let me analyze this. <thinking>This is complex.</thinking> Here's my answer."
                     .to_string(),
             ),
+            request_id: None,
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -1107,6 +1108,7 @@ mod tests {
                     input: tool_input,
                 },
             ]),
+            request_id: None,
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -1166,6 +1168,7 @@ mod tests {
                     text: "File has been written.".to_string(),
                 },
             ]),
+            request_id: None,
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
