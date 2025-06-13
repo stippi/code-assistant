@@ -152,11 +152,6 @@ impl Tool for WriteFileTool {
             Ok(full_content) => {
                 // If we have a working memory reference, update it with the written file
                 if let Some(working_memory) = &mut context.working_memory {
-                    // Remove any existing summary since file is new/overwritten
-                    working_memory
-                        .summaries
-                        .remove(&(input.project.clone(), path.clone()));
-
                     // Always update the working memory with the complete content
                     // For both new files and append operations
                     working_memory.loaded_resources.insert(

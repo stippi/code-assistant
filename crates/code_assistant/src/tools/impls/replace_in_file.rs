@@ -172,11 +172,6 @@ impl Tool for ReplaceInFileTool {
             Ok(new_content) => {
                 // If we have a working memory reference, update it with the modified file
                 if let Some(working_memory) = &mut context.working_memory {
-                    // Remove any existing summary since file is changed
-                    working_memory
-                        .summaries
-                        .remove(&(input.project.clone(), path.clone()));
-
                     // Add the file with new content to working memory
                     working_memory.loaded_resources.insert(
                         (input.project.clone(), path.clone()),

@@ -77,16 +77,10 @@ impl Default for FileFormat {
 pub struct WorkingMemory {
     /// Current task description
     pub current_task: String,
-    /// Current plan
-    pub plan: String,
     /// Currently loaded resources (files, web search results, web pages)
     /// Key format: "project_name::path" to make it JSON-serializable
     #[serde(with = "tuple_key_map")]
     pub loaded_resources: HashMap<(String, PathBuf), LoadedResource>,
-    /// Summaries of previously seen resources
-    /// Key format: "project_name::path" to make it JSON-serializable
-    #[serde(with = "tuple_key_map")]
-    pub summaries: HashMap<(String, PathBuf), String>,
     /// File trees for each project
     pub file_trees: HashMap<String, FileTreeEntry>,
     /// Expanded directories per project
@@ -111,9 +105,7 @@ mod tuple_key_map {
     {
         let string_map: HashMap<String, &V> = map
             .iter()
-            .map(|((project, path), value)| {
-                (format!("{}::{}", project, path.display()), value)
-            })
+            .map(|((project, path), value)| (format!("{}::{}", project, path.display()), value))
             .collect();
         string_map.serialize(serializer)
     }

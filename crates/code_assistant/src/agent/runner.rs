@@ -378,8 +378,6 @@ impl Agent {
     }
 
     fn init_working_memory(&mut self, task: String) -> Result<()> {
-        self.working_memory.current_task = task.clone();
-
         // Initialize empty structures for multi-project support
         self.working_memory.file_trees = HashMap::new();
         self.working_memory.available_projects = Vec::new();
