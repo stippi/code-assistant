@@ -3,8 +3,8 @@ pub mod streaming;
 pub mod terminal;
 use crate::types::WorkingMemory;
 use async_trait::async_trait;
-pub use streaming::DisplayFragment;
 pub use gpui::ui_events::UiEvent;
+pub use streaming::DisplayFragment;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq)]

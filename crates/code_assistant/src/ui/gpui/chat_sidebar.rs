@@ -175,7 +175,9 @@ impl ChatSidebar {
         // Emit event to create a new chat session
         if let Some(sender) = cx.try_global::<UiEventSender>() {
             tracing::info!("ChatSidebar: Sending CreateNewChatSession event");
-            let _ = sender.0.try_send(UiEvent::CreateNewChatSession { name: None });
+            let _ = sender
+                .0
+                .try_send(UiEvent::CreateNewChatSession { name: None });
         } else {
             tracing::warn!("ChatSidebar: No UiEventSender global available");
         }
@@ -328,10 +330,11 @@ impl Render for ChatSidebar {
                                                 if let Some(sender) =
                                                     cx.try_global::<UiEventSender>()
                                                 {
-                                                    let _ =
-                                                        sender.0.try_send(UiEvent::LoadChatSession {
+                                                    let _ = sender.0.try_send(
+                                                        UiEvent::LoadChatSession {
                                                             session_id: session_id.clone(),
-                                                        });
+                                                        },
+                                                    );
                                                 }
                                             }
                                         })

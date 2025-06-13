@@ -184,10 +184,12 @@ impl SessionManager {
         // Set the current session ID so the agent doesn't create a new session
         session_manager_for_agent.set_current_session(session_id.to_string());
 
-        let state_storage = Box::new(crate::agent::state_storage::SessionManagerStatePersistence::new(
-            session_manager_for_agent,
-            self.agent_config.tool_mode,
-        ));
+        let state_storage = Box::new(
+            crate::agent::state_storage::SessionManagerStatePersistence::new(
+                session_manager_for_agent,
+                self.agent_config.tool_mode,
+            ),
+        );
 
         let mut agent = crate::agent::Agent::new(
             llm_provider,

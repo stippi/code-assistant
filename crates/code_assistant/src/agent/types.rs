@@ -44,8 +44,12 @@ impl std::fmt::Debug for ToolExecution {
 impl Clone for ToolExecution {
     fn clone(&self) -> Self {
         // We can't clone the actual result, but we can serialize and deserialize it
-        let serialized = self.serialize().expect("Failed to serialize tool execution for cloning");
-        serialized.deserialize().expect("Failed to deserialize tool execution for cloning")
+        let serialized = self
+            .serialize()
+            .expect("Failed to serialize tool execution for cloning");
+        serialized
+            .deserialize()
+            .expect("Failed to deserialize tool execution for cloning")
     }
 }
 

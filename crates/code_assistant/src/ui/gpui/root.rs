@@ -170,7 +170,11 @@ impl RootView {
                 // V2 mode: Send user message event if we have an active session
                 if let Some(session_id) = &self.current_session_id {
                     if let Some(sender) = cx.try_global::<UiEventSender>() {
-                        tracing::info!("RootView: Sending user message to session {}: {}", session_id, content);
+                        tracing::info!(
+                            "RootView: Sending user message to session {}: {}",
+                            session_id,
+                            content
+                        );
                         let _ = sender.0.try_send(UiEvent::SendUserMessage {
                             message: content.clone(),
                             session_id: session_id.clone(),
@@ -403,8 +407,9 @@ impl Render for RootView {
                                         match current_streaming_state {
                                             StreamingState::Idle => {
                                                 // Show send button, enabled if input requested OR if we have an active session (V2 mode)
-                                                let is_enabled = is_input_requested || current_session_id.is_some();
-                                                
+                                                let is_enabled = is_input_requested
+                                                    || current_session_id.is_some();
+
                                                 let mut button = div()
                                                     .size(px(40.))
                                                     .rounded_sm()

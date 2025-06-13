@@ -517,7 +517,7 @@ impl UserInterface for ProxyUI {
         if let Ok(mut buffer) = self.fragment_buffer.lock() {
             buffer.clear();
         }
-        
+
         if self.is_active() {
             self.real_ui.end_llm_request(request_id, cancelled).await
         } else {

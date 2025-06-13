@@ -48,8 +48,8 @@ pub enum UiEvent {
     /// Update the working memory view
     UpdateMemory { memory: WorkingMemory },
     /// Set all messages at once (for session loading, clears existing)
-    SetMessages { 
-        messages: Vec<MessageData>, 
+    SetMessages {
+        messages: Vec<MessageData>,
         session_id: Option<String>,
         tool_results: Vec<ToolResultData>,
     },
@@ -68,7 +68,10 @@ pub enum UiEvent {
     /// Update the chat list display
     UpdateChatList { sessions: Vec<ChatMetadata> },
     /// Load session fragments for display (new architecture)
-    LoadSessionFragments { fragments: Vec<DisplayFragment>, session_id: String },
+    LoadSessionFragments {
+        fragments: Vec<DisplayFragment>,
+        session_id: String,
+    },
     /// Clear all messages
     ClearMessages,
     /// Send user message to active session (triggers agent)

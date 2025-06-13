@@ -88,7 +88,10 @@ impl StreamProcessorTrait for XmlStreamProcessor {
         }
     }
 
-    fn extract_fragments_from_message(&mut self, message: &Message) -> Result<Vec<DisplayFragment>, UIError> {
+    fn extract_fragments_from_message(
+        &mut self,
+        message: &Message,
+    ) -> Result<Vec<DisplayFragment>, UIError> {
         let mut fragments = Vec::new();
 
         match &message.content {
@@ -104,7 +107,9 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                         }
                         ContentBlock::Text { text } => {
                             // Process text for XML tags, using request_id for consistent tool ID generation
-                            fragments.extend(self.extract_fragments_from_text(text, message.request_id)?);
+                            fragments.extend(
+                                self.extract_fragments_from_text(text, message.request_id)?,
+                            );
                         }
                         ContentBlock::ToolUse { id, name, input } => {
                             // Convert JSON ToolUse to XML-style fragments
@@ -524,7 +529,11 @@ impl XmlStreamProcessor {
     }
 
     /// Extract fragments from text without sending to UI (used for session loading)
-    fn extract_fragments_from_text(&mut self, text: &str, request_id: Option<u64>) -> Result<Vec<DisplayFragment>, UIError> {
+    fn extract_fragments_from_text(
+        &mut self,
+        text: &str,
+        request_id: Option<u64>,
+    ) -> Result<Vec<DisplayFragment>, UIError> {
         let mut fragments = Vec::new();
 
         // Local state for processing this text (don't modify self.state)
@@ -581,7 +590,7 @@ impl XmlStreamProcessor {
                                 local_in_tool = true;
                                 local_tool_name = tool_name;
                                 tool_counter += 1;
-                                
+
                                 // Generate consistent tool ID using request_id (same as live streaming)
                                 local_tool_id = if let Some(req_id) = request_id {
                                     format!("tool-{}-{}", req_id, tool_counter)
@@ -626,7 +635,8 @@ impl XmlStreamProcessor {
                             let char_text = &text[absolute_tag_pos..absolute_tag_pos + char_len];
 
                             if local_in_thinking {
-                                fragments.push(DisplayFragment::ThinkingText(char_text.to_string()));
+                                fragments
+                                    .push(DisplayFragment::ThinkingText(char_text.to_string()));
                             } else if local_in_param {
                                 fragments.push(DisplayFragment::ToolParameter {
                                     name: local_param_name.clone(),

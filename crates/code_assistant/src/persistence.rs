@@ -188,4 +188,3 @@ pub fn generate_session_id() -> String {
 
     format!("chat_{:x}_{:x}", timestamp, random_part)
 }
-

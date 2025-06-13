@@ -176,7 +176,10 @@ impl StreamProcessorTrait for JsonStreamProcessor {
         }
     }
 
-    fn extract_fragments_from_message(&mut self, message: &Message) -> Result<Vec<DisplayFragment>, UIError> {
+    fn extract_fragments_from_message(
+        &mut self,
+        message: &Message,
+    ) -> Result<Vec<DisplayFragment>, UIError> {
         let mut fragments = Vec::new();
 
         match &message.content {
@@ -193,7 +196,9 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                         }
                         ContentBlock::Text { text } => {
                             // Process text for any thinking tags
-                            fragments.extend(self.extract_fragments_from_text(text, message.request_id)?);
+                            fragments.extend(
+                                self.extract_fragments_from_text(text, message.request_id)?,
+                            );
                         }
                         ContentBlock::ToolUse { id, name, input } => {
                             // Add tool name fragment
@@ -891,7 +896,11 @@ impl JsonStreamProcessor {
     }
 
     /// Extract fragments from text without sending to UI (used for session loading)
-    fn extract_fragments_from_text(&mut self, text: &str, _request_id: Option<u64>) -> Result<Vec<DisplayFragment>, UIError> {
+    fn extract_fragments_from_text(
+        &mut self,
+        text: &str,
+        _request_id: Option<u64>,
+    ) -> Result<Vec<DisplayFragment>, UIError> {
         let mut fragments = Vec::new();
 
         // Local state for processing this text
@@ -963,9 +972,11 @@ impl JsonStreamProcessor {
 
                             if !char_text.is_empty() {
                                 if local_in_thinking {
-                                    fragments.push(DisplayFragment::ThinkingText(char_text.to_string()));
+                                    fragments
+                                        .push(DisplayFragment::ThinkingText(char_text.to_string()));
                                 } else {
-                                    fragments.push(DisplayFragment::PlainText(char_text.to_string()));
+                                    fragments
+                                        .push(DisplayFragment::PlainText(char_text.to_string()));
                                 }
                             }
                             current_pos = absolute_tag_pos + char_len;
@@ -1000,7 +1011,8 @@ impl JsonStreamProcessor {
                         processed_remaining_text.pop();
                     }
                     if at_block_start && !processed_remaining_text.is_empty() {
-                        processed_remaining_text = processed_remaining_text.trim_start().to_string();
+                        processed_remaining_text =
+                            processed_remaining_text.trim_start().to_string();
                     }
 
                     if !processed_remaining_text.is_empty() {

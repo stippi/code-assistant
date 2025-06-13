@@ -47,7 +47,10 @@ pub trait StreamProcessorTrait: Send + Sync {
 
     /// Extract display fragments from a stored message without sending to UI
     /// Used for session loading to reconstruct fragment sequences
-    fn extract_fragments_from_message(&mut self, message: &Message) -> Result<Vec<DisplayFragment>, UIError>;
+    fn extract_fragments_from_message(
+        &mut self,
+        message: &Message,
+    ) -> Result<Vec<DisplayFragment>, UIError>;
 }
 
 // Export the concrete implementations
