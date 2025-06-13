@@ -15,7 +15,7 @@ use llm::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::ToolMode;
 
@@ -98,6 +98,10 @@ impl Agent {
 
     /// Save the current state (message history and tool executions)
     fn save_state(&mut self) -> Result<()> {
+        warn!(
+            "saving {} messages to persistence",
+            self.message_history.len()
+        );
         self.state_storage.save_agent_state(
             self.message_history.clone(),
             self.tool_executions.clone(),
@@ -122,12 +126,12 @@ impl Agent {
     /// Run a single iteration of the agent loop without waiting for user input
     /// This is used in the new on-demand agent architecture
     pub async fn run_single_iteration(&mut self) -> Result<()> {
-        let mut request_counter: u64 = 0;
-
-        // Clear any pending user input requests since this is on-demand
-        self.message_history.retain(|msg| {
-            !matches!(msg.role, MessageRole::User) || !msg.content.to_string().trim().is_empty()
-        });
+        // Initialize request counter based on existing Assistant messages
+        let mut request_counter: u64 = self
+            .message_history
+            .iter()
+            .filter(|msg| matches!(msg.role, llm::MessageRole::Assistant))
+            .count() as u64;
 
         loop {
             let messages = self.prepare_messages();
@@ -201,6 +205,10 @@ impl Agent {
     ) -> Result<()> {
         // Restore all state components
         self.message_history = session_state.messages;
+        warn!(
+            "loaded {} messages from session",
+            self.message_history.len()
+        );
         self.tool_executions = session_state.tool_executions;
         self.working_memory = session_state.working_memory;
         self.init_path = session_state.init_path;

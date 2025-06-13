@@ -2,7 +2,7 @@
 mod tests;
 
 mod runner;
-mod state_storage;
+pub mod state_storage;
 mod tool_description_generator;
 mod types;
 

@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use crate::agent::SessionManagerStatePersistence;
 use crate::config::ProjectManager;
 use crate::persistence::{generate_session_id, ChatMetadata, ChatSession, FileStatePersistence};
 use crate::session::instance::SessionInstance;
@@ -132,6 +131,10 @@ impl SessionManager {
         let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
         session_instance.set_ui_active(true);
 
+        // Reload session from persistence to get latest state
+        // This ensures we see any changes made by agents since session was loaded
+        session_instance.reload_from_persistence(&self.persistence)?;
+
         // Generate UI events for connecting to this session
         let ui_events = session_instance.generate_session_connect_events()?;
 
@@ -181,7 +184,7 @@ impl SessionManager {
         // Set the current session ID so the agent doesn't create a new session
         session_manager_for_agent.set_current_session(session_id.to_string());
 
-        let state_storage = Box::new(SessionManagerStatePersistence::new(
+        let state_storage = Box::new(crate::agent::state_storage::SessionManagerStatePersistence::new(
             session_manager_for_agent,
             self.agent_config.tool_mode,
         ));

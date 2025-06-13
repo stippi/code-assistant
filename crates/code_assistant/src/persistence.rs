@@ -118,7 +118,7 @@ impl FileStatePersistence {
         Ok(())
     }
 
-    pub fn load_chat_session(&mut self, session_id: &str) -> Result<Option<ChatSession>> {
+    pub fn load_chat_session(&self, session_id: &str) -> Result<Option<ChatSession>> {
         let session_path = self.chat_file_path(session_id)?;
         if !session_path.exists() {
             return Ok(None);

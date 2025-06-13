@@ -168,6 +168,43 @@ impl SessionInstance {
         &self.session.messages
     }
 
+    /// Update the complete session state from agent
+    /// This keeps the SessionInstance synchronized with Agent state changes
+    pub fn update_session_state(
+        &mut self,
+        messages: Vec<llm::Message>,
+        tool_executions: Vec<crate::agent::ToolExecution>,
+        working_memory: crate::types::WorkingMemory,
+        init_path: Option<std::path::PathBuf>,
+        initial_project: Option<String>,
+    ) -> anyhow::Result<()> {
+        // Update all session fields
+        self.session.messages = messages;
+        self.session.tool_executions = tool_executions
+            .into_iter()
+            .map(|te| te.serialize())
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        self.session.working_memory = working_memory;
+        self.session.init_path = init_path;
+        self.session.initial_project = initial_project;
+        self.session.updated_at = std::time::SystemTime::now();
+
+        Ok(())
+    }
+
+    /// Reload session data from persistence
+    /// This ensures SessionInstance has the latest state even if agents have made changes
+    pub fn reload_from_persistence(
+        &mut self,
+        persistence: &crate::persistence::FileStatePersistence,
+    ) -> anyhow::Result<()> {
+        if let Some(session) = persistence.load_chat_session(&self.session.id)? {
+            tracing::debug!("Reloading session {} from persistence", self.session.id);
+            self.session = session;
+        }
+        Ok(())
+    }
+
     /// Get the last message ID for streaming identification
     pub fn get_last_message_id(&self) -> String {
         format!("msg_{}_{}", self.session.id, self.session.messages.len())
@@ -293,6 +330,11 @@ impl SessionInstance {
 
         let mut messages_data = Vec::new();
 
+        tracing::warn!(
+            "preparing {} messages for event",
+            self.session.messages.len()
+        );
+
         for message in &self.session.messages {
             // Filter out tool-result user messages (they have empty content or structured content)
             if message.role == llm::MessageRole::User {
@@ -325,6 +367,8 @@ impl SessionInstance {
                 }
             }
         }
+
+        tracing::warn!("prepared {} message data for event", messages_data.len());
 
         Ok(messages_data)
     }
@@ -469,6 +513,11 @@ impl UserInterface for ProxyUI {
     }
 
     async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError> {
+        // Clear fragment buffer when LLM request ends - fragments are now part of message history
+        if let Ok(mut buffer) = self.fragment_buffer.lock() {
+            buffer.clear();
+        }
+        
         if self.is_active() {
             self.real_ui.end_llm_request(request_id, cancelled).await
         } else {

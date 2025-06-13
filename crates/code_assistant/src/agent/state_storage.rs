@@ -64,6 +64,8 @@ impl AgentStatePersistence for MockStatePersistence {
 pub struct SessionManagerStatePersistence {
     session_manager: LegacySessionManager,
     tool_mode: ToolMode,
+    /// Optional callback to update SessionInstance in memory
+    update_callback: Option<Box<dyn Fn(Vec<Message>, Vec<ToolExecution>, WorkingMemory, Option<PathBuf>, Option<String>) -> Result<()> + Send + Sync>>,
 }
 
 impl SessionManagerStatePersistence {
@@ -71,6 +73,23 @@ impl SessionManagerStatePersistence {
         Self {
             session_manager,
             tool_mode,
+            update_callback: None,
+        }
+    }
+
+    /// Create with callback to update SessionInstance
+    pub fn with_update_callback<F>(
+        session_manager: LegacySessionManager, 
+        tool_mode: ToolMode,
+        callback: F
+    ) -> Self 
+    where
+        F: Fn(Vec<Message>, Vec<ToolExecution>, WorkingMemory, Option<PathBuf>, Option<String>) -> Result<()> + Send + Sync + 'static,
+    {
+        Self {
+            session_manager,
+            tool_mode,
+            update_callback: Some(Box::new(callback)),
         }
     }
 }
@@ -96,6 +115,18 @@ impl AgentStatePersistence for SessionManagerStatePersistence {
                 .create_session(task_name, self.tool_mode)?;
         }
 
+        // First: Call update callback to update SessionInstance if available
+        if let Some(ref callback) = self.update_callback {
+            callback(
+                messages.clone(),
+                tool_executions.clone(),
+                working_memory.clone(),
+                init_path.clone(),
+                initial_project.clone(),
+            )?;
+        }
+
+        // Second: Save to persistence as before
         self.session_manager.save_session(
             messages,
             tool_executions,
