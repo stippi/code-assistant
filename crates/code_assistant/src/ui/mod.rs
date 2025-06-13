@@ -36,12 +36,6 @@ pub enum UIMessage {
 pub enum UIError {
     #[error("IO error: {0}")]
     IOError(#[from] std::io::Error),
-    #[error("Input not supported in this UI mode")]
-    InputNotSupported,
-    // #[error("Input cancelled")]
-    // Cancelled,
-    // #[error("Other UI error: {0}")]
-    // Other(String),
 }
 
 #[async_trait]
