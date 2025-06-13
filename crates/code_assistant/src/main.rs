@@ -102,7 +102,6 @@ struct Args {
     /// Fast playback mode - ignore chunk timing when playing recordings
     #[arg(long)]
     fast_playback: bool,
-
 }
 
 #[derive(Subcommand, Debug)]
@@ -324,7 +323,6 @@ async fn run_agent_terminal(
     }
 }
 
-
 async fn run_agent(args: Args) -> Result<()> {
     // Get all the agent options from args
     let path = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
@@ -393,7 +391,6 @@ async fn run_agent(args: Args) -> Result<()> {
         .await
     }
 }
-
 
 /// Simplified backend event handler that fixes mutex/await boundary issues
 async fn handle_backend_events(
@@ -475,8 +472,11 @@ async fn handle_backend_events(
                 // Handle result and send UI events directly
                 match ui_events_result {
                     Ok(ui_events) => {
-                        tracing::info!("🎯 V2: Session connected with {} UI events", ui_events.len());
-                        
+                        tracing::info!(
+                            "🎯 V2: Session connected with {} UI events",
+                            ui_events.len()
+                        );
+
                         // Send all UI events to update the interface
                         for event in ui_events {
                             let ui_message = crate::ui::UIMessage::UiEvent(event);
@@ -484,13 +484,17 @@ async fn handle_backend_events(
                                 tracing::error!("Failed to send UI event: {}", e);
                             }
                         }
-                        
+
                         // DON'T return a response - UI events already handled the update
                         // This prevents the duplicate message processing in handle_backend_response
                         continue;
                     }
                     Err(e) => {
-                        tracing::error!("🚨 V2: Failed to connect to session {}: {}", session_id, e);
+                        tracing::error!(
+                            "🚨 V2: Failed to connect to session {}: {}",
+                            session_id,
+                            e
+                        );
                         ui::gpui::BackendResponse::Error {
                             message: e.to_string(),
                         }
@@ -531,6 +535,16 @@ async fn handle_backend_events(
                     message
                 );
 
+                // First: Display the user message immediately in the UI
+                let ui_message =
+                    crate::ui::UIMessage::UiEvent(ui::gpui::ui_events::UiEvent::DisplayMessage {
+                        content: message.clone(),
+                        role: ui::gpui::elements::MessageRole::User,
+                    });
+                if let Err(e) = gui.display(ui_message).await {
+                    tracing::error!("Failed to display user message: {}", e);
+                }
+
                 // Use MultiSessionManager.start_agent_for_message() instead of creating a separate agent
                 let result = {
                     // Create components for the agent
@@ -554,14 +568,16 @@ async fn handle_backend_events(
                         Ok(client) => {
                             // Use the MultiSessionManager to start the agent properly
                             let mut manager = multi_session_manager.lock().unwrap();
-                            manager.start_agent_for_message(
-                                &session_id,
-                                message.clone(),
-                                client,
-                                project_manager,
-                                command_executor,
-                                user_interface,
-                            ).await
+                            manager
+                                .start_agent_for_message(
+                                    &session_id,
+                                    message.clone(),
+                                    client,
+                                    project_manager,
+                                    command_executor,
+                                    user_interface,
+                                )
+                                .await
                         }
                         Err(e) => {
                             tracing::error!("🚨 V2: Failed to create LLM client: {}", e);
@@ -577,7 +593,11 @@ async fn handle_backend_events(
                         continue;
                     }
                     Err(e) => {
-                        tracing::error!("🚨 V2: Failed to start agent for session {}: {}", session_id, e);
+                        tracing::error!(
+                            "🚨 V2: Failed to start agent for session {}: {}",
+                            session_id,
+                            e
+                        );
                         ui::gpui::BackendResponse::Error {
                             message: format!("Failed to start agent: {}", e),
                         }
@@ -630,10 +650,8 @@ fn run_agent_gpui_v2(
     };
 
     // Create the new SessionManager
-    let multi_session_manager = Arc::new(Mutex::new(SessionManager::new(
-        persistence,
-        agent_config,
-    )));
+    let multi_session_manager =
+        Arc::new(Mutex::new(SessionManager::new(persistence, agent_config)));
 
     // Clone GUI before moving it into thread
     let gui_for_thread = gui.clone();
@@ -646,35 +664,42 @@ fn run_agent_gpui_v2(
         runtime.block_on(async {
             if let Some(initial_task) = task_clone {
                 // Task provided - create new session and start agent
-                tracing::info!("🚀 V2: Creating initial session with task: {}", initial_task);
-                
+                tracing::info!(
+                    "🚀 V2: Creating initial session with task: {}",
+                    initial_task
+                );
+
                 let session_id = {
                     let mut manager = multi_session_manager.lock().unwrap();
                     manager.create_session(None).unwrap()
                 };
-                
+
                 tracing::info!("✅ V2: Created initial session: {}", session_id);
-                
+
                 // Connect session to UI and start agent
                 let ui_events = {
                     let mut manager = multi_session_manager.lock().unwrap();
-                    manager.set_active_session(session_id.clone()).await.unwrap_or_else(|e| {
-                        tracing::error!("Failed to set active session: {}", e);
-                        Vec::new()
-                    })
+                    manager
+                        .set_active_session(session_id.clone())
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::error!("Failed to set active session: {}", e);
+                            Vec::new()
+                        })
                 };
-                
+
                 for event in ui_events {
                     let ui_message = crate::ui::UIMessage::UiEvent(event);
                     if let Err(e) = gui_for_thread.display(ui_message).await {
                         tracing::error!("Failed to send UI event: {}", e);
                     }
                 }
-                
+
                 let project_manager = Box::new(DefaultProjectManager::new());
                 let command_executor = Box::new(DefaultCommandExecutor);
-                let user_interface = Arc::new(Box::new(gui_for_thread.clone()) as Box<dyn UserInterface>);
-                
+                let user_interface =
+                    Arc::new(Box::new(gui_for_thread.clone()) as Box<dyn UserInterface>);
+
                 let llm_client = create_llm_client(
                     provider.clone(),
                     model.clone(),
@@ -683,41 +708,49 @@ fn run_agent_gpui_v2(
                     record.clone(),
                     playback.clone(),
                     fast_playback,
-                ).await.expect("Failed to create LLM client");
-                
+                )
+                .await
+                .expect("Failed to create LLM client");
+
                 {
                     let mut manager = multi_session_manager.lock().unwrap();
-                    manager.start_agent_for_message(
-                        &session_id,
-                        initial_task,
-                        llm_client,
-                        project_manager,
-                        command_executor,
-                        user_interface,
-                    ).await.expect("Failed to start agent with initial task");
+                    manager
+                        .start_agent_for_message(
+                            &session_id,
+                            initial_task,
+                            llm_client,
+                            project_manager,
+                            command_executor,
+                            user_interface,
+                        )
+                        .await
+                        .expect("Failed to start agent with initial task");
                 }
-                
+
                 tracing::info!("🎯 V2: Started agent for initial session");
             } else {
                 // No task - connect to latest existing session
                 tracing::info!("🔄 V2: No task provided, connecting to latest session");
-                
+
                 let latest_session_id = {
                     let manager = multi_session_manager.lock().unwrap();
                     manager.get_latest_session_id().unwrap_or(None)
                 };
-                
+
                 if let Some(session_id) = latest_session_id {
                     tracing::info!("📋 V2: Connecting to existing session: {}", session_id);
-                    
+
                     let ui_events = {
                         let mut manager = multi_session_manager.lock().unwrap();
-                        manager.set_active_session(session_id.clone()).await.unwrap_or_else(|e| {
-                            tracing::error!("Failed to set active session: {}", e);
-                            Vec::new()
-                        })
+                        manager
+                            .set_active_session(session_id.clone())
+                            .await
+                            .unwrap_or_else(|e| {
+                                tracing::error!("Failed to set active session: {}", e);
+                                Vec::new()
+                            })
                     };
-                    
+
                     for event in ui_events {
                         let ui_message = crate::ui::UIMessage::UiEvent(event);
                         if let Err(e) = gui_for_thread.display(ui_message).await {
@@ -728,7 +761,7 @@ fn run_agent_gpui_v2(
                     tracing::info!("📝 V2: No existing sessions found - UI will start empty");
                 }
             }
-            
+
             handle_backend_events(
                 backend_event_rx,
                 backend_response_tx,
@@ -757,7 +790,6 @@ fn run_agent_gpui_v2(
 async fn main() -> Result<()> {
     // Parse command line arguments
     let args = Args::parse();
-
 
     match args.mode {
         // Server mode
