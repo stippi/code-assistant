@@ -791,7 +791,14 @@ impl LLMProvider for AnthropicClient {
         let anthropic_request = AnthropicRequest {
             model: self.model.clone(),
             thinking,
-            messages: request.messages,
+            messages: request
+                .messages
+                .into_iter()
+                .map(|mut msg| {
+                    msg.request_id = None;
+                    msg
+                })
+                .collect(),
             max_tokens,
             temperature: 1.0,
             system,
