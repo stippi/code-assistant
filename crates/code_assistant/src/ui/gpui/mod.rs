@@ -770,10 +770,12 @@ impl Gpui {
                 session_id,
                 name: _,
             } => {
-                *self.current_session_id.lock().unwrap() = Some(session_id);
+                *self.current_session_id.lock().unwrap() = Some(session_id.clone());
                 // Refresh the session list
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::ListSessions);
+                    // Load the newly created session to connect it to the UI
+                    let _ = sender.try_send(BackendEvent::LoadSession { session_id });
                 }
             }
             BackendResponse::SessionDeleted { session_id: _ } => {

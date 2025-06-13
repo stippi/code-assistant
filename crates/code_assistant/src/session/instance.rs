@@ -210,20 +210,15 @@ impl SessionInstance {
     pub fn generate_session_connect_events(&self) -> Result<Vec<UiEvent>, anyhow::Error> {
         let mut events = Vec::new();
 
-        // First event: Set all session messages with tool results
-        if !self.session.messages.is_empty() {
-            let messages_data = self.convert_messages_to_ui_data(self.session.tool_mode)?;
-            let tool_results = self.convert_tool_executions_to_ui_data()?;
+        // Always use SetMessages regardless of whether session is empty or not
+        let messages_data = self.convert_messages_to_ui_data(self.session.tool_mode)?;
+        let tool_results = self.convert_tool_executions_to_ui_data()?;
 
-            events.push(UiEvent::SetMessages {
-                messages: messages_data,
-                session_id: Some(self.session.id.clone()),
-                tool_results,
-            });
-        } else {
-            // Clear messages if session is empty
-            events.push(UiEvent::ClearMessages);
-        }
+        events.push(UiEvent::SetMessages {
+            messages: messages_data,
+            session_id: Some(self.session.id.clone()),
+            tool_results,
+        });
 
         // Second event: Load buffered fragments if currently streaming
         if self.is_streaming {
