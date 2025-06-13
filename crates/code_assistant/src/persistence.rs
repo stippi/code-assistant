@@ -189,12 +189,3 @@ pub fn generate_session_id() -> String {
     format!("chat_{:x}_{:x}", timestamp, random_part)
 }
 
-/// Format a SystemTime for display
-pub fn format_time(time: SystemTime) -> String {
-    // Simple formatting without external dependencies
-    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let secs = duration.as_secs();
-
-    // Basic timestamp formatting (YYYY-MM-DD HH:MM would require more complex date calculations)
-    format!("timestamp_{}", secs)
-}

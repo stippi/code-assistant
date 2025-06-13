@@ -15,7 +15,7 @@ mod tests;
 use crate::agent::{Agent, SessionManagerStatePersistence};
 use crate::mcp::MCPServer;
 use crate::persistence::FileStatePersistence;
-use crate::session::{LegacySessionManager, SessionManager};
+use crate::session::LegacySessionManager;
 use crate::types::ToolMode;
 use crate::ui::terminal::TerminalUI;
 use crate::ui::UserInterface;
@@ -29,7 +29,6 @@ use llm::{
     AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, OpenRouterClient,
     VertexClient,
 };
-use rand;
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -330,7 +329,7 @@ async fn run_agent(args: Args) -> Result<()> {
     // Get all the agent options from args
     let path = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
     let task = args.task.clone();
-    let continue_task = args.continue_task;
+    let _continue_task = args.continue_task;
     let verbose = args.verbose;
     let provider = args.provider.unwrap_or(LLMProviderType::Anthropic);
     let model = args.model.clone();

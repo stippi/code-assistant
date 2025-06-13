@@ -5,15 +5,14 @@ use crate::config::ProjectManager;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{parse_tool_xml, TOOL_TAG_PREFIX};
 use crate::types::*;
-use crate::ui::{streaming::create_stream_processor, DisplayFragment, UIMessage, UserInterface};
+use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
-use async_trait::async_trait;
 use llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
     StreamingChunk,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing::debug;

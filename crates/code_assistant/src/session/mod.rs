@@ -4,16 +4,15 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::agent::ToolExecution;
-use crate::persistence::{ChatMetadata, ChatSession, FileStatePersistence, generate_session_id};
+use crate::persistence::{generate_session_id, ChatSession, FileStatePersistence};
 use crate::types::{ToolMode, WorkingMemory};
 
 // New session management architecture
 pub mod instance;
 pub mod multi_manager;
 
-pub use instance::SessionInstance;
 // New main session manager (V2)
-pub use multi_manager::{SessionManager, AgentConfig, SessionSwitchData};
+pub use multi_manager::{AgentConfig, SessionManager};
 
 /// Legacy session manager (V1) - kept for compatibility with state_storage.rs
 pub struct LegacySessionManager {
@@ -72,11 +71,13 @@ impl LegacySessionManager {
         init_path: Option<PathBuf>,
         initial_project: Option<String>,
     ) -> Result<()> {
-        let session_id = self.current_session_id
+        let session_id = self
+            .current_session_id
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No active session"))?;
 
-        let mut session = self.persistence
+        let mut session = self
+            .persistence
             .load_chat_session(session_id)?
             .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
 
@@ -95,43 +96,6 @@ impl LegacySessionManager {
         Ok(())
     }
 
-    /// Load a session and return its state for agent restoration
-    pub fn load_session(&mut self, session_id: &str) -> Result<SessionState> {
-        let session = self.persistence
-            .load_chat_session(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
-
-        self.current_session_id = Some(session_id.to_string());
-
-        let tool_executions = session.tool_executions
-            .into_iter()
-            .map(|se| se.deserialize())
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(SessionState {
-            messages: session.messages,
-            tool_executions,
-            working_memory: session.working_memory,
-            init_path: session.init_path,
-            initial_project: session.initial_project,
-        })
-    }
-
-    /// List all available chat sessions
-    pub fn list_sessions(&self) -> Result<Vec<ChatMetadata>> {
-        self.persistence.list_chat_sessions()
-    }
-
-    /// Delete a chat session
-    pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
-        // If we're deleting the current session, clear the current session ID
-        if self.current_session_id.as_deref() == Some(session_id) {
-            self.current_session_id = None;
-        }
-
-        self.persistence.delete_chat_session(session_id)
-    }
-
     /// Get the ID of the currently active session
     pub fn current_session_id(&self) -> Option<&str> {
         self.current_session_id.as_deref()
@@ -140,10 +104,5 @@ impl LegacySessionManager {
     /// Set the current session without loading it
     pub fn set_current_session(&mut self, session_id: String) {
         self.current_session_id = Some(session_id);
-    }
-
-    /// Get the latest session ID for auto-resuming
-    pub fn get_latest_session_id(&self) -> Result<Option<String>> {
-        self.persistence.get_latest_session_id()
     }
 }

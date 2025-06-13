@@ -1,17 +1,16 @@
 use anyhow::Result;
-use async_trait::async_trait;
 use llm::Message;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use crate::agent::{Agent, SessionManagerStatePersistence};
+use crate::agent::SessionManagerStatePersistence;
 use crate::config::ProjectManager;
 use crate::persistence::{generate_session_id, ChatMetadata, ChatSession, FileStatePersistence};
 use crate::session::instance::SessionInstance;
 use crate::types::{ToolMode, WorkingMemory};
-use crate::ui::{DisplayFragment, UserInterface};
+use crate::ui::UserInterface;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
 
@@ -142,11 +141,6 @@ impl SessionManager {
         Ok(ui_events)
     }
 
-    /// Get the currently UI-active session ID
-    pub fn get_active_session_id(&self) -> Option<String> {
-        self.active_session_id.clone()
-    }
-
     /// Start an agent for a session with a user message
     /// This is the key method - agents run on-demand for specific messages
     pub async fn start_agent_for_message(
@@ -183,10 +177,10 @@ impl SessionManager {
         // Create a new legacy session manager for this agent
         let mut session_manager_for_agent =
             crate::session::LegacySessionManager::new(self.persistence.clone());
-        
-        // CRITICAL: Set the current session ID so the agent doesn't create a new session
+
+        // Set the current session ID so the agent doesn't create a new session
         session_manager_for_agent.set_current_session(session_id.to_string());
-        
+
         let state_storage = Box::new(SessionManagerStatePersistence::new(
             session_manager_for_agent,
             self.agent_config.tool_mode,
@@ -242,90 +236,9 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Get buffered fragments for the active session (for UI connection mid-streaming)
-    pub fn get_active_session_fragments(&self, clear_buffer: bool) -> Vec<DisplayFragment> {
-        if let Some(session_id) = &self.active_session_id {
-            if let Some(session_instance) = self.active_sessions.get(session_id) {
-                return session_instance.get_buffered_fragments(clear_buffer);
-            }
-        }
-        Vec::new()
-    }
-
-    /// Check completion status of all running agents
-    pub async fn check_agent_completions(&mut self) -> Result<Vec<String>> {
-        let mut completed_sessions = Vec::new();
-
-        // First, collect session IDs that have finished tasks
-        let finished_session_ids: Vec<String> = self
-            .active_sessions
-            .iter()
-            .filter(|(_, session_instance)| session_instance.is_task_finished())
-            .map(|(session_id, _)| session_id.clone())
-            .collect();
-
-        // Now handle the finished tasks one by one
-        for session_id in finished_session_ids {
-            // Check if the session still exists and needs completion processing
-            if let Some(session_instance) = self.active_sessions.get(&session_id) {
-                if session_instance.is_task_finished() && !session_instance.agent_completed {
-                    // Extract the task handle
-                    let task_handle = self
-                        .active_sessions
-                        .get_mut(&session_id)
-                        .and_then(|instance| instance.task_handle.take());
-
-                    // Process the completed task
-                    if let Some(handle) = task_handle {
-                        if handle.is_finished() {
-                            let completion_result = match handle.await {
-                                Ok(agent_result) => match agent_result {
-                                    Ok(_) => (true, None),
-                                    Err(e) => (true, Some(e.to_string())),
-                                },
-                                Err(join_error) => {
-                                    (true, Some(format!("Task join error: {}", join_error)))
-                                }
-                            };
-
-                            // Update session state based on completion result
-                            let (completed, error) = completion_result;
-                            if completed {
-                                if let Some(session_instance) =
-                                    self.active_sessions.get_mut(&session_id)
-                                {
-                                    session_instance.agent_completed = true;
-                                    session_instance.last_agent_error = error;
-                                    session_instance.is_streaming = false;
-                                    session_instance.streaming_message_id = None;
-                                }
-                                completed_sessions.push(session_id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(completed_sessions)
-    }
-
     /// List all available sessions (both active and persisted)
     pub fn list_all_sessions(&self) -> Result<Vec<ChatMetadata>> {
         self.persistence.list_chat_sessions()
-    }
-
-    /// List currently active sessions
-    pub fn list_active_sessions(&self) -> Vec<String> {
-        self.active_sessions.keys().cloned().collect()
-    }
-
-    /// Check if a session is currently streaming
-    pub fn is_session_streaming(&self, session_id: &str) -> bool {
-        self.active_sessions
-            .get(session_id)
-            .map(|instance| instance.is_streaming)
-            .unwrap_or(false)
     }
 
     /// Delete a session
@@ -346,35 +259,8 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Save a session to persistence
-    pub fn save_session(&mut self, session_id: &str) -> Result<()> {
-        if let Some(session_instance) = self.active_sessions.get(session_id) {
-            self.persistence
-                .save_chat_session(&session_instance.session)?;
-        }
-        Ok(())
-    }
-
     /// Get the latest session ID for auto-resuming
     pub fn get_latest_session_id(&self) -> Result<Option<String>> {
         self.persistence.get_latest_session_id()
     }
-
-    /// Helper method to send UI events for session connection
-    /// This method sends multiple UI events over the channel to properly connect to a session
-    pub async fn send_session_connect_events(
-        ui_events: Vec<crate::ui::gpui::ui_events::UiEvent>,
-        ui_event_sender: &async_channel::Sender<crate::ui::UIMessage>,
-    ) -> Result<()> {
-        for event in ui_events {
-            ui_event_sender
-                .send(crate::ui::UIMessage::UiEvent(event))
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to send UI event: {}", e))?;
-        }
-        Ok(())
-    }
 }
-
-// For now, let's skip the BufferingUI implementation as it has complex trait issues
-// The core architecture can work without it initially

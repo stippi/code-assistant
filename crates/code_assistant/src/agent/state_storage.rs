@@ -21,6 +21,7 @@ pub trait AgentStatePersistence: Send + Sync {
 }
 
 /// Mock implementation for testing
+#[cfg(test)]
 pub struct MockStatePersistence {
     pub save_count: usize,
     pub last_saved_messages: Option<Vec<Message>>,
@@ -28,6 +29,7 @@ pub struct MockStatePersistence {
     pub last_saved_working_memory: Option<WorkingMemory>,
 }
 
+#[cfg(test)]
 impl MockStatePersistence {
     pub fn new() -> Self {
         Self {
@@ -39,6 +41,7 @@ impl MockStatePersistence {
     }
 }
 
+#[cfg(test)]
 impl AgentStatePersistence for MockStatePersistence {
     fn save_agent_state(
         &mut self,
@@ -65,15 +68,10 @@ pub struct SessionManagerStatePersistence {
 
 impl SessionManagerStatePersistence {
     pub fn new(session_manager: LegacySessionManager, tool_mode: ToolMode) -> Self {
-        Self { session_manager, tool_mode }
-    }
-    
-    pub fn session_manager(&self) -> &LegacySessionManager {
-        &self.session_manager
-    }
-    
-    pub fn session_manager_mut(&mut self) -> &mut LegacySessionManager {
-        &mut self.session_manager
+        Self {
+            session_manager,
+            tool_mode,
+        }
     }
 }
 
@@ -93,7 +91,9 @@ impl AgentStatePersistence for SessionManagerStatePersistence {
             } else {
                 None
             };
-            let _session_id = self.session_manager.create_session(task_name, self.tool_mode)?;
+            let _session_id = self
+                .session_manager
+                .create_session(task_name, self.tool_mode)?;
         }
 
         self.session_manager.save_session(

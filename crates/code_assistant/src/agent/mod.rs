@@ -8,5 +8,5 @@ mod types;
 
 pub use crate::types::ToolMode;
 pub use runner::Agent;
-pub use state_storage::{AgentStatePersistence, MockStatePersistence, SessionManagerStatePersistence};
+pub use state_storage::SessionManagerStatePersistence;
 pub use types::{ToolExecution, ToolRequest};
