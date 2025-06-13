@@ -10,7 +10,7 @@ use crate::config::ProjectManager;
 use crate::persistence::{generate_session_id, ChatMetadata, ChatSession, FileStatePersistence};
 use crate::session::instance::SessionInstance;
 use crate::types::{ToolMode, WorkingMemory};
-use crate::ui::UserInterface;
+use crate::ui::{DisplayFragment, UserInterface};
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
 
