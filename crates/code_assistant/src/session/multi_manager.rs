@@ -191,7 +191,7 @@ impl SessionManager {
             self.agent_config.tool_mode,
             project_manager,
             command_executor,
-            ui.clone(),
+            session_instance.create_proxy_ui(ui.clone()),
             state_storage,
             self.agent_config.init_path.clone(),
         );

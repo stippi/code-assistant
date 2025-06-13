@@ -5,11 +5,11 @@ use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 
 // Agent instances are created on-demand, no need to import
-use crate::ui::{DisplayFragment, UIError, UIMessage, UserInterface};
-use crate::ui::gpui::ui_events::{UiEvent, MessageData};
-use crate::ui::gpui::elements::MessageRole;
-use crate::ui::streaming::create_stream_processor;
 use crate::persistence::ChatSession;
+use crate::ui::gpui::elements::MessageRole;
+use crate::ui::gpui::ui_events::{MessageData, UiEvent};
+use crate::ui::streaming::create_stream_processor;
+use crate::ui::{DisplayFragment, UIError, UIMessage, UserInterface};
 use async_trait::async_trait;
 
 /// Represents a single session instance with its own agent and state
@@ -19,7 +19,6 @@ pub struct SessionInstance {
 
     // Agent instances are created on-demand and moved into tokio tasks
     // We only track the task handle, not the agent itself
-
     /// Task handle for the running agent (None if not running)
     pub task_handle: Option<JoinHandle<Result<()>>>,
 
@@ -103,18 +102,6 @@ impl SessionInstance {
         Ok(())
     }
 
-    /// Add a display fragment to the buffer
-    pub fn add_fragment(&self, fragment: DisplayFragment) {
-        if let Ok(mut buffer) = self.fragment_buffer.lock() {
-            buffer.push_back(fragment);
-
-            // Keep buffer size reasonable (e.g., last 1000 fragments)
-            while buffer.len() > 1000 {
-                buffer.pop_front();
-            }
-        }
-    }
-
     /// Get all buffered fragments and optionally clear the buffer
     pub fn get_buffered_fragments(&self, clear: bool) -> Vec<DisplayFragment> {
         if let Ok(mut buffer) = self.fragment_buffer.lock() {
@@ -195,7 +182,10 @@ impl SessionInstance {
 
     /// Check if this session is currently connected to the UI
     pub fn is_ui_active(&self) -> bool {
-        self.is_ui_active.lock().map(|active| *active).unwrap_or(false)
+        self.is_ui_active
+            .lock()
+            .map(|active| *active)
+            .unwrap_or(false)
     }
 
     /// Get fragment buffer reference for agent access
@@ -204,7 +194,10 @@ impl SessionInstance {
     }
 
     /// Create a ProxyUI for this session that handles fragment buffering
-    pub fn create_proxy_ui(&self, real_ui: Arc<Box<dyn UserInterface>>) -> Arc<Box<dyn UserInterface>> {
+    pub fn create_proxy_ui(
+        &self,
+        real_ui: Arc<Box<dyn UserInterface>>,
+    ) -> Arc<Box<dyn UserInterface>> {
         Arc::new(Box::new(ProxyUI::new(
             real_ui,
             self.fragment_buffer.clone(),
@@ -221,7 +214,7 @@ impl SessionInstance {
         if !self.session.messages.is_empty() {
             let messages_data = self.convert_messages_to_ui_data(self.session.tool_mode)?;
             let tool_results = self.convert_tool_executions_to_ui_data()?;
-            
+
             events.push(UiEvent::SetMessages {
                 messages: messages_data,
                 session_id: Some(self.session.id.clone()),
@@ -247,19 +240,57 @@ impl SessionInstance {
     }
 
     /// Convert session messages to UI MessageData format
-    fn convert_messages_to_ui_data(&self, tool_mode: crate::types::ToolMode) -> Result<Vec<MessageData>, anyhow::Error> {
+    fn convert_messages_to_ui_data(
+        &self,
+        tool_mode: crate::types::ToolMode,
+    ) -> Result<Vec<MessageData>, anyhow::Error> {
         // Create dummy UI for stream processor
         struct DummyUI;
         #[async_trait::async_trait]
         impl crate::ui::UserInterface for DummyUI {
-            async fn display(&self, _message: crate::ui::UIMessage) -> Result<(), crate::ui::UIError> { Ok(()) }
-            async fn get_input(&self) -> Result<String, crate::ui::UIError> { Ok("".to_string()) }
-            fn display_fragment(&self, _fragment: &crate::ui::DisplayFragment) -> Result<(), crate::ui::UIError> { Ok(()) }
-            async fn update_memory(&self, _memory: &crate::types::WorkingMemory) -> Result<(), crate::ui::UIError> { Ok(()) }
-            async fn update_tool_status(&self, _tool_id: &str, _status: crate::ui::ToolStatus, _message: Option<String>, _output: Option<String>) -> Result<(), crate::ui::UIError> { Ok(()) }
-            async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> { Ok(0) }
-            async fn end_llm_request(&self, _request_id: u64, _cancelled: bool) -> Result<(), crate::ui::UIError> { Ok(()) }
-            fn should_streaming_continue(&self) -> bool { true }
+            async fn display(
+                &self,
+                _message: crate::ui::UIMessage,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            async fn get_input(&self) -> Result<String, crate::ui::UIError> {
+                Ok("".to_string())
+            }
+            fn display_fragment(
+                &self,
+                _fragment: &crate::ui::DisplayFragment,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            async fn update_memory(
+                &self,
+                _memory: &crate::types::WorkingMemory,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            async fn update_tool_status(
+                &self,
+                _tool_id: &str,
+                _status: crate::ui::ToolStatus,
+                _message: Option<String>,
+                _output: Option<String>,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> {
+                Ok(0)
+            }
+            async fn end_llm_request(
+                &self,
+                _request_id: u64,
+                _cancelled: bool,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+            fn should_streaming_continue(&self) -> bool {
+                true
+            }
         }
 
         let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
@@ -284,7 +315,7 @@ impl SessionInstance {
                     }
                 }
             }
-            
+
             match processor.extract_fragments_from_message(message) {
                 Ok(fragments) => {
                     let role = match message.role {
@@ -304,16 +335,18 @@ impl SessionInstance {
     }
 
     /// Convert tool executions to UI tool result data
-    fn convert_tool_executions_to_ui_data(&self) -> Result<Vec<crate::ui::gpui::ui_events::ToolResultData>, anyhow::Error> {
+    fn convert_tool_executions_to_ui_data(
+        &self,
+    ) -> Result<Vec<crate::ui::gpui::ui_events::ToolResultData>, anyhow::Error> {
         use crate::tools::core::ResourcesTracker;
-        
+
         let mut tool_results = Vec::new();
         let mut resources_tracker = ResourcesTracker::new();
 
         for serialized_execution in &self.session.tool_executions {
             // Deserialize the tool execution
             let execution = serialized_execution.deserialize()?;
-            
+
             // Generate status and output from result
             let success = execution.result.is_success();
             let status = if success {
@@ -321,10 +354,10 @@ impl SessionInstance {
             } else {
                 crate::ui::ToolStatus::Error
             };
-            
+
             let short_output = execution.result.as_render().status();
             let output = execution.result.as_render().render(&mut resources_tracker);
-            
+
             tool_results.push(crate::ui::gpui::ui_events::ToolResultData {
                 tool_id: execution.tool_request.id,
                 status,
@@ -359,7 +392,10 @@ impl ProxyUI {
 
     /// Check if this session is currently active
     fn is_active(&self) -> bool {
-        self.is_session_active.lock().map(|active| *active).unwrap_or(false)
+        self.is_session_active
+            .lock()
+            .map(|active| *active)
+            .unwrap_or(false)
     }
 }
 
@@ -416,7 +452,9 @@ impl UserInterface for ProxyUI {
         output: Option<String>,
     ) -> Result<(), UIError> {
         if self.is_active() {
-            self.real_ui.update_tool_status(tool_id, status, message, output).await
+            self.real_ui
+                .update_tool_status(tool_id, status, message, output)
+                .await
         } else {
             Ok(()) // NOP if session not active
         }
