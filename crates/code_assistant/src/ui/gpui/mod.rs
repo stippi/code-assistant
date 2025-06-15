@@ -87,10 +87,6 @@ pub enum BackendResponse {
     },
 }
 
-// Legacy aliases for compatibility during transition
-pub type ChatManagementEvent = BackendEvent;
-pub type ChatManagementResponse = BackendResponse;
-
 // Our main UI struct that implements the UserInterface trait
 #[derive(Clone)]
 pub struct Gpui {
@@ -106,7 +102,7 @@ pub struct Gpui {
     current_tool_counter: Arc<Mutex<u64>>,
     last_xml_tool_id: Arc<Mutex<String>>,
     #[allow(dead_code)]
-    parameter_renderers: Arc<ParameterRendererRegistry>, // TODO: Needed?!
+    parameter_renderers: Arc<ParameterRendererRegistry>,
     streaming_state: Arc<Mutex<StreamingState>>,
     // Unified backend communication
     backend_event_sender: Arc<Mutex<Option<async_channel::Sender<BackendEvent>>>>,
@@ -722,27 +718,6 @@ impl Gpui {
 
         // Return the backend ends
         (event_rx, response_tx)
-    }
-
-    // Legacy methods for compatibility during transition
-    pub fn setup_chat_communication(
-        &self,
-    ) -> (
-        async_channel::Receiver<ChatManagementEvent>,
-        async_channel::Sender<ChatManagementResponse>,
-    ) {
-        self.setup_backend_communication()
-    }
-
-    pub fn setup_v2_communication(
-        &self,
-        _user_message_tx: async_channel::Sender<(String, String)>,
-        session_event_tx: async_channel::Sender<ChatManagementEvent>,
-        session_response_rx: async_channel::Receiver<ChatManagementResponse>,
-    ) {
-        // For backward compatibility, but now we ignore the separate user_message_tx
-        *self.backend_event_sender.lock().unwrap() = Some(session_event_tx);
-        *self.backend_response_receiver.lock().unwrap() = Some(session_response_rx);
     }
 
     // Helper to add an event to the queue
