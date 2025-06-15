@@ -67,11 +67,6 @@ pub enum UiEvent {
     RefreshChatList,
     /// Update the chat list display
     UpdateChatList { sessions: Vec<ChatMetadata> },
-    /// Load session fragments for display (new architecture)
-    LoadSessionFragments {
-        fragments: Vec<DisplayFragment>,
-        session_id: String,
-    },
     /// Clear all messages
     ClearMessages,
     /// Send user message to active session (triggers agent)

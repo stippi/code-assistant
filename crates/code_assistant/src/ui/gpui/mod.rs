@@ -16,7 +16,6 @@ pub mod ui_events;
 
 use crate::persistence::ChatMetadata;
 use crate::types::WorkingMemory;
-use crate::ui::gpui::ui_events::MessageData;
 use crate::ui::gpui::{
     content_renderer::ContentRenderer,
     diff_renderer::DiffParameterRenderer,
@@ -33,7 +32,6 @@ use async_channel;
 use gpui::{actions, px, AppContext, AsyncApp, Entity, Global, Point};
 use gpui_component::input::InputState;
 use gpui_component::Root;
-use llm;
 pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
@@ -68,23 +66,10 @@ pub enum BackendEvent {
 // Response from backend to UI
 #[derive(Debug, Clone)]
 pub enum BackendResponse {
-    SessionLoaded {
-        session_id: String,
-        messages: Vec<llm::Message>,
-    },
-    SessionCreated {
-        session_id: String,
-        name: String,
-    },
-    SessionDeleted {
-        session_id: String,
-    },
-    SessionsListed {
-        sessions: Vec<ChatMetadata>,
-    },
-    Error {
-        message: String,
-    },
+    SessionCreated { session_id: String, name: String },
+    SessionDeleted { session_id: String },
+    SessionsListed { sessions: Vec<ChatMetadata> },
+    Error { message: String },
 }
 
 // Our main UI struct that implements the UserInterface trait
@@ -455,20 +440,46 @@ impl Gpui {
                     queue.clear();
                 }
 
-                // Create new message containers from the message data
+                // Process message data with on-demand container creation
                 for message_data in messages {
-                    let container = cx
-                        .new(|cx| MessageContainer::with_role(message_data.role, cx))
-                        .expect("Failed to create message container");
-
-                    // Process all fragments for this message
-                    self.process_fragments_for_container(&container, message_data.fragments, cx);
-
-                    // Add container to queue
-                    {
+                    let current_container = {
                         let mut queue = self.message_queue.lock().unwrap();
-                        queue.push(container);
-                    }
+
+                        // Check if we can reuse the last container (same role)
+                        let needs_new_container = if let Some(last_container) = queue.last() {
+                            let last_role = cx
+                                .update_entity(last_container, |container, _cx| {
+                                    if container.is_user_message() {
+                                        MessageRole::User
+                                    } else {
+                                        MessageRole::Assistant
+                                    }
+                                })
+                                .expect("Failed to get container role");
+                            last_role == MessageRole::User || last_role != message_data.role
+                        } else {
+                            true
+                        };
+
+                        if needs_new_container {
+                            // Create new container for this role
+                            let container = cx
+                                .new(|cx| MessageContainer::with_role(message_data.role, cx))
+                                .expect("Failed to create message container");
+                            queue.push(container.clone());
+                            container
+                        } else {
+                            // Use existing container
+                            queue.last().unwrap().clone()
+                        }
+                    }; // Lock is released here
+
+                    // Process fragments into the current container
+                    self.process_fragments_for_container(
+                        &current_container,
+                        message_data.fragments,
+                        cx,
+                    );
                 }
 
                 // Apply tool results to update tool blocks with their execution results
@@ -574,35 +585,6 @@ impl Gpui {
 
                 // Refresh all windows to trigger re-render with new chat data
                 tracing::info!("UI: Refreshing windows for chat list update");
-                cx.refresh().expect("Failed to refresh windows");
-            }
-            // New v2 architecture events
-            UiEvent::LoadSessionFragments {
-                fragments,
-                session_id,
-            } => {
-                tracing::info!("UI: LoadSessionFragments event for session {}", session_id);
-
-                // Set as active session
-                *self.current_session_id.lock().unwrap() = Some(session_id);
-
-                // DON'T clear existing messages - append fragments to existing messages instead
-                // Create a single assistant container for all fragments and append it
-                if !fragments.is_empty() {
-                    let container = cx
-                        .new(|cx| MessageContainer::with_role(MessageRole::Assistant, cx))
-                        .expect("Failed to create message container");
-
-                    // Process all fragments
-                    self.process_fragments_for_container(&container, fragments, cx);
-
-                    // Append to queue (don't clear)
-                    {
-                        let mut queue = self.message_queue.lock().unwrap();
-                        queue.push(container);
-                    }
-                }
-
                 cx.refresh().expect("Failed to refresh windows");
             }
             UiEvent::ClearMessages => {
@@ -717,55 +699,10 @@ impl Gpui {
         self.current_session_id.lock().unwrap().clone()
     }
 
-    // Send a user message to the active session
-    pub fn send_user_message_to_active_session(&self, message: String) -> Result<(), String> {
-        let session_id = self
-            .get_current_session_id()
-            .ok_or_else(|| "No active session".to_string())?;
-
-        let sender = self.backend_event_sender.lock().unwrap();
-        if let Some(ref tx) = *sender {
-            tx.try_send(BackendEvent::SendUserMessage {
-                session_id,
-                message,
-            })
-            .map_err(|e| format!("Failed to send message: {}", e))?;
-            Ok(())
-        } else {
-            Err("Backend event sender not initialized".to_string())
-        }
-    }
-
     // Handle backend responses
     fn handle_backend_response(&self, response: BackendResponse, _cx: &mut AsyncApp) {
         tracing::info!("UI: Received chat management response: {:?}", response);
         match response {
-            BackendResponse::SessionLoaded {
-                session_id,
-                messages,
-            } => {
-                *self.current_session_id.lock().unwrap() = Some(session_id.clone());
-
-                // Create fragments from loaded messages and send SetMessages event
-                match self.create_fragments_from_messages(&messages) {
-                    Ok(message_data) => {
-                        tracing::info!(
-                            "Created {} message containers from loaded session",
-                            message_data.len()
-                        );
-                        self.push_event(UiEvent::SetMessages {
-                            messages: message_data,
-                            session_id: Some(session_id),
-                            tool_results: Vec::new(), // No tool results available in this legacy path
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to create fragments from messages: {}", e);
-                        // Fallback: just clear messages
-                        self.message_queue.lock().unwrap().clear();
-                    }
-                }
-            }
             BackendResponse::SessionCreated {
                 session_id,
                 name: _,
@@ -792,104 +729,6 @@ impl Gpui {
                 warn!("Backend error: {}", message);
             }
         }
-    }
-
-    // Update chat state from agent responses
-    pub fn update_chat_state(&self, session_id: Option<String>, sessions: Vec<ChatMetadata>) {
-        *self.current_session_id.lock().unwrap() = session_id;
-        *self.chat_sessions.lock().unwrap() = sessions;
-
-        // Trigger UI update
-        self.push_event(UiEvent::UpdateChatList {
-            sessions: self.chat_sessions.lock().unwrap().clone(),
-        });
-    }
-}
-
-impl Gpui {
-    // Create message data from loaded session messages using StreamProcessor
-    fn create_fragments_from_messages(
-        &self,
-        messages: &[llm::Message],
-    ) -> Result<Vec<MessageData>, UIError> {
-        use crate::ui::streaming::create_stream_processor;
-
-        // Create dummy UI for stream processor (same as in Agent)
-        struct DummyUI;
-        #[async_trait::async_trait]
-        impl crate::ui::UserInterface for DummyUI {
-            async fn display(
-                &self,
-                _message: crate::ui::UIMessage,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            async fn get_input(&self) -> Result<String, crate::ui::UIError> {
-                Ok("".to_string())
-            }
-            fn display_fragment(
-                &self,
-                _fragment: &crate::ui::DisplayFragment,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            async fn update_memory(
-                &self,
-                _memory: &crate::types::WorkingMemory,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            async fn update_tool_status(
-                &self,
-                _tool_id: &str,
-                _status: crate::ui::ToolStatus,
-                _message: Option<String>,
-                _output: Option<String>,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            async fn begin_llm_request(&self, request_id: u64) -> Result<(), crate::ui::UIError> {
-                let _ = request_id;
-                Ok(())
-            }
-            async fn end_llm_request(
-                &self,
-                _request_id: u64,
-                _cancelled: bool,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            fn should_streaming_continue(&self) -> bool {
-                true
-            }
-        }
-
-        let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
-
-        // Use Native mode as default - TODO: Get actual tool mode from somewhere
-        let mut processor = create_stream_processor(crate::types::ToolMode::Native, dummy_ui, 0);
-
-        let mut messages_data = Vec::new();
-        tracing::warn!("Processing {} messages for UI fragments", messages.len());
-
-        for (i, message) in messages.iter().enumerate() {
-            match processor.extract_fragments_from_message(message) {
-                Ok(fragments) => {
-                    let role = match message.role {
-                        llm::MessageRole::User => MessageRole::User,
-                        llm::MessageRole::Assistant => MessageRole::Assistant,
-                    };
-                    tracing::info!("Message {}: Extracted {} fragments", i, fragments.len());
-                    messages_data.push(MessageData { role, fragments });
-                }
-                Err(e) => {
-                    tracing::error!("Message {}: Failed to extract fragments: {}", i, e);
-                }
-            }
-        }
-
-        tracing::warn!("Created {} message containers", messages_data.len());
-        Ok(messages_data)
     }
 }
 

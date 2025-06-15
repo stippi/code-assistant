@@ -243,30 +243,32 @@ impl SessionInstance {
     }
 
     /// Generate UI events for connecting to this session
-    /// Returns both the session messages and any buffered fragments from current streaming
+    /// Returns SetMessages event with all session messages including incomplete streaming message
     pub fn generate_session_connect_events(&self) -> Result<Vec<UiEvent>, anyhow::Error> {
         let mut events = Vec::new();
 
-        // Always use SetMessages regardless of whether session is empty or not
-        let messages_data = self.convert_messages_to_ui_data(self.session.tool_mode)?;
+        // Convert session messages to UI data
+        let mut messages_data = self.convert_messages_to_ui_data(self.session.tool_mode)?;
         let tool_results = self.convert_tool_executions_to_ui_data()?;
+
+        // If currently streaming, add incomplete message as additional MessageData
+        if self.is_streaming {
+            let buffered_fragments = self.get_buffered_fragments(false); // Don't clear buffer
+            if !buffered_fragments.is_empty() {
+                // Create incomplete assistant message from buffered fragments
+                let incomplete_message = MessageData {
+                    role: crate::ui::gpui::elements::MessageRole::Assistant,
+                    fragments: buffered_fragments,
+                };
+                messages_data.push(incomplete_message);
+            }
+        }
 
         events.push(UiEvent::SetMessages {
             messages: messages_data,
             session_id: Some(self.session.id.clone()),
             tool_results,
         });
-
-        // Second event: Load buffered fragments if currently streaming
-        if self.is_streaming {
-            let buffered_fragments = self.get_buffered_fragments(false); // Don't clear buffer
-            if !buffered_fragments.is_empty() {
-                events.push(UiEvent::LoadSessionFragments {
-                    fragments: buffered_fragments,
-                    session_id: self.session.id.clone(),
-                });
-            }
-        }
 
         Ok(events)
     }
