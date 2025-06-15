@@ -76,6 +76,4 @@ pub enum UiEvent {
     ClearMessages,
     /// Send user message to active session (triggers agent)
     SendUserMessage { message: String, session_id: String },
-    /// Connect to active session mid-streaming
-    ConnectToActiveSession { session_id: String },
 }

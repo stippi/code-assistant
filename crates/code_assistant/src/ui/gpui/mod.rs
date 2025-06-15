@@ -629,21 +629,6 @@ impl Gpui {
                     tracing::warn!("UI: No backend event sender available");
                 }
             }
-            UiEvent::ConnectToActiveSession { session_id } => {
-                tracing::info!(
-                    "UI: ConnectToActiveSession event for session {}",
-                    session_id
-                );
-                // Set as active session
-                *self.current_session_id.lock().unwrap() = Some(session_id.clone());
-
-                // Request buffered fragments from MultiSessionManager
-                // This would need to be implemented in the backend
-                tracing::info!(
-                    "UI: TODO - Request buffered fragments for session {}",
-                    session_id
-                );
-            }
         }
     }
 
@@ -973,10 +958,13 @@ impl UserInterface for Gpui {
             }
             DisplayFragment::ToolName { name, id } => {
                 if id.is_empty() {
-                    warn!("StreamingProcessor provided empty tool ID for tool '{}' - this is a bug!", name);
+                    warn!(
+                        "StreamingProcessor provided empty tool ID for tool '{}' - this is a bug!",
+                        name
+                    );
                     return Err(UIError::IOError(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        format!("Empty tool ID for tool '{}'", name)
+                        format!("Empty tool ID for tool '{}'", name),
                     )));
                 }
 
@@ -994,7 +982,7 @@ impl UserInterface for Gpui {
                     warn!("StreamingProcessor provided empty tool ID for parameter '{}' - this is a bug!", name);
                     return Err(UIError::IOError(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        format!("Empty tool ID for parameter '{}'", name)
+                        format!("Empty tool ID for parameter '{}'", name),
                     )));
                 }
 
@@ -1009,7 +997,7 @@ impl UserInterface for Gpui {
                     warn!("StreamingProcessor provided empty tool ID for ToolEnd - this is a bug!");
                     return Err(UIError::IOError(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "Empty tool ID for ToolEnd".to_string()
+                        "Empty tool ID for ToolEnd".to_string(),
                     )));
                 }
 
