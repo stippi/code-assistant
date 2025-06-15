@@ -71,6 +71,7 @@ impl SessionManager {
             init_path: self.agent_config.init_path.clone(),
             initial_project: self.agent_config.initial_project.clone(),
             tool_mode: self.agent_config.tool_mode,
+            next_request_id: 1,
         };
 
         // Save to persistence
@@ -214,6 +215,7 @@ impl SessionManager {
             working_memory: session_instance.session.working_memory.clone(),
             init_path: session_instance.session.init_path.clone(),
             initial_project: session_instance.session.initial_project.clone(),
+            next_request_id: Some(session_instance.session.next_request_id),
         };
 
         agent.load_from_session_state(session_state).await?;

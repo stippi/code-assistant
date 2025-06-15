@@ -51,6 +51,8 @@ pub struct Agent {
     tool_executions: Vec<crate::agent::types::ToolExecution>,
     // Cached system message
     cached_system_message: OnceLock<String>,
+    // Counter for generating unique request IDs
+    next_request_id: u64,
 }
 
 impl Agent {
@@ -93,6 +95,7 @@ impl Agent {
             initial_project: None,
             tool_executions: Vec::new(),
             cached_system_message: OnceLock::new(),
+            next_request_id: 1, // Start from 1
         }
     }
 
@@ -108,6 +111,7 @@ impl Agent {
             self.working_memory.clone(),
             self.init_path.clone(),
             self.initial_project.clone(),
+            self.next_request_id,
         )?;
         Ok(())
     }
@@ -213,6 +217,13 @@ impl Agent {
         self.working_memory = session_state.working_memory;
         self.init_path = session_state.init_path;
         self.initial_project = session_state.initial_project;
+
+        // Restore next_request_id from session, or calculate from existing messages for backward compatibility
+        self.next_request_id = session_state.next_request_id.unwrap_or_else(|| {
+            self.message_history.iter()
+                .filter(|msg| matches!(msg.role, llm::MessageRole::Assistant))
+                .count() as u64 + 1
+        });
 
         // Restore working memory file trees and project state
         self.restore_working_memory_state().await?;
@@ -672,11 +683,15 @@ impl Agent {
 
     /// Gets the next assistant message from the LLM provider.
     async fn get_next_assistant_message(
-        &self,
+        &mut self,
         messages: Vec<Message>,
     ) -> Result<(llm::LLMResponse, u64)> {
+        // Generate and increment request ID
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        
         // Inform UI that a new LLM request is starting
-        let request_id = self.ui.begin_llm_request().await?;
+        self.ui.begin_llm_request(request_id).await?;
         debug!("Starting LLM request with ID: {}", request_id);
 
         // Convert messages based on tool mode
@@ -713,10 +728,11 @@ impl Agent {
             debug!("{}", indented);
         }
 
-        // Create a StreamProcessor with the UI
+        // Create a StreamProcessor with the UI and request ID
         let processor = Arc::new(Mutex::new(create_stream_processor(
             self.tool_mode,
             self.ui.clone(),
+            request_id,
         )));
 
         let ui_for_callback = self.ui.clone();

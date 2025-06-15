@@ -31,6 +31,9 @@ pub struct ChatSession {
     pub initial_project: Option<String>,
     /// Tool mode used for this session (XML or Native)
     pub tool_mode: ToolMode,
+    /// Counter for generating unique request IDs within this session
+    #[serde(default)]
+    pub next_request_id: u64,
 }
 
 /// Serialized representation of a tool execution

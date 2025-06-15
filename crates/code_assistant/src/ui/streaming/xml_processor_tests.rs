@@ -9,7 +9,7 @@ fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
     let test_ui = TestUI::new();
     let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
 
-    let mut processor = XmlStreamProcessor::new(ui_arc);
+    let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
     // Split text into small chunks and process each one
     for chunk in chunk_str(text, chunk_size) {
@@ -177,7 +177,7 @@ mod tests {
     fn test_extract_fragments_from_text_message_with_xml_tags() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
-        let mut processor = XmlStreamProcessor::new(ui_arc);
+        let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Create a message with text content containing XML-style tags
         let message = llm::Message {
@@ -215,7 +215,7 @@ mod tests {
     fn test_extract_fragments_from_structured_message_converted_to_xml_style() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
-        let mut processor = XmlStreamProcessor::new(ui_arc);
+        let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Create a message with structured content including tool use
         // This tests conversion from JSON ToolUse to XML-style fragments
@@ -269,7 +269,7 @@ mod tests {
     fn test_extract_fragments_from_mixed_structured_message() {
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
-        let mut processor = XmlStreamProcessor::new(ui_arc);
+        let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Create a message with mixed content blocks
         let message = llm::Message {

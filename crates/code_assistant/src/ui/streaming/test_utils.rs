@@ -120,9 +120,10 @@ impl UserInterface for TestUI {
         Ok(())
     }
 
-    async fn begin_llm_request(&self) -> Result<u64, UIError> {
-        // For tests, return a fixed request ID
-        Ok(42)
+    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError> {
+        // For tests, just accept the provided request ID
+        let _ = request_id;
+        Ok(())
     }
 
     async fn end_llm_request(&self, _request_id: u64, _cancelled: bool) -> Result<(), UIError> {

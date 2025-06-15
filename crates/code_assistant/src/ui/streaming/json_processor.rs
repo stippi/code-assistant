@@ -74,13 +74,15 @@ impl Default for JsonProcessorState {
 pub struct JsonStreamProcessor {
     state: JsonProcessorState,
     ui: Arc<Box<dyn UserInterface>>,
+    request_id: u64,
 }
 
 impl StreamProcessorTrait for JsonStreamProcessor {
-    fn new(ui: Arc<Box<dyn UserInterface>>) -> Self {
+    fn new(ui: Arc<Box<dyn UserInterface>>, request_id: u64) -> Self {
         Self {
             state: JsonProcessorState::default(),
             ui,
+            request_id,
         }
     }
 

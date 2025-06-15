@@ -310,8 +310,9 @@ impl SessionInstance {
             ) -> Result<(), crate::ui::UIError> {
                 Ok(())
             }
-            async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> {
-                Ok(0)
+            async fn begin_llm_request(&self, request_id: u64) -> Result<(), crate::ui::UIError> {
+                let _ = request_id;
+                Ok(())
             }
             async fn end_llm_request(
                 &self,
@@ -326,7 +327,7 @@ impl SessionInstance {
         }
 
         let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
-        let mut processor = create_stream_processor(tool_mode, dummy_ui);
+        let mut processor = create_stream_processor(tool_mode, dummy_ui, 0);
 
         let mut messages_data = Vec::new();
 
@@ -499,16 +500,16 @@ impl UserInterface for ProxyUI {
         }
     }
 
-    async fn begin_llm_request(&self) -> Result<u64, UIError> {
+    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError> {
         // Clear fragment buffer at start of new LLM request
         if let Ok(mut buffer) = self.fragment_buffer.lock() {
             buffer.clear();
         }
 
         if self.is_active() {
-            self.real_ui.begin_llm_request().await
+            self.real_ui.begin_llm_request(request_id).await
         } else {
-            Ok(0) // Return dummy request ID if session not active
+            Ok(()) // No-op if session not active
         }
     }
 

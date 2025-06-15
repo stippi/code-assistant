@@ -205,13 +205,7 @@ impl UserInterface for TerminalUI {
         Ok(())
     }
 
-    async fn begin_llm_request(&self) -> Result<u64, UIError> {
-        // Use a simple timestamp for request IDs
-        let request_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
+    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError> {
         // Optionally display a message that we're starting a new request
         self.write_line(
             &format!("Starting new LLM request ({})", request_id)
@@ -220,7 +214,7 @@ impl UserInterface for TerminalUI {
         )
         .await?;
 
-        Ok(request_id)
+        Ok(())
     }
 
     async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError> {

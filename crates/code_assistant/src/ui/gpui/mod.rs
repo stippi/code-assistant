@@ -99,8 +99,6 @@ pub struct Gpui {
     event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
     session_event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
     current_request_id: Arc<Mutex<u64>>,
-    current_tool_counter: Arc<Mutex<u64>>,
-    last_xml_tool_id: Arc<Mutex<String>>,
     #[allow(dead_code)]
     parameter_renderers: Arc<ParameterRendererRegistry>,
     streaming_state: Arc<Mutex<StreamingState>>,
@@ -125,8 +123,6 @@ impl Gpui {
         let event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let session_event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let current_request_id = Arc::new(Mutex::new(0));
-        let current_tool_counter = Arc::new(Mutex::new(0));
-        let last_xml_tool_id = Arc::new(Mutex::new(String::new()));
         let streaming_state = Arc::new(Mutex::new(StreamingState::Idle));
 
         // Initialize parameter renderers registry with default renderer
@@ -170,8 +166,6 @@ impl Gpui {
             event_task,
             session_event_task,
             current_request_id,
-            current_tool_counter,
-            last_xml_tool_id,
             parameter_renderers,
             streaming_state,
             backend_event_sender: Arc::new(Mutex::new(None)),
@@ -869,8 +863,9 @@ impl Gpui {
             ) -> Result<(), crate::ui::UIError> {
                 Ok(())
             }
-            async fn begin_llm_request(&self) -> Result<u64, crate::ui::UIError> {
-                Ok(0)
+            async fn begin_llm_request(&self, request_id: u64) -> Result<(), crate::ui::UIError> {
+                let _ = request_id;
+                Ok(())
             }
             async fn end_llm_request(
                 &self,
@@ -887,7 +882,7 @@ impl Gpui {
         let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
 
         // Use Native mode as default - TODO: Get actual tool mode from somewhere
-        let mut processor = create_stream_processor(crate::types::ToolMode::Native, dummy_ui);
+        let mut processor = create_stream_processor(crate::types::ToolMode::Native, dummy_ui, 0);
 
         let mut messages_data = Vec::new();
         tracing::warn!("Processing {} messages for UI fragments", messages.len());
@@ -977,25 +972,17 @@ impl UserInterface for Gpui {
                 });
             }
             DisplayFragment::ToolName { name, id } => {
-                let tool_id = if id.is_empty() {
-                    // XML case: Generate ID based on request ID and tool counter
-                    let request_id = *self.current_request_id.lock().unwrap();
-                    let mut tool_counter = self.current_tool_counter.lock().unwrap();
-                    *tool_counter += 1;
-                    let new_id = format!("tool-{}-{}", request_id, tool_counter);
-
-                    // Save this ID for subsequent empty parameter IDs
-                    *self.last_xml_tool_id.lock().unwrap() = new_id.clone();
-
-                    new_id
-                } else {
-                    // JSON case: Use the provided ID
-                    id.clone()
-                };
+                if id.is_empty() {
+                    warn!("StreamingProcessor provided empty tool ID for tool '{}' - this is a bug!", name);
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Empty tool ID for tool '{}'", name)
+                    )));
+                }
 
                 self.push_event(UiEvent::StartTool {
                     name: name.clone(),
-                    id: tool_id,
+                    id: id.clone(),
                 });
             }
             DisplayFragment::ToolParameter {
@@ -1003,28 +990,30 @@ impl UserInterface for Gpui {
                 value,
                 tool_id,
             } => {
-                // Use last_xml_tool_id if tool_id is empty
-                let actual_id = if tool_id.is_empty() {
-                    self.last_xml_tool_id.lock().unwrap().clone()
-                } else {
-                    tool_id.clone()
-                };
+                if tool_id.is_empty() {
+                    warn!("StreamingProcessor provided empty tool ID for parameter '{}' - this is a bug!", name);
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Empty tool ID for parameter '{}'", name)
+                    )));
+                }
 
                 self.push_event(UiEvent::UpdateToolParameter {
-                    tool_id: actual_id,
+                    tool_id: tool_id.clone(),
                     name: name.clone(),
                     value: value.clone(),
                 });
             }
             DisplayFragment::ToolEnd { id } => {
-                // Use last_xml_tool_id if id is empty
-                let tool_id = if id.is_empty() {
-                    self.last_xml_tool_id.lock().unwrap().clone()
-                } else {
-                    id.clone()
-                };
+                if id.is_empty() {
+                    warn!("StreamingProcessor provided empty tool ID for ToolEnd - this is a bug!");
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Empty tool ID for ToolEnd".to_string()
+                    )));
+                }
 
-                self.push_event(UiEvent::EndTool { id: tool_id });
+                self.push_event(UiEvent::EndTool { id: id.clone() });
             }
         }
 
@@ -1057,23 +1046,17 @@ impl UserInterface for Gpui {
         Ok(())
     }
 
-    async fn begin_llm_request(&self) -> Result<u64, UIError> {
+    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError> {
         // Set streaming state to Streaming
         *self.streaming_state.lock().unwrap() = StreamingState::Streaming;
 
-        // Increment request ID counter
-        let mut request_id = self.current_request_id.lock().unwrap();
-        *request_id += 1;
-        let current_id = *request_id;
-
-        // Reset tool counter for this request
-        let mut tool_counter = self.current_tool_counter.lock().unwrap();
-        *tool_counter = 0;
+        // Store the request ID
+        *self.current_request_id.lock().unwrap() = request_id;
 
         // Send StreamingStarted event
-        self.push_event(UiEvent::StreamingStarted(current_id));
+        self.push_event(UiEvent::StreamingStarted(request_id));
 
-        Ok(current_id)
+        Ok(())
     }
 
     async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError> {

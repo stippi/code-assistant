@@ -24,12 +24,15 @@ struct ProcessorState {
     // Track if we're at the beginning of a block (thinking/param/tool)
     // Used to determine when to trim leading newlines
     at_block_start: bool,
+    // Counter for tools processed in this request
+    tool_counter: u64,
 }
 
 /// Manages the conversion of LLM streaming chunks to display fragments using XML-style tags
 pub struct XmlStreamProcessor {
     state: ProcessorState,
     ui: Arc<Box<dyn UserInterface>>,
+    request_id: u64,
 }
 
 // Define tag types we need to process
@@ -45,10 +48,11 @@ enum TagType {
 
 // Implement the common StreamProcessorTrait
 impl StreamProcessorTrait for XmlStreamProcessor {
-    fn new(ui: Arc<Box<dyn UserInterface>>) -> Self {
+    fn new(ui: Arc<Box<dyn UserInterface>>, request_id: u64) -> Self {
         Self {
             state: ProcessorState::default(),
             ui,
+            request_id,
         }
     }
 
@@ -304,16 +308,9 @@ impl XmlStreamProcessor {
                             self.state.in_tool = true;
                             self.state.tool_name = tool_name;
 
-                            // For XML tools, use empty ID - the UI will generate one
-                            // Use a deterministic ID for tests only
-                            #[cfg(test)]
-                            {
-                                self.state.tool_id = "ignored".to_string();
-                            }
-                            #[cfg(not(test))]
-                            {
-                                self.state.tool_id = String::new();
-                            }
+                            // For XML tools, generate ID based on request ID and tool counter
+                            self.state.tool_counter += 1;
+                            self.state.tool_id = format!("tool-{}-{}", self.request_id, self.state.tool_counter);
 
                             // Send fragment with tool name
                             self.ui.display_fragment(&DisplayFragment::ToolName {

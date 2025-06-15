@@ -37,8 +37,8 @@ pub enum DisplayFragment {
 
 /// Common trait for stream processors
 pub trait StreamProcessorTrait: Send + Sync {
-    /// Create a new stream processor with the given UI
-    fn new(ui: Arc<Box<dyn UserInterface>>) -> Self
+    /// Create a new stream processor with the given UI and request context
+    fn new(ui: Arc<Box<dyn UserInterface>>, request_id: u64) -> Self
     where
         Self: Sized;
 
@@ -61,9 +61,10 @@ pub use xml_processor::XmlStreamProcessor;
 pub fn create_stream_processor(
     tool_mode: ToolMode,
     ui: Arc<Box<dyn UserInterface>>,
+    request_id: u64,
 ) -> Box<dyn StreamProcessorTrait> {
     match tool_mode {
-        ToolMode::Xml => Box::new(XmlStreamProcessor::new(ui)),
-        ToolMode::Native => Box::new(JsonStreamProcessor::new(ui)),
+        ToolMode::Xml => Box::new(XmlStreamProcessor::new(ui, request_id)),
+        ToolMode::Native => Box::new(JsonStreamProcessor::new(ui, request_id)),
     }
 }

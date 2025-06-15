@@ -28,6 +28,7 @@ pub struct SessionState {
     pub working_memory: WorkingMemory,
     pub init_path: Option<PathBuf>,
     pub initial_project: Option<String>,
+    pub next_request_id: Option<u64>,
 }
 
 impl LegacySessionManager {
@@ -54,6 +55,7 @@ impl LegacySessionManager {
             init_path: None,
             initial_project: None,
             tool_mode,
+            next_request_id: 1,
         };
 
         self.persistence.save_chat_session(&session)?;
@@ -70,6 +72,7 @@ impl LegacySessionManager {
         working_memory: WorkingMemory,
         init_path: Option<PathBuf>,
         initial_project: Option<String>,
+        next_request_id: u64,
     ) -> Result<()> {
         let session_id = self
             .current_session_id
@@ -90,6 +93,7 @@ impl LegacySessionManager {
         session.working_memory = working_memory;
         session.init_path = init_path;
         session.initial_project = initial_project;
+        session.next_request_id = next_request_id;
         session.updated_at = SystemTime::now();
 
         self.persistence.save_chat_session(&session)?;
