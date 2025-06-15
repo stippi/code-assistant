@@ -60,6 +60,7 @@ impl MessageContainer {
     }
 
     // Remove all blocks with the given request ID
+    // Used when the user cancels a request while it is streaming
     pub fn remove_blocks_with_request_id(&self, request_id: u64, cx: &mut Context<Self>) {
         let mut elements = self.elements.lock().unwrap();
         let mut blocks_to_remove = Vec::new();
