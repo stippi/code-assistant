@@ -220,9 +220,11 @@ impl Agent {
 
         // Restore next_request_id from session, or calculate from existing messages for backward compatibility
         self.next_request_id = session_state.next_request_id.unwrap_or_else(|| {
-            self.message_history.iter()
+            self.message_history
+                .iter()
                 .filter(|msg| matches!(msg.role, llm::MessageRole::Assistant))
-                .count() as u64 + 1
+                .count() as u64
+                + 1
         });
 
         // Restore working memory file trees and project state
@@ -689,7 +691,7 @@ impl Agent {
         // Generate and increment request ID
         let request_id = self.next_request_id;
         self.next_request_id += 1;
-        
+
         // Inform UI that a new LLM request is starting
         self.ui.begin_llm_request(request_id).await?;
         debug!("Starting LLM request with ID: {}", request_id);
