@@ -130,26 +130,15 @@ impl Agent {
     /// Run a single iteration of the agent loop without waiting for user input
     /// This is used in the new on-demand agent architecture
     pub async fn run_single_iteration(&mut self) -> Result<()> {
-        // Initialize request counter based on existing Assistant messages
-        let mut request_counter: u64 = self
-            .message_history
-            .iter()
-            .filter(|msg| matches!(msg.role, llm::MessageRole::Assistant))
-            .count() as u64;
-
         loop {
-            let messages = self.prepare_messages();
-            if self.message_history.is_empty() {
-                self.message_history = messages.clone();
-            }
-            request_counter += 1;
+            let messages = self.render_tool_results_in_messages();
 
             // 1. Obtain LLM response (includes adding assistant message to history)
-            let llm_response = self.obtain_llm_response(messages).await?;
+            let (llm_response, request_id) = self.obtain_llm_response(messages).await?;
 
             // 2. Extract tool requests from LLM response and determine the next flow action
             let (tool_requests, flow) = self
-                .extract_tool_requests_from_response(&llm_response, request_counter)
+                .extract_tool_requests_from_response(&llm_response, request_id)
                 .await?;
 
             // 3. Act based on the flow instruction
@@ -237,7 +226,10 @@ impl Agent {
 
     /// Handles the interaction with the LLM to get the next assistant message.
     /// Appends the assistant's message to the history only if it has content.
-    async fn obtain_llm_response(&mut self, messages: Vec<Message>) -> Result<llm::LLMResponse> {
+    async fn obtain_llm_response(
+        &mut self,
+        messages: Vec<Message>,
+    ) -> Result<(llm::LLMResponse, u64)> {
         let (llm_response, request_id) = self.get_next_assistant_message(messages).await?;
 
         // Only add to message history if there's actual content
@@ -249,7 +241,7 @@ impl Agent {
             })?;
         }
 
-        Ok(llm_response)
+        Ok((llm_response, request_id))
     }
 
     /// Parses tool requests from the LLM response.
@@ -341,26 +333,14 @@ impl Agent {
     }
 
     async fn run_agent_loop(&mut self) -> Result<()> {
-        let mut request_counter: u64 = 0;
-
         loop {
-            // Commands are now processed by main.rs chat management task
-            // This avoids blocking when agent waits for input
-            let messages = self.prepare_messages();
-            if self.message_history.is_empty() {
-                // This ensures that on the very first run, the initial task (user message)
-                // is correctly set up in message_history if `prepare_messages` returns it.
-                // `prepare_messages` is designed to return the current task if history is empty.
-                self.message_history = messages.clone();
-            }
-            request_counter += 1;
-
+            let messages = self.render_tool_results_in_messages();
             // 1. Obtain LLM response (includes adding assistant message to history)
-            let llm_response = self.obtain_llm_response(messages).await?;
+            let (llm_response, request_id) = self.obtain_llm_response(messages).await?;
 
             // 2. Extract tool requests from LLM response and determine the next flow action
             let (tool_requests, flow) = self
-                .extract_tool_requests_from_response(&llm_response, request_counter)
+                .extract_tool_requests_from_response(&llm_response, request_id)
                 .await?;
 
             // 3. Act based on the flow instruction
@@ -398,7 +378,7 @@ impl Agent {
         }
     }
 
-    fn init_working_memory(&mut self, task: String) -> Result<()> {
+    fn init_working_memory(&mut self) -> Result<()> {
         // Initialize empty structures for multi-project support
         self.working_memory.file_trees = HashMap::new();
         self.working_memory.available_projects = Vec::new();
@@ -447,7 +427,7 @@ impl Agent {
     pub async fn start_with_task(&mut self, task: String) -> Result<()> {
         debug!("Starting agent with task: {}", task);
 
-        self.init_working_memory(task.clone())?;
+        self.init_working_memory()?;
 
         self.message_history.clear();
         self.ui.display(UIMessage::UserInput(task.clone())).await?;
@@ -810,16 +790,7 @@ impl Agent {
     }
 
     /// Prepare messages for LLM request, dynamically rendering tool outputs
-    fn prepare_messages(&self) -> Vec<Message> {
-        if self.message_history.is_empty() {
-            // Initial message with just the task
-            return vec![Message {
-                role: MessageRole::User,
-                content: MessageContent::Text(self.working_memory.current_task.clone()),
-                request_id: None,
-            }];
-        }
-
+    fn render_tool_results_in_messages(&self) -> Vec<Message> {
         // Start with a clean slate
         let mut messages = Vec::new();
 
