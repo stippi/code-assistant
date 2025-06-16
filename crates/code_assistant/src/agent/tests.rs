@@ -107,6 +107,171 @@ fn test_replacement_xml_parsing() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_mixed_tool_start_end() -> Result<()> {
+    let text = concat!(
+        "Now I will take a look at the drop down implementation:\n",
+        "\n",
+        "<tool:read_files>\n",
+        "<param:project>gpui-component</param:project>\n",
+        "<param:path>crates/ui/src/dropdown.rs</param:path>\n",
+        "<param:path>crates/ui/src/menu</param:path>\n",
+        "</tool:list_files>"
+    )
+    .to_string();
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text }],
+        usage: Usage::zero(),
+    };
+
+    let result = parse_llm_response(&response, 1);
+    println!("result: {:?}", result);
+
+    // This should return an error, not Ok([])
+    assert!(
+        result.is_err(),
+        "Expected ParseError for mismatched tool names"
+    );
+
+    if let Err(ref error) = result {
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains("mismatching tool names"),
+            "Error should mention mismatching tool names: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("read_files"),
+            "Error should mention read_files: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("list_files"),
+            "Error should mention list_files: {}",
+            error_msg
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_ignore_non_tool_tags() -> Result<()> {
+    let text = concat!(
+        "I will work with some HTML code:\n",
+        "\n",
+        "<div>Some HTML content</div>\n",
+        "<tool:read_files>\n",
+        "<param:project>test</param:project>\n",
+        "<param:path>index.html</param:path>\n",
+        "</tool:read_files>\n",
+        "<p>More HTML after the tool</p>"
+    )
+    .to_string();
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text }],
+        usage: Usage::zero(),
+    };
+
+    let result = parse_llm_response(&response, 1)?;
+
+    // Should successfully parse the tool while ignoring HTML tags
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].name, "read_files");
+    assert_eq!(
+        result[0].input.get("project").unwrap().as_str().unwrap(),
+        "test"
+    );
+    assert_eq!(
+        result[0].input.get("paths").unwrap().as_array().unwrap()[0],
+        "index.html"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_html_between_tool_tags_should_error() -> Result<()> {
+    let text = concat!(
+        "I will read files with some HTML mixed in:\n",
+        "\n",
+        "<tool:read_files>\n",
+        "<div>This HTML should not be here</div>\n",
+        "<param:project>test</param:project>\n",
+        "<param:path>index.html</param:path>\n",
+        "</tool:read_files>"
+    )
+    .to_string();
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text }],
+        usage: Usage::zero(),
+    };
+
+    let result = parse_llm_response(&response, 1);
+
+    // This should be an error since HTML tags between tool tags (but outside parameters) make the structure unclear
+    assert!(
+        result.is_err(),
+        "Expected ParseError for HTML tag inside tool block"
+    );
+
+    if let Err(ref error) = result {
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains("unexpected tag"),
+            "Error should mention unexpected tag: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("div"),
+            "Error should mention the div tag: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("read_files"),
+            "Error should mention the tool name: {}",
+            error_msg
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_html_inside_parameter_allowed() -> Result<()> {
+    // The existing test_flexible_xml_parsing already covers HTML content inside parameters
+    // We'll just verify that our validation doesn't break that case
+    let text = concat!(
+        "I will search for content with special characters:\n",
+        "\n",
+        "<tool:search_files>\n",
+        "<param:project>test</param:project>\n",
+        "<param:regex><div id=\"test\"></param:regex>\n",
+        "</tool:search_files>"
+    )
+    .to_string();
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text }],
+        usage: Usage::zero(),
+    };
+
+    let result = parse_llm_response(&response, 1)?;
+
+    // Should successfully parse - special characters inside parameter content are allowed
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].name, "search_files");
+    assert_eq!(
+        result[0].input.get("project").unwrap().as_str().unwrap(),
+        "test"
+    );
+    assert_eq!(
+        result[0].input.get("regex").unwrap().as_str().unwrap(),
+        "<div id=\"test\">"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_unknown_tool_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use tracing::trace;
 
 pub const TOOL_TAG_PREFIX: &str = "tool:";
-const PARAM_TAG_PREFIX: &str = "param:";
+pub const PARAM_TAG_PREFIX: &str = "param:";
 
 /// Represents a parsed path with optional line ranges
 #[derive(Debug, Clone)]
