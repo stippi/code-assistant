@@ -71,7 +71,7 @@ impl MockLLMProvider {
 #[async_trait]
 impl LLMProvider for MockLLMProvider {
     async fn send_message(
-        &self,
+        &mut self,
         request: LLMRequest,
         _streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse, anyhow::Error> {
