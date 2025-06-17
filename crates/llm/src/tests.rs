@@ -643,7 +643,7 @@ async fn run_provider_tests<T: MockResponseGenerator + Clone + 'static>(
         println!("Running {} test case: {}", provider_name, case.name);
 
         let base_url = create_mock_server(case.clone(), generator.clone()).await;
-        let client = create_client(&base_url);
+        let mut client = create_client(&base_url);
 
         // Test non-streaming
         let response = client.send_message(case.request.clone(), None).await?;
@@ -809,7 +809,7 @@ async fn test_anthropic_rate_limit_retry() -> Result<()> {
     let base_url = create_rate_limited_mock_server(2, error_response, headers).await;
 
     // Create client with fast retry timings for test
-    let client = AnthropicClient::new("test-key".to_string(), "claude-3".to_string(), base_url);
+    let mut client = AnthropicClient::new("test-key".to_string(), "claude-3".to_string(), base_url);
 
     // Send a test message that should trigger retries
     let request = LLMRequest {
