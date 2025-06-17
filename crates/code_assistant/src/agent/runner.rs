@@ -969,7 +969,6 @@ enum ParseState {
         tool_name: String,
         param_name: String,
         start_pos: usize,
-        content_start: usize,
     },
 }
 
@@ -1103,7 +1102,6 @@ fn parse_xml_tool_invocations(
                                 tool_name: tool_name.clone(),
                                 param_name: param_name.to_string(),
                                 start_pos: *start_pos,
-                                content_start: abs_tag_end + 1,
                             };
                             current_pos = abs_tag_end + 1;
                             continue;
