@@ -40,7 +40,7 @@ pub struct Agent {
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
-    state_storage: Box<dyn AgentStatePersistence>,
+    state_persistence: Box<dyn AgentStatePersistence>,
     // Store all messages exchanged
     message_history: Vec<Message>,
     // Path provided during agent initialization
@@ -89,7 +89,7 @@ impl Agent {
             project_manager,
             ui,
             command_executor,
-            state_storage,
+            state_persistence: state_storage,
             message_history: Vec::new(),
             init_path,
             initial_project: None,
@@ -105,7 +105,7 @@ impl Agent {
             "saving {} messages to persistence",
             self.message_history.len()
         );
-        self.state_storage.save_agent_state(
+        self.state_persistence.save_agent_state(
             self.message_history.clone(),
             self.tool_executions.clone(),
             self.working_memory.clone(),
