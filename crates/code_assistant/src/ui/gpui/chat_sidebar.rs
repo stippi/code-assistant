@@ -350,14 +350,48 @@ impl Render for ChatSidebar {
                                                         .text_color(cx.theme().foreground)
                                                         .child(SharedString::from(name)),
                                                 )
-                                                .when(is_selected, |s| {
-                                                    s.child(
-                                                        div()
-                                                            .size(px(6.))
-                                                            .rounded_full()
-                                                            .bg(cx.theme().primary),
-                                                    )
-                                                }),
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .when(is_selected, |s| {
+                                                            s.child(
+                                                                div()
+                                                                    .size(px(6.))
+                                                                    .rounded_full()
+                                                                    .bg(cx.theme().primary),
+                                                            )
+                                                        })
+                                                        .child(
+                                                            // Delete button for chat options
+                                                            div()
+                                                                .size(px(20.))
+                                                                .rounded_sm()
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .cursor_pointer()
+                                                                .hover(|s| s.bg(cx.theme().danger.opacity(0.1)))
+                                                                .child(file_icons::render_icon(
+                                                                    &file_icons::get().get_type_icon("trash"),
+                                                                    12.0,
+                                                                    cx.theme().danger,
+                                                                    "🗑",
+                                                                ))
+                                                                .on_mouse_up(MouseButton::Left, {
+                                                                    let session_id_for_delete = session_id.clone();
+                                                                    move |_, _window, cx| {
+                                                                        // Emit delete event
+                                                                        if let Some(sender) = cx.try_global::<UiEventSender>() {
+                                                                            let _ = sender.0.try_send(UiEvent::DeleteChatSession {
+                                                                                session_id: session_id_for_delete.clone(),
+                                                                            });
+                                                                        }
+                                                                    }
+                                                                })
+                                                        )
+                                                ),
                                         )
                                         .child(
                                             div()
