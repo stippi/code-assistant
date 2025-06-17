@@ -68,6 +68,7 @@ pub enum UiEvent {
     /// Update the chat list display
     UpdateChatList { sessions: Vec<ChatMetadata> },
     /// Clear all messages
+    #[allow(dead_code)]
     ClearMessages,
     /// Send user message to active session (triggers agent)
     SendUserMessage { message: String, session_id: String },

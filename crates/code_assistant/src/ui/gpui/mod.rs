@@ -662,7 +662,6 @@ impl Gpui {
         }
     }
 
-    // Setup chat management communication channels
     /// Setup unified backend communication channels
     /// Returns channels for backend thread to receive events and send responses
     pub fn setup_backend_communication(

@@ -99,23 +99,6 @@ impl RootView {
         cx.notify();
     }
 
-    // Update chat sidebar with new sessions
-    pub fn update_chat_sessions(
-        &mut self,
-        sessions: Vec<ChatMetadata>,
-        current_session_id: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        self.chat_sessions = sessions.clone();
-        self.current_session_id = current_session_id.clone();
-
-        self.chat_sidebar.update(cx, |sidebar, cx| {
-            sidebar.update_sessions(sessions, cx);
-            sidebar.set_selected_session(current_session_id, cx);
-        });
-        cx.notify();
-    }
-
     // Trigger refresh of chat list on startup
     pub fn refresh_chat_list(&mut self, cx: &mut Context<Self>) {
         tracing::info!("RootView: Requesting chat list refresh");

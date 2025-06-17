@@ -130,6 +130,15 @@ impl Agent {
     /// Run a single iteration of the agent loop without waiting for user input
     /// This is used in the new on-demand agent architecture
     pub async fn run_single_iteration(&mut self) -> Result<()> {
+        let _needs_user_input = self.run_single_iteration_internal().await?;
+        // In on-demand mode, we don't handle user input - that's done externally
+        // Just ignore the needs_user_input flag and return
+        Ok(())
+    }
+
+    /// Internal helper for running a single iteration
+    /// Returns whether user input is needed before the next iteration
+    async fn run_single_iteration_internal(&mut self) -> Result<bool> {
         loop {
             let messages = self.render_tool_results_in_messages();
 
@@ -145,24 +154,30 @@ impl Agent {
             match flow {
                 LoopFlow::GetUserInput => {
                     // In on-demand mode, we don't wait for user input
-                    // Instead, we complete this iteration and wait for the next message
+                    // Instead, we complete this iteration
                     debug!("Agent iteration complete - waiting for next user message");
-                    break;
+                    return Ok(true); // User input needed
                 }
                 LoopFlow::Continue => {
                     if !tool_requests.is_empty() {
                         // Tools were requested, manage their execution
-                        match self.manage_tool_execution(&tool_requests).await? {
+                        let flow = self.manage_tool_execution(&tool_requests).await?;
+
+                        // Save state and update memory after tool executions
+                        self.save_state()?;
+                        let _ = self.ui.update_memory(&self.working_memory).await;
+
+                        match flow {
                             LoopFlow::Continue => { /* Continue to the next iteration */ }
                             LoopFlow::GetUserInput => {
                                 // Complete iteration instead of waiting for input
                                 debug!("Tool execution complete - waiting for next user message");
-                                break;
+                                return Ok(true); // User input needed
                             }
                             LoopFlow::Break => {
                                 // Task completed (e.g., via complete_task tool)
                                 debug!("Task completed");
-                                break;
+                                return Ok(false); // No user input needed, task complete
                             }
                         }
                     }
@@ -172,21 +187,12 @@ impl Agent {
                 LoopFlow::Break => {
                     // Loop completed
                     debug!("Agent loop break requested");
-                    break;
+                    // Save state before returning
+                    self.save_state()?;
+                    return Ok(false); // No user input needed, task complete
                 }
             }
-
-            // Notify UI of working memory change at the end of each cycle
-            let _ = self.ui.update_memory(&self.working_memory).await;
         }
-
-        // Save state after iteration
-        self.save_state()?;
-
-        // Final memory update
-        let _ = self.ui.update_memory(&self.working_memory).await;
-
-        Ok(())
     }
 
     /// Load state from session state (for backward compatibility)
@@ -332,47 +338,16 @@ impl Agent {
 
     async fn run_agent_loop(&mut self) -> Result<()> {
         loop {
-            let messages = self.render_tool_results_in_messages();
-            // 1. Obtain LLM response (includes adding assistant message to history)
-            let (llm_response, request_id) = self.obtain_llm_response(messages).await?;
+            // Run a single iteration and check if user input is needed
+            let needs_user_input = self.run_single_iteration_internal().await?;
 
-            // 2. Extract tool requests from LLM response and determine the next flow action
-            let (tool_requests, flow) = self
-                .extract_tool_requests_from_response(&llm_response, request_id)
-                .await?;
-
-            // 3. Act based on the flow instruction
-            match flow {
-                LoopFlow::GetUserInput => {
-                    // LLM explicitly requested user input (no tools requested)
-                    self.solicit_user_input().await?;
-                }
-                LoopFlow::Continue => {
-                    if !tool_requests.is_empty() {
-                        // Tools were requested, manage their execution
-                        match self.manage_tool_execution(&tool_requests).await? {
-                            LoopFlow::Continue => { /* Continue to the next iteration */ }
-                            LoopFlow::GetUserInput => {
-                                // Handle case where tool execution results in needing user input
-                                self.solicit_user_input().await?;
-                            }
-                            LoopFlow::Break => {
-                                // Task completed (e.g., via complete_task tool)
-                                return Ok(());
-                            }
-                        }
-                    }
-                    // If tool_requests is empty here, it was a parsing error
-                    // and we continue to the next iteration without user input
-                }
-                LoopFlow::Break => {
-                    // Immediately break the loop
-                    return Ok(());
-                }
+            if needs_user_input {
+                // LLM explicitly requested user input (no tools requested)
+                self.solicit_user_input().await?;
+            } else {
+                // Task completed or loop should break
+                return Ok(());
             }
-
-            // Notify UI of working memory change at the end of each cycle
-            let _ = self.ui.update_memory(&self.working_memory).await;
         }
     }
 
