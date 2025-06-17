@@ -5,11 +5,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use crate::agent::ToolExecution;
 use crate::config::ProjectManager;
 use crate::persistence::{generate_session_id, ChatMetadata, ChatSession, FileStatePersistence};
 use crate::session::instance::SessionInstance;
 use crate::types::{ToolMode, WorkingMemory};
-use crate::ui::{DisplayFragment, UserInterface};
+use crate::ui::UserInterface;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
 
@@ -35,13 +36,6 @@ pub struct AgentConfig {
     pub tool_mode: ToolMode,
     pub init_path: Option<PathBuf>,
     pub initial_project: Option<String>,
-}
-
-/// Data returned when switching sessions
-pub struct SessionSwitchData {
-    pub session_id: String,
-    pub messages: Vec<Message>,
-    pub buffered_fragments: Vec<DisplayFragment>,
 }
 
 impl SessionManager {
@@ -178,19 +172,18 @@ impl SessionManager {
         let _fragment_buffer = session_instance.get_fragment_buffer();
         let _is_ui_active = Arc::new(Mutex::new(session_instance.is_ui_active()));
 
-        // Create a new legacy session manager for this agent
-        let mut session_manager_for_agent =
-            crate::session::LegacySessionManager::new(self.persistence.clone());
+        // Create a session-specific state storage wrapper
+        // This allows the agent to save to the correct session without requiring
+        // the SessionManager to track a single "current" session
+        let session_manager_ref = Arc::new(Mutex::new(SessionManager::new(
+            self.persistence.clone(),
+            self.agent_config.clone(),
+        )));
 
-        // Set the current session ID so the agent doesn't create a new session
-        session_manager_for_agent.set_current_session(session_id.to_string());
-
-        let state_storage = Box::new(
-            crate::agent::persistence::SessionManagerStatePersistence::new(
-                session_manager_for_agent,
-                self.agent_config.tool_mode,
-            ),
-        );
+        let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
+            session_manager_ref,
+            session_id.to_string(),
+        ));
 
         let mut agent = crate::agent::Agent::new(
             llm_provider,
@@ -269,5 +262,43 @@ impl SessionManager {
     /// Get the latest session ID for auto-resuming
     pub fn get_latest_session_id(&self) -> Result<Option<String>> {
         self.persistence.get_latest_session_id()
+    }
+
+    /// Save agent state to a specific session
+    pub fn save_session_state(
+        &mut self,
+        session_id: &str,
+        messages: Vec<Message>,
+        tool_executions: Vec<ToolExecution>,
+        working_memory: WorkingMemory,
+        init_path: Option<PathBuf>,
+        initial_project: Option<String>,
+        next_request_id: u64,
+    ) -> Result<()> {
+        let mut session = self
+            .persistence
+            .load_chat_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+
+        // Update session with current state
+        session.messages = messages;
+        session.tool_executions = tool_executions
+            .into_iter()
+            .map(|te| te.serialize())
+            .collect::<Result<Vec<_>>>()?;
+        session.working_memory = working_memory;
+        session.init_path = init_path;
+        session.initial_project = initial_project;
+        session.next_request_id = next_request_id;
+        session.updated_at = SystemTime::now();
+
+        self.persistence.save_chat_session(&session)?;
+
+        // Update active session instance if it exists
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session = session;
+        }
+
+        Ok(())
     }
 }

@@ -12,10 +12,10 @@ mod utils;
 #[cfg(test)]
 mod tests;
 
-use crate::agent::{Agent, SessionManagerStatePersistence};
+use crate::agent::{Agent, SessionStatePersistence};
 use crate::mcp::MCPServer;
 use crate::persistence::FileStatePersistence;
-use crate::session::LegacySessionManager;
+use crate::session::SessionManager;
 use crate::types::ToolMode;
 use crate::ui::terminal::TerminalUI;
 use crate::ui::UserInterface;
@@ -269,7 +269,7 @@ async fn run_mcp_server(verbose: bool) -> Result<()> {
 async fn run_agent_terminal(
     path: PathBuf,
     task: Option<String>,
-    session_manager: LegacySessionManager,
+    session_manager: SessionManager,
     session_state: Option<crate::session::SessionState>,
     provider: LLMProviderType,
     model: Option<String>,
@@ -300,10 +300,17 @@ async fn run_agent_terminal(
     .await
     .context("Failed to initialize LLM client")?;
 
-    // Initialize agent with session manager wrapped in StatePersistence
-    let state_storage = Box::new(SessionManagerStatePersistence::new(
-        session_manager,
-        tools_type,
+    // Initialize agent with session-specific state persistence
+    let session_manager_ref = Arc::new(Mutex::new(session_manager));
+    let session_id = session_manager_ref
+        .lock()
+        .unwrap()
+        .get_latest_session_id()?
+        .ok_or_else(|| anyhow::anyhow!("No session available"))?;
+    
+    let state_storage = Box::new(SessionStatePersistence::new(
+        session_manager_ref,
+        session_id,
     ));
     let mut agent = Agent::new(
         llm_client,
@@ -347,10 +354,18 @@ async fn run_agent(args: Args) -> Result<()> {
     // Run in either GUI or terminal mode
     if use_gui {
         // GUI mode - V2 architecture handles session management
+        let persistence = FileStatePersistence::new(path.clone());
+        let agent_config = crate::session::AgentConfig {
+            tool_mode: tools_type,
+            init_path: Some(path.clone()),
+            initial_project: None,
+        };
+        let session_manager = SessionManager::new(persistence, agent_config);
+        
         run_agent_gpui_v2(
             path.clone(),
             task, // Can be None - will connect to latest session instead
-            LegacySessionManager::new(FileStatePersistence::new(path)), // dummy for compatibility
+            session_manager, // dummy for compatibility
             None,
             provider,
             model,
@@ -362,13 +377,18 @@ async fn run_agent(args: Args) -> Result<()> {
             args.fast_playback,
         )
     } else {
-        // Terminal mode - create legacy session manager
+        // Terminal mode - create session manager
         let persistence = FileStatePersistence::new(path.clone());
-        let mut session_manager = LegacySessionManager::new(persistence);
+        let agent_config = crate::session::AgentConfig {
+            tool_mode: tools_type,
+            init_path: Some(path.clone()),
+            initial_project: None,
+        };
+        let mut session_manager = SessionManager::new(persistence, agent_config);
 
         // Handle chat session logic for terminal mode
         let (session_task, session_state) = if task.is_some() {
-            let new_session_id = session_manager.create_session(None, tools_type)?;
+            let new_session_id = session_manager.create_session(None)?;
             println!("Created new chat session: {}", new_session_id);
             (task, None)
         } else {
@@ -620,7 +640,7 @@ async fn handle_backend_events(
 fn run_agent_gpui_v2(
     path: PathBuf,
     task: Option<String>,
-    _legacy_session_manager: LegacySessionManager, // Old single session manager (keep for compatibility)
+    _session_manager: SessionManager, // Session manager (kept for compatibility)
     _session_state: Option<crate::session::SessionState>,
     provider: LLMProviderType,
     model: Option<String>,

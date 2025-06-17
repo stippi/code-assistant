@@ -58,50 +58,6 @@ impl SessionInstance {
         }
     }
 
-    /// Check if the agent is currently running
-    pub fn is_agent_running(&self) -> bool {
-        self.task_handle.is_some() && !self.agent_completed
-    }
-
-    /// Check if task is finished (synchronous, no await)
-    pub fn is_task_finished(&self) -> bool {
-        if let Some(handle) = &self.task_handle {
-            handle.is_finished()
-        } else {
-            true // No task means finished
-        }
-    }
-
-    /// Check if the task handle is finished
-    pub async fn check_task_completion(&mut self) -> Result<()> {
-        if let Some(handle) = &mut self.task_handle {
-            if handle.is_finished() {
-                // Take the handle to get the result
-                let handle = self.task_handle.take().unwrap();
-                match handle.await {
-                    Ok(agent_result) => {
-                        self.agent_completed = true;
-                        match agent_result {
-                            Ok(_) => {
-                                self.last_agent_error = None;
-                            }
-                            Err(e) => {
-                                self.last_agent_error = Some(e.to_string());
-                            }
-                        }
-                    }
-                    Err(join_error) => {
-                        self.agent_completed = true;
-                        self.last_agent_error = Some(format!("Task join error: {}", join_error));
-                    }
-                }
-                self.is_streaming = false;
-                self.streaming_message_id = None;
-            }
-        }
-        Ok(())
-    }
-
     /// Get all buffered fragments and optionally clear the buffer
     pub fn get_buffered_fragments(&self, clear: bool) -> Vec<DisplayFragment> {
         if let Ok(mut buffer) = self.fragment_buffer.lock() {
@@ -131,12 +87,6 @@ impl SessionInstance {
         self.last_agent_error = None;
     }
 
-    /// Stop streaming
-    pub fn stop_streaming(&mut self) {
-        self.is_streaming = false;
-        self.streaming_message_id = None;
-    }
-
     /// Terminate the running agent
     pub fn terminate_agent(&mut self) {
         if let Some(handle) = self.task_handle.take() {
@@ -145,16 +95,6 @@ impl SessionInstance {
             self.streaming_message_id = None;
             self.agent_completed = true;
         }
-    }
-
-    /// Get the session ID
-    pub fn session_id(&self) -> &str {
-        &self.session.id
-    }
-
-    /// Get the session name
-    pub fn session_name(&self) -> &str {
-        &self.session.name
     }
 
     /// Add a message to the session
@@ -166,30 +106,6 @@ impl SessionInstance {
     /// Get all messages in the session
     pub fn messages(&self) -> &[Message] {
         &self.session.messages
-    }
-
-    /// Update the complete session state from agent
-    /// This keeps the SessionInstance synchronized with Agent state changes
-    pub fn update_session_state(
-        &mut self,
-        messages: Vec<llm::Message>,
-        tool_executions: Vec<crate::agent::ToolExecution>,
-        working_memory: crate::types::WorkingMemory,
-        init_path: Option<std::path::PathBuf>,
-        initial_project: Option<String>,
-    ) -> anyhow::Result<()> {
-        // Update all session fields
-        self.session.messages = messages;
-        self.session.tool_executions = tool_executions
-            .into_iter()
-            .map(|te| te.serialize())
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        self.session.working_memory = working_memory;
-        self.session.init_path = init_path;
-        self.session.initial_project = initial_project;
-        self.session.updated_at = std::time::SystemTime::now();
-
-        Ok(())
     }
 
     /// Reload session data from persistence

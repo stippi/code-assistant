@@ -1,10 +1,11 @@
 use anyhow::Result;
 use llm::Message;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use crate::agent::types::ToolExecution;
-use crate::session::LegacySessionManager;
-use crate::types::{ToolMode, WorkingMemory};
+use crate::session::SessionManager;
+use crate::types::WorkingMemory;
 
 /// Trait for persisting agent state
 /// This abstracts away the storage mechanism from the Agent implementation
@@ -61,23 +62,24 @@ impl AgentStatePersistence for MockStatePersistence {
     }
 }
 
-/// Wrapper that implements AgentStatePersistence for LegacySessionManager
-/// This allows existing V1 SessionManager code to work with the new Agent interface
-pub struct SessionManagerStatePersistence {
-    session_manager: LegacySessionManager,
-    tool_mode: ToolMode,
+/// Session-specific wrapper that implements AgentStatePersistence
+/// This allows agents to save state to a specific session without the SessionManager
+/// needing to track a single "current" session (which would break concurrent agents)
+pub struct SessionStatePersistence {
+    session_manager: Arc<Mutex<SessionManager>>,
+    session_id: String,
 }
 
-impl SessionManagerStatePersistence {
-    pub fn new(session_manager: LegacySessionManager, tool_mode: ToolMode) -> Self {
+impl SessionStatePersistence {
+    pub fn new(session_manager: Arc<Mutex<SessionManager>>, session_id: String) -> Self {
         Self {
             session_manager,
-            tool_mode,
+            session_id,
         }
     }
 }
 
-impl AgentStatePersistence for SessionManagerStatePersistence {
+impl AgentStatePersistence for SessionStatePersistence {
     fn save_agent_state(
         &mut self,
         messages: Vec<Message>,
@@ -87,20 +89,13 @@ impl AgentStatePersistence for SessionManagerStatePersistence {
         initial_project: Option<String>,
         next_request_id: u64,
     ) -> Result<()> {
-        // Create a session if none exists (backward compatibility)
-        if self.session_manager.current_session_id().is_none() {
-            let task_name = if !working_memory.current_task.is_empty() {
-                Some(working_memory.current_task.clone())
-            } else {
-                None
-            };
-            let _session_id = self
-                .session_manager
-                .create_session(task_name, self.tool_mode)?;
-        }
+        let mut session_manager = self
+            .session_manager
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Failed to lock session manager"))?;
 
-        // Save to persistence
-        self.session_manager.save_session(
+        session_manager.save_session_state(
+            &self.session_id,
             messages,
             tool_executions,
             working_memory,
@@ -110,3 +105,4 @@ impl AgentStatePersistence for SessionManagerStatePersistence {
         )
     }
 }
+
