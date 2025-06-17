@@ -1,12 +1,12 @@
 #[cfg(test)]
 mod tests;
 
+pub mod persistence;
 mod runner;
-pub mod state_storage;
 mod tool_description_generator;
 mod types;
 
 pub use crate::types::ToolMode;
+pub use persistence::SessionManagerStatePersistence;
 pub use runner::Agent;
-pub use state_storage::SessionManagerStatePersistence;
 pub use types::{ToolExecution, ToolRequest};

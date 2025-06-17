@@ -1,4 +1,4 @@
-use crate::agent::state_storage::AgentStatePersistence;
+use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::tool_description_generator::generate_tool_documentation;
 use crate::agent::types::{ToolExecution, ToolRequest};
 use crate::config::ProjectManager;

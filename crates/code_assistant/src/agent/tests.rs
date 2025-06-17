@@ -1,6 +1,6 @@
 use super::*;
+use crate::agent::persistence::MockStatePersistence;
 use crate::agent::runner::parse_llm_response;
-use crate::agent::state_storage::MockStatePersistence;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
     create_command_executor_mock, create_test_response, create_test_response_text,
@@ -438,7 +438,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
 
     // Validate Request 1: Invalid XML parse error handling
     let request1 = &requests[1];
-    
+
     // Check assistant message with invalid XML
     assert_eq!(request1.messages[1].role, MessageRole::Assistant);
     if let MessageContent::Structured(blocks) = &request1.messages[1].content {
@@ -452,7 +452,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
     } else {
         panic!("Expected Structured content in assistant message");
     }
-    
+
     // Check error message from system
     assert_eq!(request1.messages[2].role, MessageRole::User);
     if let MessageContent::Text(error_text) = &request1.messages[2].content {
@@ -464,10 +464,10 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
     } else {
         panic!("Expected Text content in error message");
     }
-    
+
     // Validate Request 2: Corrected tool call and successful execution
     let request2 = &requests[2];
-    
+
     // Check corrected assistant message
     assert_eq!(request2.messages[3].role, MessageRole::Assistant);
     if let MessageContent::Structured(blocks) = &request2.messages[3].content {
@@ -481,7 +481,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
     } else {
         panic!("Expected Structured content in corrected assistant message");
     }
-    
+
     // Check successful tool execution result
     assert_eq!(request2.messages[4].role, MessageRole::User);
     if let MessageContent::Text(result_text) = &request2.messages[4].content {

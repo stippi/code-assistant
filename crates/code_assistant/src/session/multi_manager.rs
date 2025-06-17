@@ -186,7 +186,7 @@ impl SessionManager {
         session_manager_for_agent.set_current_session(session_id.to_string());
 
         let state_storage = Box::new(
-            crate::agent::state_storage::SessionManagerStatePersistence::new(
+            crate::agent::persistence::SessionManagerStatePersistence::new(
                 session_manager_for_agent,
                 self.agent_config.tool_mode,
             ),
