@@ -299,7 +299,7 @@ impl OllamaClient {
 #[async_trait]
 impl LLMProvider for OllamaClient {
     async fn send_message(
-        &self,
+        &mut self,
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {

@@ -85,7 +85,7 @@ impl RecordingProvider {
 #[async_trait]
 impl LLMProvider for RecordingProvider {
     async fn send_message(
-        &self,
+        &mut self,
         _request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {

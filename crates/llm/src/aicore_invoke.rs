@@ -683,7 +683,7 @@ impl AiCoreClient {
 #[async_trait]
 impl LLMProvider for AiCoreClient {
     async fn send_message(
-        &self,
+        &mut self,
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
