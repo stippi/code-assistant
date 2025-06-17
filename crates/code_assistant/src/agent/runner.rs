@@ -15,7 +15,7 @@ use llm::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use super::ToolMode;
 
@@ -101,7 +101,7 @@ impl Agent {
 
     /// Save the current state (message history and tool executions)
     fn save_state(&mut self) -> Result<()> {
-        warn!(
+        trace!(
             "saving {} messages to persistence",
             self.message_history.len()
         );
