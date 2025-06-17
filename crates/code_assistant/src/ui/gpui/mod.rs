@@ -194,8 +194,9 @@ impl Gpui {
             file_icons::init(cx);
 
             // Initialize gpui-component modules
-            theme::init_themes(cx);
             gpui_component::init(cx);
+            // Apply our custom theme colors
+            theme::init_themes(cx);
 
             // Spawn task to receive UiEvents
             let rx = gpui_clone.event_receiver.lock().unwrap().clone();
