@@ -436,10 +436,63 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
     assert_eq!(requests[1].messages.len(), 3); // User + Assistant(invalid) + User(error)
     assert_eq!(requests[2].messages.len(), 5); // Previous + Assistant(valid) + User(tool result)
 
-    // The key test: verify that error handling works and the agent continues
-    // This is validated by having 3 successful LLM requests with the expected message pattern
-
-    mock_llm_ref.print_requests();
+    // Validate Request 1: Invalid XML parse error handling
+    let request1 = &requests[1];
+    
+    // Check assistant message with invalid XML
+    assert_eq!(request1.messages[1].role, MessageRole::Assistant);
+    if let MessageContent::Structured(blocks) = &request1.messages[1].content {
+        assert_eq!(blocks.len(), 1);
+        if let ContentBlock::Text { text } = &blocks[0] {
+            assert!(text.contains("invalid tool call"));
+            assert!(text.contains("</tool:read>")); // The invalid closing tag
+        } else {
+            panic!("Expected Text block in assistant message");
+        }
+    } else {
+        panic!("Expected Structured content in assistant message");
+    }
+    
+    // Check error message from system
+    assert_eq!(request1.messages[2].role, MessageRole::User);
+    if let MessageContent::Text(error_text) = &request1.messages[2].content {
+        assert!(error_text.contains("Tool error"));
+        assert!(error_text.contains("mismatching tool names"));
+        assert!(error_text.contains("Expected '</tool:read_files>'"));
+        assert!(error_text.contains("found '</tool:read>'"));
+        assert!(error_text.contains("Please try again"));
+    } else {
+        panic!("Expected Text content in error message");
+    }
+    
+    // Validate Request 2: Corrected tool call and successful execution
+    let request2 = &requests[2];
+    
+    // Check corrected assistant message
+    assert_eq!(request2.messages[3].role, MessageRole::Assistant);
+    if let MessageContent::Structured(blocks) = &request2.messages[3].content {
+        assert_eq!(blocks.len(), 1);
+        if let ContentBlock::Text { text } = &blocks[0] {
+            assert!(text.contains("Correct second attempt"));
+            assert!(text.contains("</tool:read_files>")); // The correct closing tag
+        } else {
+            panic!("Expected Text block in corrected assistant message");
+        }
+    } else {
+        panic!("Expected Structured content in corrected assistant message");
+    }
+    
+    // Check successful tool execution result
+    assert_eq!(request2.messages[4].role, MessageRole::User);
+    if let MessageContent::Text(result_text) = &request2.messages[4].content {
+        assert!(result_text.contains("Successfully loaded"));
+        assert!(result_text.contains("FILE: test.txt"));
+        assert!(result_text.contains("line 1"));
+        assert!(result_text.contains("line 2"));
+        assert!(result_text.contains("line 3"));
+    } else {
+        panic!("Expected Text content in tool result message");
+    }
 
     Ok(())
 }
