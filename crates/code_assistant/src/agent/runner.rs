@@ -64,7 +64,7 @@ impl Agent {
                     format!("Unknown tool '{}'. Please use only available tools.", t)
                 }
                 ToolError::ParseError(msg) => {
-                    format!("Tool parameter error: {}. Please try again.", msg)
+                    format!("Tool error: {}. Please try again.", msg)
                 }
             }
         } else {
@@ -117,7 +117,7 @@ impl Agent {
     }
 
     /// Adds a message to the history and saves the state
-    fn append_message(&mut self, message: Message) -> Result<()> {
+    pub fn append_message(&mut self, message: Message) -> Result<()> {
         self.message_history.push(message);
         self.save_state()?;
         Ok(())
@@ -165,14 +165,12 @@ impl Agent {
                                 break;
                             }
                         }
-                    } else {
-                        // No tools and Continue flow means we should stop and wait for user input
-                        debug!("No tools requested - waiting for next user message");
-                        break;
                     }
+                    // If tool_requests is empty with Continue flow, this means there was a parse error
+                    // and we should continue the loop to give the LLM another chance to respond correctly
                 }
                 LoopFlow::Break => {
-                    // Task completed
+                    // Loop completed
                     debug!("Agent loop break requested");
                     break;
                 }

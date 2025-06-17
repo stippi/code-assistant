@@ -3,7 +3,8 @@ use crate::agent::runner::parse_llm_response;
 use crate::agent::state_storage::MockStatePersistence;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
-    create_command_executor_mock, create_test_response, MockProjectManager, MockUI,
+    create_command_executor_mock, create_test_response, create_test_response_text,
+    MockProjectManager, MockUI,
 };
 use crate::types::*;
 use crate::UserInterface;
@@ -317,8 +318,6 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
 
     // Check error was communicated to LLM
     let error_request = &requests[1];
-    assert!(error_request.messages.len() >= 2); // May have changed with the new implementation
-
     // Check that we have the expected number of messages in the error request
     assert_eq!(error_request.messages.len(), 3);
 
@@ -376,6 +375,71 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
     } else {
         panic!("Expected Structured content in third message");
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_invalid_xml_tool_error_handling() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Task completed successfully.")), // Final response after successful tool
+        Ok(create_test_response_text(concat!(
+            "Correct second attempt:\n",
+            "\n",
+            "<tool:read_files>\n",
+            "<param:project>test</param:project>\n",
+            "<param:path>test.txt</param:path>\n",
+            "</tool:read_files>"
+        ))),
+        // Simulate LLM using an invalid tool call with mixed start/end tags
+        Ok(create_test_response_text(concat!(
+            "Attempting to read a file with invalid tool call:\n",
+            "\n",
+            "<tool:read_files>\n",
+            "<param:project>test</param:project>\n",
+            "<param:path>test.txt</param:path>\n",
+            "</tool:read>"
+        ))),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let mut agent = Agent::new(
+        Box::new(mock_llm),
+        ToolMode::Xml,
+        Box::new(MockProjectManager::new()),
+        Box::new(create_command_executor_mock()),
+        Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
+        Box::new(MockStatePersistence::new()),
+        Some(PathBuf::from("./test_path")),
+    );
+
+    // Add an initial user message like the working test does
+    let user_msg = Message {
+        role: MessageRole::User,
+        content: MessageContent::Text("Test task".to_string()),
+        request_id: None,
+    };
+    agent.append_message(user_msg)?;
+
+    agent.run_single_iteration().await?;
+
+    let requests = mock_llm_ref.get_requests();
+
+    // Should see three requests:
+    // 1. Initial request with invalid tool
+    // 2. Request with corrected tool after error feedback
+    // 3. Final request after successful tool execution
+    assert_eq!(requests.len(), 3);
+
+    // Verify that we get requests with increasing message counts as expected
+    assert_eq!(requests[0].messages.len(), 1); // Initial user message
+    assert_eq!(requests[1].messages.len(), 3); // User + Assistant(invalid) + User(error)
+    assert_eq!(requests[2].messages.len(), 5); // Previous + Assistant(valid) + User(tool result)
+
+    // The key test: verify that error handling works and the agent continues
+    // This is validated by having 3 successful LLM requests with the expected message pattern
+
+    mock_llm_ref.print_requests();
 
     Ok(())
 }

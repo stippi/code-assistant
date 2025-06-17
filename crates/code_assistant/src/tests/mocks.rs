@@ -106,6 +106,15 @@ pub fn create_test_response(
     }
 }
 
+pub fn create_test_response_text(text: &str) -> LLMResponse {
+    LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        usage: Usage::zero(),
+    }
+}
+
 // Struct to represent a captured command
 #[derive(Clone, Debug)]
 pub struct CapturedCommand {
