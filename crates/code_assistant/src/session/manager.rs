@@ -183,12 +183,12 @@ impl SessionManager {
 
         let mut agent = crate::agent::Agent::new(
             llm_provider,
-            self.agent_config.tool_mode,
+            session_instance.session.tool_mode,
             project_manager,
             command_executor,
             session_instance.create_proxy_ui(ui.clone()),
             state_storage,
-            self.agent_config.init_path.clone(),
+            session_instance.session.init_path.clone(),
         );
 
         // Load the session state into the agent
