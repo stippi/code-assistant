@@ -13,6 +13,7 @@ use crate::types::{ToolMode, WorkingMemory};
 use crate::ui::UserInterface;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
+use tracing::debug;
 
 /// The main SessionManager that manages multiple active sessions with on-demand agents
 pub struct SessionManager {
@@ -156,6 +157,9 @@ impl SessionManager {
             .get_mut(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
 
+        // Make sure the session instance is not stale
+        session_instance.reload_from_persistence(&self.persistence)?;
+
         // Add user message to session
         let user_msg = Message {
             role: llm::MessageRole::User,
@@ -167,10 +171,6 @@ impl SessionManager {
         // Generate message ID for this interaction
         let _message_id = session_instance.get_last_message_id();
         session_instance.start_streaming(_message_id.clone());
-
-        // Get references for agent
-        let _fragment_buffer = session_instance.get_fragment_buffer();
-        let _is_ui_active = Arc::new(Mutex::new(session_instance.is_ui_active()));
 
         // Create a session-specific state storage wrapper
         // This allows the agent to save to the correct session without requiring
@@ -196,7 +196,6 @@ impl SessionManager {
         );
 
         // Load the session state into the agent
-        let session_instance = self.active_sessions.get(session_id).unwrap();
         let session_state = crate::session::SessionState {
             messages: session_instance.messages().to_vec(),
             tool_executions: session_instance
@@ -217,20 +216,15 @@ impl SessionManager {
         let session_id_clone = session_id.to_string();
 
         let task_handle = tokio::spawn(async move {
-            tracing::info!("🚀 V2: Starting agent for session {}", session_id_clone);
+            debug!("Starting agent for session {}", session_id_clone);
             // Run the agent once for this message (same as UI messages)
             let result = agent.run_single_iteration().await;
 
-            tracing::info!("✅ V2: Agent completed for session {}", session_id_clone);
+            debug!("Agent completed for session {}", session_id_clone);
             result
         });
 
         // Store the task handle (but not the agent, as it's moved into the task)
-        let session_instance = self
-            .active_sessions
-            .get_mut(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
-
         session_instance.task_handle = Some(task_handle);
 
         Ok(())
