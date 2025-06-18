@@ -26,21 +26,8 @@ pub struct SessionInstance {
     /// This allows UI to connect mid-streaming and see buffered content
     pub fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
 
-    /// Whether this session is currently streaming
-    pub is_streaming: bool,
-
     /// Whether this session is currently connected to the UI
-    /// (only the active session should be true)
-    pub is_ui_active: Arc<Mutex<bool>>,
-
-    /// The ID of the currently streaming message (if any)
-    pub streaming_message_id: Option<String>,
-
-    /// Whether this session's agent completed successfully
-    pub agent_completed: bool,
-
-    /// Error from the last agent run (if any)
-    pub last_agent_error: Option<String>,
+    pub is_ui_connected: Arc<Mutex<bool>>,
 }
 
 impl SessionInstance {
@@ -50,11 +37,7 @@ impl SessionInstance {
             session,
             task_handle: None,
             fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
-            is_streaming: false,
-            is_ui_active: Arc::new(Mutex::new(false)),
-            streaming_message_id: None,
-            agent_completed: false,
-            last_agent_error: None,
+            is_ui_connected: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -78,22 +61,11 @@ impl SessionInstance {
         }
     }
 
-    /// Start streaming a new message
-    pub fn start_streaming(&mut self, message_id: String) {
-        self.is_streaming = true;
-        self.streaming_message_id = Some(message_id);
-        self.clear_fragment_buffer();
-        self.agent_completed = false;
-        self.last_agent_error = None;
-    }
-
     /// Terminate the running agent
     pub fn terminate_agent(&mut self) {
         if let Some(handle) = self.task_handle.take() {
             handle.abort();
-            self.is_streaming = false;
-            self.streaming_message_id = None;
-            self.agent_completed = true;
+            self.clear_fragment_buffer();
         }
     }
 
@@ -121,29 +93,11 @@ impl SessionInstance {
         Ok(())
     }
 
-    /// Get the last message ID for streaming identification
-    pub fn get_last_message_id(&self) -> String {
-        format!("msg_{}_{}", self.session.id, self.session.messages.len())
-    }
-
     /// Set UI active state for this session
-    pub fn set_ui_active(&mut self, active: bool) {
-        if let Ok(mut ui_active) = self.is_ui_active.lock() {
-            *ui_active = active;
+    pub fn set_ui_connected(&mut self, connected: bool) {
+        if let Ok(mut ui_connected) = self.is_ui_connected.lock() {
+            *ui_connected = connected;
         }
-    }
-
-    /// Check if this session is currently connected to the UI
-    pub fn is_ui_active(&self) -> bool {
-        self.is_ui_active
-            .lock()
-            .map(|active| *active)
-            .unwrap_or(false)
-    }
-
-    /// Get fragment buffer reference for agent access
-    pub fn get_fragment_buffer(&self) -> Arc<Mutex<VecDeque<DisplayFragment>>> {
-        self.fragment_buffer.clone()
     }
 
     /// Create a ProxyUI for this session that handles fragment buffering
@@ -154,7 +108,7 @@ impl SessionInstance {
         Arc::new(Box::new(ProxyUI::new(
             real_ui,
             self.fragment_buffer.clone(),
-            self.is_ui_active.clone(),
+            self.is_ui_connected.clone(),
         )))
     }
 
@@ -168,16 +122,14 @@ impl SessionInstance {
         let tool_results = self.convert_tool_executions_to_ui_data()?;
 
         // If currently streaming, add incomplete message as additional MessageData
-        if self.is_streaming {
-            let buffered_fragments = self.get_buffered_fragments(false); // Don't clear buffer
-            if !buffered_fragments.is_empty() {
-                // Create incomplete assistant message from buffered fragments
-                let incomplete_message = MessageData {
-                    role: crate::ui::gpui::elements::MessageRole::Assistant,
-                    fragments: buffered_fragments,
-                };
-                messages_data.push(incomplete_message);
-            }
+        let buffered_fragments = self.get_buffered_fragments(false); // Don't clear buffer
+        if !buffered_fragments.is_empty() {
+            // Create incomplete assistant message from buffered fragments
+            let incomplete_message = MessageData {
+                role: crate::ui::gpui::elements::MessageRole::Assistant,
+                fragments: buffered_fragments,
+            };
+            messages_data.push(incomplete_message);
         }
 
         events.push(UiEvent::SetMessages {
@@ -332,7 +284,7 @@ impl SessionInstance {
 struct ProxyUI {
     real_ui: Arc<Box<dyn UserInterface>>,
     fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
-    is_session_active: Arc<Mutex<bool>>,
+    is_session_connected: Arc<Mutex<bool>>,
 }
 
 impl ProxyUI {
@@ -344,13 +296,13 @@ impl ProxyUI {
         Self {
             real_ui,
             fragment_buffer,
-            is_session_active,
+            is_session_connected: is_session_active,
         }
     }
 
-    /// Check if this session is currently active
-    fn is_active(&self) -> bool {
-        self.is_session_active
+    /// Check if this session is currently connected to the real UI
+    fn is_connected(&self) -> bool {
+        self.is_session_connected
             .lock()
             .map(|active| *active)
             .unwrap_or(false)
@@ -360,18 +312,18 @@ impl ProxyUI {
 #[async_trait]
 impl UserInterface for ProxyUI {
     async fn display(&self, message: UIMessage) -> Result<(), UIError> {
-        if self.is_active() {
+        if self.is_connected() {
             self.real_ui.display(message).await
         } else {
-            Ok(()) // NOP if session not active
+            Ok(()) // NOP if session not connected
         }
     }
 
     async fn get_input(&self) -> Result<String, UIError> {
-        if self.is_active() {
+        if self.is_connected() {
             self.real_ui.get_input().await
         } else {
-            Ok(String::new()) // Return empty string if session not active
+            Ok(String::new()) // Return empty string if session not connected
         }
     }
 
@@ -386,8 +338,8 @@ impl UserInterface for ProxyUI {
             }
         }
 
-        // Only forward to real UI if session is active
-        if self.is_active() {
+        // Only forward to real UI if session is connected
+        if self.is_connected() {
             self.real_ui.display_fragment(fragment)
         } else {
             Ok(())
@@ -395,10 +347,10 @@ impl UserInterface for ProxyUI {
     }
 
     async fn update_memory(&self, memory: &crate::types::WorkingMemory) -> Result<(), UIError> {
-        if self.is_active() {
+        if self.is_connected() {
             self.real_ui.update_memory(memory).await
         } else {
-            Ok(()) // NOP if session not active
+            Ok(()) // NOP if session not connected
         }
     }
 
@@ -409,12 +361,12 @@ impl UserInterface for ProxyUI {
         message: Option<String>,
         output: Option<String>,
     ) -> Result<(), UIError> {
-        if self.is_active() {
+        if self.is_connected() {
             self.real_ui
                 .update_tool_status(tool_id, status, message, output)
                 .await
         } else {
-            Ok(()) // NOP if session not active
+            Ok(()) // NOP if session not connected
         }
     }
 
@@ -424,10 +376,10 @@ impl UserInterface for ProxyUI {
             buffer.clear();
         }
 
-        if self.is_active() {
+        if self.is_connected() {
             self.real_ui.begin_llm_request(request_id).await
         } else {
-            Ok(()) // No-op if session not active
+            Ok(()) // No-op if session not connected
         }
     }
 
@@ -437,18 +389,18 @@ impl UserInterface for ProxyUI {
             buffer.clear();
         }
 
-        if self.is_active() {
+        if self.is_connected() {
             self.real_ui.end_llm_request(request_id, cancelled).await
         } else {
-            Ok(()) // NOP if session not active
+            Ok(()) // NOP if session not connected
         }
     }
 
     fn should_streaming_continue(&self) -> bool {
-        if self.is_active() {
+        if self.is_connected() {
             self.real_ui.should_streaming_continue()
         } else {
-            true // Don't interrupt streaming if session becomes inactive
+            true // Don't interrupt streaming if session is not connected
         }
     }
 }

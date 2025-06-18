@@ -110,7 +110,7 @@ impl SessionManager {
         if let Some(old_id) = &self.active_session_id {
             if old_id != &session_id {
                 if let Some(old_session) = self.active_sessions.get_mut(old_id) {
-                    old_session.set_ui_active(false);
+                    old_session.set_ui_connected(false);
                 }
             }
         }
@@ -125,7 +125,7 @@ impl SessionManager {
 
         // Activate new session and generate UI events
         let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-        session_instance.set_ui_active(true);
+        session_instance.set_ui_connected(true);
 
         // Reload session from persistence to get latest state
         // This ensures we see any changes made by agents since session was loaded
@@ -167,10 +167,6 @@ impl SessionManager {
             request_id: None,
         };
         session_instance.add_message(user_msg.clone());
-
-        // Generate message ID for this interaction
-        let _message_id = session_instance.get_last_message_id();
-        session_instance.start_streaming(_message_id.clone());
 
         // Create a session-specific state storage wrapper
         // This allows the agent to save to the correct session without requiring

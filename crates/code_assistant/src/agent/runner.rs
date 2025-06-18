@@ -123,10 +123,6 @@ impl Agent {
         Ok(())
     }
 
-    pub async fn get_input_from_ui(&self) -> Result<String> {
-        self.ui.get_input().await.map_err(|e| e.into())
-    }
-
     /// Run a single iteration of the agent loop without waiting for user input
     /// This is used in the new on-demand agent architecture
     pub async fn run_single_iteration(&mut self) -> Result<()> {
@@ -136,7 +132,7 @@ impl Agent {
         Ok(())
     }
 
-    /// Internal helper for running a single iteration
+    /// Internal helper for running a single iteration of the agent calling tools in a loop
     /// Returns whether user input is needed before the next iteration
     async fn run_single_iteration_internal(&mut self) -> Result<bool> {
         loop {
@@ -282,7 +278,7 @@ impl Agent {
     /// Handles the case where no tool requests are made by the LLM.
     /// Prompts the user for input and adds it to the message history.
     async fn solicit_user_input(&mut self) -> Result<()> {
-        let user_input = self.get_input_from_ui().await?;
+        let user_input = self.ui.get_input().await?;
         self.ui
             .display(UIMessage::UserInput(user_input.clone()))
             .await?;
