@@ -234,9 +234,58 @@ impl Agent {
         });
 
         // Restore working memory file trees and project state
-        self.restore_working_memory_state().await?;
+        self.init_working_memory_projects()?;
 
         let _ = self.ui.update_memory(&self.working_memory).await;
+
+        Ok(())
+    }
+
+    fn init_working_memory(&mut self) -> Result<()> {
+        // Initialize empty structures for multi-project support
+        self.working_memory.file_trees = HashMap::new();
+        self.working_memory.available_projects = Vec::new();
+
+        // Reset the initial project
+        self.initial_project = None;
+
+        Ok(())
+    }
+
+    fn init_working_memory_projects(&mut self) -> Result<()> {
+        // If a path was provided in args, add it as a temporary project
+        if let Some(path) = &self.init_path {
+            // Add as temporary project and get its name
+            let project_name = self.project_manager.add_temporary_project(path.clone())?;
+
+            // Store the name of the initial project
+            self.initial_project = Some(project_name.clone());
+
+            // Create initial file tree for this project
+            let mut explorer = self
+                .project_manager
+                .get_explorer_for_project(&project_name)?;
+            let tree = explorer.create_initial_tree(2)?; // Limited depth for initial tree
+
+            // Store in working memory
+            self.working_memory
+                .file_trees
+                .insert(project_name.clone(), tree);
+        }
+
+        // Load all available projects
+        let all_projects = self.project_manager.get_projects()?;
+        for project_name in all_projects.keys() {
+            if !self
+                .working_memory
+                .available_projects
+                .contains(project_name)
+            {
+                self.working_memory
+                    .available_projects
+                    .push(project_name.clone());
+            }
+        }
 
         Ok(())
     }
@@ -349,51 +398,6 @@ impl Agent {
         Ok(LoopFlow::Continue)
     }
 
-    fn init_working_memory(&mut self) -> Result<()> {
-        // Initialize empty structures for multi-project support
-        self.working_memory.file_trees = HashMap::new();
-        self.working_memory.available_projects = Vec::new();
-
-        // Reset the initial project
-        self.initial_project = None;
-
-        // If a path was provided in args, add it as a temporary project
-        if let Some(path) = &self.init_path {
-            // Add as temporary project and get its name
-            let project_name = self.project_manager.add_temporary_project(path.clone())?;
-
-            // Store the name of the initial project
-            self.initial_project = Some(project_name.clone());
-
-            // Create initial file tree for this project
-            let mut explorer = self
-                .project_manager
-                .get_explorer_for_project(&project_name)?;
-            let tree = explorer.create_initial_tree(2)?; // Limited depth for initial tree
-
-            // Store in working memory
-            self.working_memory
-                .file_trees
-                .insert(project_name.clone(), tree);
-        }
-
-        // Load all available projects
-        let all_projects = self.project_manager.get_projects()?;
-        for project_name in all_projects.keys() {
-            if !self
-                .working_memory
-                .available_projects
-                .contains(project_name)
-            {
-                self.working_memory
-                    .available_projects
-                    .push(project_name.clone());
-            }
-        }
-
-        Ok(())
-    }
-
     /// Start a new agent task
     pub async fn start_with_task(&mut self, task: String) -> Result<()> {
         debug!("Starting agent with task: {}", task);
@@ -415,92 +419,6 @@ impl Agent {
         let _ = self.ui.update_memory(&self.working_memory).await;
 
         self.run_agent_loop().await
-    }
-
-    /// Restore working memory state after loading from session
-    async fn restore_working_memory_state(&mut self) -> Result<()> {
-        // If there's an initial project, make sure it's in the list
-        if let Some(project_name) = &self.initial_project {
-            // Create file tree for the project if not already present
-            if !self.working_memory.file_trees.contains_key(project_name) {
-                match self.project_manager.get_explorer_for_project(project_name) {
-                    Ok(mut explorer) => match explorer.create_initial_tree(2) {
-                        Ok(tree) => {
-                            self.working_memory
-                                .file_trees
-                                .insert(project_name.clone(), tree);
-                        }
-                        Err(e) => {
-                            debug!(
-                                "Error creating file tree for project {}: {}",
-                                project_name, e
-                            );
-                        }
-                    },
-                    Err(e) => {
-                        debug!("Error getting explorer for project {}: {}", project_name, e);
-                    }
-                }
-            }
-
-            // Add to available projects if not already there
-            if !self
-                .working_memory
-                .available_projects
-                .contains(project_name)
-            {
-                self.working_memory
-                    .available_projects
-                    .push(project_name.clone());
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Initialize file trees for available projects
-    /// This is a simplified version that doesn't rely on action_history
-    async fn load_current_files_to_memory(&mut self) -> Result<()> {
-        // In the new version, we don't need to build file trees from action history
-        // Instead, we'll just initialize file trees for the available projects
-
-        // If there's an initial project, make sure it's in the list
-        if let Some(project_name) = &self.initial_project {
-            // Create file tree for the project
-            match self.project_manager.get_explorer_for_project(project_name) {
-                Ok(mut explorer) => {
-                    match explorer.create_initial_tree(2) {
-                        Ok(tree) => {
-                            self.working_memory
-                                .file_trees
-                                .insert(project_name.clone(), tree);
-
-                            // Add to available projects if not already there
-                            if !self
-                                .working_memory
-                                .available_projects
-                                .contains(project_name)
-                            {
-                                self.working_memory
-                                    .available_projects
-                                    .push(project_name.clone());
-                            }
-                        }
-                        Err(e) => {
-                            debug!(
-                                "Error creating file tree for project {}: {}",
-                                project_name, e
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    debug!("Error getting explorer for project {}: {}", project_name, e);
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Get the appropriate system prompt based on tool mode

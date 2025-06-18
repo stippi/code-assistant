@@ -138,6 +138,10 @@ impl SessionInstance {
             tool_results,
         });
 
+        events.push(UiEvent::UpdateMemory {
+            memory: self.session.working_memory.clone(),
+        });
+
         Ok(events)
     }
 
