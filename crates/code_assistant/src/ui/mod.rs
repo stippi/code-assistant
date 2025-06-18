@@ -25,6 +25,7 @@ pub enum StreamingState {
 #[derive(Debug, Clone)]
 pub enum UIMessage {
     // System actions that the agent takes
+    #[allow(dead_code)]
     Action(String),
     // User input messages
     UserInput(String),

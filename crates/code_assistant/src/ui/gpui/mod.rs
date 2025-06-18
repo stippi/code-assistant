@@ -38,7 +38,7 @@ pub use root::RootView;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::warn;
+use tracing::{debug, trace, warn};
 
 use elements::MessageContainer;
 
@@ -210,18 +210,15 @@ impl Gpui {
             // Spawn task to receive UiEvents
             let rx = gpui_clone.event_receiver.lock().unwrap().clone();
             let async_gpui_clone = gpui_clone.clone();
-            tracing::info!("Starting UI event processing task");
+            debug!("Starting UI event processing task");
             let task = cx.spawn(async move |cx: &mut AsyncApp| {
-                tracing::info!("UI event processing task is running");
+                debug!("UI event processing task is running");
                 loop {
-                    tracing::debug!("Waiting for UI event...");
+                    trace!("Waiting for UI event...");
                     let result = rx.recv().await;
                     match result {
                         Ok(received_event) => {
-                            tracing::trace!(
-                                "UI event processing: Received event: {:?}",
-                                received_event
-                            );
+                            trace!("UI event processing: Received event: {:?}", received_event);
                             async_gpui_clone.process_ui_event_async(received_event, cx);
                         }
                         Err(err) => {
@@ -558,34 +555,34 @@ impl Gpui {
             }
             // Chat management events - forward to backend thread
             UiEvent::LoadChatSession { session_id } => {
-                tracing::info!("UI: LoadChatSession event for session_id: {}", session_id);
+                debug!("UI: LoadChatSession event for session_id: {}", session_id);
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::LoadSession { session_id });
                 }
             }
             UiEvent::CreateNewChatSession { name } => {
-                tracing::info!("UI: CreateNewChatSession event with name: {:?}", name);
+                debug!("UI: CreateNewChatSession event with name: {:?}", name);
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::CreateNewSession { name });
                 }
             }
             UiEvent::DeleteChatSession { session_id } => {
-                tracing::info!("UI: DeleteChatSession event for session_id: {}", session_id);
+                debug!("UI: DeleteChatSession event for session_id: {}", session_id);
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::DeleteSession { session_id });
                 }
             }
             UiEvent::RefreshChatList => {
-                tracing::info!("UI: RefreshChatList event received");
+                debug!("UI: RefreshChatList event received");
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                    tracing::info!("UI: Sending ListSessions to backend");
+                    debug!("UI: Sending ListSessions to backend");
                     let _ = sender.try_send(BackendEvent::ListSessions);
                 } else {
-                    tracing::warn!("UI: No backend event sender available for RefreshChatList");
+                    warn!("UI: No backend event sender available for RefreshChatList");
                 }
             }
             UiEvent::UpdateChatList { sessions } => {
-                tracing::info!(
+                debug!(
                     "UI: UpdateChatList event received with {} sessions",
                     sessions.len()
                 );
@@ -594,11 +591,11 @@ impl Gpui {
                 let _current_session_id = self.current_session_id.lock().unwrap().clone();
 
                 // Refresh all windows to trigger re-render with new chat data
-                tracing::info!("UI: Refreshing windows for chat list update");
+                debug!("UI: Refreshing windows for chat list update");
                 cx.refresh().expect("Failed to refresh windows");
             }
             UiEvent::ClearMessages => {
-                tracing::info!("UI: ClearMessages event");
+                debug!("UI: ClearMessages event");
                 let mut queue = self.message_queue.lock().unwrap();
                 queue.clear();
                 cx.refresh().expect("Failed to refresh windows");
@@ -607,10 +604,9 @@ impl Gpui {
                 message,
                 session_id,
             } => {
-                tracing::info!(
+                debug!(
                     "UI: SendUserMessage event for session {}: {}",
-                    session_id,
-                    message
+                    session_id, message
                 );
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::SendUserMessage {
@@ -618,7 +614,7 @@ impl Gpui {
                         message,
                     });
                 } else {
-                    tracing::warn!("UI: No backend event sender available");
+                    warn!("UI: No backend event sender available");
                 }
             }
         }
@@ -710,7 +706,7 @@ impl Gpui {
 
     // Handle backend responses
     fn handle_backend_response(&self, response: BackendResponse, _cx: &mut AsyncApp) {
-        tracing::info!("UI: Received chat management response: {:?}", response);
+        debug!("UI: Received chat management response: {:?}", response);
         match response {
             BackendResponse::SessionCreated { session_id } => {
                 *self.current_session_id.lock().unwrap() = Some(session_id.clone());

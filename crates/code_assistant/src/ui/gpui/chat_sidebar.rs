@@ -6,27 +6,28 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme, StyledExt};
 use std::time::SystemTime;
+use tracing::{debug, trace, warn};
 
 /// Individual chat list item component
 pub struct ChatListItem {
-    metadata: ChatMetadata,
-    is_selected: bool,
-    focus_handle: FocusHandle,
+    // metadata: ChatMetadata,
+    // is_selected: bool,
+    // focus_handle: FocusHandle,
 }
 
 impl ChatListItem {
-    pub fn new(metadata: ChatMetadata, is_selected: bool, cx: &mut Context<Self>) -> Self {
-        Self {
-            metadata,
-            is_selected,
-            focus_handle: cx.focus_handle(),
-        }
-    }
+    // pub fn new(metadata: ChatMetadata, is_selected: bool, cx: &mut Context<Self>) -> Self {
+    //     Self {
+    //         metadata,
+    //         is_selected,
+    //         focus_handle: cx.focus_handle(),
+    //     }
+    // }
 
-    pub fn update_selection(&mut self, is_selected: bool, cx: &mut Context<Self>) {
-        self.is_selected = is_selected;
-        cx.notify();
-    }
+    // pub fn update_selection(&mut self, is_selected: bool, cx: &mut Context<Self>) {
+    //     self.is_selected = is_selected;
+    //     cx.notify();
+    // }
 
     /// Format the creation date for display
     fn format_date(timestamp: SystemTime) -> String {
@@ -49,84 +50,84 @@ impl ChatListItem {
     }
 }
 
-impl Focusable for ChatListItem {
-    fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
+// impl Focusable for ChatListItem {
+//     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
+//         self.focus_handle.clone()
+//     }
+// }
 
-impl Render for ChatListItem {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let session_id = self.metadata.id.clone();
-        let name = self.metadata.name.clone();
-        let formatted_date = Self::format_date(self.metadata.created_at);
+// impl Render for ChatListItem {
+//     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+//         let session_id = self.metadata.id.clone();
+//         let name = self.metadata.name.clone();
+//         let formatted_date = Self::format_date(self.metadata.created_at);
 
-        div()
-            .id(SharedString::from(format!(
-                "chat-item-{}",
-                self.metadata.id
-            )))
-            .w_full()
-            .px_3()
-            .py_2()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .cursor_pointer()
-            .rounded_md()
-            .bg(if self.is_selected {
-                cx.theme().primary.opacity(0.1)
-            } else {
-                cx.theme().transparent
-            })
-            .border_1()
-            .border_color(if self.is_selected {
-                cx.theme().primary.opacity(0.3)
-            } else {
-                cx.theme().transparent
-            })
-            .hover(|s| {
-                if !self.is_selected {
-                    s.bg(cx.theme().muted.opacity(0.5))
-                } else {
-                    s
-                }
-            })
-            .on_mouse_up(MouseButton::Left, {
-                let session_id = session_id.clone();
-                move |_, _window, cx| {
-                    // Emit event to load this chat session
-                    if let Some(sender) = cx.try_global::<UiEventSender>() {
-                        let _ = sender.0.try_send(UiEvent::LoadChatSession {
-                            session_id: session_id.clone(),
-                        });
-                    }
-                }
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_medium()
-                            .text_color(cx.theme().foreground)
-                            .child(SharedString::from(name)),
-                    )
-                    .when(self.is_selected, |s| {
-                        s.child(div().size(px(6.)).rounded_full().bg(cx.theme().primary))
-                    }),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(SharedString::from(formatted_date)),
-            )
-    }
-}
+//         div()
+//             .id(SharedString::from(format!(
+//                 "chat-item-{}",
+//                 self.metadata.id
+//             )))
+//             .w_full()
+//             .px_3()
+//             .py_2()
+//             .flex()
+//             .flex_col()
+//             .gap_1()
+//             .cursor_pointer()
+//             .rounded_md()
+//             .bg(if self.is_selected {
+//                 cx.theme().primary.opacity(0.1)
+//             } else {
+//                 cx.theme().transparent
+//             })
+//             .border_1()
+//             .border_color(if self.is_selected {
+//                 cx.theme().primary.opacity(0.3)
+//             } else {
+//                 cx.theme().transparent
+//             })
+//             .hover(|s| {
+//                 if !self.is_selected {
+//                     s.bg(cx.theme().muted.opacity(0.5))
+//                 } else {
+//                     s
+//                 }
+//             })
+//             .on_mouse_up(MouseButton::Left, {
+//                 let session_id = session_id.clone();
+//                 move |_, _window, cx| {
+//                     // Emit event to load this chat session
+//                     if let Some(sender) = cx.try_global::<UiEventSender>() {
+//                         let _ = sender.0.try_send(UiEvent::LoadChatSession {
+//                             session_id: session_id.clone(),
+//                         });
+//                     }
+//                 }
+//             })
+//             .child(
+//                 div()
+//                     .flex()
+//                     .items_center()
+//                     .justify_between()
+//                     .child(
+//                         div()
+//                             .text_sm()
+//                             .font_medium()
+//                             .text_color(cx.theme().foreground)
+//                             .child(SharedString::from(name)),
+//                     )
+//                     .when(self.is_selected, |s| {
+//                         s.child(div().size(px(6.)).rounded_full().bg(cx.theme().primary))
+//                     }),
+//             )
+//             .child(
+//                 div()
+//                     .text_xs()
+//                     .text_color(cx.theme().muted_foreground)
+//                     .child(SharedString::from(formatted_date)),
+//             )
+//     }
+// }
 
 /// Main chat sidebar component
 pub struct ChatSidebar {
@@ -161,25 +162,21 @@ impl ChatSidebar {
         cx.notify();
     }
 
-    pub fn is_collapsed(&self) -> bool {
-        self.is_collapsed
-    }
-
     fn on_new_chat_click(
         &mut self,
         _: &MouseUpEvent,
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        tracing::info!("ChatSidebar: New chat button clicked");
+        debug!("New chat button clicked");
         // Emit event to create a new chat session
         if let Some(sender) = cx.try_global::<UiEventSender>() {
-            tracing::info!("ChatSidebar: Sending CreateNewChatSession event");
+            trace!("ChatSidebar: Sending CreateNewChatSession event");
             let _ = sender
                 .0
                 .try_send(UiEvent::CreateNewChatSession { name: None });
         } else {
-            tracing::warn!("ChatSidebar: No UiEventSender global available");
+            warn!("ChatSidebar: No UiEventSender global available");
         }
     }
 }
