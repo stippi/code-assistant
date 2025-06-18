@@ -11,6 +11,7 @@ use crate::ui::gpui::ui_events::{MessageData, UiEvent};
 use crate::ui::streaming::create_stream_processor;
 use crate::ui::{DisplayFragment, UIError, UIMessage, UserInterface};
 use async_trait::async_trait;
+use tracing::{debug, error, trace};
 
 /// Represents a single session instance with its own agent and state
 pub struct SessionInstance {
@@ -87,7 +88,7 @@ impl SessionInstance {
         persistence: &crate::persistence::FileStatePersistence,
     ) -> anyhow::Result<()> {
         if let Some(session) = persistence.load_chat_session(&self.session.id)? {
-            tracing::debug!("Reloading session {} from persistence", self.session.id);
+            debug!("Reloading session {} from persistence", self.session.id);
             self.session = session;
         }
         Ok(())
@@ -205,7 +206,7 @@ impl SessionInstance {
 
         let mut messages_data = Vec::new();
 
-        tracing::warn!(
+        trace!(
             "preparing {} messages for event",
             self.session.messages.len()
         );
@@ -237,13 +238,13 @@ impl SessionInstance {
                     messages_data.push(MessageData { role, fragments });
                 }
                 Err(e) => {
-                    tracing::error!("Failed to extract fragments from message: {}", e);
+                    error!("Failed to extract fragments from message: {}", e);
                     // Continue with other messages even if one fails
                 }
             }
         }
 
-        tracing::warn!("prepared {} message data for event", messages_data.len());
+        trace!("prepared {} message data for event", messages_data.len());
 
         Ok(messages_data)
     }
