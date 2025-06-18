@@ -355,7 +355,7 @@ async fn run_agent(args: Args) -> Result<()> {
     // Run in either GUI or terminal mode
     if use_gui {
         // GUI mode - V2 architecture handles session management
-        let persistence = FileStatePersistence::new(path.clone());
+        let persistence = FileStatePersistence::new();
         let agent_config = crate::session::AgentConfig {
             tool_mode: tools_type,
             init_path: Some(path.clone()),
@@ -379,7 +379,7 @@ async fn run_agent(args: Args) -> Result<()> {
         )
     } else {
         // Terminal mode - create session manager
-        let persistence = FileStatePersistence::new(path.clone());
+        let persistence = FileStatePersistence::new();
         let agent_config = crate::session::AgentConfig {
             tool_mode: tools_type,
             init_path: Some(path.clone()),
@@ -426,7 +426,6 @@ async fn handle_backend_events(
     playback: Option<PathBuf>,
     fast_playback: bool,
     gui: ui::gpui::Gpui,
-    _root_path: PathBuf,
 ) {
     debug!("Backend event handler started");
 
@@ -643,7 +642,7 @@ fn run_agent_gpui_v2(
 
     // Setup dynamic types for MultiSessionManager
     let root_path = path.canonicalize()?;
-    let persistence = crate::persistence::FileStatePersistence::new(root_path.clone());
+    let persistence = crate::persistence::FileStatePersistence::new();
 
     let agent_config = AgentConfig {
         tool_mode: tools_type,
@@ -773,7 +772,6 @@ fn run_agent_gpui_v2(
                 playback,
                 fast_playback,
                 gui_for_thread,
-                root_path.clone(),
             )
             .await;
         });

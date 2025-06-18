@@ -3,7 +3,7 @@ use llm::Message;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::agent::ToolRequest;
 use crate::types::{ToolMode, WorkingMemory};
@@ -63,12 +63,16 @@ pub struct FileStatePersistence {
 }
 
 impl FileStatePersistence {
-    pub fn new(root_dir: PathBuf) -> Self {
+    pub fn new() -> Self {
+        let root_dir = dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("code-assistant");
+        info!("Storing sessions in: {:?}", root_dir.to_path_buf());
         Self { root_dir }
     }
 
     fn ensure_chats_dir(&self) -> Result<PathBuf> {
-        let chats_dir = self.root_dir.join(".code-assistant-chats");
+        let chats_dir = self.root_dir.join("sessions");
         if !chats_dir.exists() {
             std::fs::create_dir_all(&chats_dir)?;
         }
