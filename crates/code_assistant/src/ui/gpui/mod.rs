@@ -66,10 +66,19 @@ pub enum BackendEvent {
 // Response from backend to UI
 #[derive(Debug, Clone)]
 pub enum BackendResponse {
-    SessionCreated { session_id: String, name: String },
-    SessionDeleted { session_id: String },
-    SessionsListed { sessions: Vec<ChatMetadata> },
-    Error { message: String },
+    SessionCreated {
+        session_id: String,
+    },
+    #[allow(dead_code)]
+    SessionDeleted {
+        session_id: String,
+    },
+    SessionsListed {
+        sessions: Vec<ChatMetadata>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 // Our main UI struct that implements the UserInterface trait
@@ -703,10 +712,7 @@ impl Gpui {
     fn handle_backend_response(&self, response: BackendResponse, _cx: &mut AsyncApp) {
         tracing::info!("UI: Received chat management response: {:?}", response);
         match response {
-            BackendResponse::SessionCreated {
-                session_id,
-                name: _,
-            } => {
+            BackendResponse::SessionCreated { session_id } => {
                 *self.current_session_id.lock().unwrap() = Some(session_id.clone());
                 // Refresh the session list
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {

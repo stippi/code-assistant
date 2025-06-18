@@ -32,6 +32,7 @@ use llm::{
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tracing::{error, info};
 use tracing_subscriber::fmt::SubscriberBuilder;
 
 #[derive(ValueEnum, Debug, Clone)]
@@ -307,7 +308,7 @@ async fn run_agent_terminal(
         .unwrap()
         .get_latest_session_id()?
         .ok_or_else(|| anyhow::anyhow!("No session available"))?;
-    
+
     let state_storage = Box::new(SessionStatePersistence::new(
         session_manager_ref,
         session_id,
@@ -361,10 +362,10 @@ async fn run_agent(args: Args) -> Result<()> {
             initial_project: None,
         };
         let session_manager = SessionManager::new(persistence, agent_config);
-        
+
         run_agent_gpui_v2(
             path.clone(),
-            task, // Can be None - will connect to latest session instead
+            task,            // Can be None - will connect to latest session instead
             session_manager, // dummy for compatibility
             None,
             provider,
@@ -464,15 +465,11 @@ async fn handle_backend_events(
                 // Now handle result without any locks
                 match create_result {
                     Ok(session_id) => {
-                        let display_name = format!("Chat {}", &session_id[5..13]);
-                        tracing::info!("🎯 V2: Created session {}", session_id);
-                        ui::gpui::BackendResponse::SessionCreated {
-                            session_id,
-                            name: display_name,
-                        }
+                        info!("Created session {}", session_id);
+                        ui::gpui::BackendResponse::SessionCreated { session_id }
                     }
                     Err(e) => {
-                        tracing::error!("🚨 V2: Failed to create session: {}", e);
+                        error!("Failed to create session: {}", e);
                         ui::gpui::BackendResponse::Error {
                             message: e.to_string(),
                         }
