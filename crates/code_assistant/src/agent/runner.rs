@@ -123,6 +123,23 @@ impl Agent {
         Ok(())
     }
 
+    /// Run the agent loop until task completion
+    /// Get user input whenever there is no tool use by the LLM
+    async fn run_agent_loop(&mut self) -> Result<()> {
+        loop {
+            // Run a single iteration and check if user input is needed
+            let needs_user_input = self.run_single_iteration_internal().await?;
+
+            if needs_user_input {
+                // LLM explicitly requested user input (no tools requested)
+                self.solicit_user_input().await?;
+            } else {
+                // Task completed or loop should break
+                return Ok(());
+            }
+        }
+    }
+
     /// Run a single iteration of the agent loop without waiting for user input
     /// This is used in the new on-demand agent architecture
     pub async fn run_single_iteration(&mut self) -> Result<()> {
@@ -330,21 +347,6 @@ impl Agent {
             self.append_message(result_message)?;
         }
         Ok(LoopFlow::Continue)
-    }
-
-    async fn run_agent_loop(&mut self) -> Result<()> {
-        loop {
-            // Run a single iteration and check if user input is needed
-            let needs_user_input = self.run_single_iteration_internal().await?;
-
-            if needs_user_input {
-                // LLM explicitly requested user input (no tools requested)
-                self.solicit_user_input().await?;
-            } else {
-                // Task completed or loop should break
-                return Ok(());
-            }
-        }
     }
 
     fn init_working_memory(&mut self) -> Result<()> {
