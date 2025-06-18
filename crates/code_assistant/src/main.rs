@@ -32,7 +32,7 @@ use llm::{
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tracing::{error, info};
+use tracing::{debug, error, info, trace};
 use tracing_subscriber::fmt::SubscriberBuilder;
 
 #[derive(ValueEnum, Debug, Clone)]
@@ -428,10 +428,10 @@ async fn handle_backend_events(
     gui: ui::gpui::Gpui,
     _root_path: PathBuf,
 ) {
-    tracing::info!("🎯 V2: Backend event handler started");
+    debug!("Backend event handler started");
 
     while let Ok(event) = backend_event_rx.recv().await {
-        tracing::info!("🎯 V2: Backend event: {:?}", event);
+        debug!("Backend event: {:?}", event);
 
         let response = match event {
             ui::gpui::BackendEvent::ListSessions => {
@@ -442,11 +442,11 @@ async fn handle_backend_events(
                 };
                 match sessions {
                     Ok(sessions) => {
-                        tracing::info!("🎯 V2: Found {} sessions", sessions.len());
+                        trace!("Found {} sessions", sessions.len());
                         ui::gpui::BackendResponse::SessionsListed { sessions }
                     }
                     Err(e) => {
-                        tracing::error!("🚨 V2: Failed to list sessions: {}", e);
+                        error!("Failed to list sessions: {}", e);
                         ui::gpui::BackendResponse::Error {
                             message: e.to_string(),
                         }
@@ -478,7 +478,7 @@ async fn handle_backend_events(
             }
 
             ui::gpui::BackendEvent::LoadSession { session_id } => {
-                tracing::info!("🎯 V2: LoadSession requested: {}", session_id);
+                debug!("LoadSession requested: {}", session_id);
 
                 // Use set_active_session to get properly processed UI events (same as initial connection)
                 let ui_events_result = {
@@ -489,16 +489,13 @@ async fn handle_backend_events(
                 // Handle result and send UI events directly
                 match ui_events_result {
                     Ok(ui_events) => {
-                        tracing::info!(
-                            "🎯 V2: Session connected with {} UI events",
-                            ui_events.len()
-                        );
+                        trace!("Session connected with {} UI events", ui_events.len());
 
                         // Send all UI events to update the interface
                         for event in ui_events {
                             let ui_message = crate::ui::UIMessage::UiEvent(event);
                             if let Err(e) = gui.display(ui_message).await {
-                                tracing::error!("Failed to send UI event: {}", e);
+                                error!("Failed to send UI event: {}", e);
                             }
                         }
 
@@ -507,11 +504,7 @@ async fn handle_backend_events(
                         continue;
                     }
                     Err(e) => {
-                        tracing::error!(
-                            "🚨 V2: Failed to connect to session {}: {}",
-                            session_id,
-                            e
-                        );
+                        error!("Failed to connect to session {}: {}", session_id, e);
                         ui::gpui::BackendResponse::Error {
                             message: e.to_string(),
                         }
@@ -520,7 +513,7 @@ async fn handle_backend_events(
             }
 
             ui::gpui::BackendEvent::DeleteSession { session_id } => {
-                tracing::info!("🎯 V2: DeleteSession requested: {}", session_id);
+                debug!("DeleteSession requested: {}", session_id);
 
                 // Now we can call delete_session directly since it's synchronous
                 let delete_result = {
@@ -530,11 +523,11 @@ async fn handle_backend_events(
 
                 match delete_result {
                     Ok(_) => {
-                        tracing::info!("🎯 V2: Session deleted: {}", session_id);
+                        debug!("Session deleted: {}", session_id);
                         ui::gpui::BackendResponse::SessionDeleted { session_id }
                     }
                     Err(e) => {
-                        tracing::error!("🚨 V2: Failed to delete session {}: {}", session_id, e);
+                        error!("Failed to delete session {}: {}", session_id, e);
                         ui::gpui::BackendResponse::Error {
                             message: e.to_string(),
                         }
@@ -546,11 +539,7 @@ async fn handle_backend_events(
                 session_id,
                 message,
             } => {
-                tracing::info!(
-                    "🚀 V2: User message for session {}: {}",
-                    session_id,
-                    message
-                );
+                debug!("User message for session {}: {}", session_id, message);
 
                 // First: Display the user message immediately in the UI
                 let ui_message =
@@ -559,7 +548,7 @@ async fn handle_backend_events(
                         role: ui::gpui::elements::MessageRole::User,
                     });
                 if let Err(e) = gui.display(ui_message).await {
-                    tracing::error!("Failed to display user message: {}", e);
+                    error!("Failed to display user message: {}", e);
                 }
 
                 // Use MultiSessionManager.start_agent_for_message() instead of creating a separate agent
@@ -597,7 +586,7 @@ async fn handle_backend_events(
                                 .await
                         }
                         Err(e) => {
-                            tracing::error!("🚨 V2: Failed to create LLM client: {}", e);
+                            error!("Failed to create LLM client: {}", e);
                             Err(e)
                         }
                     }
@@ -605,16 +594,12 @@ async fn handle_backend_events(
 
                 match result {
                     Ok(_) => {
-                        tracing::info!("✅ V2: Agent started for session {}", session_id);
+                        debug!("Agent started for session {}", session_id);
                         // No response needed for SendUserMessage - agent communicates via UI
                         continue;
                     }
                     Err(e) => {
-                        tracing::error!(
-                            "🚨 V2: Failed to start agent for session {}: {}",
-                            session_id,
-                            e
-                        );
+                        error!("Failed to start agent for session {}: {}", session_id, e);
                         ui::gpui::BackendResponse::Error {
                             message: format!("Failed to start agent: {}", e),
                         }
@@ -625,12 +610,12 @@ async fn handle_backend_events(
 
         // Send response back to UI
         if let Err(e) = backend_response_tx.send(response).await {
-            tracing::error!("🚨 V2: Failed to send response: {}", e);
+            error!("Failed to send response: {}", e);
             break;
         }
     }
 
-    tracing::info!("🎯 V2: Backend event handler stopped");
+    debug!("Backend event handler stopped");
 }
 
 /// V2 Implementation using MultiSessionManager architecture
@@ -681,17 +666,14 @@ fn run_agent_gpui_v2(
         runtime.block_on(async {
             if let Some(initial_task) = task_clone {
                 // Task provided - create new session and start agent
-                tracing::info!(
-                    "🚀 V2: Creating initial session with task: {}",
-                    initial_task
-                );
+                debug!("Creating initial session with task: {}", initial_task);
 
                 let session_id = {
                     let mut manager = multi_session_manager.lock().unwrap();
                     manager.create_session(None).unwrap()
                 };
 
-                tracing::info!("✅ V2: Created initial session: {}", session_id);
+                debug!("Created initial session: {}", session_id);
 
                 // Connect session to UI and start agent
                 let ui_events = {
@@ -700,7 +682,7 @@ fn run_agent_gpui_v2(
                         .set_active_session(session_id.clone())
                         .await
                         .unwrap_or_else(|e| {
-                            tracing::error!("Failed to set active session: {}", e);
+                            error!("Failed to set active session: {}", e);
                             Vec::new()
                         })
                 };
@@ -708,7 +690,7 @@ fn run_agent_gpui_v2(
                 for event in ui_events {
                     let ui_message = crate::ui::UIMessage::UiEvent(event);
                     if let Err(e) = gui_for_thread.display(ui_message).await {
-                        tracing::error!("Failed to send UI event: {}", e);
+                        error!("Failed to send UI event: {}", e);
                     }
                 }
 
@@ -744,10 +726,10 @@ fn run_agent_gpui_v2(
                         .expect("Failed to start agent with initial task");
                 }
 
-                tracing::info!("🎯 V2: Started agent for initial session");
+                debug!("Started agent for initial session");
             } else {
                 // No task - connect to latest existing session
-                tracing::info!("🔄 V2: No task provided, connecting to latest session");
+                info!("No task provided, connecting to latest session");
 
                 let latest_session_id = {
                     let manager = multi_session_manager.lock().unwrap();
@@ -755,7 +737,7 @@ fn run_agent_gpui_v2(
                 };
 
                 if let Some(session_id) = latest_session_id {
-                    tracing::info!("📋 V2: Connecting to existing session: {}", session_id);
+                    debug!("Connecting to existing session: {}", session_id);
 
                     let ui_events = {
                         let mut manager = multi_session_manager.lock().unwrap();
@@ -763,7 +745,7 @@ fn run_agent_gpui_v2(
                             .set_active_session(session_id.clone())
                             .await
                             .unwrap_or_else(|e| {
-                                tracing::error!("Failed to set active session: {}", e);
+                                error!("Failed to set active session: {}", e);
                                 Vec::new()
                             })
                     };
@@ -771,11 +753,11 @@ fn run_agent_gpui_v2(
                     for event in ui_events {
                         let ui_message = crate::ui::UIMessage::UiEvent(event);
                         if let Err(e) = gui_for_thread.display(ui_message).await {
-                            tracing::error!("Failed to send UI event: {}", e);
+                            error!("Failed to send UI event: {}", e);
                         }
                     }
                 } else {
-                    tracing::info!("📝 V2: No existing sessions found - UI will start empty");
+                    info!("No existing sessions found - UI will start empty");
                 }
             }
 
