@@ -163,7 +163,6 @@ This section is not really a roadmap, as the items are in no particular order.
 Below are some topics that are likely the next focus.
 
 - **Improve UI**: There are various ways in which the UI can be improved.
-- **Persist Chats**: Persist all chats and make them available from a sidebar.
 - **Add Memory Tools**: Add tools that facilitate building up a knowledge base useful work working in a given project.
 - **Security**: Ideally, the execution for all tools would run in some sort of sandbox that restricts access to the files in the project tracked by git.
   Currently, the tools reject absolute paths, but do not check whether the relative paths point outside the project or try to access git-ignored files.
