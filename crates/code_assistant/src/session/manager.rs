@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 use crate::agent::ToolExecution;
 use crate::config::ProjectManager;
-use crate::persistence::{generate_session_id, ChatMetadata, ChatSession, FileStatePersistence};
+use crate::persistence::{generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence};
 use crate::session::instance::SessionInstance;
 use crate::types::{ToolMode, WorkingMemory};
 use crate::ui::UserInterface;
@@ -18,7 +18,7 @@ use tracing::debug;
 /// The main SessionManager that manages multiple active sessions with on-demand agents
 pub struct SessionManager {
     /// Persistence layer for saving/loading sessions
-    persistence: FileStatePersistence,
+    persistence: FileSessionPersistence,
 
     /// Active session instances (session_id -> SessionInstance)
     /// These can have running agents
@@ -41,7 +41,7 @@ pub struct AgentConfig {
 
 impl SessionManager {
     /// Create a new SessionManager
-    pub fn new(persistence: FileStatePersistence, agent_config: AgentConfig) -> Self {
+    pub fn new(persistence: FileSessionPersistence, agent_config: AgentConfig) -> Self {
         Self {
             persistence,
             active_sessions: HashMap::new(),

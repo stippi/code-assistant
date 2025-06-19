@@ -58,11 +58,11 @@ pub struct ChatMetadata {
 }
 
 #[derive(Clone)]
-pub struct FileStatePersistence {
+pub struct FileSessionPersistence {
     root_dir: PathBuf,
 }
 
-impl FileStatePersistence {
+impl FileSessionPersistence {
     pub fn new() -> Self {
         let root_dir = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))

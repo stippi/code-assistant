@@ -85,7 +85,7 @@ impl SessionInstance {
     /// This ensures SessionInstance has the latest state even if agents have made changes
     pub fn reload_from_persistence(
         &mut self,
-        persistence: &crate::persistence::FileStatePersistence,
+        persistence: &crate::persistence::FileSessionPersistence,
     ) -> anyhow::Result<()> {
         if let Some(session) = persistence.load_chat_session(&self.session.id)? {
             debug!("Reloading session {} from persistence", self.session.id);

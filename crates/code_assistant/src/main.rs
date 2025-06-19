@@ -14,7 +14,7 @@ mod tests;
 
 use crate::agent::{Agent, SessionStatePersistence};
 use crate::mcp::MCPServer;
-use crate::persistence::FileStatePersistence;
+use crate::persistence::FileSessionPersistence;
 use crate::session::SessionManager;
 use crate::types::ToolMode;
 use crate::ui::terminal::TerminalUI;
@@ -353,7 +353,7 @@ fn run_agent_gpui(
 
     // Setup dynamic types for MultiSessionManager
     let root_path = path.canonicalize()?;
-    let persistence = crate::persistence::FileStatePersistence::new();
+    let persistence = crate::persistence::FileSessionPersistence::new();
 
     let agent_config = AgentConfig {
         tool_mode: tools_type,
@@ -531,7 +531,7 @@ async fn run_agent(args: Args) -> Result<()> {
         )
     } else {
         // Terminal mode - create session manager
-        let persistence = FileStatePersistence::new();
+        let persistence = FileSessionPersistence::new();
         let agent_config = crate::session::AgentConfig {
             tool_mode: tools_type,
             init_path: Some(path.clone()),
