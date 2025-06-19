@@ -7,8 +7,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
+use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::hash::{Hash, Hasher};
 use std::str::{self};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
 /// Response structure for Anthropic error messages
@@ -134,6 +136,14 @@ struct CacheControl {
     cache_type: String,
 }
 
+/// Cache state tracking for a specific content prefix
+#[derive(Debug)]
+struct CacheEntry {
+    count: u32,
+    last_used: SystemTime,
+    current_cache_position: Option<usize>,
+}
+
 /// System content block with optional cache control
 #[derive(Debug, Serialize)]
 struct SystemBlock {
@@ -142,6 +152,44 @@ struct SystemBlock {
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_control: Option<CacheControl>,
+}
+
+/// Anthropic-specific content block with cache control support
+#[derive(Debug, Serialize)]
+struct AnthropicContentBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    #[serde(flatten)]
+    content: AnthropicBlockContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
+/// Content variants for Anthropic content blocks
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum AnthropicBlockContent {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
+}
+
+/// Anthropic-specific message structure
+#[derive(Debug, Serialize)]
+struct AnthropicMessage {
+    role: String,
+    content: Vec<AnthropicContentBlock>,
 }
 
 #[derive(Debug, Serialize)]
@@ -157,7 +205,7 @@ struct AnthropicRequest {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfiguration>,
-    messages: Vec<Message>,
+    messages: Vec<AnthropicMessage>,
     max_tokens: usize,
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -304,9 +352,203 @@ pub struct AnthropicClient {
     base_url: String,
     model: String,
     recorder: Option<APIRecorder>,
+    /// Cache state tracking per content prefix
+    cache_state: HashMap<String, CacheEntry>,
 }
 
 impl AnthropicClient {
+    /// Generate a stable cache key based on message windows
+    fn generate_stable_cache_key(&self, messages: &[Message]) -> String {
+        // Stable window: new hash every 10 messages
+        let stable_count = (messages.len() / 10) * 10;
+
+        // Hash the first stable_count messages
+        let stable_messages = &messages[..stable_count.min(messages.len())];
+
+        let mut hasher = DefaultHasher::new();
+        for msg in stable_messages {
+            // Hash role + content
+            match msg.role {
+                MessageRole::User => "user".hash(&mut hasher),
+                MessageRole::Assistant => "assistant".hash(&mut hasher),
+            };
+            match &msg.content {
+                MessageContent::Text(text) => {
+                    text.hash(&mut hasher);
+                }
+                MessageContent::Structured(blocks) => {
+                    for block in blocks {
+                        // Hash block discriminant and content
+                        std::mem::discriminant(block).hash(&mut hasher);
+                        match block {
+                            ContentBlock::Text { text } => text.hash(&mut hasher),
+                            ContentBlock::ToolUse { id, name, input } => {
+                                id.hash(&mut hasher);
+                                name.hash(&mut hasher);
+                                input.to_string().hash(&mut hasher);
+                            }
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            } => {
+                                tool_use_id.hash(&mut hasher);
+                                content.hash(&mut hasher);
+                                is_error.hash(&mut hasher);
+                            }
+                            ContentBlock::Thinking {
+                                thinking,
+                                signature,
+                            } => {
+                                thinking.hash(&mut hasher);
+                                signature.hash(&mut hasher);
+                            }
+                            ContentBlock::RedactedThinking { data } => {
+                                data.hash(&mut hasher);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        format!("cache_{}_{:x}", stable_count, hasher.finish())
+    }
+
+    /// Determine cache marker positions (old and new for smooth transitions)
+    fn get_cache_marker_positions(
+        &mut self,
+        messages: &[Message],
+    ) -> (Option<usize>, Option<usize>) {
+        let cache_key = self.generate_stable_cache_key(messages);
+
+        // Cleanup old entries (>5min = Anthropic cache lifetime)
+        let now = SystemTime::now();
+        self.cache_state.retain(|_, entry| {
+            now.duration_since(entry.last_used)
+                .unwrap_or(Duration::from_secs(0))
+                < Duration::from_secs(300)
+        });
+
+        let cache_key_for_debug = cache_key.clone();
+        let entry = self.cache_state.entry(cache_key).or_insert(CacheEntry {
+            count: 0,
+            last_used: now,
+            current_cache_position: None,
+        });
+
+        entry.count += 1;
+        entry.last_used = now;
+
+        // Move cache-marker every 5 requests
+        if entry.count % 5 == 0 {
+            // Calc new cache-marker position
+            let stable_count = (messages.len() / 10) * 10;
+            let new_cache_position = stable_count.saturating_sub(1);
+
+            let old_position = entry.current_cache_position;
+            entry.current_cache_position = Some(new_cache_position);
+
+            debug!(
+                "Moving cache marker from {:?} to {} for cache key {} (count: {})",
+                old_position, new_cache_position, cache_key_for_debug, entry.count
+            );
+
+            // Return old and new marker
+            (old_position, Some(new_cache_position))
+        } else {
+            // Return only the current marker
+            (entry.current_cache_position, None)
+        }
+    }
+
+    /// Convert generic messages to Anthropic-specific format with cache control
+    fn convert_messages_with_cache(&mut self, messages: Vec<Message>) -> Vec<AnthropicMessage> {
+        let (old_cache_position, new_cache_position) = self.get_cache_marker_positions(&messages);
+
+        messages
+            .into_iter()
+            .enumerate()
+            .map(|(msg_index, msg)| {
+                let content_blocks = match msg.content {
+                    MessageContent::Text(text) => {
+                        vec![AnthropicContentBlock {
+                            block_type: "text".to_string(),
+                            content: AnthropicBlockContent::Text { text },
+                            cache_control: if old_cache_position == Some(msg_index)
+                                || new_cache_position == Some(msg_index)
+                            {
+                                Some(CacheControl {
+                                    cache_type: "ephemeral".to_string(),
+                                })
+                            } else {
+                                None
+                            },
+                        }]
+                    }
+                    MessageContent::Structured(blocks) => {
+                        blocks
+                            .into_iter()
+                            .enumerate()
+                            .map(|(block_index, block)| {
+                                let (block_type, content) = match block {
+                                    ContentBlock::Text { text } => {
+                                        ("text".to_string(), AnthropicBlockContent::Text { text })
+                                    }
+                                    ContentBlock::ToolUse { id, name, input } => (
+                                        "tool_use".to_string(),
+                                        AnthropicBlockContent::ToolUse { id, name, input },
+                                    ),
+                                    ContentBlock::ToolResult {
+                                        tool_use_id,
+                                        content,
+                                        is_error,
+                                    } => (
+                                        "tool_result".to_string(),
+                                        AnthropicBlockContent::ToolResult {
+                                            tool_use_id,
+                                            content,
+                                            is_error,
+                                        },
+                                    ),
+                                    // Thinking blocks sind nicht Teil der Anthropic API Request
+                                    ContentBlock::Thinking { .. }
+                                    | ContentBlock::RedactedThinking { .. } => {
+                                        // Skip thinking blocks in requests
+                                        return None;
+                                    }
+                                };
+
+                                Some(AnthropicContentBlock {
+                                    block_type,
+                                    content,
+                                    cache_control: if (old_cache_position == Some(msg_index)
+                                        || new_cache_position == Some(msg_index))
+                                        && block_index == 0
+                                    {
+                                        Some(CacheControl {
+                                            cache_type: "ephemeral".to_string(),
+                                        })
+                                    } else {
+                                        None
+                                    },
+                                })
+                            })
+                            .filter_map(|x| x)
+                            .collect()
+                    }
+                };
+
+                AnthropicMessage {
+                    role: match msg.role {
+                        MessageRole::User => "user".to_string(),
+                        MessageRole::Assistant => "assistant".to_string(),
+                    },
+                    content: content_blocks,
+                }
+            })
+            .collect()
+    }
     pub fn default_base_url() -> String {
         "https://api.anthropic.com/v1".to_string()
     }
@@ -318,6 +560,7 @@ impl AnthropicClient {
             base_url,
             model,
             recorder: None,
+            cache_state: HashMap::new(),
         }
     }
 
@@ -334,6 +577,7 @@ impl AnthropicClient {
             base_url,
             model,
             recorder: Some(APIRecorder::new(recording_path)),
+            cache_state: HashMap::new(),
         }
     }
 
@@ -342,7 +586,7 @@ impl AnthropicClient {
     }
 
     async fn send_with_retry(
-        &self,
+        &mut self,
         request: &AnthropicRequest,
         streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
@@ -374,7 +618,7 @@ impl AnthropicClient {
     }
 
     async fn try_send_request(
-        &self,
+        &mut self,
         request: &AnthropicRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
@@ -726,7 +970,7 @@ impl AnthropicClient {
 #[async_trait]
 impl LLMProvider for AnthropicClient {
     async fn send_message(
-        &self,
+        &mut self,
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
@@ -791,7 +1035,7 @@ impl LLMProvider for AnthropicClient {
         let anthropic_request = AnthropicRequest {
             model: self.model.clone(),
             thinking,
-            messages: request.messages,
+            messages: self.convert_messages_with_cache(request.messages),
             max_tokens,
             temperature: 1.0,
             system,

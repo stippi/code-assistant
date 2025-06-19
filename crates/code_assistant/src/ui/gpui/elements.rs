@@ -23,7 +23,14 @@ pub enum MessageRole {
 pub struct MessageContainer {
     elements: Arc<Mutex<Vec<Entity<BlockView>>>>,
     role: MessageRole,
+    /// The current_request_id is used to remove all blocks from a canceled request.
+    /// The same MessageContainer may assemble blocks from multiple subsequent LLM responses.
+    /// While the agent loop sends requests to the LLM provider, the request ID is updated for
+    /// each new request (see `UiEvent::StreamingStarted` in gpui/mod). When the user cancels
+    /// streaming, all blocks that were created for that last, canceled request are removed.
     current_request_id: Arc<Mutex<u64>>,
+    /// Set to `true` in UiEvent::StreamingStarted, and set to false when the first streaming chunk
+    /// is received. A progress spinner is showing while it is `true`.
     waiting_for_content: Arc<Mutex<bool>>,
 }
 
@@ -53,6 +60,7 @@ impl MessageContainer {
     }
 
     // Remove all blocks with the given request ID
+    // Used when the user cancels a request while it is streaming
     pub fn remove_blocks_with_request_id(&self, request_id: u64, cx: &mut Context<Self>) {
         let mut elements = self.elements.lock().unwrap();
         let mut blocks_to_remove = Vec::new();
@@ -370,33 +378,6 @@ impl MessageContainer {
                 }
             });
         }
-    }
-
-    // Toggle a thinking block's collapsed state by its index
-    #[allow(dead_code)]
-    pub fn toggle_thinking_collapsed(&self, cx: &mut Context<Self>, index: usize) -> bool {
-        let elements = self.elements.lock().unwrap();
-        let mut thinking_index = 0;
-        let mut changed = false;
-
-        for element in elements.iter() {
-            element.update(cx, |view, cx| {
-                if let Some(thinking_block) = view.block.as_thinking_mut() {
-                    if thinking_index == index {
-                        thinking_block.is_collapsed = !thinking_block.is_collapsed;
-                        changed = true;
-                        cx.notify();
-                    }
-                    thinking_index += 1;
-                }
-            });
-
-            if changed {
-                break;
-            }
-        }
-
-        changed
     }
 }
 

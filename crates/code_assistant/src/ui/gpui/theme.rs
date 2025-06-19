@@ -76,12 +76,21 @@ pub fn init_themes(cx: &mut App) {
     // Register the theme
     gpui_component::theme::init(cx);
 
-    // Explizit in den Dark Mode wechseln
-    Theme::change(ThemeMode::Dark, None, cx);
+    // Get the current theme mode to determine which custom colors to apply
+    let theme = cx.global::<Theme>();
+    let current_mode = theme.mode;
 
-    // Set our custom dark theme colors
-    let theme = cx.global_mut::<Theme>();
-    theme.colors = custom_dark_theme();
+    // Apply the appropriate custom theme colors based on current mode
+    match current_mode {
+        ThemeMode::Dark => {
+            // Set our custom dark theme colors
+            cx.global_mut::<Theme>().colors = custom_dark_theme();
+        }
+        ThemeMode::Light => {
+            // Set our custom light theme colors
+            cx.global_mut::<Theme>().colors = custom_light_theme();
+        }
+    }
 }
 
 /// Toggle between light and dark theme

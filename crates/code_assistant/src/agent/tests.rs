@@ -1,14 +1,17 @@
 use super::*;
+use crate::agent::persistence::MockStatePersistence;
 use crate::agent::runner::parse_llm_response;
-use crate::persistence::MockStatePersistence;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
-    create_command_executor_mock, create_test_response, MockProjectManager, MockUI,
+    create_command_executor_mock, create_test_response, create_test_response_text,
+    MockProjectManager, MockUI,
 };
 use crate::types::*;
+use crate::UserInterface;
 use anyhow::Result;
 use llm::types::*;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[test]
 fn test_flexible_xml_parsing() -> Result<()> {
@@ -105,6 +108,171 @@ fn test_replacement_xml_parsing() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_mixed_tool_start_end() -> Result<()> {
+    let text = concat!(
+        "Now I will take a look at the drop down implementation:\n",
+        "\n",
+        "<tool:read_files>\n",
+        "<param:project>gpui-component</param:project>\n",
+        "<param:path>crates/ui/src/dropdown.rs</param:path>\n",
+        "<param:path>crates/ui/src/menu</param:path>\n",
+        "</tool:list_files>"
+    )
+    .to_string();
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text }],
+        usage: Usage::zero(),
+    };
+
+    let result = parse_llm_response(&response, 1);
+    println!("result: {:?}", result);
+
+    // This should return an error, not Ok([])
+    assert!(
+        result.is_err(),
+        "Expected ParseError for mismatched tool names"
+    );
+
+    if let Err(ref error) = result {
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains("mismatching tool names"),
+            "Error should mention mismatching tool names: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("read_files"),
+            "Error should mention read_files: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("list_files"),
+            "Error should mention list_files: {}",
+            error_msg
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_ignore_non_tool_tags() -> Result<()> {
+    let text = concat!(
+        "I will work with some HTML code:\n",
+        "\n",
+        "<div>Some HTML content</div>\n",
+        "<tool:read_files>\n",
+        "<param:project>test</param:project>\n",
+        "<param:path>index.html</param:path>\n",
+        "</tool:read_files>\n",
+        "<p>More HTML after the tool</p>"
+    )
+    .to_string();
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text }],
+        usage: Usage::zero(),
+    };
+
+    let result = parse_llm_response(&response, 1)?;
+
+    // Should successfully parse the tool while ignoring HTML tags
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].name, "read_files");
+    assert_eq!(
+        result[0].input.get("project").unwrap().as_str().unwrap(),
+        "test"
+    );
+    assert_eq!(
+        result[0].input.get("paths").unwrap().as_array().unwrap()[0],
+        "index.html"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_html_between_tool_tags_should_error() -> Result<()> {
+    let text = concat!(
+        "I will read files with some HTML mixed in:\n",
+        "\n",
+        "<tool:read_files>\n",
+        "<div>This HTML should not be here</div>\n",
+        "<param:project>test</param:project>\n",
+        "<param:path>index.html</param:path>\n",
+        "</tool:read_files>"
+    )
+    .to_string();
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text }],
+        usage: Usage::zero(),
+    };
+
+    let result = parse_llm_response(&response, 1);
+
+    // This should be an error since HTML tags between tool tags (but outside parameters) make the structure unclear
+    assert!(
+        result.is_err(),
+        "Expected ParseError for HTML tag inside tool block"
+    );
+
+    if let Err(ref error) = result {
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains("unexpected tag"),
+            "Error should mention unexpected tag: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("div"),
+            "Error should mention the div tag: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("read_files"),
+            "Error should mention the tool name: {}",
+            error_msg
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_html_inside_parameter_allowed() -> Result<()> {
+    // The existing test_flexible_xml_parsing already covers HTML content inside parameters
+    // We'll just verify that our validation doesn't break that case
+    let text = concat!(
+        "I will search for content with special characters:\n",
+        "\n",
+        "<tool:search_files>\n",
+        "<param:project>test</param:project>\n",
+        "<param:regex><div id=\"test\"></param:regex>\n",
+        "</tool:search_files>"
+    )
+    .to_string();
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text }],
+        usage: Usage::zero(),
+    };
+
+    let result = parse_llm_response(&response, 1)?;
+
+    // Should successfully parse - special characters inside parameter content are allowed
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].name, "search_files");
+    assert_eq!(
+        result[0].input.get("project").unwrap().as_str().unwrap(),
+        "test"
+    );
+    assert_eq!(
+        result[0].input.get("regex").unwrap().as_str().unwrap(),
+        "<div id=\"test\">"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_unknown_tool_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(
@@ -133,7 +301,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         ToolMode::Native,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
-        Box::new(MockUI::default()),
+        Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
         Box::new(MockStatePersistence::new()),
         Some(PathBuf::from("./test_path")),
     );
@@ -150,8 +318,6 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
 
     // Check error was communicated to LLM
     let error_request = &requests[1];
-    assert!(error_request.messages.len() >= 2); // May have changed with the new implementation
-
     // Check that we have the expected number of messages in the error request
     assert_eq!(error_request.messages.len(), 3);
 
@@ -214,6 +380,124 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_invalid_xml_tool_error_handling() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Task completed successfully.")), // Final response after successful tool
+        Ok(create_test_response_text(concat!(
+            "Correct second attempt:\n",
+            "\n",
+            "<tool:read_files>\n",
+            "<param:project>test</param:project>\n",
+            "<param:path>test.txt</param:path>\n",
+            "</tool:read_files>"
+        ))),
+        // Simulate LLM using an invalid tool call with mixed start/end tags
+        Ok(create_test_response_text(concat!(
+            "Attempting to read a file with invalid tool call:\n",
+            "\n",
+            "<tool:read_files>\n",
+            "<param:project>test</param:project>\n",
+            "<param:path>test.txt</param:path>\n",
+            "</tool:read>"
+        ))),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let mut agent = Agent::new(
+        Box::new(mock_llm),
+        ToolMode::Xml,
+        Box::new(MockProjectManager::new()),
+        Box::new(create_command_executor_mock()),
+        Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
+        Box::new(MockStatePersistence::new()),
+        Some(PathBuf::from("./test_path")),
+    );
+
+    // Add an initial user message like the working test does
+    let user_msg = Message {
+        role: MessageRole::User,
+        content: MessageContent::Text("Test task".to_string()),
+        request_id: None,
+    };
+    agent.append_message(user_msg)?;
+
+    agent.run_single_iteration().await?;
+
+    let requests = mock_llm_ref.get_requests();
+
+    // Should see three requests:
+    // 1. Initial request with invalid tool
+    // 2. Request with corrected tool after error feedback
+    // 3. Final request after successful tool execution
+    assert_eq!(requests.len(), 3);
+
+    // Verify that we get requests with increasing message counts as expected
+    assert_eq!(requests[0].messages.len(), 1); // Initial user message
+    assert_eq!(requests[1].messages.len(), 3); // User + Assistant(invalid) + User(error)
+    assert_eq!(requests[2].messages.len(), 5); // Previous + Assistant(valid) + User(tool result)
+
+    // Validate Request 1: Invalid XML parse error handling
+    let request1 = &requests[1];
+
+    // Check assistant message with invalid XML
+    assert_eq!(request1.messages[1].role, MessageRole::Assistant);
+    if let MessageContent::Structured(blocks) = &request1.messages[1].content {
+        assert_eq!(blocks.len(), 1);
+        if let ContentBlock::Text { text } = &blocks[0] {
+            assert!(text.contains("invalid tool call"));
+            assert!(text.contains("</tool:read>")); // The invalid closing tag
+        } else {
+            panic!("Expected Text block in assistant message");
+        }
+    } else {
+        panic!("Expected Structured content in assistant message");
+    }
+
+    // Check error message from system
+    assert_eq!(request1.messages[2].role, MessageRole::User);
+    if let MessageContent::Text(error_text) = &request1.messages[2].content {
+        assert!(error_text.contains("Tool error"));
+        assert!(error_text.contains("mismatching tool names"));
+        assert!(error_text.contains("Expected '</tool:read_files>'"));
+        assert!(error_text.contains("found '</tool:read>'"));
+        assert!(error_text.contains("Please try again"));
+    } else {
+        panic!("Expected Text content in error message");
+    }
+
+    // Validate Request 2: Corrected tool call and successful execution
+    let request2 = &requests[2];
+
+    // Check corrected assistant message
+    assert_eq!(request2.messages[3].role, MessageRole::Assistant);
+    if let MessageContent::Structured(blocks) = &request2.messages[3].content {
+        assert_eq!(blocks.len(), 1);
+        if let ContentBlock::Text { text } = &blocks[0] {
+            assert!(text.contains("Correct second attempt"));
+            assert!(text.contains("</tool:read_files>")); // The correct closing tag
+        } else {
+            panic!("Expected Text block in corrected assistant message");
+        }
+    } else {
+        panic!("Expected Structured content in corrected assistant message");
+    }
+
+    // Check successful tool execution result
+    assert_eq!(request2.messages[4].role, MessageRole::User);
+    if let MessageContent::Text(result_text) = &request2.messages[4].content {
+        assert!(result_text.contains("Successfully loaded"));
+        assert!(result_text.contains("FILE: test.txt"));
+        assert!(result_text.contains("line 1"));
+        assert!(result_text.contains("line 2"));
+        assert!(result_text.contains("line 3"));
+    } else {
+        panic!("Expected Text content in tool result message");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_parse_error_handling() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![
         Ok(create_test_response(
@@ -243,7 +527,7 @@ async fn test_parse_error_handling() -> Result<()> {
         ToolMode::Native,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
-        Box::new(MockUI::default()),
+        Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
         Box::new(MockStatePersistence::new()),
         Some(PathBuf::from("./test_path")),
     );

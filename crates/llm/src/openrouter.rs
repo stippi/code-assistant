@@ -22,7 +22,7 @@ impl OpenRouterClient {
 #[async_trait]
 impl LLMProvider for OpenRouterClient {
     async fn send_message(
-        &self,
+        &mut self,
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {

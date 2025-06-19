@@ -3,6 +3,7 @@ pub mod streaming;
 pub mod terminal;
 use crate::types::WorkingMemory;
 use async_trait::async_trait;
+pub use gpui::ui_events::UiEvent;
 pub use streaming::DisplayFragment;
 use thiserror::Error;
 
@@ -24,19 +25,18 @@ pub enum StreamingState {
 #[derive(Debug, Clone)]
 pub enum UIMessage {
     // System actions that the agent takes
+    #[allow(dead_code)]
     Action(String),
     // User input messages
     UserInput(String),
+    // UI events for GPUI interface
+    UiEvent(UiEvent),
 }
 
 #[derive(Error, Debug)]
 pub enum UIError {
     #[error("IO error: {0}")]
     IOError(#[from] std::io::Error),
-    // #[error("Input cancelled")]
-    // Cancelled,
-    // #[error("Other UI error: {0}")]
-    // Other(String),
 }
 
 #[async_trait]
@@ -62,9 +62,9 @@ pub trait UserInterface: Send + Sync {
     /// Update memory view with current working memory
     async fn update_memory(&self, memory: &WorkingMemory) -> Result<(), UIError>;
 
-    /// Informs the UI that a new LLM request is starting
-    /// Returns the request ID that can be used to correlate tool invocations
-    async fn begin_llm_request(&self) -> Result<u64, UIError>;
+    /// Informs the UI that a new LLM request is starting with the given request ID
+    /// The request ID is used to correlate tool invocations
+    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError>;
 
     /// Informs the UI that an LLM request has completed
     async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError>;

@@ -71,7 +71,7 @@ impl MockLLMProvider {
 #[async_trait]
 impl LLMProvider for MockLLMProvider {
     async fn send_message(
-        &self,
+        &mut self,
         request: LLMRequest,
         _streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse, anyhow::Error> {
@@ -102,6 +102,15 @@ pub fn create_test_response(
                 input: tool_input,
             },
         ],
+        usage: Usage::zero(),
+    }
+}
+
+pub fn create_test_response_text(text: &str) -> LLMResponse {
+    LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         usage: Usage::zero(),
     }
 }
@@ -240,9 +249,10 @@ impl UserInterface for MockUI {
         Ok(())
     }
 
-    async fn begin_llm_request(&self) -> Result<u64, UIError> {
-        // For tests, return a fixed request ID
-        Ok(42)
+    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError> {
+        // For tests, just accept the provided request ID
+        let _ = request_id;
+        Ok(())
     }
 
     async fn end_llm_request(&self, _request_id: u64, _cancelled: bool) -> Result<(), UIError> {

@@ -2,94 +2,196 @@ use anyhow::Result;
 use llm::Message;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tracing::debug;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, info};
 
-/// Persistent state of the agent
+use crate::tools::ToolRequest;
+use crate::types::{ToolMode, WorkingMemory};
+
+/// A complete chat session with all its data
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AgentState {
-    /// Original task description
-    pub task: String,
+pub struct ChatSession {
+    /// Unique identifier for the chat session
+    pub id: String,
+    /// User-friendly name for the chat
+    pub name: String,
+    /// Creation timestamp
+    pub created_at: SystemTime,
+    /// Last updated timestamp
+    pub updated_at: SystemTime,
     /// Message history
     pub messages: Vec<Message>,
+    /// Serialized tool execution results
+    pub tool_executions: Vec<SerializedToolExecution>,
+    /// Working memory state
+    pub working_memory: WorkingMemory,
+    /// Initial project path (if any)
+    pub init_path: Option<PathBuf>,
+    /// Initial project name
+    pub initial_project: Option<String>,
+    /// Tool mode used for this session (XML or Native)
+    pub tool_mode: ToolMode,
+    /// Counter for generating unique request IDs within this session
+    #[serde(default)]
+    pub next_request_id: u64,
 }
 
-pub trait StatePersistence: Send + Sync {
-    fn save_state(&mut self, task: String, messages: Vec<Message>) -> Result<()>;
-    fn load_state(&mut self) -> Result<Option<AgentState>>;
-    fn cleanup(&mut self) -> Result<()>;
+/// Serialized representation of a tool execution
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SerializedToolExecution {
+    /// Tool request details
+    pub tool_request: ToolRequest,
+    /// Serialized tool result as JSON
+    pub result_json: serde_json::Value,
+    /// Tool name for deserialization
+    pub tool_name: String,
 }
 
-pub struct FileStatePersistence {
+/// Metadata for a chat session (used for listing)
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ChatMetadata {
+    pub id: String,
+    pub name: String,
+    pub created_at: SystemTime,
+    pub updated_at: SystemTime,
+    pub message_count: usize,
+}
+
+#[derive(Clone)]
+pub struct FileSessionPersistence {
     root_dir: PathBuf,
 }
 
-impl FileStatePersistence {
-    pub fn new(root_dir: PathBuf) -> Self {
+impl FileSessionPersistence {
+    pub fn new() -> Self {
+        let root_dir = dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("code-assistant");
+        info!("Storing sessions in: {:?}", root_dir.to_path_buf());
         Self { root_dir }
     }
-}
 
-const STATE_FILE: &str = ".code-assistant.state.json";
+    fn ensure_chats_dir(&self) -> Result<PathBuf> {
+        let chats_dir = self.root_dir.join("sessions");
+        if !chats_dir.exists() {
+            std::fs::create_dir_all(&chats_dir)?;
+        }
+        Ok(chats_dir)
+    }
 
-impl StatePersistence for FileStatePersistence {
-    fn save_state(&mut self, task: String, messages: Vec<Message>) -> Result<()> {
-        let state = AgentState { task, messages };
-        let state_path = self.root_dir.join(STATE_FILE);
-        debug!("Saving state to {}", state_path.display());
-        let json = serde_json::to_string_pretty(&state)?;
-        std::fs::write(state_path, json)?;
+    fn chat_file_path(&self, session_id: &str) -> Result<PathBuf> {
+        let chats_dir = self.ensure_chats_dir()?;
+        Ok(chats_dir.join(format!("{}.json", session_id)))
+    }
+
+    fn metadata_file_path(&self) -> Result<PathBuf> {
+        let chats_dir = self.ensure_chats_dir()?;
+        Ok(chats_dir.join("metadata.json"))
+    }
+
+    pub fn save_chat_session(&mut self, session: &ChatSession) -> Result<()> {
+        let session_path = self.chat_file_path(&session.id)?;
+        debug!("Saving chat session to {}", session_path.display());
+        let json = serde_json::to_string_pretty(session)?;
+        std::fs::write(session_path, json)?;
+
+        // Update metadata
+        let metadata_path = self.metadata_file_path()?;
+        let mut metadata_list: Vec<ChatMetadata> = if metadata_path.exists() {
+            let content = std::fs::read_to_string(&metadata_path)?;
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // Update or add metadata for this session
+        let new_metadata = ChatMetadata {
+            id: session.id.clone(),
+            name: session.name.clone(),
+            created_at: session.created_at,
+            updated_at: session.updated_at,
+            message_count: session.messages.len(),
+        };
+
+        if let Some(existing) = metadata_list.iter_mut().find(|m| m.id == session.id) {
+            *existing = new_metadata;
+        } else {
+            metadata_list.push(new_metadata);
+        }
+
+        let metadata_json = serde_json::to_string_pretty(&metadata_list)?;
+        std::fs::write(metadata_path, metadata_json)?;
+
         Ok(())
     }
 
-    fn load_state(&mut self) -> Result<Option<AgentState>> {
-        let state_path = self.root_dir.join(STATE_FILE);
-        if !state_path.exists() {
+    pub fn load_chat_session(&self, session_id: &str) -> Result<Option<ChatSession>> {
+        let session_path = self.chat_file_path(session_id)?;
+        if !session_path.exists() {
             return Ok(None);
         }
 
-        debug!("Loading state from {}", state_path.display());
-        let json = std::fs::read_to_string(state_path)?;
-        let state = serde_json::from_str(&json)?;
-        Ok(Some(state))
+        debug!("Loading chat session from {}", session_path.display());
+        let json = std::fs::read_to_string(session_path)?;
+        let session = serde_json::from_str(&json)?;
+        Ok(Some(session))
     }
 
-    fn cleanup(&mut self) -> Result<()> {
-        let state_path = self.root_dir.join(STATE_FILE);
-        if state_path.exists() {
-            debug!("Removing state file {}", state_path.display());
-            std::fs::remove_file(state_path)?;
+    pub fn list_chat_sessions(&self) -> Result<Vec<ChatMetadata>> {
+        let metadata_path = self.metadata_file_path()?;
+        if !metadata_path.exists() {
+            return Ok(Vec::new());
         }
+
+        let content = std::fs::read_to_string(metadata_path)?;
+        let mut metadata_list: Vec<ChatMetadata> =
+            serde_json::from_str(&content).unwrap_or_default();
+
+        // Sort by updated_at in descending order (newest first)
+        metadata_list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+        Ok(metadata_list)
+    }
+
+    pub fn delete_chat_session(&mut self, session_id: &str) -> Result<()> {
+        // Remove the session file
+        let session_path = self.chat_file_path(session_id)?;
+        if session_path.exists() {
+            debug!("Deleting chat session file {}", session_path.display());
+            std::fs::remove_file(session_path)?;
+        }
+
+        // Update metadata to remove this session
+        let metadata_path = self.metadata_file_path()?;
+        if metadata_path.exists() {
+            let content = std::fs::read_to_string(&metadata_path)?;
+            let mut metadata_list: Vec<ChatMetadata> =
+                serde_json::from_str(&content).unwrap_or_default();
+
+            metadata_list.retain(|m| m.id != session_id);
+
+            let metadata_json = serde_json::to_string_pretty(&metadata_list)?;
+            std::fs::write(metadata_path, metadata_json)?;
+        }
+
         Ok(())
+    }
+
+    pub fn get_latest_session_id(&self) -> Result<Option<String>> {
+        let sessions = self.list_chat_sessions()?;
+        Ok(sessions.first().map(|s| s.id.clone()))
     }
 }
 
-#[cfg(test)]
-pub struct MockStatePersistence {
-    state: Option<AgentState>,
-}
+/// Generate a unique session ID
+pub fn generate_session_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
 
-#[cfg(test)]
-impl MockStatePersistence {
-    pub fn new() -> Self {
-        Self { state: None }
-    }
-}
+    // Simple random component using timestamp
+    let random_part = (timestamp % 10000) + (std::process::id() as u64 % 1000);
 
-#[cfg(test)]
-impl StatePersistence for MockStatePersistence {
-    fn save_state(&mut self, task: String, messages: Vec<Message>) -> Result<()> {
-        // In-Memory state
-        let state = AgentState { task, messages };
-        self.state = Some(state);
-        Ok(())
-    }
-
-    fn load_state(&mut self) -> Result<Option<AgentState>> {
-        Ok(self.state.clone())
-    }
-
-    fn cleanup(&mut self) -> Result<()> {
-        self.state = None;
-        Ok(())
-    }
+    format!("chat_{:x}_{:x}", timestamp, random_part)
 }

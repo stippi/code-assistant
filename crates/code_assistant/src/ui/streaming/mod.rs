@@ -3,7 +3,7 @@
 use crate::agent::ToolMode;
 use crate::ui::UIError;
 use crate::ui::UserInterface;
-use llm::StreamingChunk;
+use llm::{Message, StreamingChunk};
 use std::sync::Arc;
 
 mod json_processor;
@@ -37,13 +37,20 @@ pub enum DisplayFragment {
 
 /// Common trait for stream processors
 pub trait StreamProcessorTrait: Send + Sync {
-    /// Create a new stream processor with the given UI
-    fn new(ui: Arc<Box<dyn UserInterface>>) -> Self
+    /// Create a new stream processor with the given UI and request context
+    fn new(ui: Arc<Box<dyn UserInterface>>, request_id: u64) -> Self
     where
         Self: Sized;
 
     /// Process a streaming chunk and send display fragments to the UI
     fn process(&mut self, chunk: &StreamingChunk) -> Result<(), UIError>;
+
+    /// Extract display fragments from a stored message without sending to UI
+    /// Used for session loading to reconstruct fragment sequences
+    fn extract_fragments_from_message(
+        &mut self,
+        message: &Message,
+    ) -> Result<Vec<DisplayFragment>, UIError>;
 }
 
 // Export the concrete implementations
@@ -54,9 +61,10 @@ pub use xml_processor::XmlStreamProcessor;
 pub fn create_stream_processor(
     tool_mode: ToolMode,
     ui: Arc<Box<dyn UserInterface>>,
+    request_id: u64,
 ) -> Box<dyn StreamProcessorTrait> {
     match tool_mode {
-        ToolMode::Xml => Box::new(XmlStreamProcessor::new(ui)),
-        ToolMode::Native => Box::new(JsonStreamProcessor::new(ui)),
+        ToolMode::Xml => Box::new(XmlStreamProcessor::new(ui, request_id)),
+        ToolMode::Native => Box::new(JsonStreamProcessor::new(ui, request_id)),
     }
 }

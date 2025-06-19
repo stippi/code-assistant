@@ -1,9 +1,12 @@
 use super::auto_scroll::AutoScrollContainer;
+use super::chat_sidebar::ChatSidebar;
 use super::file_icons;
 use super::memory::MemoryView;
 use super::messages::MessagesView;
 use super::theme;
-use super::CloseWindow;
+use super::{CloseWindow, Gpui, UiEventSender};
+use crate::persistence::ChatMetadata;
+use crate::ui::gpui::ui_events::UiEvent;
 use crate::ui::StreamingState;
 use gpui::{
     div, prelude::*, px, rgba, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
@@ -13,11 +16,13 @@ use gpui_component::input::InputState;
 use gpui_component::input::TextInput;
 use gpui_component::ActiveTheme;
 use std::sync::{Arc, Mutex};
+use tracing::{debug, trace, warn};
 
 // Root View - handles overall layout and coordination
 pub struct RootView {
     pub text_input: Entity<InputState>,
     memory_view: Entity<MemoryView>,
+    chat_sidebar: Entity<ChatSidebar>,
     auto_scroll_container: Entity<AutoScrollContainer<MessagesView>>,
     recent_keystrokes: Vec<gpui::Keystroke>,
     focus_handle: FocusHandle,
@@ -25,6 +30,10 @@ pub struct RootView {
     input_requested: Arc<Mutex<bool>>,
     // Memory view state
     memory_collapsed: bool,
+    // Chat sidebar state
+    chat_collapsed: bool,
+    current_session_id: Option<String>,
+    chat_sessions: Vec<ChatMetadata>,
     // Streaming state - shared with Gpui
     streaming_state: Arc<Mutex<StreamingState>>,
 }
@@ -43,17 +52,29 @@ impl RootView {
         let auto_scroll_container =
             cx.new(|_cx| AutoScrollContainer::new("messages", messages_view));
 
-        Self {
+        // Create the chat sidebar
+        let chat_sidebar = cx.new(|cx| ChatSidebar::new(cx));
+
+        let mut root_view = Self {
             text_input,
             memory_view,
+            chat_sidebar,
             auto_scroll_container,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
             input_value,
             input_requested,
             memory_collapsed: false,
+            chat_collapsed: false, // Chat sidebar is visible by default
+            current_session_id: None,
+            chat_sessions: Vec::new(),
             streaming_state,
-        }
+        };
+
+        // Request initial chat session list
+        root_view.refresh_chat_list(cx);
+
+        root_view
     }
 
     pub fn on_toggle_memory(
@@ -64,6 +85,31 @@ impl RootView {
     ) {
         self.memory_collapsed = !self.memory_collapsed;
         cx.notify();
+    }
+
+    pub fn on_toggle_chat_sidebar(
+        &mut self,
+        _: &MouseUpEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.chat_collapsed = !self.chat_collapsed;
+        self.chat_sidebar.update(cx, |sidebar, cx| {
+            sidebar.toggle_collapsed(cx);
+        });
+        cx.notify();
+    }
+
+    // Trigger refresh of chat list on startup
+    pub fn refresh_chat_list(&mut self, cx: &mut Context<Self>) {
+        debug!("Requesting chat list refresh");
+        // Request session list from agent via Gpui global
+        if let Some(sender) = cx.try_global::<UiEventSender>() {
+            trace!("Sending RefreshChatList event");
+            let _ = sender.0.try_send(UiEvent::RefreshChatList);
+        } else {
+            warn!("No UiEventSender global available");
+        }
     }
 
     fn on_toggle_theme(
@@ -98,9 +144,27 @@ impl RootView {
         self.text_input.update(cx, |text_input, cx| {
             let content = text_input.value().to_string();
             if !content.is_empty() {
-                // Store input in the shared value
-                let mut input_value = self.input_value.lock().unwrap();
-                *input_value = Some(content);
+                // V1 mode: Store input in the shared value if input is requested
+                let is_input_requested = *self.input_requested.lock().unwrap();
+                if is_input_requested {
+                    let mut input_value = self.input_value.lock().unwrap();
+                    *input_value = Some(content.clone());
+                }
+
+                // V2 mode: Send user message event if we have an active session
+                if let Some(session_id) = &self.current_session_id {
+                    if let Some(sender) = cx.try_global::<UiEventSender>() {
+                        tracing::info!(
+                            "RootView: Sending user message to session {}: {}",
+                            session_id,
+                            content
+                        );
+                        let _ = sender.0.try_send(UiEvent::SendUserMessage {
+                            message: content.clone(),
+                            session_id: session_id.clone(),
+                        });
+                    }
+                }
 
                 // Clear the input field
                 text_input.set_value("", window, cx);
@@ -132,6 +196,24 @@ impl Render for RootView {
         // Check if input is requested and current streaming state
         let is_input_requested = *self.input_requested.lock().unwrap();
         let current_streaming_state = *self.streaming_state.lock().unwrap();
+
+        // Get current chat state from global Gpui
+        let (chat_sessions, current_session_id) = if let Some(gpui) = cx.try_global::<Gpui>() {
+            (gpui.get_chat_sessions(), gpui.get_current_session_id())
+        } else {
+            (Vec::new(), None)
+        };
+
+        // Update chat sidebar if needed
+        if self.chat_sessions != chat_sessions || self.current_session_id != current_session_id {
+            self.chat_sessions = chat_sessions.clone();
+            self.current_session_id = current_session_id.clone();
+
+            self.chat_sidebar.update(cx, |sidebar, cx| {
+                sidebar.update_sessions(chat_sessions.clone(), cx);
+                sidebar.set_selected_session(current_session_id.clone(), cx);
+            });
+        }
 
         // Main container with titlebar and content
         div()
@@ -174,6 +256,28 @@ impl Render for RootView {
                             .flex()
                             .items_center()
                             .gap_2()
+                            // Chat sidebar toggle button
+                            .child(
+                                div()
+                                    .size(px(32.))
+                                    .rounded_sm()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(cx.theme().muted))
+                                    .child(file_icons::render_icon(
+                                        &file_icons::get()
+                                            .get_type_icon(file_icons::MESSAGE_BUBBLES),
+                                        18.0,
+                                        cx.theme().muted_foreground,
+                                        "💬",
+                                    ))
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(Self::on_toggle_chat_sidebar),
+                                    ),
+                            )
                             // Theme toggle button
                             .child(
                                 div()
@@ -228,15 +332,17 @@ impl Render for RootView {
                             ),
                     ),
             )
-            // Main content area with messages, input, and sidebar
+            // Main content area with chat sidebar, messages+input, and memory sidebar (3-column layout)
             .child(
                 div()
                     .size_full()
                     .min_h_0()
                     .flex()
-                    .flex_row() // Content as row layout for main + sidebar
+                    .flex_row() // 3-column layout: chat | messages+input | memory
+                    // Left sidebar: Chat sessions
+                    .child(self.chat_sidebar.clone())
                     .child(
-                        // Left side with messages and input (content area)
+                        // Center: Messages and input (content area)
                         div()
                             .flex()
                             .flex_col()
@@ -284,14 +390,17 @@ impl Render for RootView {
                                         // Create button based on streaming state
                                         match current_streaming_state {
                                             StreamingState::Idle => {
-                                                // Show send button, enabled only if input is requested
+                                                // Show send button, enabled if input requested OR if we have an active session (V2 mode)
+                                                let is_enabled = is_input_requested
+                                                    || current_session_id.is_some();
+
                                                 let mut button = div()
                                                     .size(px(40.))
                                                     .rounded_sm()
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
-                                                    .cursor(if is_input_requested {
+                                                    .cursor(if is_enabled {
                                                         CursorStyle::PointingHand
                                                     } else {
                                                         CursorStyle::OperationNotAllowed
@@ -300,7 +409,7 @@ impl Render for RootView {
                                                         &file_icons::get()
                                                             .get_type_icon(file_icons::SEND),
                                                         22.0,
-                                                        if is_input_requested {
+                                                        if is_enabled {
                                                             cx.theme().primary
                                                         } else {
                                                             cx.theme().muted_foreground
@@ -308,7 +417,7 @@ impl Render for RootView {
                                                         ">",
                                                     ));
 
-                                                if is_input_requested {
+                                                if is_enabled {
                                                     button = button
                                                         .hover(|s| s.bg(cx.theme().muted))
                                                         .on_mouse_up(

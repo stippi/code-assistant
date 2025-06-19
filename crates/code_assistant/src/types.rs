@@ -77,20 +77,59 @@ impl Default for FileFormat {
 pub struct WorkingMemory {
     /// Current task description
     pub current_task: String,
-    /// Current plan
-    pub plan: String,
     /// Currently loaded resources (files, web search results, web pages)
-    /// Key is (project_name, path)
+    /// Key format: "project_name::path" to make it JSON-serializable
+    #[serde(with = "tuple_key_map")]
     pub loaded_resources: HashMap<(String, PathBuf), LoadedResource>,
-    /// Summaries of previously seen resources
-    /// Key is (project_name, path)
-    pub summaries: HashMap<(String, PathBuf), String>,
     /// File trees for each project
     pub file_trees: HashMap<String, FileTreeEntry>,
     /// Expanded directories per project
     pub expanded_directories: HashMap<String, Vec<PathBuf>>,
     /// Available project names
     pub available_projects: Vec<String>,
+}
+
+/// Custom serialization for HashMap with tuple keys
+mod tuple_key_map {
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<S, V>(
+        map: &HashMap<(String, PathBuf), V>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        V: Serialize,
+    {
+        let string_map: HashMap<String, &V> = map
+            .iter()
+            .map(|((project, path), value)| (format!("{}::{}", project, path.display()), value))
+            .collect();
+        string_map.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D, V>(
+        deserializer: D,
+    ) -> Result<HashMap<(String, PathBuf), V>, D::Error>
+    where
+        D: Deserializer<'de>,
+        V: Deserialize<'de>,
+    {
+        let string_map: HashMap<String, V> = HashMap::deserialize(deserializer)?;
+        let result = string_map
+            .into_iter()
+            .filter_map(|(key, value)| {
+                if let Some((project, path_str)) = key.split_once("::") {
+                    Some(((project.to_string(), PathBuf::from(path_str)), value))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Ok(result)
+    }
 }
 
 impl std::fmt::Display for LoadedResource {
@@ -189,7 +228,7 @@ pub struct SearchResult {
 }
 
 /// Specifies the tool integration mode
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ToolMode {
     /// Native tools via API
     Native,

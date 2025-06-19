@@ -2,5 +2,6 @@
 /sessions
 mcp-config.json
 .code-assistant.state.json
+/.code-assistant-chats
 tarpaulin-report.html
 .DS_Store

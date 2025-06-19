@@ -149,11 +149,6 @@ impl Tool for DeleteFilesTool {
                         working_memory
                             .loaded_resources
                             .remove(&(input.project.clone(), path.clone()));
-
-                        // Remove from summaries if it exists there
-                        working_memory
-                            .summaries
-                            .remove(&(input.project.clone(), path.clone()));
                     }
                 }
                 Err(e) => {
@@ -239,12 +234,6 @@ mod tests {
             crate::types::LoadedResource::File("File 2 content".to_string()),
         );
 
-        // Also add a summary for one file
-        working_memory.summaries.insert(
-            ("test-project".to_string(), PathBuf::from("file1.txt")),
-            "A summary of file 1".to_string(),
-        );
-
         // Create a tool context with working memory
         let mut context = ToolContext {
             project_manager: &project_manager,
@@ -275,9 +264,6 @@ mod tests {
         assert!(working_memory
             .loaded_resources
             .contains_key(&("test-project".to_string(), PathBuf::from("file2.txt"))));
-
-        // Verify summary was also removed
-        assert!(working_memory.summaries.is_empty());
 
         Ok(())
     }

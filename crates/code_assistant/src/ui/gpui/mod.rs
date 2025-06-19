@@ -1,8 +1,9 @@
 pub mod assets;
 pub mod auto_scroll;
+pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_renderer;
-mod elements;
+pub mod elements;
 pub mod file_icons;
 mod memory;
 mod messages;
@@ -13,6 +14,7 @@ pub mod simple_renderers;
 pub mod theme;
 pub mod ui_events;
 
+use crate::persistence::ChatMetadata;
 use crate::types::WorkingMemory;
 use crate::ui::gpui::{
     content_renderer::ContentRenderer,
@@ -33,15 +35,51 @@ use gpui_component::Root;
 pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
-use std::any::Any;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::warn;
+use tracing::{debug, trace, warn};
 
 use elements::MessageContainer;
 
 actions!(code_assistant, [CloseWindow]);
+
+// Global UI event sender for chat components
+#[derive(Clone)]
+pub struct UiEventSender(pub async_channel::Sender<UiEvent>);
+
+impl Global for UiEventSender {}
+
+// Unified event type for all UI→Backend communication
+#[derive(Debug, Clone)]
+pub enum BackendEvent {
+    // Session management
+    LoadSession { session_id: String },
+    CreateNewSession { name: Option<String> },
+    DeleteSession { session_id: String },
+    ListSessions,
+
+    // Agent operations
+    SendUserMessage { session_id: String, message: String },
+}
+
+// Response from backend to UI
+#[derive(Debug, Clone)]
+pub enum BackendResponse {
+    SessionCreated {
+        session_id: String,
+    },
+    #[allow(dead_code)]
+    SessionDeleted {
+        session_id: String,
+    },
+    SessionsListed {
+        sessions: Vec<ChatMetadata>,
+    },
+    Error {
+        message: String,
+    },
+}
 
 // Our main UI struct that implements the UserInterface trait
 #[derive(Clone)]
@@ -52,13 +90,19 @@ pub struct Gpui {
     working_memory: Arc<Mutex<Option<WorkingMemory>>>,
     event_sender: Arc<Mutex<async_channel::Sender<UiEvent>>>,
     event_receiver: Arc<Mutex<async_channel::Receiver<UiEvent>>>,
-    event_task: Arc<Mutex<Option<Box<dyn Any + Send + Sync>>>>,
+    event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
+    session_event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
     current_request_id: Arc<Mutex<u64>>,
-    current_tool_counter: Arc<Mutex<u64>>,
-    last_xml_tool_id: Arc<Mutex<String>>,
     #[allow(dead_code)]
-    parameter_renderers: Arc<ParameterRendererRegistry>, // TODO: Needed?!
+    parameter_renderers: Arc<ParameterRendererRegistry>,
     streaming_state: Arc<Mutex<StreamingState>>,
+    // Unified backend communication
+    backend_event_sender: Arc<Mutex<Option<async_channel::Sender<BackendEvent>>>>,
+    backend_response_receiver: Arc<Mutex<Option<async_channel::Receiver<BackendResponse>>>>,
+
+    // Current chat state
+    current_session_id: Arc<Mutex<Option<String>>>,
+    chat_sessions: Arc<Mutex<Vec<ChatMetadata>>>,
 }
 
 // Implement Global trait for Gpui
@@ -70,10 +114,9 @@ impl Gpui {
         let input_value = Arc::new(Mutex::new(None));
         let input_requested = Arc::new(Mutex::new(false));
         let working_memory = Arc::new(Mutex::new(None));
-        let event_task = Arc::new(Mutex::new(None));
+        let event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
+        let session_event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let current_request_id = Arc::new(Mutex::new(0));
-        let current_tool_counter = Arc::new(Mutex::new(0));
-        let last_xml_tool_id = Arc::new(Mutex::new(String::new()));
         let streaming_state = Arc::new(Mutex::new(StreamingState::Idle));
 
         // Initialize parameter renderers registry with default renderer
@@ -115,11 +158,15 @@ impl Gpui {
             event_sender,
             event_receiver,
             event_task,
+            session_event_task,
             current_request_id,
-            current_tool_counter,
-            last_xml_tool_id,
             parameter_renderers,
             streaming_state,
+            backend_event_sender: Arc::new(Mutex::new(None)),
+            backend_response_receiver: Arc::new(Mutex::new(None)),
+
+            current_session_id: Arc::new(Mutex::new(None)),
+            chat_sessions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -138,6 +185,11 @@ impl Gpui {
             // Register our Gpui instance as a global
             cx.set_global(gpui_clone.clone());
 
+            // Register UI event sender as global for chat components
+            cx.set_global(UiEventSender(
+                gpui_clone.event_sender.lock().unwrap().clone(),
+            ));
+
             // Setup window close listener
             cx.bind_keys([gpui::KeyBinding::new("cmd-w", CloseWindow, None)]);
             cx.on_window_closed(|cx| {
@@ -151,20 +203,28 @@ impl Gpui {
             file_icons::init(cx);
 
             // Initialize gpui-component modules
-            theme::init_themes(cx);
             gpui_component::init(cx);
+            // Apply our custom theme colors
+            theme::init_themes(cx);
 
             // Spawn task to receive UiEvents
             let rx = gpui_clone.event_receiver.lock().unwrap().clone();
             let async_gpui_clone = gpui_clone.clone();
-            let task = cx.spawn(async move |cx: &mut AsyncApp| loop {
-                let result = rx.recv().await;
-                match result {
-                    Ok(received_event) => {
-                        async_gpui_clone.process_ui_event_async(received_event, cx);
-                    }
-                    Err(err) => {
-                        warn!("Receive error: {}", err);
+            debug!("Starting UI event processing task");
+            let task = cx.spawn(async move |cx: &mut AsyncApp| {
+                debug!("UI event processing task is running");
+                loop {
+                    trace!("Waiting for UI event...");
+                    let result = rx.recv().await;
+                    match result {
+                        Ok(received_event) => {
+                            trace!("UI event processing: Received event: {:?}", received_event);
+                            async_gpui_clone.process_ui_event_async(received_event, cx);
+                        }
+                        Err(err) => {
+                            warn!("Receive error: {}", err);
+                            break;
+                        }
                     }
                 }
             });
@@ -172,15 +232,51 @@ impl Gpui {
             // Store the task in our Gpui instance
             {
                 let mut task_guard = gpui_clone.event_task.lock().unwrap();
-                *task_guard = Some(Box::new(task));
+                *task_guard = Some(task);
+            }
+
+            // Spawn task to handle chat management responses from agent
+            let chat_gpui_clone = gpui_clone.clone();
+            let chat_response_task = cx.spawn(async move |cx: &mut AsyncApp| {
+                // Wait a bit for the communication channels to be set up
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                loop {
+                    // Check if we have a response receiver
+                    let receiver_opt = chat_gpui_clone
+                        .backend_response_receiver
+                        .lock()
+                        .unwrap()
+                        .clone();
+                    if let Some(receiver) = receiver_opt {
+                        match receiver.recv().await {
+                            Ok(response) => {
+                                chat_gpui_clone.handle_backend_response(response, cx);
+                            }
+                            Err(_) => {
+                                // Channel closed, break the loop
+                                break;
+                            }
+                        }
+                    } else {
+                        // No receiver yet, wait and try again
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            });
+
+            // Store the chat response task as well
+            {
+                let mut task_guard = gpui_clone.session_event_task.lock().unwrap();
+                *task_guard = Some(chat_response_task);
             }
 
             // Create memory view with our shared working memory
             let memory_view = cx.new(|cx| MemoryView::new(working_memory.clone(), cx));
 
-            // Create window with larger size to accommodate both views
+            // Create window with larger size to accommodate chat sidebar, messages, and memory view
             let bounds =
-                gpui::Bounds::centered(None, gpui::size(gpui::px(1000.0), gpui::px(650.0)), cx);
+                gpui::Bounds::centered(None, gpui::size(gpui::px(1400.0), gpui::px(700.0)), cx);
             // Open window with titlebar
             let window_result = cx.open_window(
                 gpui::WindowOptions {
@@ -335,6 +431,83 @@ impl Gpui {
                 }
                 cx.refresh().expect("Failed to refresh windows");
             }
+            UiEvent::SetMessages {
+                messages,
+                session_id,
+                tool_results,
+            } => {
+                // Update current session ID if provided
+                if let Some(session_id) = session_id {
+                    *self.current_session_id.lock().unwrap() = Some(session_id);
+                }
+
+                // Clear existing messages
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    queue.clear();
+                }
+
+                // Process message data with on-demand container creation
+                for message_data in messages {
+                    let current_container = {
+                        let mut queue = self.message_queue.lock().unwrap();
+
+                        // Check if we can reuse the last container (same role)
+                        let needs_new_container = if let Some(last_container) = queue.last() {
+                            let last_role = cx
+                                .update_entity(last_container, |container, _cx| {
+                                    if container.is_user_message() {
+                                        MessageRole::User
+                                    } else {
+                                        MessageRole::Assistant
+                                    }
+                                })
+                                .expect("Failed to get container role");
+                            last_role == MessageRole::User || last_role != message_data.role
+                        } else {
+                            true
+                        };
+
+                        if needs_new_container {
+                            // Create new container for this role
+                            let container = cx
+                                .new(|cx| MessageContainer::with_role(message_data.role, cx))
+                                .expect("Failed to create message container");
+                            queue.push(container.clone());
+                            container
+                        } else {
+                            // Use existing container
+                            queue.last().unwrap().clone()
+                        }
+                    }; // Lock is released here
+
+                    // Process fragments into the current container
+                    self.process_fragments_for_container(
+                        &current_container,
+                        message_data.fragments,
+                        cx,
+                    );
+                }
+
+                // Apply tool results to update tool blocks with their execution results
+                for tool_result in tool_results {
+                    let queue = self.message_queue.lock().unwrap();
+                    for message_container in queue.iter() {
+                        cx.update_entity(message_container, |message_container, cx| {
+                            message_container.update_tool_status(
+                                &tool_result.tool_id,
+                                tool_result.status,
+                                tool_result.message.clone(),
+                                tool_result.output.clone(),
+                                cx,
+                            );
+                        })
+                        .expect("Failed to update entity");
+                    }
+                }
+
+                cx.refresh().expect("Failed to refresh windows");
+            }
             UiEvent::StreamingStarted(request_id) => {
                 let mut queue = self.message_queue.lock().unwrap();
 
@@ -380,7 +553,137 @@ impl Gpui {
                     }
                 }
             }
+            // Chat management events - forward to backend thread
+            UiEvent::LoadChatSession { session_id } => {
+                debug!("UI: LoadChatSession event for session_id: {}", session_id);
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::LoadSession { session_id });
+                }
+            }
+            UiEvent::CreateNewChatSession { name } => {
+                debug!("UI: CreateNewChatSession event with name: {:?}", name);
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::CreateNewSession { name });
+                }
+            }
+            UiEvent::DeleteChatSession { session_id } => {
+                debug!("UI: DeleteChatSession event for session_id: {}", session_id);
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::DeleteSession { session_id });
+                }
+            }
+            UiEvent::RefreshChatList => {
+                debug!("UI: RefreshChatList event received");
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    debug!("UI: Sending ListSessions to backend");
+                    let _ = sender.try_send(BackendEvent::ListSessions);
+                } else {
+                    warn!("UI: No backend event sender available for RefreshChatList");
+                }
+            }
+            UiEvent::UpdateChatList { sessions } => {
+                debug!(
+                    "UI: UpdateChatList event received with {} sessions",
+                    sessions.len()
+                );
+                // Update local cache
+                *self.chat_sessions.lock().unwrap() = sessions.clone();
+                let _current_session_id = self.current_session_id.lock().unwrap().clone();
+
+                // Refresh all windows to trigger re-render with new chat data
+                debug!("UI: Refreshing windows for chat list update");
+                cx.refresh().expect("Failed to refresh windows");
+            }
+            UiEvent::ClearMessages => {
+                debug!("UI: ClearMessages event");
+                let mut queue = self.message_queue.lock().unwrap();
+                queue.clear();
+                cx.refresh().expect("Failed to refresh windows");
+            }
+            UiEvent::SendUserMessage {
+                message,
+                session_id,
+            } => {
+                debug!(
+                    "UI: SendUserMessage event for session {}: {}",
+                    session_id, message
+                );
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::SendUserMessage {
+                        session_id,
+                        message,
+                    });
+                } else {
+                    warn!("UI: No backend event sender available");
+                }
+            }
         }
+    }
+
+    /// Process display fragments and add them to a message container
+    fn process_fragments_for_container(
+        &self,
+        container: &Entity<MessageContainer>,
+        fragments: Vec<DisplayFragment>,
+        cx: &mut gpui::AsyncApp,
+    ) {
+        for fragment in fragments {
+            match fragment {
+                DisplayFragment::PlainText(text) => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_or_append_to_text_block(text, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ThinkingText(text) => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_or_append_to_thinking_block(text, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ToolName { name, id } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_tool_use_block(name, id, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ToolParameter {
+                    name,
+                    value,
+                    tool_id,
+                } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_or_update_tool_parameter(tool_id, name, value, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ToolEnd { id } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.end_tool_use(id, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
+        }
+    }
+
+    /// Setup unified backend communication channels
+    /// Returns channels for backend thread to receive events and send responses
+    pub fn setup_backend_communication(
+        &self,
+    ) -> (
+        async_channel::Receiver<BackendEvent>,
+        async_channel::Sender<BackendResponse>,
+    ) {
+        let (event_tx, event_rx) = async_channel::unbounded::<BackendEvent>();
+        let (response_tx, response_rx) = async_channel::unbounded::<BackendResponse>();
+
+        // Store channels for UI use
+        *self.backend_event_sender.lock().unwrap() = Some(event_tx);
+        *self.backend_response_receiver.lock().unwrap() = Some(response_rx);
+
+        // Return the backend ends
+        (event_rx, response_tx)
     }
 
     // Helper to add an event to the queue
@@ -389,6 +692,44 @@ impl Gpui {
         // Non-blocking send
         if let Err(err) = sender.try_send(event) {
             warn!("Failed to send event via channel: {}", err);
+        }
+    }
+
+    // Get current chat state for UI components
+    pub fn get_chat_sessions(&self) -> Vec<ChatMetadata> {
+        self.chat_sessions.lock().unwrap().clone()
+    }
+
+    pub fn get_current_session_id(&self) -> Option<String> {
+        self.current_session_id.lock().unwrap().clone()
+    }
+
+    // Handle backend responses
+    fn handle_backend_response(&self, response: BackendResponse, _cx: &mut AsyncApp) {
+        debug!("UI: Received chat management response: {:?}", response);
+        match response {
+            BackendResponse::SessionCreated { session_id } => {
+                *self.current_session_id.lock().unwrap() = Some(session_id.clone());
+                // Refresh the session list
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::ListSessions);
+                    // Load the newly created session to connect it to the UI
+                    let _ = sender.try_send(BackendEvent::LoadSession { session_id });
+                }
+            }
+            BackendResponse::SessionDeleted { session_id: _ } => {
+                // Refresh the session list
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::ListSessions);
+                }
+            }
+            BackendResponse::SessionsListed { sessions } => {
+                *self.chat_sessions.lock().unwrap() = sessions.clone();
+                self.push_event(UiEvent::UpdateChatList { sessions });
+            }
+            BackendResponse::Error { message } => {
+                warn!("Backend error: {}", message);
+            }
         }
     }
 }
@@ -411,6 +752,10 @@ impl UserInterface for Gpui {
                     role: MessageRole::User,
                 });
             }
+            UIMessage::UiEvent(event) => {
+                // Forward UI events directly to the event processing
+                self.push_event(event);
+            }
         }
 
         Ok(())
@@ -423,8 +768,9 @@ impl UserInterface for Gpui {
             *requested = true;
         }
 
-        // Wait for input
+        // Wait for input or commands
         loop {
+            // Check for user input
             {
                 let mut input = self.input_value.lock().unwrap();
                 if let Some(value) = input.take() {
@@ -434,6 +780,7 @@ impl UserInterface for Gpui {
                     return Ok(value);
                 }
             }
+
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -451,25 +798,20 @@ impl UserInterface for Gpui {
                 });
             }
             DisplayFragment::ToolName { name, id } => {
-                let tool_id = if id.is_empty() {
-                    // XML case: Generate ID based on request ID and tool counter
-                    let request_id = *self.current_request_id.lock().unwrap();
-                    let mut tool_counter = self.current_tool_counter.lock().unwrap();
-                    *tool_counter += 1;
-                    let new_id = format!("tool-{}-{}", request_id, tool_counter);
-
-                    // Save this ID for subsequent empty parameter IDs
-                    *self.last_xml_tool_id.lock().unwrap() = new_id.clone();
-
-                    new_id
-                } else {
-                    // JSON case: Use the provided ID
-                    id.clone()
-                };
+                if id.is_empty() {
+                    warn!(
+                        "StreamingProcessor provided empty tool ID for tool '{}' - this is a bug!",
+                        name
+                    );
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Empty tool ID for tool '{}'", name),
+                    )));
+                }
 
                 self.push_event(UiEvent::StartTool {
                     name: name.clone(),
-                    id: tool_id,
+                    id: id.clone(),
                 });
             }
             DisplayFragment::ToolParameter {
@@ -477,28 +819,30 @@ impl UserInterface for Gpui {
                 value,
                 tool_id,
             } => {
-                // Use last_xml_tool_id if tool_id is empty
-                let actual_id = if tool_id.is_empty() {
-                    self.last_xml_tool_id.lock().unwrap().clone()
-                } else {
-                    tool_id.clone()
-                };
+                if tool_id.is_empty() {
+                    warn!("StreamingProcessor provided empty tool ID for parameter '{}' - this is a bug!", name);
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Empty tool ID for parameter '{}'", name),
+                    )));
+                }
 
                 self.push_event(UiEvent::UpdateToolParameter {
-                    tool_id: actual_id,
+                    tool_id: tool_id.clone(),
                     name: name.clone(),
                     value: value.clone(),
                 });
             }
             DisplayFragment::ToolEnd { id } => {
-                // Use last_xml_tool_id if id is empty
-                let tool_id = if id.is_empty() {
-                    self.last_xml_tool_id.lock().unwrap().clone()
-                } else {
-                    id.clone()
-                };
+                if id.is_empty() {
+                    warn!("StreamingProcessor provided empty tool ID for ToolEnd - this is a bug!");
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Empty tool ID for ToolEnd".to_string(),
+                    )));
+                }
 
-                self.push_event(UiEvent::EndTool { id: tool_id });
+                self.push_event(UiEvent::EndTool { id: id.clone() });
             }
         }
 
@@ -531,23 +875,17 @@ impl UserInterface for Gpui {
         Ok(())
     }
 
-    async fn begin_llm_request(&self) -> Result<u64, UIError> {
+    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError> {
         // Set streaming state to Streaming
         *self.streaming_state.lock().unwrap() = StreamingState::Streaming;
 
-        // Increment request ID counter
-        let mut request_id = self.current_request_id.lock().unwrap();
-        *request_id += 1;
-        let current_id = *request_id;
-
-        // Reset tool counter for this request
-        let mut tool_counter = self.current_tool_counter.lock().unwrap();
-        *tool_counter = 0;
+        // Store the request ID
+        *self.current_request_id.lock().unwrap() = request_id;
 
         // Send StreamingStarted event
-        self.push_event(UiEvent::StreamingStarted(current_id));
+        self.push_event(UiEvent::StreamingStarted(request_id));
 
-        Ok(current_id)
+        Ok(())
     }
 
     async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError> {

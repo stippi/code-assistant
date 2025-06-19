@@ -53,6 +53,8 @@ pub const THEME_LIGHT: &str = "theme_light"; // theme_light.svg
 
 pub const SEND: &str = "send"; // send.svg
 pub const STOP: &str = "stop"; // circle_stop.svg
+pub const MESSAGE_BUBBLES: &str = "message_bubbles"; // message_bubbles.svg
+pub const PLUS: &str = "plus"; // plus.svg
 
 // Tool-specific icon mappings to actual SVG files
 // These are direct constants defining the paths to SVG icons or existing types

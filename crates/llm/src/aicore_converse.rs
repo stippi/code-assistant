@@ -361,7 +361,7 @@ impl AiCoreClient {
     }
 
     async fn send_with_retry(
-        &self,
+        &mut self,
         request: &ConverseRequest,
         streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
@@ -393,7 +393,7 @@ impl AiCoreClient {
     }
 
     async fn try_send_request(
-        &self,
+        &mut self,
         request: &ConverseRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
@@ -708,7 +708,7 @@ impl AiCoreClient {
 #[async_trait]
 impl LLMProvider for AiCoreClient {
     async fn send_message(
-        &self,
+        &mut self,
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {

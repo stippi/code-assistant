@@ -1,7 +1,7 @@
 use super::DisplayFragment;
 use super::StreamProcessorTrait;
 use crate::ui::{UIError, UserInterface};
-use llm::StreamingChunk;
+use llm::{ContentBlock, Message, MessageContent, StreamingChunk};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -77,7 +77,7 @@ pub struct JsonStreamProcessor {
 }
 
 impl StreamProcessorTrait for JsonStreamProcessor {
-    fn new(ui: Arc<Box<dyn UserInterface>>) -> Self {
+    fn new(ui: Arc<Box<dyn UserInterface>>, _request_id: u64) -> Self {
         Self {
             state: JsonProcessorState::default(),
             ui,
@@ -174,6 +174,74 @@ impl StreamProcessorTrait for JsonStreamProcessor {
 
             StreamingChunk::Text(text) => self.process_text_with_thinking_tags(text),
         }
+    }
+
+    fn extract_fragments_from_message(
+        &mut self,
+        message: &Message,
+    ) -> Result<Vec<DisplayFragment>, UIError> {
+        let mut fragments = Vec::new();
+
+        match &message.content {
+            MessageContent::Text(text) => {
+                // Process text for thinking tags, similar to process_text_with_thinking_tags
+                // but collect fragments instead of sending to UI
+                fragments.extend(self.extract_fragments_from_text(text, message.request_id)?);
+            }
+            MessageContent::Structured(blocks) => {
+                for block in blocks {
+                    match block {
+                        ContentBlock::Thinking { thinking, .. } => {
+                            fragments.push(DisplayFragment::ThinkingText(thinking.clone()));
+                        }
+                        ContentBlock::Text { text } => {
+                            // Process text for any thinking tags
+                            fragments.extend(
+                                self.extract_fragments_from_text(text, message.request_id)?,
+                            );
+                        }
+                        ContentBlock::ToolUse { id, name, input } => {
+                            // Add tool name fragment
+                            fragments.push(DisplayFragment::ToolName {
+                                name: name.clone(),
+                                id: id.clone(),
+                            });
+
+                            // Parse JSON input into tool parameters
+                            if let Some(obj) = input.as_object() {
+                                for (key, value) in obj {
+                                    let value_str = if value.is_string() {
+                                        // Remove quotes from string values
+                                        value.as_str().unwrap_or("").to_string()
+                                    } else {
+                                        // For non-string values, serialize as JSON
+                                        value.to_string()
+                                    };
+
+                                    fragments.push(DisplayFragment::ToolParameter {
+                                        name: key.clone(),
+                                        value: value_str,
+                                        tool_id: id.clone(),
+                                    });
+                                }
+                            }
+
+                            // Add tool end fragment
+                            fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
+                        }
+                        ContentBlock::ToolResult { .. } => {
+                            // Tool results are typically not part of assistant messages
+                            // but we could handle them if needed
+                        }
+                        ContentBlock::RedactedThinking { .. } => {
+                            // Redacted thinking blocks are not displayed
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(fragments)
     }
 }
 
@@ -825,5 +893,144 @@ impl JsonStreamProcessor {
         }
 
         false
+    }
+
+    /// Extract fragments from text without sending to UI (used for session loading)
+    fn extract_fragments_from_text(
+        &mut self,
+        text: &str,
+        _request_id: Option<u64>,
+    ) -> Result<Vec<DisplayFragment>, UIError> {
+        let mut fragments = Vec::new();
+
+        // Local state for processing this text
+        let mut local_in_thinking = false;
+        let mut at_block_start = false;
+        let mut current_pos = 0;
+
+        while current_pos < text.len() {
+            if let Some(tag_start_offset) = text[current_pos..].find('<') {
+                let absolute_tag_pos = current_pos + tag_start_offset;
+
+                // Process text before tag
+                if tag_start_offset > 0 {
+                    let pre_tag_slice = &text[current_pos..absolute_tag_pos];
+
+                    // Check what kind of tag follows to determine trimming
+                    let after_lt_slice = &text[absolute_tag_pos..];
+                    let (tag_type, _tag_len) = self.detect_thinking_tag(after_lt_slice);
+
+                    let mut processed_pre_text = pre_tag_slice.to_string();
+                    if processed_pre_text.ends_with('\n') {
+                        processed_pre_text.pop();
+                    }
+                    if at_block_start && !processed_pre_text.is_empty() {
+                        processed_pre_text = processed_pre_text.trim_start().to_string();
+                    }
+
+                    if !processed_pre_text.is_empty() {
+                        let mut final_pre_text = processed_pre_text;
+
+                        // If a real thinking tag follows, trim ALL trailing spaces
+                        if tag_type == ThinkingTagType::Start || tag_type == ThinkingTagType::End {
+                            while final_pre_text.ends_with(' ') {
+                                final_pre_text.pop();
+                            }
+                        }
+
+                        if !final_pre_text.is_empty() {
+                            if local_in_thinking {
+                                fragments.push(DisplayFragment::ThinkingText(final_pre_text));
+                            } else {
+                                fragments.push(DisplayFragment::PlainText(final_pre_text));
+                            }
+                        }
+                    }
+                    at_block_start = false;
+                }
+
+                // Check for thinking tags
+                let tag_slice = &text[absolute_tag_pos..];
+                let (tag_type, tag_len) = self.detect_thinking_tag(tag_slice);
+
+                if tag_len > 0 {
+                    match tag_type {
+                        ThinkingTagType::Start => {
+                            local_in_thinking = true;
+                            at_block_start = true;
+                            current_pos = absolute_tag_pos + tag_len;
+                        }
+                        ThinkingTagType::End => {
+                            local_in_thinking = false;
+                            at_block_start = true;
+                            current_pos = absolute_tag_pos + tag_len;
+                        }
+                        _ => {
+                            // Not a thinking tag, process as regular character
+                            let char_len = tag_slice.chars().next().map_or(1, |c| c.len_utf8());
+                            let char_text = &text[absolute_tag_pos..absolute_tag_pos + char_len];
+
+                            if !char_text.is_empty() {
+                                if local_in_thinking {
+                                    fragments
+                                        .push(DisplayFragment::ThinkingText(char_text.to_string()));
+                                } else {
+                                    fragments
+                                        .push(DisplayFragment::PlainText(char_text.to_string()));
+                                }
+                            }
+                            current_pos = absolute_tag_pos + char_len;
+                            if !char_text.is_empty() {
+                                at_block_start = false;
+                            }
+                        }
+                    }
+                } else {
+                    // Incomplete or invalid tag, process as regular character
+                    let char_len = tag_slice.chars().next().map_or(1, |c| c.len_utf8());
+                    let char_text = &text[absolute_tag_pos..absolute_tag_pos + char_len];
+
+                    if !char_text.is_empty() {
+                        if local_in_thinking {
+                            fragments.push(DisplayFragment::ThinkingText(char_text.to_string()));
+                        } else {
+                            fragments.push(DisplayFragment::PlainText(char_text.to_string()));
+                        }
+                    }
+                    current_pos = absolute_tag_pos + char_len;
+                    if !char_text.is_empty() {
+                        at_block_start = false;
+                    }
+                }
+            } else {
+                // No more tags, process remaining text
+                let remaining = &text[current_pos..];
+                if !remaining.is_empty() {
+                    let mut processed_remaining_text = remaining.to_string();
+                    if processed_remaining_text.ends_with('\n') {
+                        processed_remaining_text.pop();
+                    }
+                    if at_block_start && !processed_remaining_text.is_empty() {
+                        processed_remaining_text =
+                            processed_remaining_text.trim_start().to_string();
+                    }
+
+                    if !processed_remaining_text.is_empty() {
+                        at_block_start = false;
+                    }
+
+                    if !processed_remaining_text.is_empty() {
+                        if local_in_thinking {
+                            fragments.push(DisplayFragment::ThinkingText(processed_remaining_text));
+                        } else {
+                            fragments.push(DisplayFragment::PlainText(processed_remaining_text));
+                        }
+                    }
+                }
+                current_pos = text.len();
+            }
+        }
+
+        Ok(fragments)
     }
 }

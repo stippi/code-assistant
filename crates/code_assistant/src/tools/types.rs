@@ -1,5 +1,6 @@
 use llm::ToolDefinition;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Enhanced version of the base ToolDefinition with additional metadata fields
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,5 +25,27 @@ impl AnnotatedToolDefinition {
     /// Convert a vector of AnnotatedToolDefinition to a vector of ToolDefinition
     pub fn to_tool_definitions(tools: Vec<AnnotatedToolDefinition>) -> Vec<ToolDefinition> {
         tools.into_iter().map(|t| t.to_tool_definition()).collect()
+    }
+}
+
+/// Represents a tool request from the LLM, derived from ContentBlock::ToolUse
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolRequest {
+    pub id: String,
+    pub name: String,
+    pub input: Value,
+}
+
+impl From<&llm::ContentBlock> for ToolRequest {
+    fn from(block: &llm::ContentBlock) -> Self {
+        if let llm::ContentBlock::ToolUse { id, name, input } = block {
+            Self {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            }
+        } else {
+            panic!("Cannot convert non-ToolUse ContentBlock to ToolRequest")
+        }
     }
 }

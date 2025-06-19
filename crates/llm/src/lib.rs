@@ -57,10 +57,10 @@ pub type StreamingCallback = Box<dyn Fn(&StreamingChunk) -> Result<()> + Send + 
 
 /// Trait for different LLM provider implementations
 #[async_trait]
-pub trait LLMProvider {
+pub trait LLMProvider: Send + Sync {
     /// Sends a request to the LLM service
     async fn send_message(
-        &self,
+        &mut self,
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse>;

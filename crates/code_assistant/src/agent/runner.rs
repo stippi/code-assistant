@@ -1,9 +1,10 @@
+use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::tool_description_generator::generate_tool_documentation;
-use crate::agent::types::{ToolExecution, ToolRequest};
+use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
-use crate::persistence::StatePersistence;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
-use crate::tools::{parse_tool_xml, TOOL_TAG_PREFIX};
+use crate::tools::parse_xml_tool_invocations;
+use crate::tools::ToolRequest;
 use crate::types::*;
 use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
@@ -15,7 +16,7 @@ use llm::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use tracing::debug;
+use tracing::{debug, trace, warn};
 
 use super::ToolMode;
 
@@ -40,7 +41,7 @@ pub struct Agent {
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
-    state_persistence: Box<dyn StatePersistence>,
+    state_persistence: Box<dyn AgentStatePersistence>,
     // Store all messages exchanged
     message_history: Vec<Message>,
     // Path provided during agent initialization
@@ -51,6 +52,8 @@ pub struct Agent {
     tool_executions: Vec<crate::agent::types::ToolExecution>,
     // Cached system message
     cached_system_message: OnceLock<String>,
+    // Counter for generating unique request IDs
+    next_request_id: u64,
 }
 
 impl Agent {
@@ -62,7 +65,7 @@ impl Agent {
                     format!("Unknown tool '{}'. Please use only available tools.", t)
                 }
                 ToolError::ParseError(msg) => {
-                    format!("Tool parameter error: {}. Please try again.", msg)
+                    format!("Tool error: {}. Please try again.", msg)
                 }
             }
         } else {
@@ -76,8 +79,8 @@ impl Agent {
         tool_mode: ToolMode,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
-        ui: Box<dyn UserInterface>,
-        state_persistence: Box<dyn StatePersistence>,
+        ui: Arc<Box<dyn UserInterface>>,
+        state_persistence: Box<dyn AgentStatePersistence>,
         init_path: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -85,7 +88,7 @@ impl Agent {
             llm_provider,
             tool_mode,
             project_manager,
-            ui: Arc::new(ui),
+            ui,
             command_executor,
             state_persistence,
             message_history: Vec::new(),
@@ -93,190 +96,153 @@ impl Agent {
             initial_project: None,
             tool_executions: Vec::new(),
             cached_system_message: OnceLock::new(),
+            next_request_id: 1, // Start from 1
         }
     }
 
-    /// Save the current state (message history)
+    /// Save the current state (message history and tool executions)
     fn save_state(&mut self) -> Result<()> {
-        self.state_persistence.save_state(
-            self.working_memory.current_task.clone(),
+        trace!(
+            "saving {} messages to persistence",
+            self.message_history.len()
+        );
+        self.state_persistence.save_agent_state(
             self.message_history.clone(),
+            self.tool_executions.clone(),
+            self.working_memory.clone(),
+            self.init_path.clone(),
+            self.initial_project.clone(),
+            self.next_request_id,
         )?;
         Ok(())
     }
 
     /// Adds a message to the history and saves the state
-    fn append_message(&mut self, message: Message) -> Result<()> {
+    pub fn append_message(&mut self, message: Message) -> Result<()> {
         self.message_history.push(message);
         self.save_state()?;
         Ok(())
     }
 
-    pub async fn get_input_from_ui(&self) -> Result<String> {
-        self.ui.get_input().await.map_err(|e| e.into())
-    }
+    /// Run the agent loop until task completion
+    /// Get user input whenever there is no tool use by the LLM
+    pub async fn run_agent_loop(&mut self) -> Result<()> {
+        loop {
+            // Run a single iteration and check if user input is needed
+            let needs_user_input = self.run_single_iteration_internal().await?;
 
-    /// Handles the interaction with the LLM to get the next assistant message.
-    /// Appends the assistant's message to the history only if it has content.
-    async fn obtain_llm_response(&mut self, messages: Vec<Message>) -> Result<llm::LLMResponse> {
-        let llm_response = self.get_next_assistant_message(messages).await?;
-
-        // Only add to message history if there's actual content
-        if !llm_response.content.is_empty() {
-            self.append_message(Message {
-                role: MessageRole::Assistant,
-                content: MessageContent::Structured(llm_response.content.clone()),
-            })?;
-        }
-
-        Ok(llm_response)
-    }
-
-    /// Parses tool requests from the LLM response.
-    /// Returns a tuple of tool requests and a LoopFlow indicating what action should be taken next.
-    /// - If parsing succeeds and requests are empty: returns (empty vec, GetUserInput)
-    /// - If parsing succeeds and requests exist: returns (requests, Continue)
-    /// - If parsing fails: adds an error message to history and returns (empty vec, Continue)
-    async fn extract_tool_requests_from_response(
-        &mut self,
-        llm_response: &llm::LLMResponse,
-        request_counter: u64,
-    ) -> Result<(Vec<ToolRequest>, LoopFlow)> {
-        match parse_llm_response(llm_response, request_counter) {
-            Ok(requests) => {
-                if requests.is_empty() {
-                    Ok((requests, LoopFlow::GetUserInput))
-                } else {
-                    Ok((requests, LoopFlow::Continue))
-                }
-            }
-            Err(e) => {
-                let error_text = Self::format_error_for_user(&e);
-                let error_msg = Message {
-                    role: MessageRole::User,
-                    content: MessageContent::Text(error_text),
-                };
-                self.append_message(error_msg)?;
-                Ok((Vec::new(), LoopFlow::Continue)) // Continue without user input on parsing errors
+            if needs_user_input {
+                // LLM explicitly requested user input (no tools requested)
+                self.solicit_user_input().await?;
+            } else {
+                // Task completed or loop should break
+                return Ok(());
             }
         }
     }
 
-    /// Handles the case where no tool requests are made by the LLM.
-    /// Prompts the user for input and adds it to the message history.
-    async fn solicit_user_input(&mut self) -> Result<()> {
-        let user_input = self.get_input_from_ui().await?;
-        self.ui
-            .display(UIMessage::UserInput(user_input.clone()))
-            .await?;
-        let user_msg = Message {
-            role: MessageRole::User,
-            content: MessageContent::Text(user_input.clone()),
-        };
-        self.append_message(user_msg)?;
+    /// Run a single iteration of the agent loop without waiting for user input
+    /// This is used in the new on-demand agent architecture
+    pub async fn run_single_iteration(&mut self) -> Result<()> {
+        let _needs_user_input = self.run_single_iteration_internal().await?;
+        // In on-demand mode, we don't handle user input - that's done externally
+        // Just ignore the needs_user_input flag and return
         Ok(())
     }
 
-    /// Executes a list of tool requests.
-    /// Handles the "complete_task" action and appends tool results to message history.
-    async fn manage_tool_execution(&mut self, tool_requests: &[ToolRequest]) -> Result<LoopFlow> {
-        let mut content_blocks = Vec::new();
-
-        for tool_request in tool_requests {
-            if tool_request.name == "complete_task" {
-                self.state_persistence.cleanup()?;
-                debug!("Task completed");
-                return Ok(LoopFlow::Break);
-            }
-
-            let result_block = match self.execute_tool(tool_request).await {
-                Ok(success) => ContentBlock::ToolResult {
-                    tool_use_id: tool_request.id.clone(),
-                    content: String::new(), // Will be filled dynamically in prepare_messages
-                    is_error: if success { None } else { Some(true) },
-                },
-                Err(e) => {
-                    let error_text = Self::format_error_for_user(&e);
-                    ContentBlock::ToolResult {
-                        tool_use_id: tool_request.id.clone(),
-                        content: error_text,
-                        is_error: Some(true),
-                    }
-                }
-            };
-            content_blocks.push(result_block);
-        }
-
-        // Only add message if there were actual tool executions (not just complete_task)
-        if !content_blocks.is_empty() {
-            let result_message = Message {
-                role: MessageRole::User,
-                content: MessageContent::Structured(content_blocks),
-            };
-            self.append_message(result_message)?;
-        }
-        Ok(LoopFlow::Continue)
-    }
-
-    async fn run_agent_loop(&mut self) -> Result<()> {
-        let mut request_counter: u64 = 0;
-
+    /// Internal helper for running a single iteration of the agent calling tools in a loop
+    /// Returns whether user input is needed before the next iteration
+    async fn run_single_iteration_internal(&mut self) -> Result<bool> {
         loop {
-            let messages = self.prepare_messages();
-            if self.message_history.is_empty() {
-                // This ensures that on the very first run, the initial task (user message)
-                // is correctly set up in message_history if `prepare_messages` returns it.
-                // `prepare_messages` is designed to return the current task if history is empty.
-                self.message_history = messages.clone();
-            }
-            request_counter += 1;
+            let messages = self.render_tool_results_in_messages();
 
             // 1. Obtain LLM response (includes adding assistant message to history)
-            let llm_response = self.obtain_llm_response(messages).await?;
+            let (llm_response, request_id) = self.obtain_llm_response(messages).await?;
 
             // 2. Extract tool requests from LLM response and determine the next flow action
             let (tool_requests, flow) = self
-                .extract_tool_requests_from_response(&llm_response, request_counter)
+                .extract_tool_requests_from_response(&llm_response, request_id)
                 .await?;
 
             // 3. Act based on the flow instruction
             match flow {
                 LoopFlow::GetUserInput => {
-                    // LLM explicitly requested user input (no tools requested)
-                    self.solicit_user_input().await?;
+                    // In on-demand mode, we don't wait for user input
+                    // Instead, we complete this iteration
+                    debug!("Agent iteration complete - waiting for next user message");
+                    return Ok(true); // User input needed
                 }
                 LoopFlow::Continue => {
                     if !tool_requests.is_empty() {
                         // Tools were requested, manage their execution
-                        match self.manage_tool_execution(&tool_requests).await? {
+                        let flow = self.manage_tool_execution(&tool_requests).await?;
+
+                        // Save state and update memory after tool executions
+                        self.save_state()?;
+                        let _ = self.ui.update_memory(&self.working_memory).await;
+
+                        match flow {
                             LoopFlow::Continue => { /* Continue to the next iteration */ }
                             LoopFlow::GetUserInput => {
-                                // Handle case where tool execution results in needing user input
-                                self.solicit_user_input().await?;
+                                // Complete iteration instead of waiting for input
+                                debug!("Tool execution complete - waiting for next user message");
+                                return Ok(true); // User input needed
                             }
                             LoopFlow::Break => {
                                 // Task completed (e.g., via complete_task tool)
-                                return Ok(());
+                                debug!("Task completed");
+                                return Ok(false); // No user input needed, task complete
                             }
                         }
                     }
-                    // If tool_requests is empty here, it was a parsing error
-                    // and we continue to the next iteration without user input
+                    // If tool_requests is empty with Continue flow, this means there was a parse error
+                    // and we should continue the loop to give the LLM another chance to respond correctly
                 }
                 LoopFlow::Break => {
-                    // Immediately break the loop
-                    return Ok(());
+                    // Loop completed
+                    debug!("Agent loop break requested");
+                    // Save state before returning
+                    self.save_state()?;
+                    return Ok(false); // No user input needed, task complete
                 }
             }
-
-            // Notify UI of working memory change at the end of each cycle
-            let _ = self.ui.update_memory(&self.working_memory).await;
         }
     }
 
-    fn init_working_memory(&mut self, task: String) -> Result<()> {
-        self.working_memory.current_task = task.clone();
+    /// Load state from session state (for backward compatibility)
+    pub async fn load_from_session_state(
+        &mut self,
+        session_state: crate::session::SessionState,
+    ) -> Result<()> {
+        // Restore all state components
+        self.message_history = session_state.messages;
+        warn!(
+            "loaded {} messages from session",
+            self.message_history.len()
+        );
+        self.tool_executions = session_state.tool_executions;
+        self.working_memory = session_state.working_memory;
+        self.init_path = session_state.init_path;
+        self.initial_project = session_state.initial_project;
 
+        // Restore next_request_id from session, or calculate from existing messages for backward compatibility
+        self.next_request_id = session_state.next_request_id.unwrap_or_else(|| {
+            self.message_history
+                .iter()
+                .filter(|msg| matches!(msg.role, llm::MessageRole::Assistant))
+                .count() as u64
+                + 1
+        });
+
+        // Restore working memory file trees and project state
+        self.init_working_memory_projects()?;
+
+        let _ = self.ui.update_memory(&self.working_memory).await;
+
+        Ok(())
+    }
+
+    pub fn init_working_memory(&mut self) -> Result<()> {
         // Initialize empty structures for multi-project support
         self.working_memory.file_trees = HashMap::new();
         self.working_memory.available_projects = Vec::new();
@@ -284,6 +250,10 @@ impl Agent {
         // Reset the initial project
         self.initial_project = None;
 
+        self.init_working_memory_projects()
+    }
+
+    fn init_working_memory_projects(&mut self) -> Result<()> {
         // If a path was provided in args, add it as a temporary project
         if let Some(path) = &self.init_path {
             // Add as temporary project and get its name
@@ -321,11 +291,120 @@ impl Agent {
         Ok(())
     }
 
+    /// Handles the interaction with the LLM to get the next assistant message.
+    /// Appends the assistant's message to the history only if it has content.
+    async fn obtain_llm_response(
+        &mut self,
+        messages: Vec<Message>,
+    ) -> Result<(llm::LLMResponse, u64)> {
+        let (llm_response, request_id) = self.get_next_assistant_message(messages).await?;
+
+        // Only add to message history if there's actual content
+        if !llm_response.content.is_empty() {
+            self.append_message(Message {
+                role: MessageRole::Assistant,
+                content: MessageContent::Structured(llm_response.content.clone()),
+                request_id: Some(request_id),
+            })?;
+        }
+
+        Ok((llm_response, request_id))
+    }
+
+    /// Parses tool requests from the LLM response.
+    /// Returns a tuple of tool requests and a LoopFlow indicating what action should be taken next.
+    /// - If parsing succeeds and requests are empty: returns (empty vec, GetUserInput)
+    /// - If parsing succeeds and requests exist: returns (requests, Continue)
+    /// - If parsing fails: adds an error message to history and returns (empty vec, Continue)
+    async fn extract_tool_requests_from_response(
+        &mut self,
+        llm_response: &llm::LLMResponse,
+        request_counter: u64,
+    ) -> Result<(Vec<ToolRequest>, LoopFlow)> {
+        match parse_llm_response(llm_response, request_counter) {
+            Ok(requests) => {
+                if requests.is_empty() {
+                    Ok((requests, LoopFlow::GetUserInput))
+                } else {
+                    Ok((requests, LoopFlow::Continue))
+                }
+            }
+            Err(e) => {
+                let error_text = Self::format_error_for_user(&e);
+                let error_msg = Message {
+                    role: MessageRole::User,
+                    content: MessageContent::Text(error_text),
+                    request_id: None,
+                };
+                self.append_message(error_msg)?;
+                Ok((Vec::new(), LoopFlow::Continue)) // Continue without user input on parsing errors
+            }
+        }
+    }
+
+    /// Handles the case where no tool requests are made by the LLM.
+    /// Prompts the user for input and adds it to the message history.
+    async fn solicit_user_input(&mut self) -> Result<()> {
+        let user_input = self.ui.get_input().await?;
+        self.ui
+            .display(UIMessage::UserInput(user_input.clone()))
+            .await?;
+        let user_msg = Message {
+            role: MessageRole::User,
+            content: MessageContent::Text(user_input.clone()),
+            request_id: None,
+        };
+        self.append_message(user_msg)?;
+        Ok(())
+    }
+
+    /// Executes a list of tool requests.
+    /// Handles the "complete_task" action and appends tool results to message history.
+    async fn manage_tool_execution(&mut self, tool_requests: &[ToolRequest]) -> Result<LoopFlow> {
+        let mut content_blocks = Vec::new();
+
+        for tool_request in tool_requests {
+            if tool_request.name == "complete_task" {
+                debug!("Task completed");
+                return Ok(LoopFlow::Break);
+            }
+
+            let result_block = match self.execute_tool(tool_request).await {
+                Ok(success) => ContentBlock::ToolResult {
+                    tool_use_id: tool_request.id.clone(),
+                    content: String::new(), // Will be filled dynamically in prepare_messages
+                    is_error: if success { None } else { Some(true) },
+                },
+                Err(e) => {
+                    let error_text = Self::format_error_for_user(&e);
+                    ContentBlock::ToolResult {
+                        tool_use_id: tool_request.id.clone(),
+                        content: error_text,
+                        is_error: Some(true),
+                    }
+                }
+            };
+            content_blocks.push(result_block);
+        }
+
+        // Only add message if there were actual tool executions (not just complete_task)
+        if !content_blocks.is_empty() {
+            let result_message = Message {
+                role: MessageRole::User,
+                content: MessageContent::Structured(content_blocks),
+                request_id: None,
+            };
+            self.append_message(result_message)?;
+        }
+        Ok(LoopFlow::Continue)
+    }
+
     /// Start a new agent task
+    #[cfg(test)]
     pub async fn start_with_task(&mut self, task: String) -> Result<()> {
         debug!("Starting agent with task: {}", task);
 
-        self.init_working_memory(task.clone())?;
+        self.init_working_memory()?;
 
         self.message_history.clear();
         self.ui.display(UIMessage::UserInput(task.clone())).await?;
@@ -334,6 +413,7 @@ impl Agent {
         let user_msg = Message {
             role: MessageRole::User,
             content: MessageContent::Text(task.clone()),
+            request_id: None,
         };
         self.append_message(user_msg)?;
 
@@ -341,83 +421,6 @@ impl Agent {
         let _ = self.ui.update_memory(&self.working_memory).await;
 
         self.run_agent_loop().await
-    }
-
-    /// Continue from a saved state
-    pub async fn start_from_state(&mut self) -> Result<()> {
-        if let Some(state) = self.state_persistence.load_state()? {
-            debug!("Continuing task: {}", state.task);
-
-            // Initialize working memory
-            self.init_working_memory(state.task.clone())?;
-
-            // Restore message history
-            self.message_history = state.messages;
-            debug!("Restored {} previous messages", self.message_history.len());
-
-            // Load current state of files into memory - will create file trees as needed
-            self.load_current_files_to_memory().await?;
-
-            self.ui
-                .display(UIMessage::Action(format!(
-                    "Continuing task: {}, loaded {} previous messages",
-                    state.task,
-                    self.message_history.len()
-                )))
-                .await?;
-
-            // Notify UI of loaded working memory
-            let _ = self.ui.update_memory(&self.working_memory).await;
-
-            self.run_agent_loop().await
-        } else {
-            anyhow::bail!("No saved state found")
-        }
-    }
-
-    /// Initialize file trees for available projects
-    /// This is a simplified version that doesn't rely on action_history
-    async fn load_current_files_to_memory(&mut self) -> Result<()> {
-        // In the new version, we don't need to build file trees from action history
-        // Instead, we'll just initialize file trees for the available projects
-
-        // If there's an initial project, make sure it's in the list
-        if let Some(project_name) = &self.initial_project {
-            // Create file tree for the project
-            match self.project_manager.get_explorer_for_project(project_name) {
-                Ok(mut explorer) => {
-                    match explorer.create_initial_tree(2) {
-                        Ok(tree) => {
-                            self.working_memory
-                                .file_trees
-                                .insert(project_name.clone(), tree);
-
-                            // Add to available projects if not already there
-                            if !self
-                                .working_memory
-                                .available_projects
-                                .contains(project_name)
-                            {
-                                self.working_memory
-                                    .available_projects
-                                    .push(project_name.clone());
-                            }
-                        }
-                        Err(e) => {
-                            debug!(
-                                "Error creating file tree for project {}: {}",
-                                project_name, e
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    debug!("Error getting explorer for project {}: {}", project_name, e);
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Get the appropriate system prompt based on tool mode
@@ -541,6 +544,7 @@ impl Agent {
                         Message {
                             role: msg.role,
                             content: MessageContent::Text(text_content.trim().to_string()),
+                            request_id: msg.request_id,
                         }
                     }
                     // For non-structured content, keep as is
@@ -551,9 +555,16 @@ impl Agent {
     }
 
     /// Gets the next assistant message from the LLM provider.
-    async fn get_next_assistant_message(&self, messages: Vec<Message>) -> Result<llm::LLMResponse> {
+    async fn get_next_assistant_message(
+        &mut self,
+        messages: Vec<Message>,
+    ) -> Result<(llm::LLMResponse, u64)> {
+        // Generate and increment request ID
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+
         // Inform UI that a new LLM request is starting
-        let request_id = self.ui.begin_llm_request().await?;
+        self.ui.begin_llm_request(request_id).await?;
         debug!("Starting LLM request with ID: {}", request_id);
 
         // Convert messages based on tool mode
@@ -590,16 +601,17 @@ impl Agent {
             debug!("{}", indented);
         }
 
-        // Create a StreamProcessor and use it to process streaming chunks
-        let ui = Arc::clone(&self.ui);
+        // Create a StreamProcessor with the UI and request ID
         let processor = Arc::new(Mutex::new(create_stream_processor(
             self.tool_mode,
-            ui.clone(),
+            self.ui.clone(),
+            request_id,
         )));
 
+        let ui_for_callback = self.ui.clone();
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
             // Check if streaming should continue
-            if !ui.should_streaming_continue() {
+            if !ui_for_callback.should_streaming_continue() {
                 debug!("Streaming should stop - user requested cancellation");
                 return Err(anyhow::anyhow!("Streaming cancelled by user"));
             }
@@ -624,10 +636,13 @@ impl Agent {
                     // End LLM request with cancelled=true
                     let _ = self.ui.end_llm_request(request_id, true).await;
                     // Return empty response
-                    return Ok(llm::LLMResponse {
-                        content: Vec::new(),
-                        usage: llm::Usage::zero(),
-                    });
+                    return Ok((
+                        llm::LLMResponse {
+                            content: Vec::new(),
+                            usage: llm::Usage::zero(),
+                        },
+                        request_id,
+                    ));
                 }
 
                 // For other errors, still end the request but not cancelled
@@ -662,19 +677,11 @@ impl Agent {
         let _ = self.ui.end_llm_request(request_id, false).await;
         debug!("Completed LLM request with ID: {}", request_id);
 
-        Ok(response)
+        Ok((response, request_id))
     }
 
     /// Prepare messages for LLM request, dynamically rendering tool outputs
-    fn prepare_messages(&self) -> Vec<Message> {
-        if self.message_history.is_empty() {
-            // Initial message with just the task
-            return vec![Message {
-                role: MessageRole::User,
-                content: MessageContent::Text(self.working_memory.current_task.clone()),
-            }];
-        }
-
+    fn render_tool_results_in_messages(&self) -> Vec<Message> {
         // Start with a clean slate
         let mut messages = Vec::new();
 
@@ -731,6 +738,7 @@ impl Agent {
                         let new_msg = Message {
                             role: msg.role.clone(),
                             content: MessageContent::Structured(new_blocks),
+                            request_id: msg.request_id,
                         };
                         messages.push(new_msg);
                     } else {
@@ -818,73 +826,15 @@ pub(crate) fn parse_llm_response(
     request_id: u64,
 ) -> Result<Vec<ToolRequest>> {
     let mut tool_requests = Vec::new();
-    let mut reasoning = String::new();
 
     for block in &response.content {
         if let ContentBlock::Text { text } = block {
-            let mut current_pos = 0;
-
-            while let Some(tool_start) = text[current_pos..].find(&format!("<{}", TOOL_TAG_PREFIX))
-            {
-                let abs_start = current_pos + tool_start;
-
-                // Add text before tool to reasoning (kept for potential future use)
-                reasoning.push_str(text[current_pos..abs_start].trim());
-                if !reasoning.is_empty() {
-                    reasoning.push('\n');
-                }
-
-                // Find the root tag name
-                let tag_name = text[abs_start..]
-                    .split('>')
-                    .next()
-                    .and_then(|s| s.strip_prefix('<'))
-                    .ok_or_else(|| anyhow::anyhow!("Invalid XML: missing tag name"))?;
-
-                // Only process tags with our tool prefix
-                if let Some(tool_name) = tag_name.strip_prefix(TOOL_TAG_PREFIX) {
-                    // Find closing tag for the root element
-                    let closing_tag = format!("</{}{}>", TOOL_TAG_PREFIX, tool_name);
-                    if let Some(rel_end) = text[abs_start..].find(&closing_tag) {
-                        let abs_end = abs_start + rel_end + closing_tag.len();
-                        let tool_content = &text[abs_start..abs_end];
-                        debug!("Found tool content:\n{}", tool_content);
-
-                        // Parse the tool XML to get tool name and parameters
-                        let (tool_name, tool_params) = parse_tool_xml(tool_content)?;
-
-                        // Check if the tool exists in the registry before creating a ToolRequest
-                        if ToolRegistry::global().get(&tool_name).is_none() {
-                            return Err(ToolError::UnknownTool(tool_name).into());
-                        }
-
-                        // Generate a unique tool ID that matches the one generated by the UI
-                        // The UI increments its counter before generating an ID, so we add 1
-                        let tool_id = format!("tool-{}-{}", request_id, tool_requests.len() + 1);
-
-                        // Create a ToolRequest
-                        let tool_request = ToolRequest {
-                            id: tool_id,
-                            name: tool_name,
-                            input: tool_params,
-                        };
-
-                        tool_requests.push(tool_request);
-                        current_pos = abs_end;
-                        continue;
-                    }
-                }
-
-                // If we get here, either the tag didn't have our prefix or we didn't find the closing tag
-                // In both cases, treat it as regular text
-                reasoning.push_str(&text[abs_start..abs_start + 1]);
-                current_pos = abs_start + 1;
-            }
-
-            // Add any remaining text to reasoning
-            if current_pos < text.len() {
-                reasoning.push_str(text[current_pos..].trim());
-            }
+            // Use state-based parser for XML tool invocations
+            tool_requests.extend(parse_xml_tool_invocations(
+                text,
+                request_id,
+                tool_requests.len(),
+            )?);
         }
 
         if let ContentBlock::ToolUse { id, name, input } = block {
@@ -895,7 +845,6 @@ pub(crate) fn parse_llm_response(
                 input: input.clone(),
             };
             tool_requests.push(tool_request);
-            reasoning = String::new();
         }
     }
 

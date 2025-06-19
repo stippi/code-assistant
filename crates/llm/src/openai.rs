@@ -358,6 +358,7 @@ impl OpenAIClient {
                                 content: MessageContent::Structured(
                                     other_blocks.iter().map(|&b| b.clone()).collect(),
                                 ),
+                                request_id: None,
                             };
                             openai_messages.push(Self::convert_message(&user_message));
                         }
@@ -701,7 +702,7 @@ impl OpenAIClient {
 #[async_trait]
 impl LLMProvider for OpenAIClient {
     async fn send_message(
-        &self,
+        &mut self,
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {

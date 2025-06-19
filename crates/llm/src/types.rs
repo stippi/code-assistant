@@ -47,6 +47,9 @@ pub struct LLMRequest {
 pub struct Message {
     pub role: MessageRole,
     pub content: MessageContent,
+    /// Request ID for assistant messages (used for consistent tool ID generation)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
