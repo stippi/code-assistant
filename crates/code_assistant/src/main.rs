@@ -334,8 +334,6 @@ async fn run_agent_terminal(
 fn run_agent_gpui(
     path: PathBuf,
     task: Option<String>,
-    _session_manager: SessionManager, // Session manager (kept for compatibility)
-    _session_state: Option<crate::session::SessionState>,
     provider: LLMProviderType,
     model: Option<String>,
     base_url: Option<String>,
@@ -519,20 +517,9 @@ async fn run_agent(args: Args) -> Result<()> {
 
     // Run in either GUI or terminal mode
     if use_gui {
-        // GUI mode - V2 architecture handles session management
-        let persistence = FileStatePersistence::new();
-        let agent_config = crate::session::AgentConfig {
-            tool_mode: tools_type,
-            init_path: Some(path.clone()),
-            initial_project: None,
-        };
-        let session_manager = SessionManager::new(persistence, agent_config);
-
         run_agent_gpui(
             path.clone(),
-            task,            // Can be None - will connect to latest session instead
-            session_manager, // dummy for compatibility
-            None,
+            task, // Can be None - will connect to latest session instead
             provider,
             model,
             base_url,
