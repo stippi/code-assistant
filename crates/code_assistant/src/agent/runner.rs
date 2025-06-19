@@ -13,7 +13,6 @@ use llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
     StreamingChunk,
 };
-#[cfg(test)]
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -243,8 +242,7 @@ impl Agent {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn init_working_memory(&mut self) -> Result<()> {
+    pub fn init_working_memory(&mut self) -> Result<()> {
         // Initialize empty structures for multi-project support
         self.working_memory.file_trees = HashMap::new();
         self.working_memory.available_projects = Vec::new();
@@ -252,7 +250,7 @@ impl Agent {
         // Reset the initial project
         self.initial_project = None;
 
-        Ok(())
+        self.init_working_memory_projects()
     }
 
     fn init_working_memory_projects(&mut self) -> Result<()> {

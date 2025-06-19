@@ -302,7 +302,7 @@ async fn run_agent_terminal(
     .context("Failed to initialize LLM client")?;
 
     // Create agent with file persistence
-    let state_storage = Box::new(file_persistence);
+    let state_storage = Box::new(file_persistence.clone());
     let mut agent = Agent::new(
         llm_client,
         tools_type,
@@ -312,8 +312,6 @@ async fn run_agent_terminal(
         state_storage,
         Some(root_path.clone()),
     );
-
-    let file_persistence = FileStatePersistence::new(&root_path, tools_type);
 
     // Check if we should continue from previous state or start new
     if continue_task && file_persistence.has_saved_state() {
@@ -339,7 +337,11 @@ async fn run_agent_terminal(
             };
 
             agent.load_from_session_state(session_state).await?;
+        } else {
+            agent.init_working_memory()?;
         }
+    } else {
+        agent.init_working_memory()?;
     }
 
     // If a new task was provided, add it and continue

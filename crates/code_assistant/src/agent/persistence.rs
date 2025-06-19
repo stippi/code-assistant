@@ -114,6 +114,7 @@ const STATE_FILE: &str = ".code-assistant.state.json";
 
 /// Simple file-based persistence that saves agent state to a single JSON file
 /// This is used for terminal mode with the --continue-task flag
+#[derive(Clone)]
 pub struct FileStatePersistence {
     state_file_path: PathBuf,
     tool_mode: ToolMode,
