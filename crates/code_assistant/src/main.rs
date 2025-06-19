@@ -331,6 +331,171 @@ async fn run_agent_terminal(
     }
 }
 
+fn run_agent_gpui(
+    path: PathBuf,
+    task: Option<String>,
+    _session_manager: SessionManager, // Session manager (kept for compatibility)
+    _session_state: Option<crate::session::SessionState>,
+    provider: LLMProviderType,
+    model: Option<String>,
+    base_url: Option<String>,
+    num_ctx: usize,
+    tools_type: ToolMode,
+    record: Option<PathBuf>,
+    playback: Option<PathBuf>,
+    fast_playback: bool,
+) -> Result<()> {
+    use crate::session::{AgentConfig, SessionManager};
+
+    // Create shared state between GUI and backend
+    let gui = ui::gpui::Gpui::new();
+
+    // Setup unified backend communication
+    let (backend_event_rx, backend_response_tx) = gui.setup_backend_communication();
+
+    // Setup dynamic types for MultiSessionManager
+    let root_path = path.canonicalize()?;
+    let persistence = crate::persistence::FileStatePersistence::new();
+
+    let agent_config = AgentConfig {
+        tool_mode: tools_type,
+        init_path: Some(root_path.clone()),
+        initial_project: None,
+    };
+
+    // Create the new SessionManager
+    let multi_session_manager =
+        Arc::new(Mutex::new(SessionManager::new(persistence, agent_config)));
+
+    // Clone GUI before moving it into thread
+    let gui_for_thread = gui.clone();
+    let task_clone = task.clone();
+
+    // Start the simplified backend thread
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        runtime.block_on(async {
+            if let Some(initial_task) = task_clone {
+                // Task provided - create new session and start agent
+                debug!("Creating initial session with task: {}", initial_task);
+
+                let session_id = {
+                    let mut manager = multi_session_manager.lock().unwrap();
+                    manager.create_session(None).unwrap()
+                };
+
+                debug!("Created initial session: {}", session_id);
+
+                // Connect session to UI and start agent
+                let ui_events = {
+                    let mut manager = multi_session_manager.lock().unwrap();
+                    manager
+                        .set_active_session(session_id.clone())
+                        .await
+                        .unwrap_or_else(|e| {
+                            error!("Failed to set active session: {}", e);
+                            Vec::new()
+                        })
+                };
+
+                for event in ui_events {
+                    let ui_message = crate::ui::UIMessage::UiEvent(event);
+                    if let Err(e) = gui_for_thread.display(ui_message).await {
+                        error!("Failed to send UI event: {}", e);
+                    }
+                }
+
+                let project_manager = Box::new(DefaultProjectManager::new());
+                let command_executor = Box::new(DefaultCommandExecutor);
+                let user_interface =
+                    Arc::new(Box::new(gui_for_thread.clone()) as Box<dyn UserInterface>);
+
+                let llm_client = create_llm_client(
+                    provider.clone(),
+                    model.clone(),
+                    base_url.clone(),
+                    num_ctx,
+                    record.clone(),
+                    playback.clone(),
+                    fast_playback,
+                )
+                .await
+                .expect("Failed to create LLM client");
+
+                {
+                    let mut manager = multi_session_manager.lock().unwrap();
+                    manager
+                        .start_agent_for_message(
+                            &session_id,
+                            initial_task,
+                            llm_client,
+                            project_manager,
+                            command_executor,
+                            user_interface,
+                        )
+                        .await
+                        .expect("Failed to start agent with initial task");
+                }
+
+                debug!("Started agent for initial session");
+            } else {
+                // No task - connect to latest existing session
+                info!("No task provided, connecting to latest session");
+
+                let latest_session_id = {
+                    let manager = multi_session_manager.lock().unwrap();
+                    manager.get_latest_session_id().unwrap_or(None)
+                };
+
+                if let Some(session_id) = latest_session_id {
+                    debug!("Connecting to existing session: {}", session_id);
+
+                    let ui_events = {
+                        let mut manager = multi_session_manager.lock().unwrap();
+                        manager
+                            .set_active_session(session_id.clone())
+                            .await
+                            .unwrap_or_else(|e| {
+                                error!("Failed to set active session: {}", e);
+                                Vec::new()
+                            })
+                    };
+
+                    for event in ui_events {
+                        let ui_message = crate::ui::UIMessage::UiEvent(event);
+                        if let Err(e) = gui_for_thread.display(ui_message).await {
+                            error!("Failed to send UI event: {}", e);
+                        }
+                    }
+                } else {
+                    info!("No existing sessions found - UI will start empty");
+                }
+            }
+
+            handle_backend_events(
+                backend_event_rx,
+                backend_response_tx,
+                multi_session_manager,
+                provider,
+                model,
+                base_url,
+                num_ctx,
+                record,
+                playback,
+                fast_playback,
+                gui_for_thread,
+            )
+            .await;
+        });
+    });
+
+    // Run the GUI in the main thread
+    gui.run_app();
+
+    Ok(())
+}
+
 async fn run_agent(args: Args) -> Result<()> {
     // Get all the agent options from args
     let path = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
@@ -363,7 +528,7 @@ async fn run_agent(args: Args) -> Result<()> {
         };
         let session_manager = SessionManager::new(persistence, agent_config);
 
-        run_agent_gpui_v2(
+        run_agent_gpui(
             path.clone(),
             task,            // Can be None - will connect to latest session instead
             session_manager, // dummy for compatibility
@@ -615,172 +780,6 @@ async fn handle_backend_events(
     }
 
     debug!("Backend event handler stopped");
-}
-
-/// V2 Implementation using MultiSessionManager architecture
-fn run_agent_gpui_v2(
-    path: PathBuf,
-    task: Option<String>,
-    _session_manager: SessionManager, // Session manager (kept for compatibility)
-    _session_state: Option<crate::session::SessionState>,
-    provider: LLMProviderType,
-    model: Option<String>,
-    base_url: Option<String>,
-    num_ctx: usize,
-    tools_type: ToolMode,
-    record: Option<PathBuf>,
-    playback: Option<PathBuf>,
-    fast_playback: bool,
-) -> Result<()> {
-    use crate::session::{AgentConfig, SessionManager};
-
-    // Create shared state between GUI and backend
-    let gui = ui::gpui::Gpui::new();
-
-    // Setup unified backend communication
-    let (backend_event_rx, backend_response_tx) = gui.setup_backend_communication();
-
-    // Setup dynamic types for MultiSessionManager
-    let root_path = path.canonicalize()?;
-    let persistence = crate::persistence::FileStatePersistence::new();
-
-    let agent_config = AgentConfig {
-        tool_mode: tools_type,
-        init_path: Some(root_path.clone()),
-        initial_project: None,
-    };
-
-    // Create the new SessionManager
-    let multi_session_manager =
-        Arc::new(Mutex::new(SessionManager::new(persistence, agent_config)));
-
-    // Clone GUI before moving it into thread
-    let gui_for_thread = gui.clone();
-    let task_clone = task.clone();
-
-    // Start the simplified backend thread
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-
-        runtime.block_on(async {
-            if let Some(initial_task) = task_clone {
-                // Task provided - create new session and start agent
-                debug!("Creating initial session with task: {}", initial_task);
-
-                let session_id = {
-                    let mut manager = multi_session_manager.lock().unwrap();
-                    manager.create_session(None).unwrap()
-                };
-
-                debug!("Created initial session: {}", session_id);
-
-                // Connect session to UI and start agent
-                let ui_events = {
-                    let mut manager = multi_session_manager.lock().unwrap();
-                    manager
-                        .set_active_session(session_id.clone())
-                        .await
-                        .unwrap_or_else(|e| {
-                            error!("Failed to set active session: {}", e);
-                            Vec::new()
-                        })
-                };
-
-                for event in ui_events {
-                    let ui_message = crate::ui::UIMessage::UiEvent(event);
-                    if let Err(e) = gui_for_thread.display(ui_message).await {
-                        error!("Failed to send UI event: {}", e);
-                    }
-                }
-
-                let project_manager = Box::new(DefaultProjectManager::new());
-                let command_executor = Box::new(DefaultCommandExecutor);
-                let user_interface =
-                    Arc::new(Box::new(gui_for_thread.clone()) as Box<dyn UserInterface>);
-
-                let llm_client = create_llm_client(
-                    provider.clone(),
-                    model.clone(),
-                    base_url.clone(),
-                    num_ctx,
-                    record.clone(),
-                    playback.clone(),
-                    fast_playback,
-                )
-                .await
-                .expect("Failed to create LLM client");
-
-                {
-                    let mut manager = multi_session_manager.lock().unwrap();
-                    manager
-                        .start_agent_for_message(
-                            &session_id,
-                            initial_task,
-                            llm_client,
-                            project_manager,
-                            command_executor,
-                            user_interface,
-                        )
-                        .await
-                        .expect("Failed to start agent with initial task");
-                }
-
-                debug!("Started agent for initial session");
-            } else {
-                // No task - connect to latest existing session
-                info!("No task provided, connecting to latest session");
-
-                let latest_session_id = {
-                    let manager = multi_session_manager.lock().unwrap();
-                    manager.get_latest_session_id().unwrap_or(None)
-                };
-
-                if let Some(session_id) = latest_session_id {
-                    debug!("Connecting to existing session: {}", session_id);
-
-                    let ui_events = {
-                        let mut manager = multi_session_manager.lock().unwrap();
-                        manager
-                            .set_active_session(session_id.clone())
-                            .await
-                            .unwrap_or_else(|e| {
-                                error!("Failed to set active session: {}", e);
-                                Vec::new()
-                            })
-                    };
-
-                    for event in ui_events {
-                        let ui_message = crate::ui::UIMessage::UiEvent(event);
-                        if let Err(e) = gui_for_thread.display(ui_message).await {
-                            error!("Failed to send UI event: {}", e);
-                        }
-                    }
-                } else {
-                    info!("No existing sessions found - UI will start empty");
-                }
-            }
-
-            handle_backend_events(
-                backend_event_rx,
-                backend_response_tx,
-                multi_session_manager,
-                provider,
-                model,
-                base_url,
-                num_ctx,
-                record,
-                playback,
-                fast_playback,
-                gui_for_thread,
-            )
-            .await;
-        });
-    });
-
-    // Run the GUI in the main thread
-    gui.run_app();
-
-    Ok(())
 }
 
 #[tokio::main]
