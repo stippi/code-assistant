@@ -12,10 +12,8 @@ mod utils;
 #[cfg(test)]
 mod tests;
 
-use crate::agent::{Agent, SessionStatePersistence};
+use crate::agent::{Agent, FileStatePersistence};
 use crate::mcp::MCPServer;
-use crate::persistence::FileSessionPersistence;
-use crate::session::SessionManager;
 use crate::types::ToolMode;
 use crate::ui::terminal::TerminalUI;
 use crate::ui::UserInterface;
@@ -270,8 +268,7 @@ async fn run_mcp_server(verbose: bool) -> Result<()> {
 async fn run_agent_terminal(
     path: PathBuf,
     task: Option<String>,
-    session_manager: SessionManager,
-    session_state: Option<crate::session::SessionState>,
+    continue_task: bool,
     provider: LLMProviderType,
     model: Option<String>,
     base_url: Option<String>,
@@ -281,9 +278,12 @@ async fn run_agent_terminal(
     playback: Option<PathBuf>,
     fast_playback: bool,
 ) -> Result<()> {
-    // Non-GUI mode - run the agent directly in the main thread
-    // Setup dynamic types
     let root_path = path.canonicalize()?;
+
+    // Create file persistence for simple state management
+    let file_persistence = FileStatePersistence::new(&root_path, tools_type);
+
+    // Setup dynamic types
     let project_manager = Box::new(DefaultProjectManager::new());
     let user_interface = Arc::new(Box::new(TerminalUI::new()) as Box<dyn UserInterface>);
     let command_executor = Box::new(DefaultCommandExecutor);
@@ -301,18 +301,8 @@ async fn run_agent_terminal(
     .await
     .context("Failed to initialize LLM client")?;
 
-    // Initialize agent with session-specific state persistence
-    let session_manager_ref = Arc::new(Mutex::new(session_manager));
-    let session_id = session_manager_ref
-        .lock()
-        .unwrap()
-        .get_latest_session_id()?
-        .ok_or_else(|| anyhow::anyhow!("No session available"))?;
-
-    let state_storage = Box::new(SessionStatePersistence::new(
-        session_manager_ref,
-        session_id,
-    ));
+    // Create agent with file persistence
+    let state_storage = Box::new(file_persistence);
     let mut agent = Agent::new(
         llm_client,
         tools_type,
@@ -323,12 +313,47 @@ async fn run_agent_terminal(
         Some(root_path.clone()),
     );
 
-    // Start either from session state or with new task
-    if let Some(session_state) = session_state {
-        agent.load_from_session_state(session_state).await
-    } else {
-        agent.start_with_task(task.unwrap()).await
+    let file_persistence = FileStatePersistence::new(&root_path, tools_type);
+
+    // Check if we should continue from previous state or start new
+    if continue_task && file_persistence.has_saved_state() {
+        // Load from saved state
+        if let Some(saved_session) = file_persistence.load_agent_state()? {
+            println!(
+                "Continuing from previous state with {} messages",
+                saved_session.messages.len()
+            );
+
+            // Convert ChatSession to SessionState for the agent
+            let session_state = crate::session::SessionState {
+                messages: saved_session.messages,
+                tool_executions: saved_session
+                    .tool_executions
+                    .iter()
+                    .map(|se| se.deserialize())
+                    .collect::<Result<Vec<_>>>()?,
+                working_memory: saved_session.working_memory,
+                init_path: saved_session.init_path,
+                initial_project: saved_session.initial_project,
+                next_request_id: Some(saved_session.next_request_id),
+            };
+
+            agent.load_from_session_state(session_state).await?;
+        }
     }
+
+    // If a new task was provided, add it and continue
+    if let Some(new_task) = task {
+        println!("Adding new task: {}", new_task);
+        let user_msg = llm::Message {
+            role: llm::MessageRole::User,
+            content: llm::MessageContent::Text(new_task),
+            request_id: None,
+        };
+        agent.append_message(user_msg)?;
+    }
+
+    agent.run_agent_loop().await
 }
 
 fn run_agent_gpui(
@@ -530,28 +555,11 @@ async fn run_agent(args: Args) -> Result<()> {
             args.fast_playback,
         )
     } else {
-        // Terminal mode - create session manager
-        let persistence = FileSessionPersistence::new();
-        let agent_config = crate::session::AgentConfig {
-            tool_mode: tools_type,
-            init_path: Some(path.clone()),
-            initial_project: None,
-        };
-        let mut session_manager = SessionManager::new(persistence, agent_config);
-
-        // Handle chat session logic for terminal mode
-        let (session_task, session_state) = if task.is_some() {
-            let new_session_id = session_manager.create_session(None)?;
-            println!("Created new chat session: {}", new_session_id);
-            (task, None)
-        } else {
-            anyhow::bail!("Please provide a task to start a new chat session.");
-        };
+        // Terminal mode
         run_agent_terminal(
             path,
-            session_task,
-            session_manager,
-            session_state,
+            task, // Can be None - will prompt user then
+            args.continue_task,
             provider,
             model,
             base_url,

@@ -13,6 +13,7 @@ use llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
     StreamingChunk,
 };
+#[cfg(test)]
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -126,7 +127,7 @@ impl Agent {
 
     /// Run the agent loop until task completion
     /// Get user input whenever there is no tool use by the LLM
-    async fn run_agent_loop(&mut self) -> Result<()> {
+    pub async fn run_agent_loop(&mut self) -> Result<()> {
         loop {
             // Run a single iteration and check if user input is needed
             let needs_user_input = self.run_single_iteration_internal().await?;
@@ -242,6 +243,7 @@ impl Agent {
         Ok(())
     }
 
+    #[cfg(test)]
     fn init_working_memory(&mut self) -> Result<()> {
         // Initialize empty structures for multi-project support
         self.working_memory.file_trees = HashMap::new();
@@ -400,6 +402,7 @@ impl Agent {
     }
 
     /// Start a new agent task
+    #[cfg(test)]
     pub async fn start_with_task(&mut self, task: String) -> Result<()> {
         debug!("Starting agent with task: {}", task);
 

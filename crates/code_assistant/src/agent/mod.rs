@@ -7,6 +7,6 @@ mod tool_description_generator;
 mod types;
 
 pub use crate::types::ToolMode;
-pub use persistence::SessionStatePersistence;
+pub use persistence::FileStatePersistence;
 pub use runner::Agent;
 pub use types::ToolExecution;

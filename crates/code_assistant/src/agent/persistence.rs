@@ -1,11 +1,15 @@
 use anyhow::Result;
 use llm::Message;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::agent::types::ToolExecution;
+use crate::persistence::{ChatSession, SerializedToolExecution};
 use crate::session::SessionManager;
-use crate::types::WorkingMemory;
+use crate::types::{ToolMode, WorkingMemory};
+
+use std::time::SystemTime;
+use tracing::{debug, info};
 
 /// Trait for persisting agent state
 /// This abstracts away the storage mechanism from the Agent implementation
@@ -106,3 +110,93 @@ impl AgentStatePersistence for SessionStatePersistence {
     }
 }
 
+const STATE_FILE: &str = ".code-assistant.state.json";
+
+/// Simple file-based persistence that saves agent state to a single JSON file
+/// This is used for terminal mode with the --continue-task flag
+pub struct FileStatePersistence {
+    state_file_path: PathBuf,
+    tool_mode: ToolMode,
+}
+
+impl FileStatePersistence {
+    pub fn new(working_dir: &Path, tool_mode: ToolMode) -> Self {
+        let state_file_path = working_dir.join(STATE_FILE);
+        info!("Using state file: {}", state_file_path.display());
+        Self {
+            state_file_path,
+            tool_mode,
+        }
+    }
+
+    /// Load agent state from the state file if it exists
+    pub fn load_agent_state(&self) -> Result<Option<ChatSession>> {
+        if !self.state_file_path.exists() {
+            debug!(
+                "State file does not exist: {}",
+                self.state_file_path.display()
+            );
+            return Ok(None);
+        }
+
+        debug!(
+            "Loading agent state from {}",
+            self.state_file_path.display()
+        );
+        let json = std::fs::read_to_string(&self.state_file_path)?;
+        let session: ChatSession = serde_json::from_str(&json)?;
+
+        info!(
+            "Loaded agent state with {} messages",
+            session.messages.len()
+        );
+        Ok(Some(session))
+    }
+
+    /// Check if the state file exists
+    pub fn has_saved_state(&self) -> bool {
+        self.state_file_path.exists()
+    }
+}
+
+impl AgentStatePersistence for FileStatePersistence {
+    fn save_agent_state(
+        &mut self,
+        messages: Vec<Message>,
+        tool_executions: Vec<ToolExecution>,
+        working_memory: WorkingMemory,
+        init_path: Option<PathBuf>,
+        initial_project: Option<String>,
+        next_request_id: u64,
+    ) -> Result<()> {
+        debug!("Saving agent state to {}", self.state_file_path.display());
+
+        // Convert tool executions to serialized form
+        let serialized_executions: Result<Vec<SerializedToolExecution>> =
+            tool_executions.iter().map(|te| te.serialize()).collect();
+
+        let serialized_executions = serialized_executions?;
+
+        // Create a ChatSession with the current state
+        let session = ChatSession {
+            id: "terminal-session".to_string(),
+            name: "Terminal Session".to_string(),
+            created_at: SystemTime::now(),
+            updated_at: SystemTime::now(),
+            messages,
+            tool_executions: serialized_executions,
+            working_memory,
+            init_path,
+            initial_project,
+            tool_mode: self.tool_mode,
+            next_request_id,
+        };
+
+        // Save to file
+        let json = serde_json::to_string_pretty(&session)?;
+        std::fs::write(&self.state_file_path, json)?;
+
+        debug!("Agent state saved successfully");
+        Ok(())
+    }
+}
