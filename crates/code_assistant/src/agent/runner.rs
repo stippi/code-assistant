@@ -79,7 +79,7 @@ impl Agent {
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         ui: Arc<Box<dyn UserInterface>>,
-        state_storage: Box<dyn AgentStatePersistence>,
+        state_persistence: Box<dyn AgentStatePersistence>,
         init_path: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -89,7 +89,7 @@ impl Agent {
             project_manager,
             ui,
             command_executor,
-            state_persistence: state_storage,
+            state_persistence,
             message_history: Vec::new(),
             init_path,
             initial_project: None,
