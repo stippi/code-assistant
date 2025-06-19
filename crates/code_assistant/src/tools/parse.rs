@@ -1,13 +1,14 @@
+use crate::agent::ToolRequest;
 use crate::tools::core::ToolRegistry;
 use crate::types::{FileReplacement, ToolError};
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::trace;
+use tracing::{debug, trace};
 
-pub const TOOL_TAG_PREFIX: &str = "tool:";
-pub const PARAM_TAG_PREFIX: &str = "param:";
+const TOOL_TAG_PREFIX: &str = "tool:";
+const PARAM_TAG_PREFIX: &str = "param:";
 
 /// Represents a parsed path with optional line ranges
 #[derive(Debug, Clone)]
@@ -89,7 +90,262 @@ impl PathWithLineRange {
     }
 }
 
-pub fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
+#[derive(Debug, Clone)]
+enum ParseState {
+    SearchingForTool,
+    InTool {
+        tool_name: String,
+        start_pos: usize,
+    },
+    InParam {
+        tool_name: String,
+        param_name: String,
+        start_pos: usize,
+    },
+}
+
+pub fn parse_xml_tool_invocations(
+    text: &str,
+    request_id: u64,
+    start_tool_count: usize,
+) -> Result<Vec<ToolRequest>> {
+    let mut tool_requests = Vec::new();
+    let mut state = ParseState::SearchingForTool;
+    let mut current_pos = 0;
+
+    while current_pos < text.len() {
+        // Find next '<' character
+        if let Some(tag_start) = text[current_pos..].find('<') {
+            let abs_tag_start = current_pos + tag_start;
+
+            // Extract tag content until '>'
+            if let Some(tag_end) = text[abs_tag_start..].find('>') {
+                let abs_tag_end = abs_tag_start + tag_end;
+                let tag_content = &text[abs_tag_start + 1..abs_tag_end]; // Skip '<' and '>'
+
+                debug!("Found tag: <{}>", tag_content);
+
+                // Check if this is a tool tag
+                if let Some(tool_name) = tag_content.strip_prefix(TOOL_TAG_PREFIX) {
+                    match &state {
+                        ParseState::SearchingForTool => {
+                            // Start of a new tool invocation
+                            state = ParseState::InTool {
+                                tool_name: tool_name.to_string(),
+                                start_pos: abs_tag_start,
+                            };
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                        ParseState::InTool {
+                            tool_name: current_tool,
+                            ..
+                        }
+                        | ParseState::InParam {
+                            tool_name: current_tool,
+                            ..
+                        } => {
+                            // Found another tool start while already in a tool - this is an error
+                            return Err(ToolError::ParseError(format!(
+                                "Malformed tool invocation: found nested tool invocation. Started '{}' but found start of '{}' before closing the first one",
+                                current_tool, tool_name
+                            )).into());
+                        }
+                    }
+                }
+                // Check if this is a tool closing tag
+                else if let Some(tool_name) =
+                    tag_content.strip_prefix(&format!("/{}", TOOL_TAG_PREFIX))
+                {
+                    match &state {
+                        ParseState::SearchingForTool => {
+                            // Found closing tag without opening tag
+                            return Err(ToolError::ParseError(format!(
+                                "Malformed tool invocation: found closing tag '</tool:{}>' without corresponding opening tag",
+                                tool_name
+                            )).into());
+                        }
+                        ParseState::InTool {
+                            tool_name: current_tool,
+                            start_pos,
+                        }
+                        | ParseState::InParam {
+                            tool_name: current_tool,
+                            start_pos,
+                            ..
+                        } => {
+                            if tool_name != current_tool {
+                                // Mismatched closing tag
+                                return Err(ToolError::ParseError(format!(
+                                    "Malformed tool invocation: mismatching tool names in start and end tag. Expected '</tool:{}>' but found '</tool:{}>'",
+                                    current_tool, tool_name
+                                )).into());
+                            }
+
+                            // Extract the complete tool XML
+                            let tool_content = &text[*start_pos..abs_tag_end + 1];
+                            debug!("Found complete tool content:\n{}", tool_content);
+
+                            // Parse the tool XML to get tool name and parameters
+                            let (parsed_tool_name, tool_params) = parse_tool_xml(tool_content)?;
+
+                            // Check if the tool exists in the registry
+                            if ToolRegistry::global().get(&parsed_tool_name).is_none() {
+                                return Err(ToolError::UnknownTool(parsed_tool_name).into());
+                            }
+
+                            // Generate a unique tool ID
+                            let tool_id = format!(
+                                "tool-{}-{}",
+                                request_id,
+                                start_tool_count + tool_requests.len() + 1
+                            );
+
+                            // Create a ToolRequest
+                            let tool_request = ToolRequest {
+                                id: tool_id,
+                                name: parsed_tool_name,
+                                input: tool_params,
+                            };
+
+                            tool_requests.push(tool_request);
+
+                            // Reset state
+                            state = ParseState::SearchingForTool;
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                    }
+                }
+                // Check if this is a parameter tag
+                else if let Some(param_name) = tag_content.strip_prefix(PARAM_TAG_PREFIX) {
+                    match &state {
+                        ParseState::SearchingForTool => {
+                            // Parameter tag outside of tool - ignore it
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                        ParseState::InTool {
+                            tool_name,
+                            start_pos,
+                        } => {
+                            // Start of parameter
+                            state = ParseState::InParam {
+                                tool_name: tool_name.clone(),
+                                param_name: param_name.to_string(),
+                                start_pos: *start_pos,
+                            };
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                        ParseState::InParam {
+                            tool_name,
+                            param_name: current_param,
+                            ..
+                        } => {
+                            // Found another parameter start while already in a parameter - this is an error
+                            return Err(ToolError::ParseError(format!(
+                                "Malformed tool invocation: found nested parameter. Started parameter '{}' in tool '{}' but found start of parameter '{}' before closing the first one",
+                                current_param, tool_name, param_name
+                            )).into());
+                        }
+                    }
+                }
+                // Check if this is a parameter closing tag
+                else if let Some(param_name) =
+                    tag_content.strip_prefix(&format!("/{}", PARAM_TAG_PREFIX))
+                {
+                    match &state {
+                        ParseState::SearchingForTool | ParseState::InTool { .. } => {
+                            // Parameter closing tag outside of parameter - ignore it
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                        ParseState::InParam {
+                            tool_name,
+                            param_name: current_param,
+                            start_pos,
+                            ..
+                        } => {
+                            if param_name != current_param {
+                                // Mismatched parameter closing tag
+                                return Err(ToolError::ParseError(format!(
+                                    "Malformed tool invocation: mismatching parameter names in start and end tag. Expected '</param:{}>' but found '</param:{}>' in tool '{}'",
+                                    current_param, param_name, tool_name
+                                )).into());
+                            }
+
+                            // End of parameter - go back to InTool state
+                            state = ParseState::InTool {
+                                tool_name: tool_name.clone(),
+                                start_pos: *start_pos,
+                            };
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                    }
+                }
+                // Any other tag - check if we're inside a tool (but not inside a parameter)
+                else {
+                    match &state {
+                        ParseState::InTool { tool_name, .. } => {
+                            // Found non-tool/non-param tag inside a tool (but outside parameters) - this is an error
+                            return Err(ToolError::ParseError(format!(
+                                "Malformed tool invocation: found unexpected tag '<{}>' inside tool '{}'. Only parameter tags are allowed inside tool blocks",
+                                tag_content, tool_name
+                            )).into());
+                        }
+                        ParseState::InParam { .. } => {
+                            // Inside a parameter - tags are allowed as part of parameter content
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                        ParseState::SearchingForTool => {
+                            // Outside of tools - ignore other tags
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                // Found '<' but no matching '>' - skip this character
+                current_pos = abs_tag_start + 1;
+                continue;
+            }
+        } else {
+            // No more '<' characters
+            break;
+        }
+    }
+
+    // Check if we ended in an incomplete state
+    match state {
+        ParseState::SearchingForTool => {
+            // This is fine
+        }
+        ParseState::InTool { tool_name, .. } => {
+            return Err(ToolError::ParseError(format!(
+                "Malformed tool invocation: unclosed tool '{}' - missing closing tag '</tool:{}>'",
+                tool_name, tool_name
+            ))
+            .into());
+        }
+        ParseState::InParam {
+            tool_name,
+            param_name,
+            ..
+        } => {
+            return Err(ToolError::ParseError(format!(
+                "Malformed tool invocation: unclosed parameter '{}' in tool '{}' - missing closing tag '</param:{}>'",
+                param_name, tool_name, param_name
+            )).into());
+        }
+    }
+
+    Ok(tool_requests)
+}
+
+fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
     trace!("Parsing XML:\n{}", xml);
 
     let tool_name = xml

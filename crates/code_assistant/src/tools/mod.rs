@@ -9,5 +9,5 @@ pub mod impls;
 #[cfg(test)]
 mod tests;
 
-pub use parse::{parse_tool_xml, TOOL_TAG_PREFIX, PARAM_TAG_PREFIX};
+pub use parse::parse_xml_tool_invocations;
 pub use types::AnnotatedToolDefinition;
