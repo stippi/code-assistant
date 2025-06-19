@@ -9,4 +9,4 @@ mod types;
 pub use crate::types::ToolMode;
 pub use persistence::SessionStatePersistence;
 pub use runner::Agent;
-pub use types::{ToolExecution, ToolRequest};
+pub use types::ToolExecution;

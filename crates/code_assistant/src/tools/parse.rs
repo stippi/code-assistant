@@ -1,5 +1,5 @@
-use crate::agent::ToolRequest;
 use crate::tools::core::ToolRegistry;
+use crate::tools::ToolRequest;
 use crate::types::{FileReplacement, ToolError};
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};

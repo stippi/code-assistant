@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
-use crate::agent::ToolRequest;
+use crate::tools::ToolRequest;
 use crate::types::{ToolMode, WorkingMemory};
 
 /// A complete chat session with all its data

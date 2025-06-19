@@ -1,30 +1,7 @@
 use crate::tools::core::{AnyOutput, ToolRegistry};
+use crate::tools::ToolRequest;
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tracing::debug;
-
-/// Represents a tool request from the LLM, derived from ContentBlock::ToolUse
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolRequest {
-    pub id: String,
-    pub name: String,
-    pub input: Value,
-}
-
-impl From<&llm::ContentBlock> for ToolRequest {
-    fn from(block: &llm::ContentBlock) -> Self {
-        if let llm::ContentBlock::ToolUse { id, name, input } = block {
-            Self {
-                id: id.clone(),
-                name: name.clone(),
-                input: input.clone(),
-            }
-        } else {
-            panic!("Cannot convert non-ToolUse ContentBlock to ToolRequest")
-        }
-    }
-}
 
 /// Record of a tool execution with its result
 pub struct ToolExecution {

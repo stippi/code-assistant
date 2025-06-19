@@ -1,9 +1,10 @@
 use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::tool_description_generator::generate_tool_documentation;
-use crate::agent::types::{ToolExecution, ToolRequest};
+use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::parse_xml_tool_invocations;
+use crate::tools::ToolRequest;
 use crate::types::*;
 use crate::ui::{streaming::create_stream_processor, UIMessage, UserInterface};
 use crate::utils::CommandExecutor;
