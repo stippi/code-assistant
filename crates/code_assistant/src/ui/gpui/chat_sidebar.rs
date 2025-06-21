@@ -133,7 +133,7 @@ impl Render for ChatListItem {
                         s.child(div().size(px(6.)).rounded_full().bg(cx.theme().primary))
                     })
                     .when(self.is_hovered, |s| {
-                        s.child(Button::new("popup-menu-1").popup_menu(
+                        s.child(Button::new("popup-menu-1").compact().popup_menu(
                             move |this, _window, _cx| {
                                 this.menu("Rename", Box::new(Rename))
                                     .separator()
@@ -175,11 +175,30 @@ impl ChatSidebar {
     }
 
     pub fn update_sessions(&mut self, sessions: Vec<ChatMetadata>, cx: &mut Context<Self>) {
-        //self.sessions = sessions;
+        // Create a map of existing items by their metadata ID for quick lookup
+        let mut existing_items: std::collections::HashMap<String, Entity<ChatListItem>> =
+            std::collections::HashMap::new();
+
+        // Extract existing items and map them by ID
+        for item in self.items.drain(..) {
+            let id = cx.read_entity(&item, |item, _| item.metadata.id.clone());
+            existing_items.insert(id, item);
+        }
+
+        // Build new items vector, reusing existing items where possible
         self.items = sessions
             .into_iter()
-            .map(|session| cx.new(|cx| ChatListItem::new(session, false, cx)))
+            .map(|session| {
+                if let Some(existing_item) = existing_items.remove(&session.id) {
+                    // Reuse existing item
+                    existing_item
+                } else {
+                    // Create new item
+                    cx.new(|cx| ChatListItem::new(session, false, cx))
+                }
+            })
             .collect();
+
         cx.notify();
     }
 
