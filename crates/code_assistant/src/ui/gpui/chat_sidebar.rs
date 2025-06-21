@@ -2,32 +2,35 @@ use super::file_icons;
 use crate::persistence::ChatMetadata;
 use crate::ui::gpui::{ui_events::UiEvent, UiEventSender};
 use gpui::{
-    div, prelude::*, px, Context, FocusHandle, Focusable, MouseButton, MouseUpEvent, SharedString,
+    actions, div, prelude::*, px, AppContext, Context, Entity, FocusHandle, Focusable, MouseButton,
+    MouseUpEvent, SharedString,
 };
-use gpui_component::{ActiveTheme, StyledExt};
+use gpui_component::{button::Button, popup_menu::PopupMenuExt as _, ActiveTheme, StyledExt};
 use std::time::SystemTime;
 use tracing::{debug, trace, warn};
 
 /// Individual chat list item component
 pub struct ChatListItem {
-    // metadata: ChatMetadata,
-    // is_selected: bool,
-    // focus_handle: FocusHandle,
+    metadata: ChatMetadata,
+    is_selected: bool,
+    focus_handle: FocusHandle,
 }
 
 impl ChatListItem {
-    // pub fn new(metadata: ChatMetadata, is_selected: bool, cx: &mut Context<Self>) -> Self {
-    //     Self {
-    //         metadata,
-    //         is_selected,
-    //         focus_handle: cx.focus_handle(),
-    //     }
-    // }
+    pub fn new(metadata: ChatMetadata, is_selected: bool, cx: &mut Context<Self>) -> Self {
+        Self {
+            metadata,
+            is_selected,
+            focus_handle: cx.focus_handle(),
+        }
+    }
 
-    // pub fn update_selection(&mut self, is_selected: bool, cx: &mut Context<Self>) {
-    //     self.is_selected = is_selected;
-    //     cx.notify();
-    // }
+    pub fn update_selection(&mut self, is_selected: bool, cx: &mut Context<Self>) {
+        if self.is_selected != is_selected {
+            self.is_selected = is_selected;
+            cx.notify();
+        }
+    }
 
     /// Format the creation date for display
     fn format_date(timestamp: SystemTime) -> String {
@@ -50,88 +53,91 @@ impl ChatListItem {
     }
 }
 
-// impl Focusable for ChatListItem {
-//     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
-//         self.focus_handle.clone()
-//     }
-// }
+impl Focusable for ChatListItem {
+    fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
 
-// impl Render for ChatListItem {
-//     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-//         let session_id = self.metadata.id.clone();
-//         let name = self.metadata.name.clone();
-//         let formatted_date = Self::format_date(self.metadata.created_at);
+impl Render for ChatListItem {
+    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let session_id = self.metadata.id.clone();
+        let name = self.metadata.name.clone();
+        let formatted_date = Self::format_date(self.metadata.created_at);
 
-//         div()
-//             .id(SharedString::from(format!(
-//                 "chat-item-{}",
-//                 self.metadata.id
-//             )))
-//             .w_full()
-//             .px_3()
-//             .py_2()
-//             .flex()
-//             .flex_col()
-//             .gap_1()
-//             .cursor_pointer()
-//             .rounded_md()
-//             .bg(if self.is_selected {
-//                 cx.theme().primary.opacity(0.1)
-//             } else {
-//                 cx.theme().transparent
-//             })
-//             .border_1()
-//             .border_color(if self.is_selected {
-//                 cx.theme().primary.opacity(0.3)
-//             } else {
-//                 cx.theme().transparent
-//             })
-//             .hover(|s| {
-//                 if !self.is_selected {
-//                     s.bg(cx.theme().muted.opacity(0.5))
-//                 } else {
-//                     s
-//                 }
-//             })
-//             .on_mouse_up(MouseButton::Left, {
-//                 let session_id = session_id.clone();
-//                 move |_, _window, cx| {
-//                     // Emit event to load this chat session
-//                     if let Some(sender) = cx.try_global::<UiEventSender>() {
-//                         let _ = sender.0.try_send(UiEvent::LoadChatSession {
-//                             session_id: session_id.clone(),
-//                         });
-//                     }
-//                 }
-//             })
-//             .child(
-//                 div()
-//                     .flex()
-//                     .items_center()
-//                     .justify_between()
-//                     .child(
-//                         div()
-//                             .text_sm()
-//                             .font_medium()
-//                             .text_color(cx.theme().foreground)
-//                             .child(SharedString::from(name)),
-//                     )
-//                     .when(self.is_selected, |s| {
-//                         s.child(div().size(px(6.)).rounded_full().bg(cx.theme().primary))
-//                     }),
-//             )
-//             .child(
-//                 div()
-//                     .text_xs()
-//                     .text_color(cx.theme().muted_foreground)
-//                     .child(SharedString::from(formatted_date)),
-//             )
-//     }
-// }
+        div()
+            .id(SharedString::from(format!(
+                "chat-item-{}",
+                self.metadata.id
+            )))
+            .w_full()
+            .px_3()
+            .py_2()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .cursor_pointer()
+            .rounded_md()
+            .bg(if self.is_selected {
+                cx.theme().primary.opacity(0.1)
+            } else {
+                cx.theme().transparent
+            })
+            .border_1()
+            .border_color(if self.is_selected {
+                cx.theme().primary.opacity(0.3)
+            } else {
+                cx.theme().transparent
+            })
+            .hover(|s| {
+                if !self.is_selected {
+                    s.bg(cx.theme().muted.opacity(0.5))
+                } else {
+                    s
+                }
+            })
+            .on_mouse_up(MouseButton::Left, {
+                let session_id = session_id.clone();
+                move |_, _window, cx| {
+                    // Emit event to load this chat session
+                    if let Some(sender) = cx.try_global::<UiEventSender>() {
+                        let _ = sender.0.try_send(UiEvent::LoadChatSession {
+                            session_id: session_id.clone(),
+                        });
+                    }
+                }
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_medium()
+                            .text_color(cx.theme().foreground)
+                            .child(SharedString::from(name)),
+                    )
+                    .when(self.is_selected, |s| {
+                        s.child(div().size(px(6.)).rounded_full().bg(cx.theme().primary))
+                    }),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(formatted_date)),
+            )
+    }
+}
+
+actions!(chat_sidebar, [Rename, Delete]);
 
 /// Main chat sidebar component
 pub struct ChatSidebar {
     sessions: Vec<ChatMetadata>,
+    items: Vec<Entity<ChatListItem>>,
     selected_session_id: Option<String>,
     focus_handle: FocusHandle,
     is_collapsed: bool,
@@ -141,6 +147,7 @@ impl ChatSidebar {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             sessions: Vec::new(),
+            items: Vec::new(),
             selected_session_id: None,
             focus_handle: cx.focus_handle(),
             is_collapsed: false,
@@ -148,13 +155,28 @@ impl ChatSidebar {
     }
 
     pub fn update_sessions(&mut self, sessions: Vec<ChatMetadata>, cx: &mut Context<Self>) {
-        self.sessions = sessions;
+        //self.sessions = sessions;
+        self.items = sessions
+            .into_iter()
+            .map(|session| cx.new(|cx| ChatListItem::new(session, false, cx)))
+            .collect();
         cx.notify();
     }
 
     pub fn set_selected_session(&mut self, session_id: Option<String>, cx: &mut Context<Self>) {
         self.selected_session_id = session_id;
-        cx.notify();
+        //cx.notify();
+        if let Some(session_id) = self.selected_session_id.clone() {
+            self.items.iter().for_each(|entity| {
+                cx.update_entity(entity, |item, cx| {
+                    item.update_selection(session_id == item.metadata.id, cx)
+                })
+            });
+        } else {
+            self.items.iter().for_each(|entity| {
+                cx.update_entity(entity, |item, cx| item.update_selection(false, cx))
+            });
+        }
     }
 
     pub fn toggle_collapsed(&mut self, cx: &mut Context<Self>) {
@@ -279,125 +301,134 @@ impl Render for ChatSidebar {
                         .gap_1()
                         .p_2()
                         .children(
-                            self.sessions
-                                .iter()
-                                .map(|session| {
-                                    let is_selected =
-                                        self.selected_session_id.as_ref() == Some(&session.id);
+                            // self.sessions
+                            //     .iter()
+                            //     .map(|session| {
+                            //         let is_selected =
+                            //             self.selected_session_id.as_ref() == Some(&session.id);
 
-                                    // Create a simple div for each chat item instead of a component
-                                    // to avoid complex entity management
-                                    let session_id = session.id.clone();
-                                    let name = session.name.clone();
-                                    let formatted_date =
-                                        ChatListItem::format_date(session.created_at);
+                            //         // Create a simple div for each chat item instead of a component
+                            //         // to avoid complex entity management
+                            //         let session_id = session.id.clone();
+                            //         let name = session.name.clone();
+                            //         let formatted_date =
+                            //             ChatListItem::format_date(session.created_at);
 
-                                    div()
-                                        .id(SharedString::from(format!("chat-item-{}", session.id)))
-                                        .w_full()
-                                        .px_3()
-                                        .py_2()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_1()
-                                        .cursor_pointer()
-                                        .rounded_md()
-                                        .bg(if is_selected {
-                                            cx.theme().primary.opacity(0.1)
-                                        } else {
-                                            cx.theme().transparent
-                                        })
-                                        .border_1()
-                                        .border_color(if is_selected {
-                                            cx.theme().primary.opacity(0.3)
-                                        } else {
-                                            cx.theme().transparent
-                                        })
-                                        .hover(|s| {
-                                            if !is_selected {
-                                                s.bg(cx.theme().muted.opacity(0.5))
-                                            } else {
-                                                s
-                                            }
-                                        })
-                                        .on_mouse_up(MouseButton::Left, {
-                                            let session_id = session_id.clone();
-                                            move |_, _window, cx| {
-                                                // Emit event to load this chat session
-                                                if let Some(sender) =
-                                                    cx.try_global::<UiEventSender>()
-                                                {
-                                                    let _ = sender.0.try_send(
-                                                        UiEvent::LoadChatSession {
-                                                            session_id: session_id.clone(),
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                        })
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .justify_between()
-                                                .child(
-                                                    div()
-                                                        .text_sm()
-                                                        .font_medium()
-                                                        .text_color(cx.theme().foreground)
-                                                        .child(SharedString::from(name)),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .flex()
-                                                        .items_center()
-                                                        .gap_2()
-                                                        .when(is_selected, |s| {
-                                                            s.child(
-                                                                div()
-                                                                    .size(px(6.))
-                                                                    .rounded_full()
-                                                                    .bg(cx.theme().primary),
-                                                            )
-                                                        })
-                                                        .child(
-                                                            // Delete button for chat options
-                                                            div()
-                                                                .size(px(20.))
-                                                                .rounded_sm()
-                                                                .flex()
-                                                                .items_center()
-                                                                .justify_center()
-                                                                .cursor_pointer()
-                                                                .hover(|s| s.bg(cx.theme().danger.opacity(0.1)))
-                                                                .child(file_icons::render_icon(
-                                                                    &file_icons::get().get_type_icon("trash"),
-                                                                    12.0,
-                                                                    cx.theme().danger,
-                                                                    "🗑",
-                                                                ))
-                                                                .on_mouse_up(MouseButton::Left, {
-                                                                    let session_id_for_delete = session_id.clone();
-                                                                    move |_, _window, cx| {
-                                                                        // Emit delete event
-                                                                        if let Some(sender) = cx.try_global::<UiEventSender>() {
-                                                                            let _ = sender.0.try_send(UiEvent::DeleteChatSession {
-                                                                                session_id: session_id_for_delete.clone(),
-                                                                            });
-                                                                        }
-                                                                    }
-                                                                })
-                                                        )
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(SharedString::from(formatted_date)),
-                                        )
-                                })
-                                .collect::<Vec<_>>(),
+                            //         div()
+                            //             .id(SharedString::from(format!("chat-item-{}", session.id)))
+                            //             .w_full()
+                            //             .px_3()
+                            //             .py_2()
+                            //             .flex()
+                            //             .flex_col()
+                            //             .gap_1()
+                            //             .cursor_pointer()
+                            //             .rounded_md()
+                            //             .bg(if is_selected {
+                            //                 cx.theme().primary.opacity(0.1)
+                            //             } else {
+                            //                 cx.theme().transparent
+                            //             })
+                            //             .border_1()
+                            //             .border_color(if is_selected {
+                            //                 cx.theme().primary.opacity(0.3)
+                            //             } else {
+                            //                 cx.theme().transparent
+                            //             })
+                            //             .hover(|s| {
+                            //                 if !is_selected {
+                            //                     s.bg(cx.theme().muted.opacity(0.5))
+                            //                 } else {
+                            //                     s
+                            //                 }
+                            //             })
+                            //             .on_mouse_up(MouseButton::Left, {
+                            //                 let session_id = session_id.clone();
+                            //                 move |_, _window, cx| {
+                            //                     // Emit event to load this chat session
+                            //                     if let Some(sender) =
+                            //                         cx.try_global::<UiEventSender>()
+                            //                     {
+                            //                         let _ = sender.0.try_send(
+                            //                             UiEvent::LoadChatSession {
+                            //                                 session_id: session_id.clone(),
+                            //                             },
+                            //                         );
+                            //                     }
+                            //                 }
+                            //             })
+                            //             .child(
+                            //                 div()
+                            //                     .flex()
+                            //                     .items_center()
+                            //                     .justify_between()
+                            //                     .child(
+                            //                         div()
+                            //                             .text_sm()
+                            //                             .font_medium()
+                            //                             .text_color(cx.theme().foreground)
+                            //                             .child(SharedString::from(name)),
+                            //                     )
+                            //                     .child(
+                            //                         div()
+                            //                             .flex()
+                            //                             .items_center()
+                            //                             .gap_2()
+                            //                             .when(is_selected, |s| {
+                            //                                 s.child(
+                            //                                     div()
+                            //                                         .size(px(6.))
+                            //                                         .rounded_full()
+                            //                                         .bg(cx.theme().primary),
+                            //                                 )
+                            //                             })
+                            //                             .child(
+                            //                                 // Delete button for chat options
+                            //                                 div()
+                            //                                     .size(px(20.))
+                            //                                     .rounded_sm()
+                            //                                     .flex()
+                            //                                     .items_center()
+                            //                                     .justify_center()
+                            //                                     .cursor_pointer()
+                            //                                     .hover(|s| s.bg(cx.theme().danger.opacity(0.1)))
+                            //                                     .child(file_icons::render_icon(
+                            //                                         &file_icons::get().get_type_icon("trash"),
+                            //                                         12.0,
+                            //                                         cx.theme().danger,
+                            //                                         "🗑",
+                            //                                     ))
+                            //                                     .on_mouse_up(MouseButton::Left, {
+                            //                                         let session_id_for_delete = session_id.clone();
+                            //                                         move |_, _window, cx| {
+                            //                                             // Emit delete event
+                            //                                             if let Some(sender) = cx.try_global::<UiEventSender>() {
+                            //                                                 let _ = sender.0.try_send(UiEvent::DeleteChatSession {
+                            //                                                     session_id: session_id_for_delete.clone(),
+                            //                                                 });
+                            //                                             }
+                            //                                         }
+                            //                                     })
+                            //                             )
+                            //                             .child(Button::new("popup-menu-1").popup_menu(
+                            //                                 move |this, _window, _cx| {
+                            //                                     this.menu("Rename", Box::new(Rename))
+                            //                                         .separator()
+                            //                                         .menu("Delete", Box::new(Delete))
+                            //                                         //.menu_with_icon("Search", IconName::Search, Box::new(SearchAll))
+                            //                                 },
+                            //                             ))
+                            //                     ),
+                            //             )
+                            //             .child(
+                            //                 div()
+                            //                     .text_xs()
+                            //                     .text_color(cx.theme().muted_foreground)
+                            //                     .child(SharedString::from(formatted_date)),
+                            //             )
+                            //     })
+                            //     .collect::<Vec<_>>(),
+                            self.items.clone(),
                         )
                         .when(self.sessions.is_empty(), |s| {
                             s.child(
