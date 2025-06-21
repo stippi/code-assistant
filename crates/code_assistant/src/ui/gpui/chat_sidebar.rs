@@ -2,10 +2,14 @@ use super::file_icons;
 use crate::persistence::ChatMetadata;
 use crate::ui::gpui::{ui_events::UiEvent, UiEventSender};
 use gpui::{
-    actions, div, prelude::*, px, AppContext, Context, Entity, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent, SharedString, Window,
+    actions, div, prelude::*, px, AnyElement, App, AppContext, Context, Div, ElementId, Entity,
+    FocusHandle, Focusable, MouseButton, MouseUpEvent, SharedString, Styled, Window,
 };
-use gpui_component::{button::Button, popup_menu::PopupMenuExt as _, ActiveTheme, StyledExt};
+use gpui_component::button::DropdownButton;
+use gpui_component::Icon;
+use gpui_component::{
+    button::Button, popup_menu::PopupMenuExt, ActiveTheme, Selectable, StyledExt,
+};
 use std::time::SystemTime;
 use tracing::{debug, trace, warn};
 
@@ -133,7 +137,12 @@ impl Render for ChatListItem {
                         s.child(div().size(px(6.)).rounded_full().bg(cx.theme().primary))
                     })
                     .when(self.is_hovered, |s| {
-                        s.child(Button::new("popup-menu-1").compact().popup_menu(
+                        s.child(ItemMenu::new("popup-menu").popup_menu(
+                            // s.child(
+                            //     Button::new("popup-menu")
+                            //         .size(px(20.))
+                            //         .icon(Icon::default().path("icons/menu.svg"))
+                            //        .popup_menu(
                             move |this, _window, _cx| {
                                 this.menu("Rename", Box::new(Rename))
                                     .separator()
@@ -149,6 +158,71 @@ impl Render for ChatListItem {
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(formatted_date)),
             )
+    }
+}
+
+#[derive(IntoElement)]
+pub struct ItemMenu {
+    pub base: Div,
+    id: ElementId,
+    selected: bool,
+}
+
+impl ItemMenu {
+    pub fn new(id: impl Into<ElementId>) -> Self {
+        Self {
+            base: div().flex_shrink_0(),
+            id: id.into(),
+            selected: false,
+        }
+    }
+}
+
+impl Selectable for ItemMenu {
+    fn element_id(&self) -> &ElementId {
+        &self.id
+    }
+
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl From<ItemMenu> for AnyElement {
+    fn from(menu: ItemMenu) -> Self {
+        menu.into_any_element()
+    }
+}
+
+impl Styled for ItemMenu {
+    fn style(&mut self) -> &mut gpui::StyleRefinement {
+        self.base.style()
+    }
+}
+
+impl PopupMenuExt for ItemMenu {}
+
+impl RenderOnce for ItemMenu {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        div()
+            .size(px(20.))
+            .rounded_sm()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|s| s.bg(cx.theme().muted.opacity(0.8)))
+            .child(file_icons::render_icon(
+                &file_icons::get().get_type_icon("menu"),
+                12.0,
+                cx.theme().muted_foreground,
+                "...",
+            ))
     }
 }
 
