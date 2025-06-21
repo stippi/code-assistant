@@ -3,7 +3,7 @@ use crate::persistence::ChatMetadata;
 use crate::ui::gpui::{ui_events::UiEvent, UiEventSender};
 use gpui::{
     actions, div, prelude::*, px, AppContext, Context, Entity, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent, SharedString,
+    MouseUpEvent, SharedString, Window,
 };
 use gpui_component::{button::Button, popup_menu::PopupMenuExt as _, ActiveTheme, StyledExt};
 use std::time::SystemTime;
@@ -13,6 +13,7 @@ use tracing::{debug, trace, warn};
 pub struct ChatListItem {
     metadata: ChatMetadata,
     is_selected: bool,
+    is_hovered: bool,
     focus_handle: FocusHandle,
 }
 
@@ -21,6 +22,7 @@ impl ChatListItem {
         Self {
             metadata,
             is_selected,
+            is_hovered: false,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -49,6 +51,13 @@ impl ChatListItem {
                 }
             }
             Err(_) => "Unknown".to_string(),
+        }
+    }
+
+    fn on_hover(&mut self, hovered: &bool, _: &mut Window, cx: &mut Context<Self>) {
+        if *hovered != self.is_hovered {
+            self.is_hovered = *hovered;
+            cx.notify();
         }
     }
 }
@@ -89,6 +98,7 @@ impl Render for ChatListItem {
             } else {
                 cx.theme().transparent
             })
+            .on_hover(cx.listener(Self::on_hover))
             .hover(|s| {
                 if !self.is_selected {
                     s.bg(cx.theme().muted.opacity(0.5))
@@ -121,6 +131,16 @@ impl Render for ChatListItem {
                     )
                     .when(self.is_selected, |s| {
                         s.child(div().size(px(6.)).rounded_full().bg(cx.theme().primary))
+                    })
+                    .when(self.is_hovered, |s| {
+                        s.child(Button::new("popup-menu-1").popup_menu(
+                            move |this, _window, _cx| {
+                                this.menu("Rename", Box::new(Rename))
+                                    .separator()
+                                    .menu("Delete", Box::new(Delete))
+                                //.menu_with_icon("Search", IconName::Search, Box::new(SearchAll))
+                            },
+                        ))
                     }),
             )
             .child(
