@@ -393,6 +393,9 @@
     "message_bubbles": {
       "icon": "icons/message_bubbles.svg"
     },
+    "menu": {
+      "icon": "icons/menu.svg"
+    },
     "plus": {
       "icon": "icons/plus.svg"
     }
