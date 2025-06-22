@@ -364,4 +364,36 @@ mod tests {
 
         assert_fragments_match(&expected_fragments, &fragments);
     }
+
+    #[test]
+    fn test_user_messages_not_parsed_for_xml_tags() {
+        // Test that user messages with XML-like content are treated as plain text
+        use llm::{Message, MessageContent, MessageRole};
+
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let mut processor = XmlStreamProcessor::new(ui_arc, 42);
+
+        // Create a user message with XML-like content
+        let user_message = Message {
+            role: MessageRole::User,
+            content: MessageContent::Text(
+                "Please use <tool:read_files> to read <param:path>test.txt</param:path> and show me <thinking>what should I do</thinking>".to_string()
+            ),
+            request_id: None,
+        };
+
+        let fragments = processor
+            .extract_fragments_from_message(&user_message)
+            .unwrap();
+
+        // Should be treated as a single PlainText fragment, not parsed for XML tags
+        let expected_fragments = vec![
+            DisplayFragment::PlainText(
+                "Please use <tool:read_files> to read <param:path>test.txt</param:path> and show me <thinking>what should I do</thinking>".to_string()
+            ),
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
 }

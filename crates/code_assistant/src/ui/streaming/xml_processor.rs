@@ -98,54 +98,85 @@ impl StreamProcessorTrait for XmlStreamProcessor {
     ) -> Result<Vec<DisplayFragment>, UIError> {
         let mut fragments = Vec::new();
 
-        match &message.content {
-            MessageContent::Text(text) => {
-                // Process text for XML tags, using request_id for consistent tool ID generation
-                fragments.extend(self.extract_fragments_from_text(text, message.request_id)?);
-            }
-            MessageContent::Structured(blocks) => {
-                for block in blocks {
-                    match block {
-                        ContentBlock::Thinking { thinking, .. } => {
-                            fragments.push(DisplayFragment::ThinkingText(thinking.clone()));
-                        }
-                        ContentBlock::Text { text } => {
-                            // Process text for XML tags, using request_id for consistent tool ID generation
-                            fragments.extend(
-                                self.extract_fragments_from_text(text, message.request_id)?,
-                            );
-                        }
-                        ContentBlock::ToolUse { id, name, input } => {
-                            // Convert JSON ToolUse to XML-style fragments
-                            fragments.push(DisplayFragment::ToolName {
-                                name: name.clone(),
-                                id: id.clone(),
-                            });
-
-                            // Parse JSON input into XML-style tool parameters
-                            if let Some(obj) = input.as_object() {
-                                for (key, value) in obj {
-                                    let value_str = if value.is_string() {
-                                        value.as_str().unwrap_or("").to_string()
-                                    } else {
-                                        value.to_string()
-                                    };
-
-                                    fragments.push(DisplayFragment::ToolParameter {
-                                        name: key.clone(),
-                                        value: value_str,
-                                        tool_id: id.clone(),
-                                    });
-                                }
+        // For User messages, don't process XML tags - just create a single PlainText fragment
+        if message.role == llm::MessageRole::User {
+            match &message.content {
+                MessageContent::Text(text) => {
+                    if !text.trim().is_empty() {
+                        fragments.push(DisplayFragment::PlainText(text.clone()));
+                    }
+                }
+                MessageContent::Structured(blocks) => {
+                    // For structured user messages, combine all text into a single fragment
+                    let mut combined_text = String::new();
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text } => {
+                                combined_text.push_str(text);
                             }
+                            ContentBlock::ToolResult { content, .. } => {
+                                // Include tool result content for user messages
+                                combined_text.push_str(content);
+                            }
+                            _ => {} // Skip other block types for user messages
+                        }
+                    }
+                    if !combined_text.trim().is_empty() {
+                        fragments.push(DisplayFragment::PlainText(combined_text));
+                    }
+                }
+            }
+        } else {
+            // For Assistant messages, process normally with XML tag parsing
+            match &message.content {
+                MessageContent::Text(text) => {
+                    // Process text for XML tags, using request_id for consistent tool ID generation
+                    fragments.extend(self.extract_fragments_from_text(text, message.request_id)?);
+                }
+                MessageContent::Structured(blocks) => {
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Thinking { thinking, .. } => {
+                                fragments.push(DisplayFragment::ThinkingText(thinking.clone()));
+                            }
+                            ContentBlock::Text { text } => {
+                                // Process text for XML tags, using request_id for consistent tool ID generation
+                                fragments.extend(
+                                    self.extract_fragments_from_text(text, message.request_id)?,
+                                );
+                            }
+                            ContentBlock::ToolUse { id, name, input } => {
+                                // Convert JSON ToolUse to XML-style fragments
+                                fragments.push(DisplayFragment::ToolName {
+                                    name: name.clone(),
+                                    id: id.clone(),
+                                });
 
-                            fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
-                        }
-                        ContentBlock::ToolResult { .. } => {
-                            // Tool results are typically not part of assistant messages
-                        }
-                        ContentBlock::RedactedThinking { .. } => {
-                            // Redacted thinking blocks are not displayed
+                                // Parse JSON input into XML-style tool parameters
+                                if let Some(obj) = input.as_object() {
+                                    for (key, value) in obj {
+                                        let value_str = if value.is_string() {
+                                            value.as_str().unwrap_or("").to_string()
+                                        } else {
+                                            value.to_string()
+                                        };
+
+                                        fragments.push(DisplayFragment::ToolParameter {
+                                            name: key.clone(),
+                                            value: value_str,
+                                            tool_id: id.clone(),
+                                        });
+                                    }
+                                }
+
+                                fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
+                            }
+                            ContentBlock::ToolResult { .. } => {
+                                // Tool results are typically not part of assistant messages
+                            }
+                            ContentBlock::RedactedThinking { .. } => {
+                                // Redacted thinking blocks are not displayed
+                            }
                         }
                     }
                 }
