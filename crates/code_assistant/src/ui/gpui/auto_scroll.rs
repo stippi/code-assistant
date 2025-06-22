@@ -42,7 +42,7 @@ impl Default for AutoScrollConfig {
 pub struct AutoScrollContainer<T: Render> {
     // Core scroll state
     scroll_handle: ScrollHandle,
-    scrollbar_state: Rc<Cell<ScrollbarState>>,
+    scrollbar_state: Rc<RefCell<ScrollbarState>>,
     content_size: Rc<Cell<Size<Pixels>>>,
     viewport_size: Rc<Cell<Size<Pixels>>>,
 
@@ -81,7 +81,7 @@ impl<T: Render> AutoScrollContainer<T> {
     ) -> Self {
         Self {
             scroll_handle: ScrollHandle::new(),
-            scrollbar_state: Rc::new(Cell::new(ScrollbarState::default())),
+            scrollbar_state: Rc::new(RefCell::new(ScrollbarState::default())),
             content_size: Rc::new(Cell::new(Size::default())),
             viewport_size: Rc::new(Cell::new(Size::default())),
             autoscroll_active: Rc::new(Cell::new(false)),
@@ -418,12 +418,10 @@ impl<T: Render> Render for AutoScrollContainer<T> {
                     .right_0()
                     .bottom_0()
                     .w(px(12.))
-                    .child(Scrollbar::vertical(
-                        view.entity_id(),
-                        self.scrollbar_state.clone(),
-                        self.scroll_handle.clone(),
-                        self.content_size.get(),
-                    )),
+                    .child(
+                        Scrollbar::vertical(&*self.scrollbar_state.borrow(), &self.scroll_handle)
+                            .scroll_size(self.content_size.get()),
+                    ),
             )
     }
 }
