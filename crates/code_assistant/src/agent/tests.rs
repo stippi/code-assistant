@@ -453,7 +453,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         panic!("Expected Structured content in assistant message");
     }
 
-    // Check error message from system
+    // Check error message from system - in XML mode gets converted to text but should contain our error content
     assert_eq!(request1.messages[2].role, MessageRole::User);
     if let MessageContent::Text(error_text) = &request1.messages[2].content {
         assert!(error_text.contains("Tool error"));
@@ -462,7 +462,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         assert!(error_text.contains("found '</tool:read>'"));
         assert!(error_text.contains("Please try again"));
     } else {
-        panic!("Expected Text content in error message");
+        panic!("Expected Text content in error message for XML mode (after conversion)");
     }
 
     // Validate Request 2: Corrected tool call and successful execution
@@ -614,6 +614,134 @@ async fn test_parse_error_handling() -> Result<()> {
     } else {
         panic!("Expected Structured content in third message");
     }
+
+    Ok(())
+}
+
+#[test]
+fn test_failed_tool_id_generation() -> Result<()> {
+    // Test that our failed tool ID generation follows the expected format
+    use crate::agent::runner::Agent;
+
+    let tool_id = Agent::generate_failed_tool_id(123, 0);
+    assert_eq!(tool_id, "failed-tool-123-0");
+
+    let tool_id2 = Agent::generate_failed_tool_id(456, 2);
+    assert_eq!(tool_id2, "failed-tool-456-2");
+
+    Ok(())
+}
+
+#[test]
+fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
+    use crate::persistence::ChatSession;
+    use crate::session::instance::SessionInstance;
+    use std::time::SystemTime;
+
+    // Create a session with mixed messages including failed tool error messages
+    let session = ChatSession {
+        id: "test-session".to_string(),
+        name: "Test Session".to_string(),
+        created_at: SystemTime::now(),
+        updated_at: SystemTime::now(),
+        messages: vec![
+            // Regular user message - should be included
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("Hello, please help me".to_string()),
+                request_id: None,
+            },
+            // Assistant response
+            Message {
+                role: MessageRole::Assistant,
+                content: MessageContent::Text("I'll help you".to_string()),
+                request_id: Some(1),
+            },
+            // Failed tool error message in XML mode - should be filtered out
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                    tool_use_id: "failed-tool-1-0".to_string(),
+                    content:
+                        "Tool error: Unknown tool 'invalid_tool'. Please use only available tools."
+                            .to_string(),
+                    is_error: Some(true),
+                }]),
+                request_id: None,
+            },
+            // Regular tool result - should be filtered out
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                    tool_use_id: "regular-tool-123".to_string(),
+                    content: "File contents here".to_string(),
+                    is_error: None,
+                }]),
+                request_id: None,
+            },
+            // Empty user message (legacy) - should be filtered out
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("".to_string()),
+                request_id: None,
+            },
+            // Another regular user message - should be included
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("Thank you for the help!".to_string()),
+                request_id: None,
+            },
+        ],
+        tool_executions: Vec::new(),
+        working_memory: crate::types::WorkingMemory::default(),
+        init_path: None,
+        initial_project: None,
+        tool_mode: ToolMode::Xml,
+        next_request_id: 1,
+    };
+
+    let session_instance = SessionInstance::new(session);
+
+    // Test the UI message conversion - should filter out tool-result and empty messages
+    let ui_messages = session_instance.convert_messages_to_ui_data(ToolMode::Xml)?;
+
+    // Should only have 3 messages:
+    // 1. "Hello, please help me" (user)
+    // 2. "I'll help you" (assistant)
+    // 3. "Thank you for the help!" (user)
+    assert_eq!(ui_messages.len(), 3);
+
+    // Verify the first message
+    assert_eq!(
+        ui_messages[0].role,
+        crate::ui::gpui::elements::MessageRole::User
+    );
+    assert!(ui_messages[0].fragments.iter().any(|f| match f {
+        crate::ui::streaming::DisplayFragment::PlainText(text) =>
+            text.contains("Hello, please help me"),
+        _ => false,
+    }));
+
+    // Verify the second message
+    assert_eq!(
+        ui_messages[1].role,
+        crate::ui::gpui::elements::MessageRole::Assistant
+    );
+    assert!(ui_messages[1].fragments.iter().any(|f| match f {
+        crate::ui::streaming::DisplayFragment::PlainText(text) => text.contains("I'll help you"),
+        _ => false,
+    }));
+
+    // Verify the third message
+    assert_eq!(
+        ui_messages[2].role,
+        crate::ui::gpui::elements::MessageRole::User
+    );
+    assert!(ui_messages[2].fragments.iter().any(|f| match f {
+        crate::ui::streaming::DisplayFragment::PlainText(text) =>
+            text.contains("Thank you for the help!"),
+        _ => false,
+    }));
 
     Ok(())
 }

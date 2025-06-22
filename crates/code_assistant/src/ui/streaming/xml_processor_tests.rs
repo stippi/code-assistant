@@ -322,4 +322,78 @@ mod tests {
 
         assert_fragments_match(&expected_fragments, &fragments);
     }
+
+    #[test]
+    fn test_mismatched_tool_closing_tag() {
+        // Test that mismatched tool closing tags don't cause empty tool ID errors
+        let input = "<tool:read_files>\n<param:path>test.txt</param:path>\n</tool:different_name>";
+
+        let test_ui = process_chunked_text(input, 3);
+        let fragments = test_ui.get_fragments();
+
+        let expected_fragments = vec![
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "test.txt".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(), // Should still end with the original tool ID
+            },
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_orphaned_tool_closing_tag() {
+        // Test that tool closing tags without corresponding opening tags are ignored gracefully
+        let input = "Some text here </tool:nonexistent> more text after";
+
+        let test_ui = process_chunked_text(input, 5);
+        let fragments = test_ui.get_fragments();
+
+        // The text gets combined into a single fragment since the orphaned closing tag is just ignored
+        let expected_fragments = vec![DisplayFragment::PlainText(
+            "Some text here more text after".to_string(),
+        )];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_user_messages_not_parsed_for_xml_tags() {
+        // Test that user messages with XML-like content are treated as plain text
+        use llm::{Message, MessageContent, MessageRole};
+
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let mut processor = XmlStreamProcessor::new(ui_arc, 42);
+
+        // Create a user message with XML-like content
+        let user_message = Message {
+            role: MessageRole::User,
+            content: MessageContent::Text(
+                "Please use <tool:read_files> to read <param:path>test.txt</param:path> and show me <thinking>what should I do</thinking>".to_string()
+            ),
+            request_id: None,
+        };
+
+        let fragments = processor
+            .extract_fragments_from_message(&user_message)
+            .unwrap();
+
+        // Should be treated as a single PlainText fragment, not parsed for XML tags
+        let expected_fragments = vec![
+            DisplayFragment::PlainText(
+                "Please use <tool:read_files> to read <param:path>test.txt</param:path> and show me <thinking>what should I do</thinking>".to_string()
+            ),
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
 }

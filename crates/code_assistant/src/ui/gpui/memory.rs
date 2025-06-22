@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use gpui::{div, prelude::*, px, App, Context, Entity, FocusHandle, Focusable, Window};
-use gpui_component::{scroll::ScrollbarAxis, ActiveTheme, StyledExt};
+use gpui::{div, prelude::*, px, App, Axis, Context, Entity, FocusHandle, Focusable, Window};
+use gpui_component::{ActiveTheme, StyledExt};
 
 use crate::types::{FileSystemEntryType, FileTreeEntry, LoadedResource, WorkingMemory};
 use crate::ui::gpui::file_icons;
@@ -80,7 +80,7 @@ impl Render for LoadedResourcesView {
             // Resources content with scrollbar using .scrollable()
             let resources_content = div()
                 .id("resources-content")
-                .scrollable(cx.entity().entity_id(), ScrollbarAxis::Vertical)
+                .scrollable(Axis::Vertical)
                 .flex()
                 .flex_col()
                 .p_1()
@@ -320,7 +320,7 @@ impl Render for FileTreeView {
                             div()
                                 .id("file-tree")
                                 .size_full()
-                                .scrollable(cx.entity().entity_id(), ScrollbarAxis::Vertical)
+                                .scrollable(Axis::Vertical)
                                 .p_1()
                                 .child(file_tree_content),
                         ),

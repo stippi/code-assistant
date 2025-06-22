@@ -147,7 +147,7 @@ impl SessionInstance {
     }
 
     /// Convert session messages to UI MessageData format
-    fn convert_messages_to_ui_data(
+    pub fn convert_messages_to_ui_data(
         &self,
         tool_mode: crate::types::ToolMode,
     ) -> Result<Vec<MessageData>, anyhow::Error> {
@@ -212,16 +212,24 @@ impl SessionInstance {
         );
 
         for message in &self.session.messages {
-            // Filter out tool-result user messages (they have empty content or structured content)
+            // Filter out tool-result user messages (they have tool IDs in structured content)
             if message.role == llm::MessageRole::User {
                 match &message.content {
                     llm::MessageContent::Text(text) if text.trim().is_empty() => {
-                        // Skip empty user messages (tool results in XML mode)
+                        // Skip empty user messages (legacy tool results in XML mode)
                         continue;
                     }
-                    llm::MessageContent::Structured(_) => {
-                        // Skip structured user messages (tool results)
-                        continue;
+                    llm::MessageContent::Structured(blocks) => {
+                        // Check if this is a tool-result message by looking for ToolResult blocks
+                        let has_tool_results = blocks
+                            .iter()
+                            .any(|block| matches!(block, llm::ContentBlock::ToolResult { .. }));
+
+                        if has_tool_results {
+                            // Skip tool-result user messages (they shouldn't be shown in UI)
+                            continue;
+                        }
+                        // Otherwise, this is a real structured user message, process it
                     }
                     _ => {
                         // This is a real user message, process it
