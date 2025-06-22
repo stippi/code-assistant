@@ -129,18 +129,59 @@ impl Render for ChatListItem {
                             .text_color(cx.theme().foreground)
                             .child(SharedString::from(name)),
                     )
-                    .when(self.is_selected, |s| {
-                        s.child(div().size(px(6.)).rounded_full().bg(cx.theme().primary))
-                    })
-                    .when(self.is_hovered, |s| {
-                        s.child(ItemMenu::new("popup-menu").popup_menu(
-                            move |this, _window, _cx| {
-                                this.menu("Rename", Box::new(Rename))
-                                    .separator()
-                                    .menu("Delete", Box::new(Delete))
-                            },
-                        ))
-                    }),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .when(self.is_selected, |s| {
+                                s.child(div().size(px(6.)).rounded_full().bg(cx.theme().primary))
+                            }) /*
+                            .when(self.is_hovered, |s| {
+                                s.child(ItemMenu::new("popup-menu").popup_menu(
+                                    move |this, _window, _cx| {
+                                        this.menu("Rename", Box::new(Rename))
+                                            .separator()
+                                            .menu("Delete", Box::new(Delete))
+                                    },
+                                ))
+                            }),
+                            */
+                            .when(self.is_selected && self.is_hovered, |s| {
+                                s.child(
+                                    div()
+                                        .size(px(20.))
+                                        .rounded_sm()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(cx.theme().danger.opacity(0.1)))
+                                        .child(file_icons::render_icon(
+                                            &file_icons::get().get_type_icon("trash"),
+                                            12.0,
+                                            cx.theme().danger,
+                                            "🗑",
+                                        ))
+                                        .on_mouse_up(MouseButton::Left, {
+                                            let session_id_for_delete = session_id.clone();
+                                            move |_, _window, cx| {
+                                                // Emit delete event
+                                                if let Some(sender) =
+                                                    cx.try_global::<UiEventSender>()
+                                                {
+                                                    let _ = sender.0.try_send(
+                                                        UiEvent::DeleteChatSession {
+                                                            session_id: session_id_for_delete
+                                                                .clone(),
+                                                        },
+                                                    );
+                                                }
+                                            }
+                                        }),
+                                )
+                            }),
+                    ),
             )
             .child(
                 div()
@@ -220,7 +261,6 @@ actions!(chat_sidebar, [Rename, Delete]);
 
 /// Main chat sidebar component
 pub struct ChatSidebar {
-    sessions: Vec<ChatMetadata>,
     items: Vec<Entity<ChatListItem>>,
     selected_session_id: Option<String>,
     focus_handle: FocusHandle,
@@ -230,7 +270,6 @@ pub struct ChatSidebar {
 impl ChatSidebar {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            sessions: Vec::new(),
             items: Vec::new(),
             selected_session_id: None,
             focus_handle: cx.focus_handle(),
@@ -403,137 +442,8 @@ impl Render for ChatSidebar {
                         .flex_col()
                         .gap_1()
                         .p_2()
-                        .children(
-                            // self.sessions
-                            //     .iter()
-                            //     .map(|session| {
-                            //         let is_selected =
-                            //             self.selected_session_id.as_ref() == Some(&session.id);
-
-                            //         // Create a simple div for each chat item instead of a component
-                            //         // to avoid complex entity management
-                            //         let session_id = session.id.clone();
-                            //         let name = session.name.clone();
-                            //         let formatted_date =
-                            //             ChatListItem::format_date(session.created_at);
-
-                            //         div()
-                            //             .id(SharedString::from(format!("chat-item-{}", session.id)))
-                            //             .w_full()
-                            //             .px_3()
-                            //             .py_2()
-                            //             .flex()
-                            //             .flex_col()
-                            //             .gap_1()
-                            //             .cursor_pointer()
-                            //             .rounded_md()
-                            //             .bg(if is_selected {
-                            //                 cx.theme().primary.opacity(0.1)
-                            //             } else {
-                            //                 cx.theme().transparent
-                            //             })
-                            //             .border_1()
-                            //             .border_color(if is_selected {
-                            //                 cx.theme().primary.opacity(0.3)
-                            //             } else {
-                            //                 cx.theme().transparent
-                            //             })
-                            //             .hover(|s| {
-                            //                 if !is_selected {
-                            //                     s.bg(cx.theme().muted.opacity(0.5))
-                            //                 } else {
-                            //                     s
-                            //                 }
-                            //             })
-                            //             .on_mouse_up(MouseButton::Left, {
-                            //                 let session_id = session_id.clone();
-                            //                 move |_, _window, cx| {
-                            //                     // Emit event to load this chat session
-                            //                     if let Some(sender) =
-                            //                         cx.try_global::<UiEventSender>()
-                            //                     {
-                            //                         let _ = sender.0.try_send(
-                            //                             UiEvent::LoadChatSession {
-                            //                                 session_id: session_id.clone(),
-                            //                             },
-                            //                         );
-                            //                     }
-                            //                 }
-                            //             })
-                            //             .child(
-                            //                 div()
-                            //                     .flex()
-                            //                     .items_center()
-                            //                     .justify_between()
-                            //                     .child(
-                            //                         div()
-                            //                             .text_sm()
-                            //                             .font_medium()
-                            //                             .text_color(cx.theme().foreground)
-                            //                             .child(SharedString::from(name)),
-                            //                     )
-                            //                     .child(
-                            //                         div()
-                            //                             .flex()
-                            //                             .items_center()
-                            //                             .gap_2()
-                            //                             .when(is_selected, |s| {
-                            //                                 s.child(
-                            //                                     div()
-                            //                                         .size(px(6.))
-                            //                                         .rounded_full()
-                            //                                         .bg(cx.theme().primary),
-                            //                                 )
-                            //                             })
-                            //                             .child(
-                            //                                 // Delete button for chat options
-                            //                                 div()
-                            //                                     .size(px(20.))
-                            //                                     .rounded_sm()
-                            //                                     .flex()
-                            //                                     .items_center()
-                            //                                     .justify_center()
-                            //                                     .cursor_pointer()
-                            //                                     .hover(|s| s.bg(cx.theme().danger.opacity(0.1)))
-                            //                                     .child(file_icons::render_icon(
-                            //                                         &file_icons::get().get_type_icon("trash"),
-                            //                                         12.0,
-                            //                                         cx.theme().danger,
-                            //                                         "🗑",
-                            //                                     ))
-                            //                                     .on_mouse_up(MouseButton::Left, {
-                            //                                         let session_id_for_delete = session_id.clone();
-                            //                                         move |_, _window, cx| {
-                            //                                             // Emit delete event
-                            //                                             if let Some(sender) = cx.try_global::<UiEventSender>() {
-                            //                                                 let _ = sender.0.try_send(UiEvent::DeleteChatSession {
-                            //                                                     session_id: session_id_for_delete.clone(),
-                            //                                                 });
-                            //                                             }
-                            //                                         }
-                            //                                     })
-                            //                             )
-                            //                             .child(Button::new("popup-menu-1").popup_menu(
-                            //                                 move |this, _window, _cx| {
-                            //                                     this.menu("Rename", Box::new(Rename))
-                            //                                         .separator()
-                            //                                         .menu("Delete", Box::new(Delete))
-                            //                                         //.menu_with_icon("Search", IconName::Search, Box::new(SearchAll))
-                            //                                 },
-                            //                             ))
-                            //                     ),
-                            //             )
-                            //             .child(
-                            //                 div()
-                            //                     .text_xs()
-                            //                     .text_color(cx.theme().muted_foreground)
-                            //                     .child(SharedString::from(formatted_date)),
-                            //             )
-                            //     })
-                            //     .collect::<Vec<_>>(),
-                            self.items.clone(),
-                        )
-                        .when(self.sessions.is_empty(), |s| {
+                        .children(self.items.clone())
+                        .when(self.items.is_empty(), |s| {
                             s.child(
                                 div()
                                     .px_3()
