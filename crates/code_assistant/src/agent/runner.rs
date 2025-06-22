@@ -57,6 +57,11 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Generate a failed tool ID using request ID and error index
+    pub fn generate_failed_tool_id(request_id: u64, error_index: usize) -> String {
+        format!("failed-tool-{}-{}", request_id, error_index)
+    }
+
     /// Formats an error, particularly ToolErrors, into a user-friendly string.
     fn format_error_for_user(error: &anyhow::Error) -> String {
         if let Some(tool_error) = error.downcast_ref::<ToolError>() {
@@ -331,11 +336,33 @@ impl Agent {
             }
             Err(e) => {
                 let error_text = Self::format_error_for_user(&e);
-                let error_msg = Message {
-                    role: MessageRole::User,
-                    content: MessageContent::Text(error_text),
-                    request_id: None,
+
+                let error_msg = match self.tool_mode {
+                    ToolMode::Xml => {
+                        // For XML mode, create structured tool-result message like regular tool results
+                        // Generate our own tool ID since XML mode doesn't have LLM-provided tool IDs
+                        let failed_tool_id = Self::generate_failed_tool_id(request_counter, 0);
+                        Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                                tool_use_id: failed_tool_id,
+                                content: error_text,
+                                is_error: Some(true),
+                            }]),
+                            request_id: None,
+                        }
+                    }
+                    ToolMode::Native => {
+                        // For native mode, keep text message since parsing errors occur before
+                        // we have any LLM-provided tool IDs to reference
+                        Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Text(error_text),
+                            request_id: None,
+                        }
+                    }
                 };
+
                 self.append_message(error_msg)?;
                 Ok((Vec::new(), LoopFlow::Continue)) // Continue without user input on parsing errors
             }
@@ -523,11 +550,19 @@ impl Agent {
 
                         for block in blocks {
                             match block {
-                                ContentBlock::ToolResult { tool_use_id, .. } => {
+                                ContentBlock::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    ..
+                                } => {
                                     // Get the dynamically rendered content for this tool result
                                     if let Some(rendered_output) = tool_outputs.get(tool_use_id) {
-                                        // Add the rendered tool output
+                                        // Add the rendered tool output from actual tool execution
                                         text_content.push_str(rendered_output);
+                                        text_content.push_str("\n\n");
+                                    } else if tool_use_id.starts_with("failed-tool-") {
+                                        // For failed tool error messages, use the content directly
+                                        text_content.push_str(content);
                                         text_content.push_str("\n\n");
                                     }
                                 }

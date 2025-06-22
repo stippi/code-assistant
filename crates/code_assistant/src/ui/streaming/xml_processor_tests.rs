@@ -322,4 +322,46 @@ mod tests {
 
         assert_fragments_match(&expected_fragments, &fragments);
     }
+
+    #[test]
+    fn test_mismatched_tool_closing_tag() {
+        // Test that mismatched tool closing tags don't cause empty tool ID errors
+        let input = "<tool:read_files>\n<param:path>test.txt</param:path>\n</tool:different_name>";
+
+        let test_ui = process_chunked_text(input, 3);
+        let fragments = test_ui.get_fragments();
+
+        let expected_fragments = vec![
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "test.txt".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(), // Should still end with the original tool ID
+            },
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_orphaned_tool_closing_tag() {
+        // Test that tool closing tags without corresponding opening tags are ignored gracefully
+        let input = "Some text here </tool:nonexistent> more text after";
+
+        let test_ui = process_chunked_text(input, 5);
+        let fragments = test_ui.get_fragments();
+
+        // The text gets combined into a single fragment since the orphaned closing tag is just ignored
+        let expected_fragments = vec![DisplayFragment::PlainText(
+            "Some text here more text after".to_string(),
+        )];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
 }

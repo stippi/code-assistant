@@ -325,18 +325,22 @@ impl XmlStreamProcessor {
                     }
 
                     TagType::ToolEnd => {
-                        // End a tool section
-                        let tool_id = self.state.tool_id.clone();
+                        // Only send ToolEnd fragment if we're actually in a tool and have a valid tool ID
+                        if self.state.in_tool && !self.state.tool_id.is_empty() {
+                            let tool_id = self.state.tool_id.clone();
+
+                            // Send fragment for tool end with the original tool ID
+                            self.ui
+                                .display_fragment(&DisplayFragment::ToolEnd { id: tool_id })?;
+                        }
+
+                        // Always reset tool state when we see any tool end tag
                         self.state.in_tool = false;
                         self.state.tool_name = String::new();
                         self.state.tool_id = String::new();
 
                         // Set at_block_start to true for next block
                         self.state.at_block_start = true;
-
-                        // Send fragment for tool end
-                        self.ui
-                            .display_fragment(&DisplayFragment::ToolEnd { id: tool_id })?;
 
                         // Skip past this tag
                         current_pos = absolute_tag_pos + tag_len;
@@ -605,14 +609,16 @@ impl XmlStreamProcessor {
                             current_pos = absolute_tag_pos + tag_len;
                         }
                         TagType::ToolEnd => {
-                            if local_in_tool {
+                            // Only add ToolEnd fragment if we're in a tool and have a valid tool ID
+                            if local_in_tool && !local_tool_id.is_empty() {
                                 fragments.push(DisplayFragment::ToolEnd {
                                     id: local_tool_id.clone(),
                                 });
-                                local_in_tool = false;
-                                local_tool_name.clear();
-                                local_tool_id.clear();
                             }
+                            // Always reset tool state when we see any tool end tag
+                            local_in_tool = false;
+                            local_tool_name.clear();
+                            local_tool_id.clear();
                             current_pos = absolute_tag_pos + tag_len;
                         }
                         TagType::ParamStart => {
