@@ -5,11 +5,7 @@ use gpui::{
     actions, div, prelude::*, px, AnyElement, App, AppContext, Context, Div, ElementId, Entity,
     FocusHandle, Focusable, MouseButton, MouseUpEvent, SharedString, Styled, Window,
 };
-use gpui_component::button::DropdownButton;
-use gpui_component::Icon;
-use gpui_component::{
-    button::Button, popup_menu::PopupMenuExt, ActiveTheme, Selectable, StyledExt,
-};
+use gpui_component::{popup_menu::PopupMenuExt, ActiveTheme, Selectable, StyledExt};
 use std::time::SystemTime;
 use tracing::{debug, trace, warn};
 
@@ -138,16 +134,10 @@ impl Render for ChatListItem {
                     })
                     .when(self.is_hovered, |s| {
                         s.child(ItemMenu::new("popup-menu").popup_menu(
-                            // s.child(
-                            //     Button::new("popup-menu")
-                            //         .size(px(20.))
-                            //         .icon(Icon::default().path("icons/menu.svg"))
-                            //        .popup_menu(
                             move |this, _window, _cx| {
                                 this.menu("Rename", Box::new(Rename))
                                     .separator()
                                     .menu("Delete", Box::new(Delete))
-                                //.menu_with_icon("Search", IconName::Search, Box::new(SearchAll))
                             },
                         ))
                     }),
