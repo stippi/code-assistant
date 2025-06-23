@@ -617,6 +617,8 @@ impl Render for BlockView {
                 // Use theme utilities for colors
                 let icon_color =
                     crate::ui::gpui::theme::colors::tool_block_icon(&cx.theme(), &block.status);
+                let tool_name_color =
+                    crate::ui::gpui::theme::colors::tool_block_name(&cx.theme(), &block.status);
                 let border_color = crate::ui::gpui::theme::colors::tool_border_by_status(
                     &cx.theme(),
                     &block.status,
@@ -656,7 +658,7 @@ impl Render for BlockView {
 
                 div()
                     .rounded(px(3.))
-                    .mb_2()
+                    .my_2()
                     .bg(tool_bg)
                     .flex()
                     .flex_row()
@@ -705,7 +707,7 @@ impl Render for BlockView {
                                                     // Tool name
                                                     div()
                                                         .font_weight(FontWeight(700.0))
-                                                        .text_color(icon_color)
+                                                        .text_color(tool_name_color)
                                                         .mr_2()
                                                         .flex_none() // Prevent shrinking
                                                         .child(block.name.clone())

@@ -54,12 +54,15 @@ impl Render for MessagesView {
             .text_size(px(16.))
             .children(messages.into_iter().map(|msg| {
                 // Create message container with appropriate styling based on role
-                let mut message_container = div().p_3().flex().flex_col().gap_2();
+                //let mut message_container = div().p_3().flex().flex_col();
+                let mut message_container = div().p_3();
 
                 if msg.read(cx).is_user_message() {
                     message_container = message_container
                         .m_3()
                         .bg(cx.theme().muted.opacity(0.3)) // Use theme muted color with opacity
+                        .border_1()
+                        .border_color(cx.theme().border)
                         .rounded_md()
                         .shadow_sm();
                 }

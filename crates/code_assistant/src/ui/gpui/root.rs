@@ -344,6 +344,7 @@ impl Render for RootView {
                     .child(
                         // Center: Messages and input (content area)
                         div()
+                            .bg(cx.theme().card)
                             .flex()
                             .flex_col()
                             .flex_grow() // Grow to take available space
