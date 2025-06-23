@@ -601,10 +601,11 @@ impl AnthropicClient {
                     return Ok(response);
                 }
                 Err(e) => {
-                    if utils::handle_retryable_error::<AnthropicRateLimitInfo>(
+                    if Self::handle_retryable_error_with_callback(
                         &e,
                         attempts,
                         max_retries,
+                        streaming_callback,
                     )
                     .await
                     {
@@ -615,6 +616,90 @@ impl AnthropicClient {
                 }
             }
         }
+    }
+
+    /// Handle retryable errors with UI notifications via streaming callback
+    async fn handle_retryable_error_with_callback(
+        error: &anyhow::Error,
+        attempts: u32,
+        max_retries: u32,
+        streaming_callback: Option<&StreamingCallback>,
+    ) -> bool {
+        if let Some(ctx) = error.downcast_ref::<ApiErrorContext<AnthropicRateLimitInfo>>() {
+            match &ctx.error {
+                ApiError::RateLimit(_) => {
+                    if let Some(rate_limits) = &ctx.rate_limits {
+                        if attempts < max_retries {
+                            let delay = rate_limits.get_retry_delay();
+                            let delay_secs = delay.as_secs();
+                            warn!(
+                                "Rate limit hit (attempt {}/{}), waiting {} seconds before retry",
+                                attempts,
+                                max_retries,
+                                delay_secs
+                            );
+
+                            // Send rate limit notification if callback is available
+                            if let Some(callback) = streaming_callback {
+                                let _ = callback(&crate::StreamingChunk::RateLimit {
+                                    seconds_remaining: delay_secs,
+                                });
+
+                                // Start a countdown
+                                for remaining in (1..=delay_secs).rev() {
+                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                    let _ = callback(&crate::StreamingChunk::RateLimit {
+                                        seconds_remaining: remaining - 1,
+                                    });
+                                }
+
+                                // Clear the rate limit notification
+                                let _ = callback(&crate::StreamingChunk::RateLimitClear);
+                            } else {
+                                // No callback, just wait
+                                tokio::time::sleep(delay).await;
+                            }
+
+                            return true;
+                        }
+                    } else {
+                        // Fallback if no rate limit info available
+                        if attempts < max_retries {
+                            let delay = Duration::from_secs(2u64.pow(attempts - 1));
+                            warn!(
+                                "Rate limit hit but no timing info available (attempt {}/{}), using exponential backoff: {} seconds",
+                                attempts,
+                                max_retries,
+                                delay.as_secs()
+                            );
+                            tokio::time::sleep(delay).await;
+                            return true;
+                        }
+                    }
+                }
+                ApiError::ServiceError(_) | ApiError::NetworkError(_) | ApiError::Overloaded(_) => {
+                    if attempts < max_retries {
+                        let delay = Duration::from_secs(2u64.pow(attempts - 1));
+                        warn!(
+                            "Error: {} (attempt {}/{}), retrying in {} seconds",
+                            error,
+                            attempts,
+                            max_retries,
+                            delay.as_secs()
+                        );
+                        tokio::time::sleep(delay).await;
+                        return true;
+                    }
+                }
+                _ => {
+                    warn!(
+                        "Unhandled error (attempt {}/{}): {:?}",
+                        attempts, max_retries, error
+                    );
+                }
+            }
+        }
+        false
     }
 
     async fn try_send_request(

@@ -617,6 +617,28 @@ impl Gpui {
                     warn!("UI: No backend event sender available");
                 }
             }
+            UiEvent::RateLimitNotification { seconds_remaining } => {
+                debug!("UI: RateLimitNotification event: {} seconds remaining", seconds_remaining);
+                let queue = self.message_queue.lock().unwrap();
+                if let Some(last) = queue.last() {
+                    cx.update_entity(&last, |message, cx| {
+                        message.set_rate_limit_countdown(Some(seconds_remaining));
+                        cx.notify();
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
+            UiEvent::ClearRateLimit => {
+                debug!("UI: ClearRateLimit event");
+                let queue = self.message_queue.lock().unwrap();
+                if let Some(last) = queue.last() {
+                    cx.update_entity(&last, |message, cx| {
+                        message.set_rate_limit_countdown(None);
+                        cx.notify();
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
         }
     }
 
@@ -906,5 +928,13 @@ impl UserInterface for Gpui {
             StreamingState::StopRequested => false,
             _ => true,
         }
+    }
+
+    fn notify_rate_limit(&self, seconds_remaining: u64) {
+        self.push_event(UiEvent::RateLimitNotification { seconds_remaining });
+    }
+
+    fn clear_rate_limit(&self) {
+        self.push_event(UiEvent::ClearRateLimit);
     }
 }
