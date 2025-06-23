@@ -135,6 +135,14 @@ impl UserInterface for TestUI {
         // Test implementation always continues streaming
         true
     }
+
+    fn notify_rate_limit(&self, _seconds_remaining: u64) {
+        // Test implementation does nothing with rate limit notifications
+    }
+
+    fn clear_rate_limit(&self) {
+        // Test implementation does nothing with rate limit clearing
+    }
 }
 
 /// Helper function to split text into small chunks for testing tag handling

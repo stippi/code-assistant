@@ -199,6 +199,12 @@ impl SessionInstance {
             fn should_streaming_continue(&self) -> bool {
                 true
             }
+            fn notify_rate_limit(&self, _seconds_remaining: u64) {
+                // No-op for dummy UI
+            }
+            fn clear_rate_limit(&self) {
+                // No-op for dummy UI
+            }
         }
 
         let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
@@ -415,5 +421,19 @@ impl UserInterface for ProxyUI {
         } else {
             true // Don't interrupt streaming if session is not connected
         }
+    }
+
+    fn notify_rate_limit(&self, seconds_remaining: u64) {
+        if self.is_connected() {
+            self.real_ui.notify_rate_limit(seconds_remaining);
+        }
+        // No-op if session not connected
+    }
+
+    fn clear_rate_limit(&self) {
+        if self.is_connected() {
+            self.real_ui.clear_rate_limit();
+        }
+        // No-op if session not connected
     }
 }

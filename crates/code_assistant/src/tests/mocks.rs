@@ -264,6 +264,14 @@ impl UserInterface for MockUI {
         // Mock implementation always continues streaming
         true
     }
+
+    fn notify_rate_limit(&self, _seconds_remaining: u64) {
+        // Mock implementation does nothing with rate limit notifications
+    }
+
+    fn clear_rate_limit(&self) {
+        // Mock implementation does nothing with rate limit clearing
+    }
 }
 
 // Mock Explorer

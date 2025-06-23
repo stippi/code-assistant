@@ -64,6 +64,18 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                 .ui
                 .display_fragment(&DisplayFragment::ThinkingText(text.clone())),
 
+            StreamingChunk::RateLimit { seconds_remaining } => {
+                // Notify UI about rate limit with countdown
+                self.ui.notify_rate_limit(*seconds_remaining);
+                Ok(())
+            }
+
+            StreamingChunk::RateLimitClear => {
+                // Clear rate limit notification
+                self.ui.clear_rate_limit();
+                Ok(())
+            }
+
             // For native JSON input, handle based on tool information
             StreamingChunk::InputJson {
                 content,
