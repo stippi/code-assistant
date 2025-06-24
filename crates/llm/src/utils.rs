@@ -1,4 +1,4 @@
-use crate::{ApiError, ApiErrorContext, RateLimitHandler};
+use crate::{ApiError, ApiErrorContext, RateLimitHandler, StreamingCallback, StreamingChunk};
 use anyhow::Result;
 use reqwest::{Response, StatusCode};
 use std::time::Duration;
@@ -39,12 +39,15 @@ pub async fn check_response_error<T: RateLimitHandler + std::fmt::Debug + Send +
 /// Handle retryable errors and rate limiting for LLM providers.
 /// Returns true if the error is retryable and we should continue the retry loop.
 /// Returns false if we should exit the retry loop.
+///
+/// If a streaming_callback is provided, rate limit notifications will be sent to the UI.
 pub async fn handle_retryable_error<
     T: RateLimitHandler + std::fmt::Debug + Send + Sync + 'static,
 >(
     error: &anyhow::Error,
     attempts: u32,
     max_retries: u32,
+    streaming_callback: Option<&StreamingCallback>,
 ) -> bool {
     if let Some(ctx) = error.downcast_ref::<ApiErrorContext<T>>() {
         match &ctx.error {
@@ -52,13 +55,50 @@ pub async fn handle_retryable_error<
                 if let Some(rate_limits) = &ctx.rate_limits {
                     if attempts < max_retries {
                         let delay = rate_limits.get_retry_delay();
+                        let delay_secs = delay.as_secs();
                         warn!(
                             "Rate limit hit (attempt {}/{}), waiting {} seconds before retry",
                             attempts,
                             max_retries,
-                            delay.as_secs()
+                            delay_secs
                         );
-                        sleep(delay).await;
+
+                        // Send rate limit notification if callback is available
+                        if let Some(callback) = streaming_callback {
+                            let _ = callback(&StreamingChunk::RateLimit {
+                                seconds_remaining: delay_secs,
+                            });
+
+                            // Start a countdown with precise timing
+                            let start_time = std::time::Instant::now();
+                            let mut next_update = start_time + Duration::from_secs(1);
+
+                            while start_time.elapsed() < delay {
+                                // Sleep until the next update time, accounting for callback execution time
+                                let now = std::time::Instant::now();
+                                if now < next_update {
+                                    sleep(next_update - now).await;
+                                }
+
+                                // Calculate remaining time based on actual elapsed time
+                                let elapsed = start_time.elapsed();
+                                let remaining_secs = delay_secs.saturating_sub(elapsed.as_secs());
+
+                                let _ = callback(&StreamingChunk::RateLimit {
+                                    seconds_remaining: remaining_secs,
+                                });
+
+                                // Schedule next update
+                                next_update += Duration::from_secs(1);
+                            }
+
+                            // Clear the rate limit notification
+                            let _ = callback(&StreamingChunk::RateLimitClear);
+                        } else {
+                            // No callback, just wait
+                            sleep(delay).await;
+                        }
+
                         return true;
                     }
                 } else {
