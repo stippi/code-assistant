@@ -618,7 +618,10 @@ impl Gpui {
                 }
             }
             UiEvent::RateLimitNotification { seconds_remaining } => {
-                debug!("UI: RateLimitNotification event: {} seconds remaining", seconds_remaining);
+                debug!(
+                    "UI: RateLimitNotification event: {} seconds remaining",
+                    seconds_remaining
+                );
                 let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
                     cx.update_entity(&last, |message, cx| {

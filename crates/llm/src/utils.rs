@@ -58,9 +58,7 @@ pub async fn handle_retryable_error<
                         let delay_secs = delay.as_secs();
                         warn!(
                             "Rate limit hit (attempt {}/{}), waiting {} seconds before retry",
-                            attempts,
-                            max_retries,
-                            delay_secs
+                            attempts, max_retries, delay_secs
                         );
 
                         // Send rate limit notification if callback is available
