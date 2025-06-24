@@ -71,10 +71,10 @@ pub trait UserInterface: Send + Sync {
 
     /// Check if streaming should continue
     fn should_streaming_continue(&self) -> bool;
-    
+
     /// Notify the UI about rate limiting and countdown
     fn notify_rate_limit(&self, seconds_remaining: u64);
-    
+
     /// Clear rate limit notification
     fn clear_rate_limit(&self);
 }

@@ -104,19 +104,16 @@ impl Render for MessagesView {
                 // Add loading indicator if waiting for content
                 if msg.read(cx).is_waiting_for_content() {
                     let rate_limit_countdown = msg.read(cx).get_rate_limit_countdown();
-                    
+
                     let (message_text, icon_color) = if let Some(seconds) = rate_limit_countdown {
                         (
                             format!("Rate limited - retrying in {}s...", seconds),
                             cx.theme().warning,
                         )
                     } else {
-                        (
-                            "Waiting for response...".to_string(),
-                            cx.theme().info,
-                        )
+                        ("Waiting for response...".to_string(), cx.theme().info)
                     };
-                    
+
                     container_children.push(
                         div()
                             .flex()
