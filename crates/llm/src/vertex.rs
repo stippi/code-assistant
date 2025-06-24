@@ -369,6 +369,7 @@ impl VertexClient {
                         &e,
                         attempts,
                         max_retries,
+                        streaming_callback,
                     )
                     .await
                     {
