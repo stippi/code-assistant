@@ -348,6 +348,7 @@ impl AiCoreClient {
                         &e,
                         attempts,
                         max_retries,
+                        streaming_callback,
                     )
                     .await
                     {

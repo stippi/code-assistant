@@ -233,4 +233,14 @@ impl UserInterface for TerminalUI {
         // Terminal UI always continues streaming (no stop functionality)
         true
     }
+
+    fn notify_rate_limit(&self, seconds_remaining: u64) {
+        // For terminal UI, we could print immediately, but let's keep it simple
+        // In a real implementation, this might use a channel to communicate with the terminal
+        println!("Rate limited - retrying in {}s...", seconds_remaining);
+    }
+
+    fn clear_rate_limit(&self) {
+        // No action needed for terminal UI
+    }
 }

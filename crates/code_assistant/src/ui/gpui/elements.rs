@@ -32,6 +32,8 @@ pub struct MessageContainer {
     /// Set to `true` in UiEvent::StreamingStarted, and set to false when the first streaming chunk
     /// is received. A progress spinner is showing while it is `true`.
     waiting_for_content: Arc<Mutex<bool>>,
+    /// Rate limit countdown in seconds (None = no rate limiting)
+    rate_limit_countdown: Arc<Mutex<Option<u64>>>,
 }
 
 impl MessageContainer {
@@ -41,6 +43,7 @@ impl MessageContainer {
             role,
             current_request_id: Arc::new(Mutex::new(0)),
             waiting_for_content: Arc::new(Mutex::new(false)),
+            rate_limit_countdown: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -57,6 +60,16 @@ impl MessageContainer {
     // Check if waiting for content
     pub fn is_waiting_for_content(&self) -> bool {
         *self.waiting_for_content.lock().unwrap()
+    }
+
+    // Set rate limit countdown
+    pub fn set_rate_limit_countdown(&self, seconds: Option<u64>) {
+        *self.rate_limit_countdown.lock().unwrap() = seconds;
+    }
+
+    // Get rate limit countdown
+    pub fn get_rate_limit_countdown(&self) -> Option<u64> {
+        *self.rate_limit_countdown.lock().unwrap()
     }
 
     // Remove all blocks with the given request ID

@@ -51,6 +51,10 @@ pub enum StreamingChunk {
         tool_name: Option<String>,
         tool_id: Option<String>,
     },
+    /// Rate limit notification with countdown in seconds
+    RateLimit { seconds_remaining: u64 },
+    /// Clear rate limit notification
+    RateLimitClear,
 }
 
 pub type StreamingCallback = Box<dyn Fn(&StreamingChunk) -> Result<()> + Send + Sync>;

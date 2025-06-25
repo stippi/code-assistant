@@ -106,6 +106,17 @@ impl Render for MessagesView {
 
                 // Add loading indicator if waiting for content
                 if msg.read(cx).is_waiting_for_content() {
+                    let rate_limit_countdown = msg.read(cx).get_rate_limit_countdown();
+
+                    let (message_text, icon_color) = if let Some(seconds) = rate_limit_countdown {
+                        (
+                            format!("Rate limited - retrying in {}s...", seconds),
+                            cx.theme().warning,
+                        )
+                    } else {
+                        ("Waiting for response...".to_string(), cx.theme().info)
+                    };
+
                     container_children.push(
                         div()
                             .flex()
@@ -116,7 +127,7 @@ impl Render for MessagesView {
                                 svg()
                                     .size(px(16.))
                                     .path(SharedString::from("icons/arrow_circle.svg"))
-                                    .text_color(cx.theme().info)
+                                    .text_color(icon_color)
                                     .with_animation(
                                         "loading_indicator",
                                         Animation::new(std::time::Duration::from_secs(2))
@@ -131,9 +142,9 @@ impl Render for MessagesView {
                             )
                             .child(
                                 div()
-                                    .text_color(cx.theme().info)
+                                    .text_color(icon_color)
                                     .text_size(px(12.))
-                                    .child("Waiting for response..."),
+                                    .child(message_text),
                             )
                             .into_any_element(),
                     );
