@@ -2,11 +2,13 @@ use crate::ui::gpui::file_icons;
 use crate::ui::gpui::parameter_renderers::ParameterRendererRegistry;
 use crate::ui::ToolStatus;
 use gpui::{
-    bounce, div, ease_in_out, percentage, px, svg, Animation, AnimationExt, Context, Entity,
-    IntoElement, MouseButton, SharedString, Styled, Transformation,
+    bounce, div, ease_in_out, percentage, px, svg, Animation, AnimationExt, Bounds, Context,
+    Entity, IntoElement, MouseButton, Pixels, SharedString, Styled, Task, Timer, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
 use gpui_component::{label::Label, ActiveTheme};
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::trace;
@@ -16,6 +18,35 @@ use tracing::trace;
 pub enum MessageRole {
     User,
     Assistant,
+}
+
+/// Animation configuration for expand/collapse
+#[derive(Clone)]
+pub struct AnimationConfig {
+    /// Animation frame rate (in milliseconds per frame)
+    pub frame_ms: u64,
+    /// Animation duration in milliseconds
+    pub duration_ms: f32,
+}
+
+impl Default for AnimationConfig {
+    fn default() -> Self {
+        Self {
+            frame_ms: 8,        // ~120 FPS
+            duration_ms: 300.0, // 300ms constant animation time
+        }
+    }
+}
+
+/// Animation state for expand/collapse
+#[derive(Clone, Debug, PartialEq)]
+enum AnimationState {
+    Idle,
+    Animating {
+        height_scale: f32,
+        target: f32, // 0.0 for collapsing, 1.0 for expanding
+        start_time: std::time::Instant,
+    },
 }
 
 /// Container for all elements within a message
@@ -429,24 +460,152 @@ impl BlockData {
 pub struct BlockView {
     block: BlockData,
     request_id: u64,
+    // Animation state
+    animation_state: AnimationState,
+    content_height: Rc<Cell<Pixels>>,
+    animation_task: Option<Task<()>>,
 }
 
 impl BlockView {
     pub fn new(block: BlockData, request_id: u64, _cx: &mut Context<Self>) -> Self {
-        Self { block, request_id }
-    }
-
-    fn toggle_thinking_collapsed(&mut self, cx: &mut Context<Self>) {
-        if let Some(thinking) = self.block.as_thinking_mut() {
-            thinking.is_collapsed = !thinking.is_collapsed;
-            cx.notify();
+        Self {
+            block,
+            request_id,
+            animation_state: AnimationState::Idle,
+            content_height: Rc::new(Cell::new(px(0.0))),
+            animation_task: None,
         }
     }
 
+    fn toggle_thinking_collapsed(&mut self, cx: &mut Context<Self>) {
+        let should_expand = if let Some(thinking) = self.block.as_thinking_mut() {
+            thinking.is_collapsed = !thinking.is_collapsed;
+            !thinking.is_collapsed
+        } else {
+            return;
+        };
+        self.start_expand_collapse_animation(should_expand, cx);
+    }
+
     fn toggle_tool_collapsed(&mut self, cx: &mut Context<Self>) {
-        if let Some(tool) = self.block.as_tool_mut() {
+        let should_expand = if let Some(tool) = self.block.as_tool_mut() {
             tool.is_collapsed = !tool.is_collapsed;
-            cx.notify();
+            !tool.is_collapsed
+        } else {
+            return;
+        };
+        self.start_expand_collapse_animation(should_expand, cx);
+    }
+
+    fn start_expand_collapse_animation(&mut self, should_expand: bool, cx: &mut Context<Self>) {
+        let target = if should_expand { 1.0 } else { 0.0 };
+        let now = std::time::Instant::now();
+
+        // Update animation state
+        match &self.animation_state.clone() {
+            AnimationState::Animating {
+                height_scale,
+                target: current_target,
+                ..
+            } if *current_target != target => {
+                // Reverse direction: keep current height_scale, but adjust start_time for smooth transition
+                let current_progress = if target == 1.0 {
+                    *height_scale
+                } else {
+                    1.0 - *height_scale
+                };
+                let adjusted_start_time =
+                    now - std::time::Duration::from_millis((current_progress * 300.0) as u64);
+
+                self.animation_state = AnimationState::Animating {
+                    height_scale: *height_scale,
+                    target,
+                    start_time: adjusted_start_time,
+                };
+            }
+            _ => {
+                // Start new animation
+                let initial_height_scale = if should_expand { 0.0 } else { 1.0 };
+                self.animation_state = AnimationState::Animating {
+                    height_scale: initial_height_scale,
+                    target,
+                    start_time: now,
+                };
+            }
+        }
+
+        // Start animation task if not already running
+        if self.animation_task.is_none() {
+            self.start_animation_task(cx);
+        }
+    }
+
+    fn start_animation_task(&mut self, cx: &mut Context<Self>) {
+        let config = AnimationConfig::default();
+        let task = cx.spawn(async move |weak_entity, async_app_cx| {
+            let mut timer = Timer::after(Duration::from_millis(config.frame_ms));
+
+            loop {
+                timer.await;
+                timer = Timer::after(Duration::from_millis(config.frame_ms));
+
+                let should_continue = weak_entity.update(async_app_cx, |view, cx| {
+                    view.update_animation(&config);
+
+                    // Check if animation should continue
+                    match &view.animation_state {
+                        AnimationState::Idle => false,
+                        _ => {
+                            cx.notify();
+                            true
+                        }
+                    }
+                });
+
+                if let Ok(should_continue) = should_continue {
+                    if !should_continue {
+                        // Animation finished, clean up task
+                        let _ = weak_entity.update(async_app_cx, |view, _cx| {
+                            view.animation_task = None;
+                        });
+                        break;
+                    }
+                } else {
+                    // Entity was dropped, stop animation
+                    break;
+                }
+            }
+        });
+
+        self.animation_task = Some(task);
+    }
+
+    fn update_animation(&mut self, config: &AnimationConfig) {
+        match &mut self.animation_state {
+            AnimationState::Animating {
+                height_scale,
+                target,
+                start_time,
+            } => {
+                let elapsed = start_time.elapsed().as_millis() as f32;
+                let progress = (elapsed / config.duration_ms).min(1.0);
+
+                // Easing function (ease_out_cubic for smooth deceleration)
+                let eased_progress = 1.0 - (1.0 - progress).powi(3);
+
+                *height_scale = if *target == 1.0 {
+                    eased_progress // Animate from 0.0 -> 1.0
+                } else {
+                    1.0 - eased_progress // Animate from 1.0 -> 0.0
+                };
+
+                // Stop when animation complete
+                if progress >= 1.0 {
+                    *height_scale = *target;
+                    self.animation_state = AnimationState::Idle;
+                }
+            }
+            AnimationState::Idle => {}
         }
     }
 }
@@ -582,32 +741,75 @@ impl Render for BlockView {
                                     .into_any(),
                             ])
                             .into_any(),
-                        // Content (only shown when expanded)
-                        if !block.is_collapsed {
+                        // Animated content container
+                        {
+                            let scale = match &self.animation_state {
+                                AnimationState::Animating { height_scale, .. } => *height_scale,
+                                AnimationState::Idle => {
+                                    if block.is_collapsed {
+                                        0.0
+                                    } else {
+                                        1.0
+                                    }
+                                }
+                            };
+
+                            let content_height_rc = self.content_height.clone();
+
                             div()
-                                .pt_1()
-                                .text_size(px(14.))
-                                .italic()
-                                .text_color(text_color)
-                                .child(gpui_component::text::TextView::markdown(
-                                    "thinking-content",
-                                    block.content.clone(),
-                                ))
-                                .into_any()
-                        } else {
-                            // If collapsed, show a preview of the first line using Markdown
-                            let first_line = block.content.lines().next().unwrap_or("").to_string();
-                            div()
-                                .pt_1()
-                                .text_size(px(14.))
-                                .italic()
-                                .text_color(text_color)
-                                .opacity(0.7)
-                                .text_ellipsis()
-                                .child(gpui_component::text::TextView::markdown(
-                                    "thinking-preview",
-                                    first_line + "...",
-                                ))
+                                .overflow_hidden()
+                                .when(scale > 0.0, |div| {
+                                    let actual_height = content_height_rc.get();
+                                    let animated_height = actual_height * scale;
+                                    div.h(animated_height)
+                                })
+                                .child(
+                                    div()
+                                        .on_children_prepainted({
+                                            let content_height_rc = content_height_rc.clone();
+                                            move |bounds_vec: Vec<Bounds<Pixels>>, _window, _app| {
+                                                if let Some(first_child_bounds) = bounds_vec.first()
+                                                {
+                                                    let new_height = first_child_bounds.size.height;
+                                                    if content_height_rc.get() != new_height {
+                                                        content_height_rc.set(new_height);
+                                                    }
+                                                }
+                                            }
+                                        })
+                                        .child(if !block.is_collapsed || scale > 0.0 {
+                                            div()
+                                                .pt_1()
+                                                .text_size(px(14.))
+                                                .italic()
+                                                .text_color(text_color)
+                                                .child(gpui_component::text::TextView::markdown(
+                                                    "thinking-content",
+                                                    block.content.clone(),
+                                                ))
+                                                .into_any()
+                                        } else {
+                                            // If collapsed, show a preview of the first line
+                                            let first_line = block
+                                                .content
+                                                .lines()
+                                                .next()
+                                                .unwrap_or("")
+                                                .to_string();
+                                            div()
+                                                .pt_1()
+                                                .text_size(px(14.))
+                                                .italic()
+                                                .text_color(text_color)
+                                                .opacity(0.7)
+                                                .text_ellipsis()
+                                                .child(gpui_component::text::TextView::markdown(
+                                                    "thinking-preview",
+                                                    first_line + "...",
+                                                ))
+                                                .into_any()
+                                        }),
+                                )
                                 .into_any()
                         },
                     ])
@@ -764,48 +966,90 @@ impl Render for BlockView {
                                         .into_any(),
                                 );
 
-                                // Conditionally add full-width parameters and output if not collapsed
-                                if !block.is_collapsed {
-                                    // Full-width parameters
-                                    if !fullwidth_params.is_empty() {
+                                // Animated expandable content container
+                                {
+                                    let scale = match &self.animation_state {
+                                        AnimationState::Animating { height_scale, .. } => *height_scale,
+                                        AnimationState::Idle => if block.is_collapsed { 0.0 } else { 1.0 }
+                                    };
+
+                                    let content_height_rc = self.content_height.clone();
+                                    let has_expandable_content = !fullwidth_params.is_empty() ||
+                                        block.output.as_ref().map_or(false, |o| !o.is_empty());
+
+                                    if has_expandable_content && (!block.is_collapsed || scale > 0.0) {
                                         elements.push(
                                             div()
-                                                .flex()
-                                                .flex_col()
-                                                .w_full()
-                                                .mt_1() // Add margin between rows
-                                                .children(
-                                                    fullwidth_params
-                                                        .iter()
-                                                        .map(|param| render_parameter(param)),
+                                                .overflow_hidden()
+                                                .when(scale < 1.0, |div| {
+                                                    let actual_height = content_height_rc.get();
+                                                    let animated_height = actual_height * scale;
+                                                    div.h(animated_height)
+                                                })
+                                                .child(
+                                                    div()
+                                                        .on_children_prepainted({
+                                                            let content_height_rc = content_height_rc.clone();
+                                                            move |bounds_vec: Vec<Bounds<Pixels>>, _window, _app| {
+                                                                if let Some(first_child_bounds) = bounds_vec.first() {
+                                                                    let new_height = first_child_bounds.size.height;
+                                                                    if content_height_rc.get() != new_height {
+                                                                        content_height_rc.set(new_height);
+                                                                    }
+                                                                }
+                                                            }
+                                                        })
+                                                        .flex()
+                                                        .flex_col()
+                                                        .children({
+                                                            let mut expandable_elements = Vec::new();
+
+                                                            // Full-width parameters
+                                                            if !fullwidth_params.is_empty() {
+                                                                expandable_elements.push(
+                                                                    div()
+                                                                        .flex()
+                                                                        .flex_col()
+                                                                        .w_full()
+                                                                        .mt_1()
+                                                                        .children(
+                                                                            fullwidth_params
+                                                                                .iter()
+                                                                                .map(|param| render_parameter(param)),
+                                                                        )
+                                                                        .into_any(),
+                                                                );
+                                                            }
+
+                                                            // Output
+                                                            if let Some(output_content) = &block.output {
+                                                                if !output_content.is_empty() {
+                                                                    let output_color =
+                                                                        if block.status == crate::ui::ToolStatus::Error {
+                                                                            cx.theme().danger
+                                                                        } else {
+                                                                            cx.theme().foreground
+                                                                        };
+
+                                                                    expandable_elements.push(
+                                                                        div()
+                                                                            .id(SharedString::from(block.id.clone()))
+                                                                            .p_2()
+                                                                            .mt_1()
+                                                                            .w_full()
+                                                                            .text_color(output_color)
+                                                                            .text_size(px(13.))
+                                                                            .child(output_content.clone())
+                                                                            .into_any(),
+                                                                    );
+                                                                }
+                                                            }
+
+                                                            expandable_elements
+                                                        })
                                                 )
                                                 .into_any(),
                                         );
-                                    }
-
-                                    // Output
-                                    if let Some(output_content) = &block.output {
-                                        if !output_content.is_empty() {
-                                            // Also check if output is not empty
-                                            let output_color =
-                                                if block.status == crate::ui::ToolStatus::Error {
-                                                    cx.theme().danger
-                                                } else {
-                                                    cx.theme().foreground
-                                                };
-
-                                            elements.push(
-                                                div()
-                                                    .id(SharedString::from(block.id.clone()))
-                                                    .p_2()
-                                                    .mt_1()
-                                                    .w_full()
-                                                    .text_color(output_color)
-                                                    .text_size(px(13.))
-                                                    .child(output_content.clone())
-                                                    .into_any(),
-                                            );
-                                        }
                                     }
                                 }
 
@@ -827,48 +1071,55 @@ impl Render for BlockView {
                                     );
                                 }
 
-                                // Bottom collapse bar (only if expanded and there's content to collapse)
-                                if !block.is_collapsed
-                                    && (!fullwidth_params.is_empty()
-                                        || block.output.as_ref().map_or(false, |o| !o.is_empty()))
+                                // Bottom collapse bar - include in animated content
                                 {
-                                    let (collapse_icon, collapse_text) = (
-                                        file_icons::get().get_type_icon(file_icons::CHEVRON_UP),
-                                        "Collapse", // Simpler text
-                                    );
-                                    elements.push(
-                                        div()
-                                            .flex()
-                                            .justify_center()
-                                            .items_center()
-                                            .w_full()
-                                            .p_1()
-                                            .mt_1()
-                                            .border_t_1()
-                                            .border_color(cx.theme().border)
-                                            .cursor_pointer()
-                                            .hover(|s| s.bg(cx.theme().border.opacity(0.5)))
-                                            .on_mouse_up(
-                                                MouseButton::Left,
-                                                cx.listener(move |view, _event, _window, cx| {
-                                                    view.toggle_tool_collapsed(cx);
-                                                }),
-                                            )
-                                            .child(div().flex().items_center().gap_1().children(
-                                                vec![
-                                                    file_icons::render_icon(
-                                                        &collapse_icon,
-                                                        14.0,
-                                                        chevron_color, // Use existing chevron_color
-                                                        "▲",
-                                                    ).into_any(),
-                                                    Label::new(collapse_text)
-                                                        .text_color(chevron_color) // Style text consistently
-                                                        .into_any_element()
-                                                ],
-                                            ))
-                                            .into_any(),
-                                    );
+                                    let scale = match &self.animation_state {
+                                        AnimationState::Animating { height_scale, .. } => *height_scale,
+                                        AnimationState::Idle => if block.is_collapsed { 0.0 } else { 1.0 }
+                                    };
+
+                                    if scale > 0.0
+                                        && (!fullwidth_params.is_empty()
+                                            || block.output.as_ref().map_or(false, |o| !o.is_empty()))
+                                    {
+                                        let (collapse_icon, collapse_text) = (
+                                            file_icons::get().get_type_icon(file_icons::CHEVRON_UP),
+                                            "Collapse",
+                                        );
+                                        elements.push(
+                                            div()
+                                                .flex()
+                                                .justify_center()
+                                                .items_center()
+                                                .w_full()
+                                                .p_1()
+                                                .mt_1()
+                                                .border_t_1()
+                                                .border_color(cx.theme().border)
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(cx.theme().border.opacity(0.5)))
+                                                .on_mouse_up(
+                                                    MouseButton::Left,
+                                                    cx.listener(move |view, _event, _window, cx| {
+                                                        view.toggle_tool_collapsed(cx);
+                                                    }),
+                                                )
+                                                .child(div().flex().items_center().gap_1().children(
+                                                    vec![
+                                                        file_icons::render_icon(
+                                                            &collapse_icon,
+                                                            14.0,
+                                                            chevron_color,
+                                                            "▲",
+                                                        ).into_any(),
+                                                        Label::new(collapse_text)
+                                                            .text_color(chevron_color)
+                                                            .into_any_element()
+                                                    ],
+                                                ))
+                                                .into_any(),
+                                        );
+                                    }
                                 }
 
                                 elements
