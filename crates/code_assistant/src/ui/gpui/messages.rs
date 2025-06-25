@@ -54,7 +54,6 @@ impl Render for MessagesView {
             .text_size(px(16.))
             .children(messages.into_iter().map(|msg| {
                 // Create message container with appropriate styling based on role
-                //let mut message_container = div().p_3().flex().flex_col();
                 let mut message_container = div().p_3();
 
                 if msg.read(cx).is_user_message() {

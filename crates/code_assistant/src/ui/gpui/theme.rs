@@ -145,21 +145,15 @@ pub mod colors {
     }
 
     pub fn tool_block_icon(theme: &Theme, status: &crate::ui::ToolStatus) -> Hsla {
-        // match status {
-        //     crate::ui::ToolStatus::Error => theme.warning,
-        //     _ => {
-        //         if theme.is_dark() {
-        //             white()
-        //         } else {
-        //             black()
-        //         }
-        //     }
-        // }
         match status {
-            crate::ui::ToolStatus::Pending => rgba(0x999999FF).into(),
-            crate::ui::ToolStatus::Running => theme.info,
-            crate::ui::ToolStatus::Success => theme.success,
             crate::ui::ToolStatus::Error => theme.warning,
+            _ => {
+                if theme.is_dark() {
+                    white()
+                } else {
+                    black()
+                }
+            }
         }
     }
 

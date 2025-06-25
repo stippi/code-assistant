@@ -670,7 +670,7 @@ impl Render for BlockView {
                 });
 
                 div()
-                    .rounded(px(3.))
+                    .rounded(px(4.))
                     .my_2()
                     .bg(tool_bg)
                     .flex()
@@ -681,11 +681,11 @@ impl Render for BlockView {
                         div()
                             .w(px(3.))
                             .flex_none()
-                            .h_full()
+                            .min_h_full()
                             .bg(border_color)
-                            .rounded_l(px(3.)),
-                        div().flex_grow().h_full().max_w_full().child(
-                            div().size_full().flex().flex_col().p_1().children({
+                            .rounded_l(px(4.)),
+                        div().flex_grow().max_w_full().child(
+                            div().w_full().flex().flex_col().p_1().children({
                                 let mut elements = Vec::new();
 
                                 // First row: Tool header with icon, name, and regular parameters
@@ -693,7 +693,6 @@ impl Render for BlockView {
                                     div()
                                         .flex()
                                         .flex_row()
-                                        .items_center() // Align all items center
                                         .justify_between() // Space between header and chevron
                                         .cursor_pointer() // Make entire header clickable
                                         //.hover(|s| s.bg(border_color.opacity(0.1))) // Hover effect
