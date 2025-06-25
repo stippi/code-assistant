@@ -682,8 +682,9 @@ impl Render for BlockView {
                             .w(px(3.))
                             .flex_none()
                             .min_h_full()
-                            .bg(border_color)
-                            .rounded_l(px(4.)),
+                            .overflow_hidden()
+                            // Use a child with enough width to avoid reducing the corner radius
+                            .child(div().w(px(8.)).h_full().rounded(px(4.)).bg(border_color)),
                         div().flex_grow().min_w_0().child(
                             div().w_full().flex().flex_col().p_1().children({
                                 let mut elements = Vec::new();
