@@ -630,6 +630,8 @@ impl Render for BlockView {
                 // Use theme utilities for colors
                 let icon_color =
                     crate::ui::gpui::theme::colors::tool_block_icon(&cx.theme(), &block.status);
+                let tool_name_color =
+                    crate::ui::gpui::theme::colors::tool_block_name(&cx.theme(), &block.status);
                 let border_color = crate::ui::gpui::theme::colors::tool_border_by_status(
                     &cx.theme(),
                     &block.status,
@@ -668,8 +670,8 @@ impl Render for BlockView {
                 });
 
                 div()
-                    .rounded(px(3.))
-                    .mb_2()
+                    .rounded(px(4.))
+                    .my_2()
                     .bg(tool_bg)
                     .flex()
                     .flex_row()
@@ -679,11 +681,11 @@ impl Render for BlockView {
                         div()
                             .w(px(3.))
                             .flex_none()
-                            .h_full()
+                            .min_h_full()
                             .bg(border_color)
-                            .rounded_l(px(3.)),
-                        div().flex_grow().h_full().max_w_full().child(
-                            div().size_full().flex().flex_col().p_1().children({
+                            .rounded_l(px(4.)),
+                        div().flex_grow().min_w_0().child(
+                            div().w_full().flex().flex_col().p_1().children({
                                 let mut elements = Vec::new();
 
                                 // First row: Tool header with icon, name, and regular parameters
@@ -691,7 +693,6 @@ impl Render for BlockView {
                                     div()
                                         .flex()
                                         .flex_row()
-                                        .items_center() // Align all items center
                                         .justify_between() // Space between header and chevron
                                         .cursor_pointer() // Make entire header clickable
                                         //.hover(|s| s.bg(border_color.opacity(0.1))) // Hover effect
@@ -708,6 +709,7 @@ impl Render for BlockView {
                                                 .flex_row()
                                                 .items_center()
                                                 .flex_grow()
+                                                .min_w_0() // Allow shrinking below content size
                                                 .children(vec![
                                                     // Tool icon
                                                     file_icons::render_icon_container(
@@ -718,7 +720,7 @@ impl Render for BlockView {
                                                     // Tool name
                                                     div()
                                                         .font_weight(FontWeight(700.0))
-                                                        .text_color(icon_color)
+                                                        .text_color(tool_name_color)
                                                         .mr_2()
                                                         .flex_none() // Prevent shrinking
                                                         .child(block.name.clone())
@@ -728,7 +730,9 @@ impl Render for BlockView {
                                                         .flex()
                                                         .flex_wrap()
                                                         .gap_1()
-                                                        .flex_grow() // Take remaining space
+                                                        .flex_grow()
+                                                        .min_w_0() // Allow shrinking and enable proper wrapping
+                                                        .overflow_hidden() // Hide overflow instead of expanding
                                                         .children(
                                                             regular_params.iter().map(|param| {
                                                                 render_parameter(param)
@@ -812,13 +816,11 @@ impl Render for BlockView {
                                 {
                                     elements.push(
                                         div()
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
                                             .p_2()
                                             .mt_1()
                                             .text_color(cx.theme().danger.opacity(0.9))
                                             .text_size(px(13.))
+                                            .whitespace_normal() // Allow text wrapping
                                             .child(block.status_message.clone().unwrap_or_default())
                                             .into_any(),
                                     );

@@ -1,4 +1,4 @@
-use gpui::{px, Element, IntoElement, ParentElement, Styled};
+use gpui::{px, Element, IntoElement, ParentElement, SharedString, Styled};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing::warn;
@@ -134,6 +134,7 @@ impl ParameterRenderer for DefaultParameterRenderer {
         use gpui::{div, FontWeight};
 
         div()
+            .max_w_full()
             .rounded_md()
             .px_2()
             .py_1()
@@ -153,6 +154,9 @@ impl ParameterRenderer for DefaultParameterRenderer {
                             .into_any(),
                         div()
                             .text_color(crate::ui::gpui::theme::colors::tool_parameter_value(theme))
+                            .text_overflow(gpui::TextOverflow::Truncate(SharedString::from("...")))
+                            .flex_shrink() // Allow this div to shrink below its content size
+                            .min_w_0() // Allow shrinking below content width
                             .child(param_value.to_string())
                             .into_any(),
                     ]),

@@ -157,6 +157,19 @@ pub mod colors {
         }
     }
 
+    pub fn tool_block_name(theme: &Theme, status: &crate::ui::ToolStatus) -> Hsla {
+        match status {
+            crate::ui::ToolStatus::Error => theme.warning,
+            _ => {
+                if theme.is_dark() {
+                    white()
+                } else {
+                    black()
+                }
+            }
+        }
+    }
+
     pub fn tool_parameter_bg(theme: &Theme) -> Hsla {
         if theme.is_dark() {
             rgba(0x333333FF).into() // Dark parameter background

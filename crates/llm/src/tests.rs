@@ -148,6 +148,7 @@ impl ChunkCollector {
                         tool_id: tool_id.clone(),
                     });
                 }
+                _ => {}
             };
             Ok(())
         })
