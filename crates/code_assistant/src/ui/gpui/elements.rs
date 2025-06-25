@@ -982,23 +982,28 @@ impl Render for BlockView {
                                             div()
                                                 .overflow_hidden()
                                                 .when(scale < 1.0, |div| {
+                                                    // During animation, use measured height but prevent sudden changes
                                                     let actual_height = content_height_rc.get();
-                                                    let animated_height = actual_height * scale;
-                                                    div.h(animated_height)
+                                                    if actual_height > px(0.0) {
+                                                        let animated_height = actual_height * scale;
+                                                        div.h(animated_height)
+                                                    } else {
+                                                        div
+                                                    }
+                                                })
+                                                .on_children_prepainted({
+                                                    let content_height_rc = content_height_rc.clone();
+                                                    move |bounds_vec: Vec<Bounds<Pixels>>, _window, _app| {
+                                                        if let Some(first_child_bounds) = bounds_vec.first() {
+                                                            let new_height = first_child_bounds.size.height;
+                                                            if content_height_rc.get() != new_height {
+                                                                content_height_rc.set(new_height);
+                                                            }
+                                                        }
+                                                    }
                                                 })
                                                 .child(
                                                     div()
-                                                        .on_children_prepainted({
-                                                            let content_height_rc = content_height_rc.clone();
-                                                            move |bounds_vec: Vec<Bounds<Pixels>>, _window, _app| {
-                                                                if let Some(first_child_bounds) = bounds_vec.first() {
-                                                                    let new_height = first_child_bounds.size.height;
-                                                                    if content_height_rc.get() != new_height {
-                                                                        content_height_rc.set(new_height);
-                                                                    }
-                                                                }
-                                                            }
-                                                        })
                                                         .flex()
                                                         .flex_col()
                                                         .children({
@@ -1021,7 +1026,7 @@ impl Render for BlockView {
                                                                 );
                                                             }
 
-                                                            // Output
+                                                            // Output with consistent rendering
                                                             if let Some(output_content) = &block.output {
                                                                 if !output_content.is_empty() {
                                                                     let output_color =
@@ -1033,12 +1038,12 @@ impl Render for BlockView {
 
                                                                     expandable_elements.push(
                                                                         div()
-                                                                            .id(SharedString::from(block.id.clone()))
                                                                             .p_2()
                                                                             .mt_1()
                                                                             .w_full()
                                                                             .text_color(output_color)
                                                                             .text_size(px(13.))
+                                                                            .whitespace_normal()
                                                                             .child(output_content.clone())
                                                                             .into_any(),
                                                                     );
