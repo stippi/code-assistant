@@ -1071,54 +1071,96 @@ impl Render for BlockView {
                                     );
                                 }
 
-                                // Bottom collapse bar - include in animated content
+                                // Bottom collapse bar with separate height and opacity animations
                                 {
-                                    let scale = match &self.animation_state {
-                                        AnimationState::Animating { height_scale, .. } => *height_scale,
-                                        AnimationState::Idle => if block.is_collapsed { 0.0 } else { 1.0 }
+                                    let (scale, is_expanding) = match &self.animation_state {
+                                        AnimationState::Animating { height_scale, target, .. } => (*height_scale, *target == 1.0),
+                                        AnimationState::Idle => if block.is_collapsed { (0.0, false) } else { (1.0, false) }
                                     };
 
-                                    if scale > 0.0
-                                        && (!fullwidth_params.is_empty()
-                                            || block.output.as_ref().map_or(false, |o| !o.is_empty()))
+                                    if !fullwidth_params.is_empty()
+                                        || block.output.as_ref().map_or(false, |o| !o.is_empty())
                                     {
-                                        let (collapse_icon, collapse_text) = (
-                                            file_icons::get().get_type_icon(file_icons::CHEVRON_UP),
-                                            "Collapse",
-                                        );
-                                        elements.push(
-                                            div()
-                                                .flex()
-                                                .justify_center()
-                                                .items_center()
-                                                .w_full()
-                                                .p_1()
-                                                .mt_1()
-                                                .border_t_1()
-                                                .border_color(cx.theme().border)
-                                                .cursor_pointer()
-                                                .hover(|s| s.bg(cx.theme().border.opacity(0.5)))
-                                                .on_mouse_up(
-                                                    MouseButton::Left,
-                                                    cx.listener(move |view, _event, _window, cx| {
-                                                        view.toggle_tool_collapsed(cx);
-                                                    }),
-                                                )
-                                                .child(div().flex().items_center().gap_1().children(
-                                                    vec![
-                                                        file_icons::render_icon(
-                                                            &collapse_icon,
-                                                            14.0,
-                                                            chevron_color,
-                                                            "▲",
-                                                        ).into_any(),
-                                                        Label::new(collapse_text)
-                                                            .text_color(chevron_color)
-                                                            .into_any_element()
-                                                    ],
-                                                ))
-                                                .into_any(),
-                                        );
+                                        // Calculate footer height and opacity based on animation phase and direction
+                                        let (footer_height_scale, footer_opacity) = if is_expanding {
+                                            // Expanding: 0-20% height, 20-40% fade in, 40-100% visible
+                                            if scale < 0.2 {
+                                                // Phase 1 (0-20%): Height animation from 0% to 100%
+                                                let phase_progress = scale / 0.2; // 0.0 to 1.0
+                                                (phase_progress, 0.0)
+                                            } else if scale < 0.4 {
+                                                // Phase 2 (20-40%): Opacity animation from 0% to 100%
+                                                let phase_progress = (scale - 0.2) / 0.2; // 0.0 to 1.0
+                                                (1.0, phase_progress)
+                                            } else {
+                                                // Phase 3 (40-100%): Fully visible
+                                                (1.0, 1.0)
+                                            }
+                                        } else {
+                                            // Collapsing: 0-60% visible, 60-80% fade out, 80-100% height collapse
+                                            if scale < 0.2 {
+                                                // Phase 3 (0-20%): Height animation from 100% to 0%
+                                                let phase_progress = scale / 0.2; // 0.0 to 1.0
+                                                (phase_progress, 0.0)
+                                            } else if scale < 0.4 {
+                                                // Phase 2 (20-40%): Opacity animation from 100% to 0%
+                                                let phase_progress = (scale - 0.2) / 0.2; // 0.0 to 1.0
+                                                (1.0, phase_progress)
+                                            } else {
+                                                // Phase 1 (40-100%): Fully visible
+                                                (1.0, 1.0)
+                                            }
+                                        };
+
+                                        // Only show footer if height scale > 0
+                                        if footer_height_scale > 0.0 {
+                                            let (collapse_icon, collapse_text) = (
+                                                file_icons::get().get_type_icon(file_icons::CHEVRON_UP),
+                                                "Collapse",
+                                            );
+                                            elements.push(
+                                                div()
+                                                    .flex()
+                                                    .justify_center()
+                                                    .items_center()
+                                                    .w_full()
+                                                    .mt_1()
+                                                    .border_t_1()
+                                                    .border_color(cx.theme().border)
+                                                    .cursor_pointer()
+                                                    .hover(|s| s.bg(cx.theme().border.opacity(0.5)))
+                                                    // Apply height scaling
+                                                    .when(footer_height_scale < 1.0, |div| {
+                                                        div.h(px(32.0 * footer_height_scale)) // Approximate footer height
+                                                            .overflow_hidden()
+                                                    })
+                                                    .when(footer_height_scale >= 1.0, |div| {
+                                                        div.p_1() // Normal padding when fully expanded
+                                                    })
+                                                    // Apply opacity
+                                                    .opacity(footer_opacity)
+                                                    .on_mouse_up(
+                                                        MouseButton::Left,
+                                                        cx.listener(move |view, _event, _window, cx| {
+                                                            view.toggle_tool_collapsed(cx);
+                                                        }),
+                                                    )
+                                                    .child(div().flex().items_center().gap_1().children(
+                                                        vec![
+                                                            file_icons::render_icon(
+                                                                &collapse_icon,
+                                                                14.0,
+                                                                chevron_color,
+                                                                "▲",
+                                                            ).into_any(),
+                                                            Label::new(collapse_text)
+                                                                .text_color(chevron_color)
+                                                                .into_any_element()
+                                                        ],
+                                                    ))
+                                                    .into_any(),
+                                            );
+                                        }
                                     }
                                 }
 
