@@ -709,6 +709,7 @@ impl Render for BlockView {
                                                 .flex_row()
                                                 .items_center()
                                                 .flex_grow()
+                                                .min_w_0() // Allow shrinking below content size
                                                 .children(vec![
                                                     // Tool icon
                                                     file_icons::render_icon_container(
@@ -729,7 +730,9 @@ impl Render for BlockView {
                                                         .flex()
                                                         .flex_wrap()
                                                         .gap_1()
-                                                        .flex_grow() // Take remaining space
+                                                        .flex_grow()
+                                                        .min_w_0() // Allow shrinking and enable proper wrapping
+                                                        .overflow_hidden() // Hide overflow instead of expanding
                                                         .children(
                                                             regular_params.iter().map(|param| {
                                                                 render_parameter(param)
