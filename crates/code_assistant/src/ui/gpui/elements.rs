@@ -684,7 +684,7 @@ impl Render for BlockView {
                             .min_h_full()
                             .bg(border_color)
                             .rounded_l(px(4.)),
-                        div().flex_grow().max_w_full().child(
+                        div().flex_grow().min_w_0().child(
                             div().w_full().flex().flex_col().p_1().children({
                                 let mut elements = Vec::new();
 
@@ -813,13 +813,11 @@ impl Render for BlockView {
                                 {
                                     elements.push(
                                         div()
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
                                             .p_2()
                                             .mt_1()
                                             .text_color(cx.theme().danger.opacity(0.9))
                                             .text_size(px(13.))
+                                            .whitespace_normal() // Allow text wrapping
                                             .child(block.status_message.clone().unwrap_or_default())
                                             .into_any(),
                                     );
