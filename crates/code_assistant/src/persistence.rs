@@ -55,6 +55,15 @@ pub struct ChatMetadata {
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
     pub message_count: usize,
+    /// Current context size (input + cache reads from most recent assistant message)
+    #[serde(default)]
+    pub current_context_size: u32,
+    /// Total usage across the entire session
+    #[serde(default)]
+    pub total_usage: llm::Usage,
+    /// Token limit from rate limiting headers (if available)
+    #[serde(default)]
+    pub tokens_limit: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -104,6 +113,9 @@ impl FileSessionPersistence {
             Vec::new()
         };
 
+        // Calculate usage information
+        let (current_context_size, total_usage, tokens_limit) = calculate_session_usage(&session);
+
         // Update or add metadata for this session
         let new_metadata = ChatMetadata {
             id: session.id.clone(),
@@ -111,6 +123,9 @@ impl FileSessionPersistence {
             created_at: session.created_at,
             updated_at: session.updated_at,
             message_count: session.messages.len(),
+            current_context_size,
+            total_usage,
+            tokens_limit,
         };
 
         if let Some(existing) = metadata_list.iter_mut().find(|m| m.id == session.id) {
@@ -194,4 +209,32 @@ pub fn generate_session_id() -> String {
     let random_part = (timestamp % 10000) + (std::process::id() as u64 % 1000);
 
     format!("chat_{:x}_{:x}", timestamp, random_part)
+}
+
+/// Calculate usage information from session messages
+fn calculate_session_usage(session: &ChatSession) -> (u32, llm::Usage, Option<u32>) {
+    let mut total_usage = llm::Usage::zero();
+    let mut current_context_size = 0;
+    let tokens_limit = None;
+
+    // Calculate total usage and find most recent assistant message usage
+    for message in &session.messages {
+        if let Some(usage) = &message.usage {
+            // Add to total usage
+            total_usage.input_tokens += usage.input_tokens;
+            total_usage.output_tokens += usage.output_tokens;
+            total_usage.cache_creation_input_tokens += usage.cache_creation_input_tokens;
+            total_usage.cache_read_input_tokens += usage.cache_read_input_tokens;
+
+            // For assistant messages, update current context size (most recent wins)
+            if matches!(message.role, llm::MessageRole::Assistant) {
+                current_context_size = usage.input_tokens + usage.cache_read_input_tokens;
+            }
+        }
+    }
+
+    // Note: We don't have access to rate_limit_info in persisted messages currently
+    // This could be added later if needed, but tokens_limit is usually constant per provider
+
+    (current_context_size, total_usage, tokens_limit)
 }

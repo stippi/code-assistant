@@ -49,6 +49,7 @@ impl TestCase {
                     cache_creation_input_tokens: 0,
                     cache_read_input_tokens: 0,
                 },
+                rate_limit_info: None,
             },
         }
     }
@@ -93,6 +94,7 @@ impl TestCase {
                     cache_creation_input_tokens: 0,
                     cache_read_input_tokens: 0,
                 },
+                rate_limit_info: None,
             },
         }
     }

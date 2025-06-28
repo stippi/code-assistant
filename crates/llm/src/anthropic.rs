@@ -938,6 +938,10 @@ impl AnthropicClient {
                         cache_creation_input_tokens: usage.cache_creation_input_tokens,
                         cache_read_input_tokens: usage.cache_read_input_tokens,
                     },
+                    rate_limit_info: Some(crate::types::RateLimitInfo {
+                        tokens_limit: rate_limits.tokens_limit,
+                        tokens_remaining: rate_limits.tokens_remaining,
+                    }),
                 },
                 rate_limits,
             ))
@@ -961,6 +965,10 @@ impl AnthropicClient {
                         .cache_creation_input_tokens,
                     cache_read_input_tokens: anthropic_response.usage.cache_read_input_tokens,
                 },
+                rate_limit_info: Some(crate::types::RateLimitInfo {
+                    tokens_limit: rate_limits.tokens_limit,
+                    tokens_remaining: rate_limits.tokens_remaining,
+                }),
             };
 
             Ok((llm_response, rate_limits))

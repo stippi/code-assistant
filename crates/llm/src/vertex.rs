@@ -479,6 +479,7 @@ impl VertexClient {
             } else {
                 Usage::default()
             },
+            rate_limit_info: None,
         };
 
         Ok((response, rate_limits))
@@ -668,6 +669,7 @@ impl VertexClient {
                 } else {
                     Usage::default()
                 },
+                rate_limit_info: None,
             },
             rate_limits,
         ))

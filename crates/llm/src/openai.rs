@@ -483,6 +483,7 @@ impl OpenAIClient {
                     cache_creation_input_tokens: 0,
                     cache_read_input_tokens: 0,
                 },
+                rate_limit_info: None,
             },
             rate_limits,
         ))
@@ -678,6 +679,7 @@ impl OpenAIClient {
                         cache_creation_input_tokens: 0,
                         cache_read_input_tokens: 0,
                     }),
+                rate_limit_info: None,
             },
             OpenAIRateLimitInfo::from_response(&response),
         ))

@@ -651,6 +651,7 @@ impl AiCoreClient {
                         cache_creation_input_tokens: usage.cache_creation_input_tokens,
                         cache_read_input_tokens: usage.cache_read_input_tokens,
                     },
+                    rate_limit_info: None,
                 },
                 rate_limits,
             ))
@@ -674,6 +675,7 @@ impl AiCoreClient {
                         .cache_creation_input_tokens,
                     cache_read_input_tokens: anthropic_response.usage.cache_read_input_tokens,
                 },
+                rate_limit_info: None,
             };
 
             Ok((llm_response, rate_limits))

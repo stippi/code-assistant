@@ -682,6 +682,7 @@ impl Agent {
                         llm::LLMResponse {
                             content: Vec::new(),
                             usage: llm::Usage::zero(),
+                            rate_limit_info: None,
                         },
                         request_id,
                     ));

@@ -97,11 +97,23 @@ pub enum ContentBlock {
     },
 }
 
+/// Rate limit information extracted from LLM provider headers
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct RateLimitInfo {
+    /// Maximum tokens per minute/request limit
+    pub tokens_limit: Option<u32>,
+    /// Remaining tokens in current window
+    pub tokens_remaining: Option<u32>,
+}
+
 /// Generic response structure
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct LLMResponse {
     pub content: Vec<ContentBlock>,
     pub usage: Usage,
+    /// Rate limit information from provider headers
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit_info: Option<RateLimitInfo>,
 }
 
 /// Common error types for all LLM providers

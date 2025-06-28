@@ -103,6 +103,7 @@ pub fn create_test_response(
             },
         ],
         usage: Usage::zero(),
+        rate_limit_info: None,
     }
 }
 
@@ -112,6 +113,7 @@ pub fn create_test_response_text(text: &str) -> LLMResponse {
             text: text.to_string(),
         }],
         usage: Usage::zero(),
+        rate_limit_info: None,
     }
 }
 

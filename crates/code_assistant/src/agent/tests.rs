@@ -27,6 +27,7 @@ fn test_flexible_xml_parsing() -> Result<()> {
     let response = LLMResponse {
         content: vec![ContentBlock::Text { text }],
         usage: Usage::zero(),
+        rate_limit_info: None,
     };
 
     // Use a test request_id
@@ -77,6 +78,7 @@ fn test_replacement_xml_parsing() -> Result<()> {
     let response = LLMResponse {
         content: vec![ContentBlock::Text { text }],
         usage: Usage::zero(),
+        rate_limit_info: None,
     };
 
     // Use a test request_id
@@ -122,6 +124,7 @@ async fn test_mixed_tool_start_end() -> Result<()> {
     let response = LLMResponse {
         content: vec![ContentBlock::Text { text }],
         usage: Usage::zero(),
+        rate_limit_info: None,
     };
 
     let result = parse_llm_response(&response, 1);
@@ -171,6 +174,7 @@ fn test_ignore_non_tool_tags() -> Result<()> {
     let response = LLMResponse {
         content: vec![ContentBlock::Text { text }],
         usage: Usage::zero(),
+        rate_limit_info: None,
     };
 
     let result = parse_llm_response(&response, 1)?;
@@ -205,6 +209,7 @@ fn test_html_between_tool_tags_should_error() -> Result<()> {
     let response = LLMResponse {
         content: vec![ContentBlock::Text { text }],
         usage: Usage::zero(),
+        rate_limit_info: None,
     };
 
     let result = parse_llm_response(&response, 1);
@@ -253,6 +258,7 @@ fn test_html_inside_parameter_allowed() -> Result<()> {
     let response = LLMResponse {
         content: vec![ContentBlock::Text { text }],
         usage: Usage::zero(),
+        rate_limit_info: None,
     };
 
     let result = parse_llm_response(&response, 1)?;
