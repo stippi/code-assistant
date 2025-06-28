@@ -1070,6 +1070,7 @@ mod tests {
                     .to_string(),
             ),
             request_id: None,
+            usage: None,
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -1109,6 +1110,7 @@ mod tests {
                 },
             ]),
             request_id: None,
+            usage: None,
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -1169,6 +1171,7 @@ mod tests {
                 },
             ]),
             request_id: None,
+            usage: None,
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();

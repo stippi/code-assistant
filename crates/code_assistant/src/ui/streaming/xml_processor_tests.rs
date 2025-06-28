@@ -186,6 +186,7 @@ mod tests {
                 "I'll help you. <thinking>Let me plan this.</thinking> Here's what I'll do: <tool:read_files><param:path>main.rs</param:path></tool:read_files>".to_string()
             ),
             request_id: Some(1u64),
+            usage: None,
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -237,6 +238,7 @@ mod tests {
                 },
             ]),
             request_id: Some(1u64),
+            usage: None,
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -292,6 +294,7 @@ mod tests {
                 },
             ]),
             request_id: Some(1u64),
+            usage: None,
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -381,6 +384,7 @@ mod tests {
                 "Please use <tool:read_files> to read <param:path>test.txt</param:path> and show me <thinking>what should I do</thinking>".to_string()
             ),
             request_id: None,
+            usage: None,
         };
 
         let fragments = processor

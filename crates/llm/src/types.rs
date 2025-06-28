@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Tracks token usage for a request/response pair
-#[derive(Debug, Deserialize, PartialEq, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
 pub struct Usage {
     /// Number of tokens in the input (prompt)
     pub input_tokens: u32,
@@ -50,6 +50,9 @@ pub struct Message {
     /// Request ID for assistant messages (used for consistent tool ID generation)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<u64>,
+    /// Token usage for assistant messages (tracks context size and costs)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

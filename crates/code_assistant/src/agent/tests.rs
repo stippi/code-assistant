@@ -418,6 +418,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         role: MessageRole::User,
         content: MessageContent::Text("Test task".to_string()),
         request_id: None,
+        usage: None,
     };
     agent.append_message(user_msg)?;
 
@@ -650,12 +651,14 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
                 role: MessageRole::User,
                 content: MessageContent::Text("Hello, please help me".to_string()),
                 request_id: None,
+                usage: None,
             },
             // Assistant response
             Message {
                 role: MessageRole::Assistant,
                 content: MessageContent::Text("I'll help you".to_string()),
                 request_id: Some(1),
+                usage: None,
             },
             // Failed tool error message in XML mode - should be filtered out
             Message {
@@ -668,6 +671,7 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
                     is_error: Some(true),
                 }]),
                 request_id: None,
+                usage: None,
             },
             // Regular tool result - should be filtered out
             Message {
@@ -678,18 +682,21 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
                     is_error: None,
                 }]),
                 request_id: None,
+                usage: None,
             },
             // Empty user message (legacy) - should be filtered out
             Message {
                 role: MessageRole::User,
                 content: MessageContent::Text("".to_string()),
                 request_id: None,
+                usage: None,
             },
             // Another regular user message - should be included
             Message {
                 role: MessageRole::User,
                 content: MessageContent::Text("Thank you for the help!".to_string()),
                 request_id: None,
+                usage: None,
             },
         ],
         tool_executions: Vec::new(),

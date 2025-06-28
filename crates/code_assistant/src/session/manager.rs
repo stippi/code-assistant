@@ -165,6 +165,7 @@ impl SessionManager {
             role: llm::MessageRole::User,
             content: llm::MessageContent::Text(user_message.clone()),
             request_id: None,
+            usage: None,
         };
         session_instance.add_message(user_msg.clone());
 
@@ -290,5 +291,37 @@ impl SessionManager {
         }
 
         Ok(())
+    }
+
+    /// Get the current context size for the active session
+    /// Returns the input tokens + cache reads from the most recent assistant message
+    pub fn get_current_context_size(&self) -> u32 {
+        if let Some(session_id) = &self.active_session_id {
+            if let Some(session_instance) = self.active_sessions.get(session_id) {
+                return session_instance.get_current_context_size();
+            }
+        }
+        0
+    }
+
+    /// Calculate total usage for the active session
+    pub fn get_total_session_usage(&self) -> llm::Usage {
+        if let Some(session_id) = &self.active_session_id {
+            if let Some(session_instance) = self.active_sessions.get(session_id) {
+                return session_instance.calculate_total_usage();
+            }
+        }
+        llm::Usage::zero()
+    }
+
+    /// Get usage data for a specific session
+    pub fn get_session_usage(&self, session_id: &str) -> Option<(u32, llm::Usage)> {
+        if let Some(session_instance) = self.active_sessions.get(session_id) {
+            let context_size = session_instance.get_current_context_size();
+            let total_usage = session_instance.calculate_total_usage();
+            Some((context_size, total_usage))
+        } else {
+            None
+        }
     }
 }

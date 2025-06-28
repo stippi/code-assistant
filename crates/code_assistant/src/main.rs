@@ -351,6 +351,7 @@ async fn run_agent_terminal(
             role: llm::MessageRole::User,
             content: llm::MessageContent::Text(new_task),
             request_id: None,
+            usage: None,
         };
         agent.append_message(user_msg)?;
     }

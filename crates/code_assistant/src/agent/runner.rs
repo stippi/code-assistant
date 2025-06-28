@@ -310,6 +310,7 @@ impl Agent {
                 role: MessageRole::Assistant,
                 content: MessageContent::Structured(llm_response.content.clone()),
                 request_id: Some(request_id),
+                usage: Some(llm_response.usage.clone()),
             })?;
         }
 
@@ -350,6 +351,7 @@ impl Agent {
                                 is_error: Some(true),
                             }]),
                             request_id: None,
+                            usage: None,
                         }
                     }
                     ToolMode::Native => {
@@ -359,6 +361,7 @@ impl Agent {
                             role: MessageRole::User,
                             content: MessageContent::Text(error_text),
                             request_id: None,
+                            usage: None,
                         }
                     }
                 };
@@ -380,6 +383,7 @@ impl Agent {
             role: MessageRole::User,
             content: MessageContent::Text(user_input.clone()),
             request_id: None,
+            usage: None,
         };
         self.append_message(user_msg)?;
         Ok(())
@@ -420,6 +424,7 @@ impl Agent {
                 role: MessageRole::User,
                 content: MessageContent::Structured(content_blocks),
                 request_id: None,
+                usage: None,
             };
             self.append_message(result_message)?;
         }
@@ -441,6 +446,7 @@ impl Agent {
             role: MessageRole::User,
             content: MessageContent::Text(task.clone()),
             request_id: None,
+            usage: None,
         };
         self.append_message(user_msg)?;
 
@@ -580,6 +586,7 @@ impl Agent {
                             role: msg.role,
                             content: MessageContent::Text(text_content.trim().to_string()),
                             request_id: msg.request_id,
+                            usage: msg.usage.clone(),
                         }
                     }
                     // For non-structured content, keep as is
@@ -700,8 +707,8 @@ impl Agent {
             }
         }
 
-        println!(
-            "\n==== Token usage: Input: {}, Output: {}, Cache: Created: {}, Read: {} ====\n",
+        debug!(
+            "Token usage: Input: {}, Output: {}, Cache: Created: {}, Read: {}",
             response.usage.input_tokens,
             response.usage.output_tokens,
             response.usage.cache_creation_input_tokens,
@@ -774,6 +781,7 @@ impl Agent {
                             role: msg.role.clone(),
                             content: MessageContent::Structured(new_blocks),
                             request_id: msg.request_id,
+                            usage: msg.usage.clone(),
                         };
                         messages.push(new_msg);
                     } else {
