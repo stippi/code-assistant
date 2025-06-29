@@ -7,9 +7,9 @@ use tokio::task::JoinHandle;
 // Agent instances are created on-demand, no need to import
 use crate::persistence::ChatSession;
 use crate::ui::gpui::elements::MessageRole;
-use crate::ui::gpui::ui_events::{MessageData, UiEvent};
 use crate::ui::streaming::create_stream_processor;
-use crate::ui::{DisplayFragment, UIError, UIMessage, UserInterface};
+use crate::ui::ui_events::{MessageData, UiEvent};
+use crate::ui::{DisplayFragment, UIError, UserInterface};
 use async_trait::async_trait;
 use tracing::{debug, error, trace};
 
@@ -187,9 +187,9 @@ impl SessionInstance {
         struct DummyUI;
         #[async_trait::async_trait]
         impl crate::ui::UserInterface for DummyUI {
-            async fn display(
+            async fn send_event(
                 &self,
-                _message: crate::ui::UIMessage,
+                _event: crate::ui::UiEvent,
             ) -> Result<(), crate::ui::UIError> {
                 Ok(())
             }
@@ -199,32 +199,6 @@ impl SessionInstance {
             fn display_fragment(
                 &self,
                 _fragment: &crate::ui::DisplayFragment,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            async fn update_memory(
-                &self,
-                _memory: &crate::types::WorkingMemory,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            async fn update_tool_status(
-                &self,
-                _tool_id: &str,
-                _status: crate::ui::ToolStatus,
-                _message: Option<String>,
-                _output: Option<String>,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-            async fn begin_llm_request(&self, request_id: u64) -> Result<(), crate::ui::UIError> {
-                let _ = request_id;
-                Ok(())
-            }
-            async fn end_llm_request(
-                &self,
-                _request_id: u64,
-                _cancelled: bool,
             ) -> Result<(), crate::ui::UIError> {
                 Ok(())
             }
@@ -298,7 +272,7 @@ impl SessionInstance {
     /// Convert tool executions to UI tool result data
     fn convert_tool_executions_to_ui_data(
         &self,
-    ) -> Result<Vec<crate::ui::gpui::ui_events::ToolResultData>, anyhow::Error> {
+    ) -> Result<Vec<crate::ui::ui_events::ToolResultData>, anyhow::Error> {
         use crate::tools::core::ResourcesTracker;
 
         let mut tool_results = Vec::new();
@@ -319,7 +293,7 @@ impl SessionInstance {
             let short_output = execution.result.as_render().status();
             let output = execution.result.as_render().render(&mut resources_tracker);
 
-            tool_results.push(crate::ui::gpui::ui_events::ToolResultData {
+            tool_results.push(crate::ui::ui_events::ToolResultData {
                 tool_id: execution.tool_request.id,
                 status,
                 message: Some(short_output),
@@ -362,9 +336,26 @@ impl ProxyUI {
 
 #[async_trait]
 impl UserInterface for ProxyUI {
-    async fn display(&self, message: UIMessage) -> Result<(), UIError> {
+    async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
+        // Handle special events that need buffer management
+        match &event {
+            UiEvent::StreamingStarted(_) => {
+                // Clear fragment buffer at start of new LLM request
+                if let Ok(mut buffer) = self.fragment_buffer.lock() {
+                    buffer.clear();
+                }
+            }
+            UiEvent::StreamingStopped { .. } => {
+                // Clear fragment buffer when LLM request ends - fragments are now part of message history
+                if let Ok(mut buffer) = self.fragment_buffer.lock() {
+                    buffer.clear();
+                }
+            }
+            _ => {}
+        }
+
         if self.is_connected() {
-            self.real_ui.display(message).await
+            self.real_ui.send_event(event).await
         } else {
             Ok(()) // NOP if session not connected
         }
@@ -394,56 +385,6 @@ impl UserInterface for ProxyUI {
             self.real_ui.display_fragment(fragment)
         } else {
             Ok(())
-        }
-    }
-
-    async fn update_memory(&self, memory: &crate::types::WorkingMemory) -> Result<(), UIError> {
-        if self.is_connected() {
-            self.real_ui.update_memory(memory).await
-        } else {
-            Ok(()) // NOP if session not connected
-        }
-    }
-
-    async fn update_tool_status(
-        &self,
-        tool_id: &str,
-        status: crate::ui::ToolStatus,
-        message: Option<String>,
-        output: Option<String>,
-    ) -> Result<(), UIError> {
-        if self.is_connected() {
-            self.real_ui
-                .update_tool_status(tool_id, status, message, output)
-                .await
-        } else {
-            Ok(()) // NOP if session not connected
-        }
-    }
-
-    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError> {
-        // Clear fragment buffer at start of new LLM request
-        if let Ok(mut buffer) = self.fragment_buffer.lock() {
-            buffer.clear();
-        }
-
-        if self.is_connected() {
-            self.real_ui.begin_llm_request(request_id).await
-        } else {
-            Ok(()) // No-op if session not connected
-        }
-    }
-
-    async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError> {
-        // Clear fragment buffer when LLM request ends - fragments are now part of message history
-        if let Ok(mut buffer) = self.fragment_buffer.lock() {
-            buffer.clear();
-        }
-
-        if self.is_connected() {
-            self.real_ui.end_llm_request(request_id, cancelled).await
-        } else {
-            Ok(()) // NOP if session not connected
         }
     }
 

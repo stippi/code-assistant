@@ -12,7 +12,6 @@ mod path_util;
 mod root;
 pub mod simple_renderers;
 pub mod theme;
-pub mod ui_events;
 
 use crate::persistence::ChatMetadata;
 use crate::types::WorkingMemory;
@@ -22,11 +21,8 @@ use crate::ui::gpui::{
     elements::MessageRole,
     parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
     simple_renderers::SimpleParameterRenderer,
-    ui_events::UiEvent,
 };
-use crate::ui::{
-    async_trait, DisplayFragment, StreamingState, ToolStatus, UIError, UIMessage, UserInterface,
-};
+use crate::ui::{async_trait, DisplayFragment, StreamingState, UIError, UiEvent, UserInterface};
 use assets::Assets;
 use async_channel;
 use gpui::{actions, px, AppContext, AsyncApp, Entity, Global, Point};
@@ -350,10 +346,10 @@ impl Gpui {
 
     fn process_ui_event_async(&self, event: UiEvent, cx: &mut gpui::AsyncApp) {
         match event {
-            UiEvent::DisplayMessage { content, role } => {
+            UiEvent::DisplayUserInput { content } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 let result = cx.new(|cx| {
-                    let new_message = MessageContainer::with_role(role, cx);
+                    let new_message = MessageContainer::with_role(MessageRole::User, cx);
                     new_message.add_text_block(&content, cx);
                     new_message
                 });
@@ -805,28 +801,24 @@ impl Gpui {
 
 #[async_trait]
 impl UserInterface for Gpui {
-    async fn display(&self, message: UIMessage) -> Result<(), UIError> {
-        match message {
-            UIMessage::Action(msg) => {
-                // Create a new assistant message
-                self.push_event(UiEvent::DisplayMessage {
-                    content: msg,
-                    role: MessageRole::Assistant,
-                });
+    async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
+        // Handle special events that need state management
+        match &event {
+            UiEvent::StreamingStarted(request_id) => {
+                // Set streaming state to Streaming
+                *self.streaming_state.lock().unwrap() = StreamingState::Streaming;
+                // Store the request ID
+                *self.current_request_id.lock().unwrap() = *request_id;
             }
-            UIMessage::UserInput(msg) => {
-                // Always create a new container for user input
-                self.push_event(UiEvent::DisplayMessage {
-                    content: msg,
-                    role: MessageRole::User,
-                });
+            UiEvent::StreamingStopped { .. } => {
+                // Reset streaming state to Idle
+                *self.streaming_state.lock().unwrap() = StreamingState::Idle;
             }
-            UIMessage::UiEvent(event) => {
-                // Forward UI events directly to the event processing
-                self.push_event(event);
-            }
+            _ => {}
         }
 
+        // Forward all events to the event processing
+        self.push_event(event);
         Ok(())
     }
 
@@ -914,58 +906,6 @@ impl UserInterface for Gpui {
                 self.push_event(UiEvent::EndTool { id: id.clone() });
             }
         }
-
-        Ok(())
-    }
-
-    async fn update_tool_status(
-        &self,
-        tool_id: &str,
-        status: ToolStatus,
-        message: Option<String>,
-        output: Option<String>,
-    ) -> Result<(), UIError> {
-        // Push an event to update tool status
-        self.push_event(UiEvent::UpdateToolStatus {
-            tool_id: tool_id.to_string(),
-            status,
-            message,
-            output,
-        });
-
-        Ok(())
-    }
-
-    async fn update_memory(&self, memory: &WorkingMemory) -> Result<(), UIError> {
-        // Push an event to update working memory
-        self.push_event(UiEvent::UpdateMemory {
-            memory: memory.clone(),
-        });
-        Ok(())
-    }
-
-    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError> {
-        // Set streaming state to Streaming
-        *self.streaming_state.lock().unwrap() = StreamingState::Streaming;
-
-        // Store the request ID
-        *self.current_request_id.lock().unwrap() = request_id;
-
-        // Send StreamingStarted event
-        self.push_event(UiEvent::StreamingStarted(request_id));
-
-        Ok(())
-    }
-
-    async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError> {
-        // Reset streaming state to Idle
-        *self.streaming_state.lock().unwrap() = StreamingState::Idle;
-
-        // Send StreamingStopped event
-        self.push_event(UiEvent::StreamingStopped {
-            id: request_id,
-            cancelled,
-        });
 
         Ok(())
     }

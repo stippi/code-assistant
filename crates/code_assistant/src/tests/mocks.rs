@@ -1,6 +1,6 @@
 use crate::config::ProjectManager;
 use crate::types::*;
-use crate::ui::{ToolStatus, UIError, UIMessage, UserInterface};
+use crate::ui::{UIError, UiEvent, UserInterface};
 use crate::utils::{CommandExecutor, CommandOutput};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -189,15 +189,15 @@ pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
 // Mock UI
 #[derive(Default, Clone)]
 pub struct MockUI {
-    messages: Arc<Mutex<Vec<UIMessage>>>,
+    events: Arc<Mutex<Vec<UiEvent>>>,
     streaming: Arc<Mutex<Vec<String>>>,
     responses: Arc<Mutex<Vec<Result<String, UIError>>>>,
 }
 
 #[async_trait]
 impl UserInterface for MockUI {
-    async fn display(&self, message: UIMessage) -> Result<(), UIError> {
-        self.messages.lock().unwrap().push(message);
+    async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
+        self.events.lock().unwrap().push(event);
         Ok(())
     }
 
@@ -235,32 +235,6 @@ impl UserInterface for MockUI {
         Ok(())
     }
 
-    async fn update_memory(&self, _memory: &WorkingMemory) -> Result<(), UIError> {
-        // Mock implementation does nothing with memory updates
-        Ok(())
-    }
-
-    async fn update_tool_status(
-        &self,
-        _tool_id: &str,
-        _status: ToolStatus,
-        _message: Option<String>,
-        _output: Option<String>,
-    ) -> Result<(), UIError> {
-        // Mock implementation does nothing with the tool status
-        Ok(())
-    }
-
-    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError> {
-        // For tests, just accept the provided request ID
-        let _ = request_id;
-        Ok(())
-    }
-
-    async fn end_llm_request(&self, _request_id: u64, _cancelled: bool) -> Result<(), UIError> {
-        // Mock implementation does nothing with request completion
-        Ok(())
-    }
 
     fn should_streaming_continue(&self) -> bool {
         // Mock implementation always continues streaming

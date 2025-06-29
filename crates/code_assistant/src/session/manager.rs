@@ -105,7 +105,7 @@ impl SessionManager {
     pub async fn set_active_session(
         &mut self,
         session_id: String,
-    ) -> Result<Vec<crate::ui::gpui::ui_events::UiEvent>> {
+    ) -> Result<Vec<crate::ui::ui_events::UiEvent>> {
         // Deactivate old session
         if let Some(old_id) = &self.active_session_id {
             if old_id != &session_id {
@@ -256,6 +256,7 @@ impl SessionManager {
     }
 
     /// Get metadata for a specific session
+    #[allow(dead_code)]
     pub fn get_session_metadata(&self, session_id: &str) -> Result<Option<ChatMetadata>> {
         self.persistence.get_chat_session_metadata(session_id)
     }

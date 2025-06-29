@@ -22,8 +22,8 @@ pub struct ToolResultData {
 /// Events for UI updates from the agent thread
 #[derive(Debug, Clone)]
 pub enum UiEvent {
-    /// Display a new message or append to an existing one
-    DisplayMessage { content: String, role: MessageRole },
+    /// Display user input message
+    DisplayUserInput { content: String },
     /// Append to the last text block
     AppendToTextBlock { content: String },
     /// Append to the last thinking block
@@ -77,5 +77,6 @@ pub enum UiEvent {
     /// Clear rate limit notification
     ClearRateLimit,
     /// Update metadata for a single session without refreshing the entire list
+    #[allow(dead_code)]
     UpdateSessionMetadata { metadata: ChatMetadata },
 }

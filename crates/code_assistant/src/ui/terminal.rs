@@ -1,5 +1,4 @@
-use super::{DisplayFragment, ToolStatus, UIError, UIMessage, UserInterface};
-use crate::types::WorkingMemory;
+use super::{DisplayFragment, ToolStatus, UIError, UiEvent, UserInterface};
 use async_trait::async_trait;
 use crossterm::style::{self, Color, Stylize};
 use rustyline::{error::ReadlineError, history::DefaultHistory, Config, Editor};
@@ -50,43 +49,72 @@ impl TerminalUI {
         writeln!(stdout, "{}", s)?;
         Ok(())
     }
-
-    fn format_tool_result(&self, text: &str) -> String {
-        // Determine result type and choose appropriate color and symbol
-        let (status_symbol, status_color) = if text.contains("Failed")
-            || text.contains("Error")
-            || text.contains("failed")
-            || text.contains("error")
-        {
-            ("✗", Color::Red)
-        } else if text.contains("Successfully")
-            || text.starts_with("Available")
-            || text.contains("success")
-        {
-            ("✓", Color::Green)
-        } else {
-            ("•", Color::Blue)
-        };
-
-        // Apply highlighting to content
-        let highlighted_text = text
-            .replace("- ", &format!("{} ", "•".with(Color::Blue)))
-            .replace("> ", &format!("{} ", "▶".with(Color::Cyan)));
-
-        // Combine status symbol and content
-        format!("{} {}", status_symbol.with(status_color), highlighted_text)
-    }
 }
 
 #[async_trait]
 impl UserInterface for TerminalUI {
-    async fn display(&self, message: UIMessage) -> Result<(), UIError> {
-        match message {
-            UIMessage::Action(msg) => {
-                // Format tool results
-                let formatted_msg = self.format_tool_result(&msg);
-                self.write_line(&formatted_msg).await?
+    async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
+        match event {
+            UiEvent::DisplayUserInput { content } => {
+                // Display user input with a prompt-like format
+                let formatted = format!("{} {}", ">".with(Color::Green), content);
+                self.write_line(&formatted).await?
             }
+            UiEvent::UpdateToolStatus {
+                tool_id: _,
+                status,
+                message,
+                output: _,
+            } => {
+                // For terminal UI, we just print a status message if provided
+                if let Some(msg) = message {
+                    // Choose color based on status
+                    let color = match status {
+                        ToolStatus::Pending => Color::DarkGrey,
+                        ToolStatus::Running => Color::Blue,
+                        ToolStatus::Success => Color::Green,
+                        ToolStatus::Error => Color::Red,
+                    };
+
+                    // Format status symbol
+                    let symbol = match status {
+                        ToolStatus::Pending => "⋯",
+                        ToolStatus::Running => "⚙",
+                        ToolStatus::Success => "✓",
+                        ToolStatus::Error => "✗",
+                    };
+
+                    // Format and print message
+                    let formatted_msg = format!("{} {}", symbol.with(color), msg);
+                    self.write_line(&formatted_msg).await?;
+                }
+            }
+            UiEvent::StreamingStarted(request_id) => {
+                // Optionally display a message that we're starting a new request
+                self.write_line(
+                    &format!("Starting new LLM request ({})", request_id)
+                        .dark_blue()
+                        .to_string(),
+                )
+                .await?;
+            }
+            UiEvent::StreamingStopped {
+                id: request_id,
+                cancelled,
+            } => {
+                // Optionally display a message that the request has completed
+                let message = if cancelled {
+                    format!("Cancelled LLM request ({})", request_id)
+                } else {
+                    format!("Completed LLM request ({})", request_id)
+                };
+
+                self.write_line(&message.dark_blue().to_string()).await?;
+            }
+            UiEvent::UpdateMemory { memory: _ } => {
+                // Terminal UI doesn't display memory visually, so this is a no-op
+            }
+            // Terminal UI ignores other events (they're for GPUI)
             _ => {}
         }
         Ok(())
@@ -164,68 +192,6 @@ impl UserInterface for TerminalUI {
         }
 
         writer.flush()?;
-        Ok(())
-    }
-
-    async fn update_tool_status(
-        &self,
-        _tool_id: &str,
-        status: ToolStatus,
-        message: Option<String>,
-        _output: Option<String>,
-    ) -> Result<(), UIError> {
-        // For terminal UI, we just print a status message if provided
-        if let Some(msg) = message {
-            // Choose color based on status
-            let color = match status {
-                ToolStatus::Pending => Color::DarkGrey,
-                ToolStatus::Running => Color::Blue,
-                ToolStatus::Success => Color::Green,
-                ToolStatus::Error => Color::Red,
-            };
-
-            // Format status symbol
-            let symbol = match status {
-                ToolStatus::Pending => "⋯",
-                ToolStatus::Running => "⚙",
-                ToolStatus::Success => "✓",
-                ToolStatus::Error => "✗",
-            };
-
-            // Format and print message
-            let formatted_msg = format!("{} {}", symbol.with(color), msg);
-            self.write_line(&formatted_msg).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn update_memory(&self, _memory: &WorkingMemory) -> Result<(), UIError> {
-        // Terminal UI doesn't display memory visually, so this is a no-op
-        Ok(())
-    }
-
-    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError> {
-        // Optionally display a message that we're starting a new request
-        self.write_line(
-            &format!("Starting new LLM request ({})", request_id)
-                .dark_blue()
-                .to_string(),
-        )
-        .await?;
-
-        Ok(())
-    }
-
-    async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError> {
-        // Optionally display a message that the request has completed
-        let message = if cancelled {
-            format!("Cancelled LLM request ({})", request_id)
-        } else {
-            format!("Completed LLM request ({})", request_id)
-        };
-
-        self.write_line(&message.dark_blue().to_string()).await?;
         Ok(())
     }
 

@@ -3,7 +3,7 @@
 //! This module contains shared test helpers, mocks and utilities that are used
 //! by both the XML and JSON processor tests.
 use crate::ui::streaming::DisplayFragment;
-use crate::ui::{ToolStatus, UIError, UserInterface};
+use crate::ui::{UIError, UserInterface};
 use async_trait::async_trait;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -77,7 +77,7 @@ impl TestUI {
 
 #[async_trait]
 impl UserInterface for TestUI {
-    async fn display(&self, _message: crate::ui::UIMessage) -> Result<(), UIError> {
+    async fn send_event(&self, _event: crate::ui::UiEvent) -> Result<(), UIError> {
         Ok(())
     }
 
@@ -101,33 +101,6 @@ impl UserInterface for TestUI {
 
         // If we couldn't merge, add the new fragment
         guard.push_back(fragment.clone());
-        Ok(())
-    }
-
-    async fn update_memory(&self, _memory: &crate::types::WorkingMemory) -> Result<(), UIError> {
-        // Test implementation does nothing with memory updates
-        Ok(())
-    }
-
-    async fn update_tool_status(
-        &self,
-        _tool_id: &str,
-        _status: ToolStatus,
-        _message: Option<String>,
-        _output: Option<String>,
-    ) -> Result<(), UIError> {
-        // Test implementation does nothing with tool status
-        Ok(())
-    }
-
-    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError> {
-        // For tests, just accept the provided request ID
-        let _ = request_id;
-        Ok(())
-    }
-
-    async fn end_llm_request(&self, _request_id: u64, _cancelled: bool) -> Result<(), UIError> {
-        // Mock implementation does nothing with request completion
         Ok(())
     }
 

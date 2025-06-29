@@ -168,6 +168,7 @@ impl FileSessionPersistence {
         Ok(metadata_list)
     }
 
+    #[allow(dead_code)]
     pub fn get_chat_session_metadata(&self, session_id: &str) -> Result<Option<ChatMetadata>> {
         let metadata_path = self.metadata_file_path()?;
         if !metadata_path.exists() {

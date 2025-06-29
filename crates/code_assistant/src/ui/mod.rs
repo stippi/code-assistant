@@ -1,11 +1,11 @@
 pub mod gpui;
 pub mod streaming;
 pub mod terminal;
-use crate::types::WorkingMemory;
+pub mod ui_events;
 use async_trait::async_trait;
-pub use gpui::ui_events::UiEvent;
 pub use streaming::DisplayFragment;
 use thiserror::Error;
+pub use ui_events::UiEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ToolStatus {
@@ -22,17 +22,6 @@ pub enum StreamingState {
     StopRequested, // User requested stop, waiting for stream to end
 }
 
-#[derive(Debug, Clone)]
-pub enum UIMessage {
-    // System actions that the agent takes
-    #[allow(dead_code)]
-    Action(String),
-    // User input messages
-    UserInput(String),
-    // UI events for GPUI interface
-    UiEvent(UiEvent),
-}
-
 #[derive(Error, Debug)]
 pub enum UIError {
     #[error("IO error: {0}")]
@@ -41,33 +30,14 @@ pub enum UIError {
 
 #[async_trait]
 pub trait UserInterface: Send + Sync {
-    /// Display a message to the user
-    async fn display(&self, message: UIMessage) -> Result<(), UIError>;
+    /// Send an event to the UI
+    async fn send_event(&self, event: UiEvent) -> Result<(), UIError>;
 
     /// Get input from the user
     async fn get_input(&self) -> Result<String, UIError>;
 
     /// Display a streaming fragment with specific type information
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError>;
-
-    /// Update tool status for a specific tool
-    async fn update_tool_status(
-        &self,
-        tool_id: &str,
-        status: ToolStatus,
-        message: Option<String>,
-        output: Option<String>,
-    ) -> Result<(), UIError>;
-
-    /// Update memory view with current working memory
-    async fn update_memory(&self, memory: &WorkingMemory) -> Result<(), UIError>;
-
-    /// Informs the UI that a new LLM request is starting with the given request ID
-    /// The request ID is used to correlate tool invocations
-    async fn begin_llm_request(&self, request_id: u64) -> Result<(), UIError>;
-
-    /// Informs the UI that an LLM request has completed
-    async fn end_llm_request(&self, request_id: u64, cancelled: bool) -> Result<(), UIError>;
 
     /// Check if streaming should continue
     fn should_streaming_continue(&self) -> bool;

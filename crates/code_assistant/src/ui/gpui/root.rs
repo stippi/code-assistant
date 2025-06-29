@@ -6,7 +6,7 @@ use super::messages::MessagesView;
 use super::theme;
 use super::{CloseWindow, Gpui, UiEventSender};
 use crate::persistence::ChatMetadata;
-use crate::ui::gpui::ui_events::UiEvent;
+use crate::ui::ui_events::UiEvent;
 use crate::ui::StreamingState;
 use gpui::{
     div, prelude::*, px, rgba, App, Context, CursorStyle, Entity, FocusHandle, Focusable,

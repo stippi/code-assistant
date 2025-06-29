@@ -1,6 +1,7 @@
 use super::file_icons;
+use super::UiEventSender;
 use crate::persistence::ChatMetadata;
-use crate::ui::gpui::{ui_events::UiEvent, UiEventSender};
+use crate::ui::ui_events::UiEvent;
 use gpui::{
     actions, div, prelude::*, px, AnyElement, App, AppContext, Context, Div, ElementId, Entity,
     FocusHandle, Focusable, MouseButton, MouseUpEvent, SharedString, Styled, Window,
@@ -190,49 +191,39 @@ impl Render for ChatListItem {
                     .child(SharedString::from(formatted_date)),
             )
             .when(
-                self.metadata.total_usage.input_tokens > 0 || self.metadata.total_usage.output_tokens > 0,
+                self.metadata.total_usage.input_tokens > 0
+                    || self.metadata.total_usage.output_tokens > 0,
                 |s| {
                     let mut token_elements = Vec::new();
-                    
+
                     // Input tokens (blue)
-                    token_elements.push(
-                        div()
-                            .text_color(cx.theme().info)
-                            .child(SharedString::from(format!("{}", self.metadata.total_usage.input_tokens)))
-                    );
-                    
+                    token_elements.push(div().text_color(cx.theme().info).child(
+                        SharedString::from(format!("{}", self.metadata.total_usage.input_tokens)),
+                    ));
+
                     // Cache reads (cyan) - only if > 0
                     if self.metadata.total_usage.cache_read_input_tokens > 0 {
-                        token_elements.push(
-                            div()
-                                .text_color(cx.theme().info.opacity(0.7))
-                                .child(SharedString::from(format!("{}", self.metadata.total_usage.cache_read_input_tokens)))
-                        );
+                        token_elements.push(div().text_color(cx.theme().info.opacity(0.7)).child(
+                            SharedString::from(format!(
+                                "{}",
+                                self.metadata.total_usage.cache_read_input_tokens
+                            )),
+                        ));
                     }
-                    
+
                     // Output tokens (green)
-                    token_elements.push(
-                        div()
-                            .text_color(cx.theme().success)
-                            .child(SharedString::from(format!("{}", self.metadata.total_usage.output_tokens)))
-                    );
-                    
+                    token_elements.push(div().text_color(cx.theme().success).child(
+                        SharedString::from(format!("{}", self.metadata.total_usage.output_tokens)),
+                    ));
+
                     // Context size (yellow) - only if > 0
                     if self.metadata.current_context_size > 0 {
-                        token_elements.push(
-                            div()
-                                .text_color(cx.theme().warning)
-                                .child(SharedString::from(format!("/{}", self.metadata.current_context_size)))
-                        );
+                        token_elements.push(div().text_color(cx.theme().warning).child(
+                            SharedString::from(format!("/{}", self.metadata.current_context_size)),
+                        ));
                     }
-                    
-                    s.child(
-                        div()
-                            .flex()
-                            .gap_1()
-                            .text_xs()
-                            .children(token_elements)
-                    )
+
+                    s.child(div().flex().gap_1().text_xs().children(token_elements))
                 },
             )
     }

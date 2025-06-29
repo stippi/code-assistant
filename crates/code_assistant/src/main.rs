@@ -426,8 +426,7 @@ fn run_agent_gpui(
                 };
 
                 for event in ui_events {
-                    let ui_message = crate::ui::UIMessage::UiEvent(event);
-                    if let Err(e) = gui_for_thread.display(ui_message).await {
+                    if let Err(e) = gui_for_thread.send_event(event).await {
                         error!("Failed to send UI event: {}", e);
                     }
                 }
@@ -489,8 +488,7 @@ fn run_agent_gpui(
                     };
 
                     for event in ui_events {
-                        let ui_message = crate::ui::UIMessage::UiEvent(event);
-                        if let Err(e) = gui_for_thread.display(ui_message).await {
+                        if let Err(e) = gui_for_thread.send_event(event).await {
                             error!("Failed to send UI event: {}", e);
                         }
                     }
@@ -655,8 +653,7 @@ async fn handle_backend_events(
 
                         // Send all UI events to update the interface
                         for event in ui_events {
-                            let ui_message = crate::ui::UIMessage::UiEvent(event);
-                            if let Err(e) = gui.display(ui_message).await {
+                            if let Err(e) = gui.send_event(event).await {
                                 error!("Failed to send UI event: {}", e);
                             }
                         }
@@ -704,12 +701,12 @@ async fn handle_backend_events(
                 debug!("User message for session {}: {}", session_id, message);
 
                 // First: Display the user message immediately in the UI
-                let ui_message =
-                    crate::ui::UIMessage::UiEvent(ui::gpui::ui_events::UiEvent::DisplayMessage {
+                if let Err(e) = gui
+                    .send_event(crate::ui::UiEvent::DisplayUserInput {
                         content: message.clone(),
-                        role: ui::gpui::elements::MessageRole::User,
-                    });
-                if let Err(e) = gui.display(ui_message).await {
+                    })
+                    .await
+                {
                     error!("Failed to display user message: {}", e);
                 }
 
