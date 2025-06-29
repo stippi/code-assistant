@@ -83,6 +83,7 @@ impl SessionInstance {
 
     /// Get the current context size (input tokens + cache reads from most recent assistant message)
     /// This represents the total tokens being processed in the current LLM request
+    #[allow(dead_code)]
     pub fn get_current_context_size(&self) -> u32 {
         // Find the most recent assistant message with usage data
         for message in self.session.messages.iter().rev() {
@@ -96,9 +97,10 @@ impl SessionInstance {
     }
 
     /// Calculate total usage across the entire session
+    #[allow(dead_code)]
     pub fn calculate_total_usage(&self) -> llm::Usage {
         let mut total = llm::Usage::zero();
-        
+
         for message in &self.session.messages {
             if let Some(usage) = &message.usage {
                 total.input_tokens += usage.input_tokens;
@@ -107,7 +109,7 @@ impl SessionInstance {
                 total.cache_read_input_tokens += usage.cache_read_input_tokens;
             }
         }
-        
+
         total
     }
 
