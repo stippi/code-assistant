@@ -235,7 +235,6 @@ impl UserInterface for MockUI {
         Ok(())
     }
 
-
     fn should_streaming_continue(&self) -> bool {
         // Mock implementation always continues streaming
         true

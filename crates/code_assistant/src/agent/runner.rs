@@ -184,7 +184,12 @@ impl Agent {
 
                         // Save state and update memory after tool executions
                         self.save_state()?;
-                        let _ = self.ui.send_event(UiEvent::UpdateMemory { memory: self.working_memory.clone() }).await;
+                        let _ = self
+                            .ui
+                            .send_event(UiEvent::UpdateMemory {
+                                memory: self.working_memory.clone(),
+                            })
+                            .await;
 
                         match flow {
                             LoopFlow::Continue => { /* Continue to the next iteration */ }
@@ -242,7 +247,12 @@ impl Agent {
         // Restore working memory file trees and project state
         self.init_working_memory_projects()?;
 
-        let _ = self.ui.send_event(UiEvent::UpdateMemory { memory: self.working_memory.clone() }).await;
+        let _ = self
+            .ui
+            .send_event(UiEvent::UpdateMemory {
+                memory: self.working_memory.clone(),
+            })
+            .await;
 
         Ok(())
     }
@@ -376,7 +386,11 @@ impl Agent {
     /// Prompts the user for input and adds it to the message history.
     async fn solicit_user_input(&mut self) -> Result<()> {
         let user_input = self.ui.get_input().await?;
-        self.ui.send_event(UiEvent::DisplayUserInput { content: user_input.clone() }).await?;
+        self.ui
+            .send_event(UiEvent::DisplayUserInput {
+                content: user_input.clone(),
+            })
+            .await?;
         let user_msg = Message {
             role: MessageRole::User,
             content: MessageContent::Text(user_input.clone()),
@@ -437,7 +451,11 @@ impl Agent {
         self.init_working_memory()?;
 
         self.message_history.clear();
-        self.ui.send_event(UiEvent::DisplayUserInput { content: task.clone() }).await?;
+        self.ui
+            .send_event(UiEvent::DisplayUserInput {
+                content: task.clone(),
+            })
+            .await?;
 
         // Create the initial user message
         let user_msg = Message {
@@ -449,7 +467,12 @@ impl Agent {
         self.append_message(user_msg)?;
 
         // Notify UI of initial working memory
-        let _ = self.ui.send_event(UiEvent::UpdateMemory { memory: self.working_memory.clone() }).await;
+        let _ = self
+            .ui
+            .send_event(UiEvent::UpdateMemory {
+                memory: self.working_memory.clone(),
+            })
+            .await;
 
         self.run_agent_loop().await
     }
@@ -604,7 +627,9 @@ impl Agent {
         self.next_request_id += 1;
 
         // Inform UI that a new LLM request is starting
-        self.ui.send_event(UiEvent::StreamingStarted(request_id)).await?;
+        self.ui
+            .send_event(UiEvent::StreamingStarted(request_id))
+            .await?;
         debug!("Starting LLM request with ID: {}", request_id);
 
         // Convert messages based on tool mode
@@ -674,7 +699,13 @@ impl Agent {
                 if e.to_string().contains("Streaming cancelled by user") {
                     debug!("Streaming cancelled by user in LLM request {}", request_id);
                     // End LLM request with cancelled=true
-                    let _ = self.ui.send_event(UiEvent::StreamingStopped { id: request_id, cancelled: true }).await;
+                    let _ = self
+                        .ui
+                        .send_event(UiEvent::StreamingStopped {
+                            id: request_id,
+                            cancelled: true,
+                        })
+                        .await;
                     // Return empty response
                     return Ok((
                         llm::LLMResponse {
@@ -687,7 +718,13 @@ impl Agent {
                 }
 
                 // For other errors, still end the request but not cancelled
-                let _ = self.ui.send_event(UiEvent::StreamingStopped { id: request_id, cancelled: false }).await;
+                let _ = self
+                    .ui
+                    .send_event(UiEvent::StreamingStopped {
+                        id: request_id,
+                        cancelled: false,
+                    })
+                    .await;
                 return Err(e);
             }
         };
@@ -715,7 +752,13 @@ impl Agent {
         );
 
         // Inform UI that the LLM request has completed (normal completion)
-        let _ = self.ui.send_event(UiEvent::StreamingStopped { id: request_id, cancelled: false }).await;
+        let _ = self
+            .ui
+            .send_event(UiEvent::StreamingStopped {
+                id: request_id,
+                cancelled: false,
+            })
+            .await;
         debug!("Completed LLM request with ID: {}", request_id);
 
         Ok((response, request_id))
@@ -806,12 +849,14 @@ impl Agent {
         );
 
         // Update status to Running before execution
-        self.ui.send_event(UiEvent::UpdateToolStatus {
-            tool_id: tool_request.id.clone(),
-            status: crate::ui::ToolStatus::Running,
-            message: None,
-            output: None,
-        }).await?;
+        self.ui
+            .send_event(UiEvent::UpdateToolStatus {
+                tool_id: tool_request.id.clone(),
+                status: crate::ui::ToolStatus::Running,
+                message: None,
+                output: None,
+            })
+            .await?;
 
         // Get the tool - could fail with UnknownTool
         let tool = match ToolRegistry::global().get(&tool_request.name) {
@@ -849,12 +894,14 @@ impl Agent {
         let output = result.as_render().render(&mut resources_tracker);
 
         // Update tool status with result
-        self.ui.send_event(UiEvent::UpdateToolStatus {
-            tool_id: tool_request.id.clone(),
-            status,
-            message: Some(short_output),
-            output: Some(output),
-        }).await?;
+        self.ui
+            .send_event(UiEvent::UpdateToolStatus {
+                tool_id: tool_request.id.clone(),
+                status,
+                message: Some(short_output),
+                output: Some(output),
+            })
+            .await?;
 
         // Create and store the ToolExecution record
         let tool_execution = ToolExecution {

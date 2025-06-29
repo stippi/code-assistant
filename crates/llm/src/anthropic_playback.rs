@@ -128,7 +128,11 @@ impl LLMProvider for RecordingProvider {
             };
 
             // Create response
-            let response = LLMResponse { content, usage, rate_limit_info: None };
+            let response = LLMResponse {
+                content,
+                usage,
+                rate_limit_info: None,
+            };
 
             // Prepare for streaming with timing information
             let _start = Instant::now();
@@ -174,7 +178,11 @@ impl LLMProvider for RecordingProvider {
             };
 
             // Create response
-            Ok(LLMResponse { content, usage, rate_limit_info: None })
+            Ok(LLMResponse {
+                content,
+                usage,
+                rate_limit_info: None,
+            })
         }
     }
 }
