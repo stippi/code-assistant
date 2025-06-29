@@ -76,4 +76,6 @@ pub enum UiEvent {
     RateLimitNotification { seconds_remaining: u64 },
     /// Clear rate limit notification
     ClearRateLimit,
+    /// Update metadata for a single session without refreshing the entire list
+    UpdateSessionMetadata { metadata: ChatMetadata },
 }

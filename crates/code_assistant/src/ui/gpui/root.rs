@@ -43,6 +43,7 @@ impl RootView {
         text_input: Entity<InputState>,
         memory_view: Entity<MemoryView>,
         messages_view: Entity<MessagesView>,
+        chat_sidebar: Entity<ChatSidebar>,
         cx: &mut Context<Self>,
         input_value: Arc<Mutex<Option<String>>>,
         input_requested: Arc<Mutex<bool>>,
@@ -51,9 +52,6 @@ impl RootView {
         // Create the auto-scroll container that wraps the messages view
         let auto_scroll_container =
             cx.new(|_cx| AutoScrollContainer::new("messages", messages_view));
-
-        // Create the chat sidebar
-        let chat_sidebar = cx.new(|cx| ChatSidebar::new(cx));
 
         let mut root_view = Self {
             text_input,

@@ -103,6 +103,9 @@ pub struct Gpui {
     // Current chat state
     current_session_id: Arc<Mutex<Option<String>>>,
     chat_sessions: Arc<Mutex<Vec<ChatMetadata>>>,
+
+    // UI components
+    chat_sidebar: Arc<Mutex<Option<Entity<chat_sidebar::ChatSidebar>>>>,
 }
 
 // Implement Global trait for Gpui
@@ -167,6 +170,8 @@ impl Gpui {
 
             current_session_id: Arc::new(Mutex::new(None)),
             chat_sessions: Arc::new(Mutex::new(Vec::new())),
+
+            chat_sidebar: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -303,12 +308,17 @@ impl Gpui {
                     // Create MessagesView
                     let messages_view = cx.new(|cx| MessagesView::new(message_queue.clone(), cx));
 
+                    // Create ChatSidebar and store it in Gpui
+                    let chat_sidebar = cx.new(|cx| chat_sidebar::ChatSidebar::new(cx));
+                    *gpui_clone.chat_sidebar.lock().unwrap() = Some(chat_sidebar.clone());
+
                     // Create RootView
                     let root_view = cx.new(|cx| {
                         RootView::new(
                             text_input,
                             memory_view.clone(),
                             messages_view,
+                            chat_sidebar.clone(),
                             cx,
                             input_value.clone(),
                             input_requested.clone(),
@@ -640,6 +650,40 @@ impl Gpui {
                         cx.notify();
                     })
                     .expect("Failed to update entity");
+                }
+            }
+            UiEvent::UpdateSessionMetadata { metadata } => {
+                debug!(
+                    "UI: UpdateSessionMetadata event for session {}",
+                    metadata.id
+                );
+                // Update the specific session in our local cache
+                {
+                    let mut sessions = self.chat_sessions.lock().unwrap();
+                    if let Some(existing_session) =
+                        sessions.iter_mut().find(|s| s.id == metadata.id)
+                    {
+                        *existing_session = metadata.clone();
+                        debug!("Updated existing session metadata for {}", metadata.id);
+                    } else {
+                        // Session not found in cache, add it (shouldn't normally happen)
+                        sessions.push(metadata.clone());
+                        debug!("Added new session metadata for {}", metadata.id);
+                    }
+                }
+
+                // Update the chat sidebar entity specifically
+                if let Some(chat_sidebar_entity) = self.chat_sidebar.lock().unwrap().as_ref() {
+                    cx.update_entity(chat_sidebar_entity, |sidebar, cx| {
+                        // Get updated sessions list
+                        let updated_sessions = self.chat_sessions.lock().unwrap().clone();
+                        sidebar.update_sessions(updated_sessions, cx);
+                        cx.notify();
+                    })
+                    .expect("Failed to update chat sidebar entity");
+                    debug!("UI: Updated chat sidebar for session metadata change");
+                } else {
+                    debug!("UI: No chat sidebar entity available for metadata update");
                 }
             }
         }
