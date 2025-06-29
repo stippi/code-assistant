@@ -2,6 +2,7 @@ use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::tool_description_generator::generate_tool_documentation;
 use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
+use crate::persistence::ChatMetadata;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::parse_xml_tool_invocations;
 use crate::tools::ToolRequest;
@@ -16,6 +17,7 @@ use llm::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 use tracing::{debug, trace, warn};
 
 use super::ToolMode;
@@ -54,6 +56,8 @@ pub struct Agent {
     cached_system_message: OnceLock<String>,
     // Counter for generating unique request IDs
     next_request_id: u64,
+    // Session ID for this agent instance
+    session_id: Option<String>,
 }
 
 impl Agent {
@@ -102,7 +106,49 @@ impl Agent {
             tool_executions: Vec::new(),
             cached_system_message: OnceLock::new(),
             next_request_id: 1, // Start from 1
+            session_id: None,
         }
+    }
+
+    /// Build current session metadata
+    fn build_current_metadata(&self) -> Option<ChatMetadata> {
+        // Only build metadata if we have a session ID
+        self.session_id.as_ref().map(|session_id| {
+            // Calculate current context size from most recent assistant message
+            let current_context_size = self
+                .message_history
+                .iter()
+                .rev()
+                .find(|msg| matches!(msg.role, MessageRole::Assistant))
+                .and_then(|msg| msg.usage.as_ref())
+                .map(|usage| usage.input_tokens + usage.cache_read_input_tokens)
+                .unwrap_or(0);
+
+            // Calculate total usage across all messages
+            let mut total_usage = llm::Usage::zero();
+            for message in &self.message_history {
+                if let Some(usage) = &message.usage {
+                    total_usage.input_tokens += usage.input_tokens;
+                    total_usage.output_tokens += usage.output_tokens;
+                    total_usage.cache_creation_input_tokens += usage.cache_creation_input_tokens;
+                    total_usage.cache_read_input_tokens += usage.cache_read_input_tokens;
+                }
+            }
+
+            // Use default for tokens limit - will be updated by persistence layer
+            let tokens_limit = None;
+
+            ChatMetadata {
+                id: session_id.clone(),
+                name: format!("Session {}", &session_id[..8]), // Default name, will be overridden by persistence
+                created_at: SystemTime::now(),                 // Will be overridden by persistence
+                updated_at: SystemTime::now(),
+                message_count: self.message_history.len(),
+                current_context_size,
+                total_usage,
+                tokens_limit,
+            }
+        })
     }
 
     /// Save the current state (message history and tool executions)
@@ -119,6 +165,20 @@ impl Agent {
             self.initial_project.clone(),
             self.next_request_id,
         )?;
+
+        // Send updated session metadata to UI
+        if let Some(metadata) = self.build_current_metadata() {
+            let _ = tokio::runtime::Handle::try_current().map(|_| {
+                let ui = self.ui.clone();
+                let metadata = metadata.clone();
+                tokio::spawn(async move {
+                    let _ = ui
+                        .send_event(UiEvent::UpdateSessionMetadata { metadata })
+                        .await;
+                });
+            });
+        }
+
         Ok(())
     }
 
@@ -225,6 +285,7 @@ impl Agent {
         session_state: crate::session::SessionState,
     ) -> Result<()> {
         // Restore all state components
+        self.session_id = Some(session_state.session_id);
         self.message_history = session_state.messages;
         warn!(
             "loaded {} messages from session",

@@ -194,6 +194,7 @@ impl SessionManager {
 
         // Load the session state into the agent
         let session_state = crate::session::SessionState {
+            session_id: session_id.to_string(),
             messages: session_instance.messages().to_vec(),
             tool_executions: session_instance
                 .session

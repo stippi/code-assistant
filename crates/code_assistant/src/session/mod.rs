@@ -13,6 +13,7 @@ pub use manager::{AgentConfig, SessionManager};
 /// State data needed to restore an agent session
 #[derive(Debug)]
 pub struct SessionState {
+    pub session_id: String,
     pub messages: Vec<Message>,
     pub tool_executions: Vec<ToolExecution>,
     pub working_memory: crate::types::WorkingMemory,
