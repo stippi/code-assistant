@@ -83,3 +83,41 @@ This is a Rust-based CLI tool for AI-assisted code tasks with multiple operation
 - Register in tool registry
 - Support both sync and async operations
 - Follow existing patterns in `src/tools/impls/`
+
+## UI Communication Architecture
+
+### Communication Channels
+There are **two main communication patterns** between components and the UI:
+
+1. **Direct UserInterface trait calls** (primary pattern):
+   - Agent calls methods like `begin_llm_request()`, `display()`, `update_tool_status()`, etc.
+   - The `display()` method takes a `UIMessage` which can wrap a `UiEvent`
+   - Can send any UI event by wrapping it: `UIMessage::UiEvent(event)`
+   - Events go into the main UI event queue processed by the first task
+
+2. **Backend thread communication** (session management):
+   - Used for session management operations (create, delete, list sessions)
+   - Has separate `BackendEvent`/`BackendResponse` types and channels
+   - Handled by a second task running concurrently
+   - Operations: `LoadSession`, `CreateNewSession`, `ListSessions`, etc.
+
+### Event Queue Architecture
+- **Two event queues** running concurrently with separate tasks
+- **Task 1**: Processes `UiEvent`s from UserInterface trait calls
+- **Task 2**: Handles session management `BackendEvent`s and `BackendResponse`s
+- Architecture acknowledged as "messy" and should be cleaned up eventually
+
+### Concurrent Agent System
+- **Multiple agents** can run concurrently, one per session
+- **Only one agent** is connected to the UI at any time
+- **ProxyUI system**: Each session gets a `ProxyUI` instance that only forwards events and method calls to the real UI when that session is "connected"
+- **Session states**:
+  - **Connected**: Session is actively connected to UI (user clicked on chat item in sidebar)
+  - **Active**: Agent loop is currently running in the session (can be active without being connected)
+- **Session switching**: User clicks chat items in sidebar to connect/activate different sessions
+
+### Key Implementation Details
+- Agent-to-UI communication should use existing `self.ui.display(UIMessage::UiEvent(...))` pattern
+- Avoid overcomplicating with new channels or architectures
+- Leverage the ProxyUI system for proper session isolation
+- Session metadata updates can be sent directly via the existing event system
