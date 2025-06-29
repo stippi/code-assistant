@@ -255,6 +255,11 @@ impl SessionManager {
         self.persistence.get_latest_session_id()
     }
 
+    /// Get metadata for a specific session
+    pub fn get_session_metadata(&self, session_id: &str) -> Result<Option<ChatMetadata>> {
+        self.persistence.get_chat_session_metadata(session_id)
+    }
+
     /// Save agent state to a specific session
     pub fn save_session_state(
         &mut self,
@@ -295,6 +300,7 @@ impl SessionManager {
 
     /// Get the current context size for the active session
     /// Returns the input tokens + cache reads from the most recent assistant message
+    #[allow(dead_code)]
     pub fn get_current_context_size(&self) -> u32 {
         if let Some(session_id) = &self.active_session_id {
             if let Some(session_instance) = self.active_sessions.get(session_id) {
@@ -305,6 +311,7 @@ impl SessionManager {
     }
 
     /// Calculate total usage for the active session
+    #[allow(dead_code)]
     pub fn get_total_session_usage(&self) -> llm::Usage {
         if let Some(session_id) = &self.active_session_id {
             if let Some(session_instance) = self.active_sessions.get(session_id) {
@@ -315,6 +322,7 @@ impl SessionManager {
     }
 
     /// Get usage data for a specific session
+    #[allow(dead_code)]
     pub fn get_session_usage(&self, session_id: &str) -> Option<(u32, llm::Usage)> {
         if let Some(session_instance) = self.active_sessions.get(session_id) {
             let context_size = session_instance.get_current_context_size();
