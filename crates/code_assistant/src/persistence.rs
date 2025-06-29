@@ -168,6 +168,18 @@ impl FileSessionPersistence {
         Ok(metadata_list)
     }
 
+    pub fn get_chat_session_metadata(&self, session_id: &str) -> Result<Option<ChatMetadata>> {
+        let metadata_path = self.metadata_file_path()?;
+        if !metadata_path.exists() {
+            return Ok(None);
+        }
+
+        let content = std::fs::read_to_string(metadata_path)?;
+        let metadata_list: Vec<ChatMetadata> = serde_json::from_str(&content).unwrap_or_default();
+
+        Ok(metadata_list.into_iter().find(|m| m.id == session_id))
+    }
+
     pub fn delete_chat_session(&mut self, session_id: &str) -> Result<()> {
         // Remove the session file
         let session_path = self.chat_file_path(session_id)?;
