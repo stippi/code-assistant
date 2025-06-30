@@ -35,6 +35,14 @@ impl ChatListItem {
         }
     }
 
+    pub fn update_metadata(&mut self, metadata: ChatMetadata, cx: &mut Context<Self>) {
+        // Check if metadata has actually changed to avoid unnecessary updates
+        if self.metadata != metadata {
+            self.metadata = metadata;
+            cx.notify();
+        }
+    }
+
     /// Format the creation date for display
     fn format_date(timestamp: SystemTime) -> String {
         // Simple date formatting - could be improved with chrono if needed
@@ -330,7 +338,10 @@ impl ChatSidebar {
             .into_iter()
             .map(|session| {
                 if let Some(existing_item) = existing_items.remove(&session.id) {
-                    // Reuse existing item
+                    // Reuse existing item but update its metadata
+                    cx.update_entity(&existing_item, |item, cx| {
+                        item.update_metadata(session, cx);
+                    });
                     existing_item
                 } else {
                     // Create new item
