@@ -178,6 +178,13 @@ enum AiCoreBlockContent {
     Text {
         text: String,
     },
+    Thinking {
+        thinking: String,
+        signature: String,
+    },
+    RedactedThinking {
+        data: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -402,21 +409,18 @@ fn convert_content_block_to_aicore(block: ContentBlock) -> AiCoreContentBlock {
         }
         ContentBlock::Thinking {
             thinking,
-            signature: _,
-        } => {
-            // Bedrock Invoke doesn't support thinking blocks in requests, convert to text
-            AiCoreContentBlock {
-                block_type: "text".to_string(),
-                content: AiCoreBlockContent::Text { text: thinking },
-            }
-        }
-        ContentBlock::RedactedThinking { data } => {
-            // Bedrock Invoke doesn't support redacted thinking blocks in requests, convert to text
-            AiCoreContentBlock {
-                block_type: "text".to_string(),
-                content: AiCoreBlockContent::Text { text: data },
-            }
-        }
+            signature,
+        } => AiCoreContentBlock {
+            block_type: "thinking".to_string(),
+            content: AiCoreBlockContent::Thinking {
+                thinking,
+                signature,
+            },
+        },
+        ContentBlock::RedactedThinking { data } => AiCoreContentBlock {
+            block_type: "redacted_thinking".to_string(),
+            content: AiCoreBlockContent::RedactedThinking { data },
+        },
     }
 }
 
