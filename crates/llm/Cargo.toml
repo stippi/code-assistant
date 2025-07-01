@@ -19,6 +19,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3.18"
 thiserror = "1.0"
 regex = "1.11"
+dirs = "5.0"
 
 [dev-dependencies]
 axum = "0.7"

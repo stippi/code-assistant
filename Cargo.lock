@@ -3872,6 +3872,7 @@ dependencies = [
  "base64 0.21.7",
  "bytes",
  "chrono",
+ "dirs 5.0.1",
  "futures",
  "keyring",
  "oauth2",

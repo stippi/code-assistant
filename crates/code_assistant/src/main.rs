@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use config::DefaultProjectManager;
 use llm::auth::TokenManager;
-use llm::config::DeploymentConfig;
+use llm::config::{AiCoreConfig, DeploymentConfig};
 use llm::{
     AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, OpenRouterClient,
     VertexClient,
@@ -82,6 +82,10 @@ struct Args {
     #[arg(long)]
     base_url: Option<String>,
 
+    /// Path to AI Core configuration file
+    #[arg(long)]
+    aicore_config: Option<PathBuf>,
+
     /// Context window size (in tokens, only relevant for Ollama)
     #[arg(long, default_value = "8192")]
     num_ctx: Option<usize>,
@@ -117,6 +121,7 @@ async fn create_llm_client(
     provider: LLMProviderType,
     model: Option<String>,
     base_url: Option<String>,
+    aicore_config: Option<PathBuf>,
     num_ctx: usize,
     record_path: Option<PathBuf>,
     playback_path: Option<PathBuf>,
@@ -144,22 +149,71 @@ async fn create_llm_client(
     // Otherwise continue with normal provider setup
     match provider {
         LLMProviderType::AiCore => {
-            let config = DeploymentConfig::load()
-                .context("Failed to load AiCore deployment configuration")?;
-            let token_manager = TokenManager::new(&config)
-                .await
-                .context("Failed to initialize token manager")?;
+            // Try new config file first, fallback to keyring
+            let config_path =
+                aicore_config.unwrap_or_else(|| AiCoreConfig::get_default_config_path());
 
-            let base_url = base_url.unwrap_or_else(|| config.api_base_url.clone());
+            if config_path.exists() {
+                // Use new JSON config file
+                let aicore_config =
+                    AiCoreConfig::load_from_file(&config_path).with_context(|| {
+                        format!("Failed to load AI Core config from {:?}", config_path)
+                    })?;
 
-            if let Some(path) = record_path {
-                Ok(Box::new(AiCoreClient::new_with_recorder(
-                    token_manager,
-                    base_url,
-                    path,
-                )))
+                // Model name bestimmen und Deployment UUID holen
+                let model_name = model.unwrap_or_else(|| "claude-sonnet-4".to_string());
+                let deployment_uuid = aicore_config.get_deployment_for_model(&model_name)
+                    .ok_or_else(|| anyhow::anyhow!("No deployment found for model '{}' in config file. Available models: {:?}",
+                                                    model_name, aicore_config.models.keys().collect::<Vec<_>>()))?;
+
+                // Convert AiCoreAuthConfig to DeploymentConfig for TokenManager
+                let deployment_config = DeploymentConfig {
+                    client_id: aicore_config.auth.client_id.clone(),
+                    client_secret: aicore_config.auth.client_secret.clone(),
+                    token_url: aicore_config.auth.token_url.clone(),
+                    api_base_url: aicore_config.auth.api_base_url.clone(),
+                };
+
+                let token_manager = TokenManager::new(&deployment_config)
+                    .await
+                    .context("Failed to initialize token manager")?;
+
+                // Extend API URL with deployment ID
+                let base_api_url = base_url.unwrap_or(aicore_config.auth.api_base_url.clone());
+                let api_url = format!(
+                    "{}/deployments/{}",
+                    base_api_url.trim_end_matches('/'),
+                    deployment_uuid
+                );
+
+                if let Some(path) = record_path {
+                    Ok(Box::new(AiCoreClient::new_with_recorder(
+                        token_manager,
+                        api_url,
+                        path,
+                    )))
+                } else {
+                    Ok(Box::new(AiCoreClient::new(token_manager, api_url)))
+                }
             } else {
-                Ok(Box::new(AiCoreClient::new(token_manager, base_url)))
+                // Fallback to old keyring system
+                let config = DeploymentConfig::load()
+                    .context("Failed to load AiCore deployment configuration from keyring. Consider creating an AI Core config file at ~/.config/code-assistant/ai-core.json")?;
+                let token_manager = TokenManager::new(&config)
+                    .await
+                    .context("Failed to initialize token manager")?;
+
+                let base_url = base_url.unwrap_or_else(|| config.api_base_url.clone());
+
+                if let Some(path) = record_path {
+                    Ok(Box::new(AiCoreClient::new_with_recorder(
+                        token_manager,
+                        base_url,
+                        path,
+                    )))
+                } else {
+                    Ok(Box::new(AiCoreClient::new(token_manager, base_url)))
+                }
             }
         }
 
@@ -272,6 +326,7 @@ async fn run_agent_terminal(
     provider: LLMProviderType,
     model: Option<String>,
     base_url: Option<String>,
+    aicore_config: Option<PathBuf>,
     num_ctx: usize,
     tools_type: ToolMode,
     record: Option<PathBuf>,
@@ -293,6 +348,7 @@ async fn run_agent_terminal(
         provider,
         model,
         base_url,
+        aicore_config,
         num_ctx,
         record,
         playback,
@@ -366,6 +422,7 @@ fn run_agent_gpui(
     provider: LLMProviderType,
     model: Option<String>,
     base_url: Option<String>,
+    aicore_config: Option<PathBuf>,
     num_ctx: usize,
     tools_type: ToolMode,
     record: Option<PathBuf>,
@@ -441,6 +498,7 @@ fn run_agent_gpui(
                     provider.clone(),
                     model.clone(),
                     base_url.clone(),
+                    aicore_config.clone(),
                     num_ctx,
                     record.clone(),
                     playback.clone(),
@@ -505,6 +563,7 @@ fn run_agent_gpui(
                 provider,
                 model,
                 base_url,
+                aicore_config,
                 num_ctx,
                 record,
                 playback,
@@ -530,6 +589,7 @@ async fn run_agent(args: Args) -> Result<()> {
     let provider = args.provider.unwrap_or(LLMProviderType::Anthropic);
     let model = args.model.clone();
     let base_url = args.base_url.clone();
+    let aicore_config = args.aicore_config.clone();
     let num_ctx = args.num_ctx.unwrap_or(8192);
     let tools_type = args.tools_type.unwrap_or(ToolMode::Xml);
     let use_gui = args.ui;
@@ -550,6 +610,7 @@ async fn run_agent(args: Args) -> Result<()> {
             provider,
             model,
             base_url,
+            aicore_config,
             num_ctx,
             tools_type,
             args.record.clone(),
@@ -565,6 +626,7 @@ async fn run_agent(args: Args) -> Result<()> {
             provider,
             model,
             base_url,
+            aicore_config,
             num_ctx,
             tools_type,
             args.record.clone(),
@@ -583,6 +645,7 @@ async fn handle_backend_events(
     provider: LLMProviderType,
     model: Option<String>,
     base_url: Option<String>,
+    aicore_config: Option<PathBuf>,
     num_ctx: usize,
     record: Option<PathBuf>,
     playback: Option<PathBuf>,
@@ -723,6 +786,7 @@ async fn handle_backend_events(
                         provider.clone(),
                         model.clone(),
                         base_url.clone(),
+                        aicore_config.clone(),
                         num_ctx,
                         record.clone(),
                         playback.clone(),

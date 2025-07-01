@@ -1,9 +1,24 @@
 use anyhow::{Context, Result};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeploymentConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub token_url: String,
+    pub api_base_url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AiCoreConfig {
+    pub auth: AiCoreAuthConfig,
+    pub models: HashMap<String, String>, // model_name -> deployment_uuid
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AiCoreAuthConfig {
     pub client_id: String,
     pub client_secret: String,
     pub token_url: String,
@@ -80,5 +95,26 @@ impl DeploymentConfig {
         input.clear();
 
         Ok(config)
+    }
+}
+
+impl AiCoreConfig {
+    pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+        let content = std::fs::read_to_string(path.as_ref())
+            .with_context(|| format!("Failed to read AI Core config file: {:?}", path.as_ref()))?;
+        serde_json::from_str(&content)
+            .with_context(|| "Failed to parse AI Core config JSON")
+    }
+    
+    pub fn get_deployment_for_model(&self, model_name: &str) -> Option<&String> {
+        self.models.get(model_name)
+    }
+
+    pub fn get_default_config_path() -> std::path::PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".config")
+            .join("code-assistant")
+            .join("ai-core.json")
     }
 }
