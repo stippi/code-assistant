@@ -155,12 +155,64 @@ struct ThinkingConfiguration {
     budget_tokens: usize,
 }
 
-/// Anthropic-specific request structure
+/// Bedrock Invoke message structure
+#[derive(Debug, Serialize)]
+struct AiCoreMessage {
+    role: String,
+    content: Vec<AiCoreContentBlock>,
+}
+
+/// Bedrock Invoke content block structure
+#[derive(Debug, Serialize)]
+struct AiCoreContentBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    #[serde(flatten)]
+    content: AiCoreBlockContent,
+}
+
+/// Content variants for Bedrock Invoke content blocks
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum AiCoreBlockContent {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<Vec<AiCoreToolResultContent>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
+}
+
+/// Tool result content for Bedrock Invoke
+#[derive(Debug, Serialize)]
+struct AiCoreToolResultContent {
+    #[serde(rename = "type")]
+    content_type: String,
+    #[serde(flatten)]
+    data: AiCoreToolResultData,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum AiCoreToolResultData {
+    Text { text: String },
+}
+
+/// Bedrock Invoke-specific request structure
 #[derive(Debug, Serialize)]
 struct AnthropicRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfiguration>,
-    messages: Vec<Message>,
+    messages: Vec<AiCoreMessage>,
     max_tokens: usize,
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -287,6 +339,85 @@ enum ContentDelta {
     Text { text: String },
     #[serde(rename = "input_json_delta")]
     InputJson { partial_json: String },
+}
+
+/// Convert LLM messages to Bedrock Invoke format (removes internal fields like request_id)
+fn convert_messages_to_aicore(messages: Vec<Message>) -> Vec<AiCoreMessage> {
+    messages
+        .into_iter()
+        .map(|msg| AiCoreMessage {
+            role: match msg.role {
+                MessageRole::User => "user".to_string(),
+                MessageRole::Assistant => "assistant".to_string(),
+            },
+            content: convert_content_to_aicore(msg.content),
+        })
+        .collect()
+}
+
+/// Convert LLM message content to Bedrock Invoke format
+fn convert_content_to_aicore(content: MessageContent) -> Vec<AiCoreContentBlock> {
+    match content {
+        MessageContent::Text(text) => {
+            vec![AiCoreContentBlock {
+                block_type: "text".to_string(),
+                content: AiCoreBlockContent::Text { text },
+            }]
+        }
+        MessageContent::Structured(blocks) => blocks
+            .into_iter()
+            .map(|block| convert_content_block_to_aicore(block))
+            .collect(),
+    }
+}
+
+/// Convert a single content block to Bedrock Invoke format
+fn convert_content_block_to_aicore(block: ContentBlock) -> AiCoreContentBlock {
+    match block {
+        ContentBlock::Text { text } => AiCoreContentBlock {
+            block_type: "text".to_string(),
+            content: AiCoreBlockContent::Text { text },
+        },
+        ContentBlock::ToolUse { id, name, input } => AiCoreContentBlock {
+            block_type: "tool_use".to_string(),
+            content: AiCoreBlockContent::ToolUse { id, name, input },
+        },
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => {
+            let tool_content = Some(vec![AiCoreToolResultContent {
+                content_type: "text".to_string(),
+                data: AiCoreToolResultData::Text { text: content },
+            }]);
+            AiCoreContentBlock {
+                block_type: "tool_result".to_string(),
+                content: AiCoreBlockContent::ToolResult {
+                    tool_use_id,
+                    content: tool_content,
+                    is_error,
+                },
+            }
+        }
+        ContentBlock::Thinking {
+            thinking,
+            signature: _,
+        } => {
+            // Bedrock Invoke doesn't support thinking blocks in requests, convert to text
+            AiCoreContentBlock {
+                block_type: "text".to_string(),
+                content: AiCoreBlockContent::Text { text: thinking },
+            }
+        }
+        ContentBlock::RedactedThinking { data } => {
+            // Bedrock Invoke doesn't support redacted thinking blocks in requests, convert to text
+            AiCoreContentBlock {
+                block_type: "text".to_string(),
+                content: AiCoreBlockContent::Text { text: data },
+            }
+        }
+    }
 }
 
 pub struct AiCoreClient {
@@ -721,9 +852,12 @@ impl LLMProvider for AiCoreClient {
                 .collect::<Vec<serde_json::Value>>()
         });
 
+        // Convert messages to Bedrock Invoke format (remove internal fields)
+        let aicore_messages = convert_messages_to_aicore(request.messages);
+
         let anthropic_request = AnthropicRequest {
             thinking: None,
-            messages: request.messages,
+            messages: aicore_messages,
             max_tokens: 8192,
             temperature: 1.0,
             system,
