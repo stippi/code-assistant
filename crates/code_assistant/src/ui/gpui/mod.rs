@@ -34,7 +34,7 @@ pub use root::RootView;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use elements::MessageContainer;
 
@@ -881,7 +881,7 @@ impl UserInterface for Gpui {
                 tool_id,
             } => {
                 if tool_id.is_empty() {
-                    warn!("StreamingProcessor provided empty tool ID for parameter '{}' - this is a bug!", name);
+                    error!("StreamingProcessor provided empty tool ID for parameter '{}' - this is a bug!", name);
                     return Err(UIError::IOError(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!("Empty tool ID for parameter '{}'", name),
