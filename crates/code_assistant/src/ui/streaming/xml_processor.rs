@@ -3,6 +3,7 @@ use crate::ui::{UIError, UserInterface};
 use anyhow::Result;
 use llm::{ContentBlock, Message, MessageContent, StreamingChunk};
 use std::sync::Arc;
+use tracing::warn;
 
 /// State for processing streaming text that may contain tags
 #[derive(Default)]
@@ -292,11 +293,20 @@ impl XmlStreamProcessor {
                             ))?;
                         } else if self.state.in_param {
                             // In parameter mode, text is collected as a parameter value
-                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                                name: self.state.param_name.clone(),
-                                value: processed_text.to_string(),
-                                tool_id: self.state.tool_id.clone(),
-                            })?;
+                            // Only send if we have a valid tool_id
+                            if !self.state.tool_id.is_empty() {
+                                self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                                    name: self.state.param_name.clone(),
+                                    value: processed_text.to_string(),
+                                    tool_id: self.state.tool_id.clone(),
+                                })?;
+                            } else {
+                                // Log the issue and treat as plain text
+                                warn!("Parameter '{}' found outside of tool context, treating as plain text", self.state.param_name);
+                                self.ui.display_fragment(&DisplayFragment::PlainText(
+                                    processed_text.to_string(),
+                                ))?;
+                            }
                         } else {
                             // All other text (including inside tool tags but not in params)
                             // is displayed as plain text
@@ -381,6 +391,9 @@ impl XmlStreamProcessor {
                         self.state.in_tool = false;
                         self.state.tool_name = String::new();
                         self.state.tool_id = String::new();
+                        // Also reset parameter state when closing tool
+                        self.state.in_param = false;
+                        self.state.param_name = String::new();
 
                         // Set at_block_start to true for next block
                         self.state.at_block_start = true;
@@ -390,27 +403,57 @@ impl XmlStreamProcessor {
                     }
 
                     TagType::ParamStart => {
-                        // Extract parameter name from tag_info
-                        if let Some(param_name) = tag_info {
-                            self.state.in_param = true;
-                            self.state.param_name = param_name;
-                            // Set that we're at the start of a parameter block
-                            self.state.at_block_start = true;
+                        // Only process parameter tags if we're inside a tool
+                        if self.state.in_tool && !self.state.tool_id.is_empty() {
+                            // Extract parameter name from tag_info
+                            if let Some(param_name) = tag_info {
+                                self.state.in_param = true;
+                                self.state.param_name = param_name;
+                                // Set that we're at the start of a parameter block
+                                self.state.at_block_start = true;
+                            }
+                            // Skip past this tag
+                            current_pos = absolute_tag_pos + tag_len;
+                        } else {
+                            // Log and treat parameter tags outside of tool context as plain text
+                            warn!("Parameter tag found outside of tool context, treating as plain text");
+                            // Process as a single character (the '<')
+                            let char_len = processing_text[absolute_tag_pos..].chars().next().map_or(1, |c| c.len_utf8());
+                            let char_text = &processing_text[absolute_tag_pos..absolute_tag_pos + char_len];
+                            
+                            if self.state.in_thinking {
+                                self.ui.display_fragment(&DisplayFragment::ThinkingText(char_text.to_string()))?;
+                            } else {
+                                self.ui.display_fragment(&DisplayFragment::PlainText(char_text.to_string()))?;
+                            }
+                            current_pos = absolute_tag_pos + char_len;
                         }
-
-                        // Skip past this tag
-                        current_pos = absolute_tag_pos + tag_len;
                     }
 
                     TagType::ParamEnd => {
-                        // End parameter section
-                        self.state.in_param = false;
-                        self.state.param_name = String::new();
-                        // Reset block start flag
-                        self.state.at_block_start = false;
-
-                        // Skip past this tag
-                        current_pos = absolute_tag_pos + tag_len;
+                        // Only process parameter end tags if we're actually in a parameter
+                        if self.state.in_param && self.state.in_tool && !self.state.tool_id.is_empty() {
+                            // End parameter section
+                            self.state.in_param = false;
+                            self.state.param_name = String::new();
+                            // Reset block start flag
+                            self.state.at_block_start = false;
+                            // Skip past this tag
+                            current_pos = absolute_tag_pos + tag_len;
+                        } else {
+                            // Treat as plain text if not in valid parameter context
+                            warn!("Parameter end tag found outside of parameter context, treating as plain text");
+                            // Process as a single character (the '<')
+                            let char_len = processing_text[absolute_tag_pos..].chars().next().map_or(1, |c| c.len_utf8());
+                            let char_text = &processing_text[absolute_tag_pos..absolute_tag_pos + char_len];
+                            
+                            if self.state.in_thinking {
+                                self.ui.display_fragment(&DisplayFragment::ThinkingText(char_text.to_string()))?;
+                            } else {
+                                self.ui.display_fragment(&DisplayFragment::PlainText(char_text.to_string()))?;
+                            }
+                            current_pos = absolute_tag_pos + char_len;
+                        }
                     }
 
                     TagType::None => {
@@ -427,11 +470,18 @@ impl XmlStreamProcessor {
                                 ))?;
                             } else if self.state.in_param {
                                 // Handle characters in parameters
-                                self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                                    name: self.state.param_name.clone(),
-                                    value: single_char,
-                                    tool_id: self.state.tool_id.clone(),
-                                })?;
+                                // Only send if we have a valid tool_id
+                                if !self.state.tool_id.is_empty() {
+                                    self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                                        name: self.state.param_name.clone(),
+                                        value: single_char,
+                                        tool_id: self.state.tool_id.clone(),
+                                    })?;
+                                } else {
+                                    // Treat as plain text if no tool context
+                                    self.ui
+                                        .display_fragment(&DisplayFragment::PlainText(single_char))?;
+                                }
                             } else {
                                 self.ui
                                     .display_fragment(&DisplayFragment::PlainText(single_char))?;
@@ -472,11 +522,20 @@ impl XmlStreamProcessor {
                                 processed_text.to_string(),
                             ))?;
                         } else if self.state.in_param {
-                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
-                                name: self.state.param_name.clone(),
-                                value: processed_text.to_string(),
-                                tool_id: self.state.tool_id.clone(),
-                            })?;
+                            // Only send if we have a valid tool_id
+                            if !self.state.tool_id.is_empty() {
+                                self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                                    name: self.state.param_name.clone(),
+                                    value: processed_text.to_string(),
+                                    tool_id: self.state.tool_id.clone(),
+                                })?;
+                            } else {
+                                // Log and treat as plain text if no tool context
+                                warn!("Parameter '{}' found outside of tool context, treating as plain text", self.state.param_name);
+                                self.ui.display_fragment(&DisplayFragment::PlainText(
+                                    processed_text.to_string(),
+                                ))?;
+                            }
                         } else {
                             self.ui.display_fragment(&DisplayFragment::PlainText(
                                 processed_text.to_string(),
