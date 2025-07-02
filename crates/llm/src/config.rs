@@ -102,10 +102,9 @@ impl AiCoreConfig {
     pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
         let content = std::fs::read_to_string(path.as_ref())
             .with_context(|| format!("Failed to read AI Core config file: {:?}", path.as_ref()))?;
-        serde_json::from_str(&content)
-            .with_context(|| "Failed to parse AI Core config JSON")
+        serde_json::from_str(&content).with_context(|| "Failed to parse AI Core config JSON")
     }
-    
+
     pub fn get_deployment_for_model(&self, model_name: &str) -> Option<&String> {
         self.models.get(model_name)
     }
