@@ -79,6 +79,89 @@ mod tests {
     }
 
     #[test]
+    fn test_text_and_multiple_tools() {
+        let input = concat!(
+            "Let me read a file:\n",
+            "\n",
+            "<tool:read_files>\n",
+            "<param:project>test</param:project>\n",
+            "<param:path>src/main.rs</param:path>\n",
+            "</tool:read_files>\n",
+            "\n",
+            "And replace something in it:\n",
+            "\n",
+            "<tool:replace_in_file>\n",
+            "<param:project>test</param:project>\n",
+            "<param:path>src/main.rs</param:path>\n",
+            "<param:diff>\n",
+            ">>>>>>> SEARCH\n",
+            "use tracing::warn;\n",
+            "=======\n",
+            "use tracing::{error, warn};\n",
+            "<<<<<<< REPLACE\n",
+            "</param:path>\n",
+            "</tool:replace_in_file>\n",
+        );
+
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("Let me read a file:".to_string()),
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "project".to_string(),
+                value: "test".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "src/main.rs".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::PlainText("\nAnd replace something in it:".to_string()),
+            DisplayFragment::ToolName {
+                name: "replace_in_file".to_string(),
+                id: "tool-42-2".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "project".to_string(),
+                value: "test".to_string(),
+                tool_id: "tool-42-2".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "src/main.rs".to_string(),
+                tool_id: "tool-42-2".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "diff".to_string(),
+                value: concat!(
+                    ">>>>>>> SEARCH\n",
+                    "use tracing::warn;\n",
+                    "=======\n",
+                    "use tracing::{error, warn};",
+                    "<<<<<<< REPLACE"
+                )
+                .to_string(),
+                tool_id: "tool-42-2".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-2".to_string(),
+            },
+        ];
+
+        // Process with chunk size that splits the tool tag
+        let test_ui = process_chunked_text(input, 10);
+
+        let fragments = test_ui.get_fragments();
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
     fn test_complex_tool_call_with_multiple_params_and_linebreaks() {
         let input = "I understand.\n\nLet me search for specific files\n<tool:search_files>\n<param:regex>main function</param:regex>\n</tool:search_files>";
 
