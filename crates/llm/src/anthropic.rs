@@ -642,7 +642,8 @@ impl AnthropicClient {
             .header("anthropic-version", "2023-06-01")
             .header("accept", accept_value);
 
-        if self.model.starts_with("claude-3-7-sonnet") {
+        if self.model.starts_with("claude-3-7-sonnet") || self.model.starts_with("claude-sonnet-4")
+        {
             request_builder = request_builder.header("anthropic-beta", "output-128k-2025-02-19");
         }
 
@@ -662,6 +663,7 @@ impl AnthropicClient {
         debug!("Parsed rate limits: {:?}", rate_limits);
 
         if let Some(callback) = streaming_callback {
+            debug!("Starting streaming response processing");
             let mut blocks: Vec<ContentBlock> = Vec::new();
             let mut current_content = String::new();
             let mut line_buffer = String::new();
