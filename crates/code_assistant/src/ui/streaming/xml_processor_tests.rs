@@ -483,4 +483,176 @@ mod tests {
 
         assert_fragments_match(&expected_fragments, &fragments);
     }
+
+    #[test]
+    fn test_param_tags_outside_tool_context_treated_as_plain_text() {
+        // Test that parameter tags outside tool context are rendered as plain text
+        let input = "Some text <param:invalid>parameter content</param:invalid> more text";
+
+        let test_ui = process_chunked_text(input, 5);
+        let fragments = test_ui.get_fragments();
+
+        // Should be treated as plain text since there's no surrounding tool
+        let expected_fragments = vec![DisplayFragment::PlainText(
+            "Some text <param:invalid>parameter content</param:invalid> more text".to_string(),
+        )];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_param_tags_before_tool_context_treated_as_plain_text() {
+        // Test parameter tags that appear before any tool is opened
+        let input = "<param:orphaned>content</param:orphaned>\n<tool:read_files>\n<param:path>test.txt</param:path>\n</tool:read_files>";
+
+        let test_ui = process_chunked_text(input, 8);
+        let fragments = test_ui.get_fragments();
+
+        let expected_fragments = vec![
+            // Orphaned parameter tags should be plain text
+            DisplayFragment::PlainText("<param:orphaned>content</param:orphaned>".to_string()),
+            // Valid tool and parameter
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "test.txt".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(),
+            },
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_param_tags_after_tool_context_treated_as_plain_text() {
+        // Test parameter tags that appear after a tool is closed
+        let input = "<tool:read_files>\n<param:path>test.txt</param:path>\n</tool:read_files>\n<param:orphaned>content</param:orphaned>";
+
+        let test_ui = process_chunked_text(input, 10);
+        let fragments = test_ui.get_fragments();
+
+        let expected_fragments = vec![
+            // Valid tool and parameter
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "test.txt".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(),
+            },
+            // Orphaned parameter tags should be plain text
+            DisplayFragment::PlainText("<param:orphaned>content</param:orphaned>".to_string()),
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_unclosed_param_tag_with_tool_closing() {
+        // Test the specific scenario where a parameter tag is not closed before tool ends
+        let input = "<tool:edit_file>\n<param:diff>some content without closing tag\n</tool:edit_file>";
+
+        let test_ui = process_chunked_text(input, 12);
+        let fragments = test_ui.get_fragments();
+
+        let expected_fragments = vec![
+            DisplayFragment::ToolName {
+                name: "edit_file".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "diff".to_string(),
+                value: "some content without closing tag".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(),
+            },
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_param_end_tag_without_param_start() {
+        // Test parameter end tags that appear without corresponding start tags
+        let input = "Some text </param:invalid> more text";
+
+        let test_ui = process_chunked_text(input, 6);
+        let fragments = test_ui.get_fragments();
+
+        // Should be treated as plain text since there's no corresponding param start
+        let expected_fragments = vec![DisplayFragment::PlainText(
+            "Some text </param:invalid> more text".to_string(),
+        )];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_multiple_tools_with_malformed_params() {
+        // Test multiple tools where some have malformed parameter tags
+        let input = concat!(
+            "<param:orphaned1>before tools</param:orphaned1>\n",
+            "<tool:first_tool>\n",
+            "<param:valid>content</param:valid>\n", 
+            "</tool:first_tool>\n",
+            "<param:orphaned2>between tools</param:orphaned2>\n",
+            "<tool:second_tool>\n",
+            "<param:also_valid>more content\n",  // Missing closing tag
+            "</tool:second_tool>\n",
+            "<param:orphaned3>after tools</param:orphaned3>"
+        );
+
+        let test_ui = process_chunked_text(input, 15);
+        let fragments = test_ui.get_fragments();
+
+        let expected_fragments = vec![
+            // Orphaned parameter before tools
+            DisplayFragment::PlainText("<param:orphaned1>before tools</param:orphaned1>".to_string()),
+            // First valid tool
+            DisplayFragment::ToolName {
+                name: "first_tool".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "valid".to_string(),
+                value: "content".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(),
+            },
+            // Orphaned parameter between tools
+            DisplayFragment::PlainText("<param:orphaned2>between tools</param:orphaned2>".to_string()),
+            // Second tool with unclosed parameter
+            DisplayFragment::ToolName {
+                name: "second_tool".to_string(),
+                id: "tool-42-2".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "also_valid".to_string(),
+                value: "more content".to_string(),
+                tool_id: "tool-42-2".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-2".to_string(),
+            },
+            // Orphaned parameter after tools
+            DisplayFragment::PlainText("<param:orphaned3>after tools</param:orphaned3>".to_string()),
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
 }
