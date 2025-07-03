@@ -13,352 +13,77 @@ use std::str::{self};
 use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
-/// Response structure for Anthropic error messages
-#[derive(Debug, Serialize, serde::Deserialize)]
-struct AnthropicErrorResponse {
-    #[serde(rename = "type")]
-    error_type: String,
-    error: AnthropicErrorPayload,
+/// Trait for providing authentication headers
+#[async_trait]
+pub trait AuthProvider: Send + Sync {
+    async fn get_auth_headers(&self) -> Result<Vec<(String, String)>>;
 }
 
-#[derive(Debug, Serialize, serde::Deserialize)]
-struct AnthropicErrorPayload {
-    #[serde(rename = "type")]
-    error_type: String,
-    message: String,
+/// Trait for customizing requests before sending
+pub trait RequestCustomizer: Send + Sync {
+    fn customize_request(&self, request: &mut serde_json::Value) -> Result<()>;
+    fn get_additional_headers(&self) -> Vec<(String, String)>;
+    fn customize_url(&self, base_url: &str, streaming: bool) -> String;
 }
 
-/// Rate limit information extracted from response headers
-#[derive(Debug, Default)]
-struct AnthropicRateLimitInfo {
-    requests_limit: Option<u32>,
-    requests_remaining: Option<u32>,
-    requests_reset: Option<DateTime<Utc>>,
-    tokens_limit: Option<u32>,
-    tokens_remaining: Option<u32>,
-    tokens_reset: Option<DateTime<Utc>>,
-    retry_after: Option<Duration>,
+/// Trait for converting messages to the appropriate format
+pub trait MessageConverter: Send + Sync {
+    fn convert_messages(&mut self, messages: Vec<Message>) -> Result<Vec<serde_json::Value>>;
 }
 
-impl RateLimitHandler for AnthropicRateLimitInfo {
-    /// Extract rate limit information from response headers
-    fn from_response(response: &Response) -> Self {
-        let headers = response.headers();
-
-        fn parse_header<T: std::str::FromStr>(
-            headers: &reqwest::header::HeaderMap,
-            name: &str,
-        ) -> Option<T> {
-            headers
-                .get(name)
-                .and_then(|h| h.to_str().ok())
-                .and_then(|s| s.parse().ok())
-        }
-
-        fn parse_datetime(
-            headers: &reqwest::header::HeaderMap,
-            name: &str,
-        ) -> Option<DateTime<Utc>> {
-            headers
-                .get(name)
-                .and_then(|h| h.to_str().ok())
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.into())
-        }
-
-        Self {
-            requests_limit: parse_header(headers, "anthropic-ratelimit-requests-limit"),
-            requests_remaining: parse_header(headers, "anthropic-ratelimit-requests-remaining"),
-            requests_reset: parse_datetime(headers, "anthropic-ratelimit-requests-reset"),
-            tokens_limit: parse_header(headers, "anthropic-ratelimit-tokens-limit"),
-            tokens_remaining: parse_header(headers, "anthropic-ratelimit-tokens-remaining"),
-            tokens_reset: parse_datetime(headers, "anthropic-ratelimit-tokens-reset"),
-            retry_after: parse_header::<u64>(headers, "retry-after").map(Duration::from_secs),
-        }
-    }
-
-    /// Calculate how long to wait before retrying based on rate limit information
-    fn get_retry_delay(&self) -> Duration {
-        // If we have a specific retry-after duration, use that
-        if let Some(retry_after) = self.retry_after {
-            return retry_after;
-        }
-
-        // Otherwise, calculate based on reset times
-        let now = Utc::now();
-        let mut shortest_wait = Duration::from_secs(60); // Default to 60 seconds if no information
-
-        // Check requests reset time
-        if let Some(reset_time) = self.requests_reset {
-            if reset_time > now {
-                shortest_wait = shortest_wait.min(Duration::from_secs(
-                    (reset_time - now).num_seconds().max(0) as u64,
-                ));
-            }
-        }
-
-        // Check tokens reset time
-        if let Some(reset_time) = self.tokens_reset {
-            if reset_time > now {
-                shortest_wait = shortest_wait.min(Duration::from_secs(
-                    (reset_time - now).num_seconds().max(0) as u64,
-                ));
-            }
-        }
-
-        // Add a small buffer to avoid hitting the limit exactly at reset time
-        shortest_wait + Duration::from_secs(1)
-    }
-
-    /// Log current rate limit status
-    fn log_status(&self) {
-        debug!(
-            "Rate limits - Requests: {}/{} (reset: {}), Tokens: {}/{} (reset: {})",
-            self.requests_remaining
-                .map_or("?".to_string(), |r| r.to_string()),
-            self.requests_limit
-                .map_or("?".to_string(), |l| l.to_string()),
-            self.requests_reset
-                .map_or("unknown".to_string(), |r| r.to_string()),
-            self.tokens_remaining
-                .map_or("?".to_string(), |r| r.to_string()),
-            self.tokens_limit.map_or("?".to_string(), |l| l.to_string()),
-            self.tokens_reset
-                .map_or("unknown".to_string(), |r| r.to_string()),
-        );
-    }
-}
-
-/// Cache control settings for Anthropic API request
-#[derive(Debug, Serialize)]
-struct CacheControl {
-    #[serde(rename = "type")]
-    cache_type: String,
-}
-
-/// Cache state tracking for a specific content prefix
-#[derive(Debug)]
-struct CacheEntry {
-    count: u32,
-    last_used: SystemTime,
-    current_cache_position: Option<usize>,
-}
-
-/// System content block with optional cache control
-#[derive(Debug, Serialize)]
-struct SystemBlock {
-    #[serde(rename = "type")]
-    block_type: String,
-    text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
-}
-
-/// Anthropic-specific content block with cache control support
-#[derive(Debug, Serialize)]
-struct AnthropicContentBlock {
-    #[serde(rename = "type")]
-    block_type: String,
-    #[serde(flatten)]
-    content: AnthropicBlockContent,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
-}
-
-/// Content variants for Anthropic content blocks
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-enum AnthropicBlockContent {
-    Text {
-        text: String,
-    },
-    ToolUse {
-        id: String,
-        name: String,
-        input: serde_json::Value,
-    },
-    ToolResult {
-        tool_use_id: String,
-        content: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        is_error: Option<bool>,
-    },
-}
-
-/// Anthropic-specific message structure
-#[derive(Debug, Serialize)]
-struct AnthropicMessage {
-    role: String,
-    content: Vec<AnthropicContentBlock>,
-}
-
-#[derive(Debug, Serialize)]
-struct ThinkingConfiguration {
-    #[serde(rename = "type")]
-    thinking_type: String,
-    budget_tokens: usize,
-}
-
-/// Anthropic-specific request structure
-#[derive(Debug, Serialize)]
-struct AnthropicRequest {
-    model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thinking: Option<ThinkingConfiguration>,
-    messages: Vec<AnthropicMessage>,
-    max_tokens: usize,
-    temperature: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<Vec<SystemBlock>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<serde_json::Value>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stream: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stop_sequences: Option<Vec<String>>,
-}
-
-/// Response structure for Anthropic API responses
-#[derive(Debug, Deserialize)]
-struct AnthropicResponse {
-    content: Vec<ContentBlock>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    id: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    model: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    role: String,
-    #[serde(rename = "type", default)]
-    #[allow(dead_code)]
-    response_type: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    stop_reason: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    stop_sequence: Option<String>,
-    usage: AnthropicUsage,
-}
-
-/// Usage information from Anthropic API
-#[derive(Debug, Deserialize)]
-struct AnthropicUsage {
-    #[serde(default)]
-    input_tokens: u32,
-    #[serde(default)]
-    output_tokens: u32,
-    #[serde(default)]
-    cache_creation_input_tokens: u32,
-    #[serde(default)]
-    cache_read_input_tokens: u32,
-}
-
-#[derive(Debug, Deserialize)]
-struct StreamEventCommon {
-    index: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct StreamErrorDetails {
-    #[serde(rename = "type")]
-    error_type: String,
-    message: String,
-    #[allow(dead_code)]
-    details: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-enum StreamEvent {
-    #[serde(rename = "message_start")]
-    MessageStart { message: MessageStart },
-    #[serde(rename = "content_block_start")]
-    ContentBlockStart {
-        #[serde(flatten)]
-        common: StreamEventCommon,
-        content_block: StreamContentBlock,
-    },
-    #[serde(rename = "content_block_delta")]
-    ContentBlockDelta {
-        #[serde(flatten)]
-        common: StreamEventCommon,
-        delta: ContentDelta,
-    },
-    #[serde(rename = "content_block_stop")]
-    ContentBlockStop {
-        #[serde(flatten)]
-        common: StreamEventCommon,
-    },
-    #[serde(rename = "message_delta")]
-    MessageDelta { usage: AnthropicUsage },
-    #[serde(rename = "message_stop")]
-    MessageStop,
-    #[serde(rename = "ping")]
-    Ping,
-    #[serde(rename = "error")]
-    Error { error: StreamErrorDetails },
-}
-
-#[derive(Debug, Deserialize)]
-struct MessageStart {
-    #[allow(dead_code)]
-    id: String,
-    #[allow(dead_code)]
-    #[serde(rename = "type")]
-    message_type: String,
-    #[allow(dead_code)]
-    role: String,
-    #[allow(dead_code)]
-    model: String,
-    usage: AnthropicUsage,
-}
-
-#[derive(Debug, Deserialize)]
-struct StreamContentBlock {
-    #[serde(rename = "type")]
-    block_type: String,
-    // Fields for text blocks
-    text: Option<String>,
-    // Fields for thinking blocks
-    thinking: Option<String>,
-    signature: Option<String>,
-    // Fields for redacted_thinking blocks
-    data: Option<String>,
-    // Fields for tool use blocks
-    id: Option<String>,
-    name: Option<String>,
-    input: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-enum ContentDelta {
-    #[serde(rename = "thinking_delta")]
-    Thinking { thinking: String },
-    #[serde(rename = "signature_delta")]
-    Signature { signature: String },
-    #[serde(rename = "text_delta")]
-    Text { text: String },
-    #[serde(rename = "input_json_delta")]
-    InputJson { partial_json: String },
-}
-
-pub struct AnthropicClient {
-    client: Client,
+/// Default API key authentication provider
+pub struct ApiKeyAuth {
     api_key: String,
-    base_url: String,
-    model: String,
-    recorder: Option<APIRecorder>,
-    /// Cache state tracking per content prefix
+}
+
+impl ApiKeyAuth {
+    pub fn new(api_key: String) -> Self {
+        Self { api_key }
+    }
+}
+
+#[async_trait]
+impl AuthProvider for ApiKeyAuth {
+    async fn get_auth_headers(&self) -> Result<Vec<(String, String)>> {
+        Ok(vec![("x-api-key".to_string(), self.api_key.clone())])
+    }
+}
+
+/// Default request customizer for Anthropic API
+pub struct DefaultRequestCustomizer;
+
+impl RequestCustomizer for DefaultRequestCustomizer {
+    fn customize_request(&self, _request: &mut serde_json::Value) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_additional_headers(&self) -> Vec<(String, String)> {
+        vec![("anthropic-version".to_string(), "2023-06-01".to_string())]
+    }
+
+    fn customize_url(&self, base_url: &str, _streaming: bool) -> String {
+        format!("{}/messages", base_url)
+    }
+}
+
+/// Default message converter with Anthropic caching logic
+pub struct DefaultMessageConverter {
     cache_state: HashMap<String, CacheEntry>,
 }
 
-impl AnthropicClient {
+impl Default for DefaultMessageConverter {
+    fn default() -> Self {
+        Self {
+            cache_state: HashMap::new(),
+        }
+    }
+}
+
+impl DefaultMessageConverter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Generate a stable cache key based on message windows
     fn generate_stable_cache_key(&self, messages: &[Message]) -> String {
         // Stable window: new hash every 10 messages
@@ -551,6 +276,342 @@ impl AnthropicClient {
             })
             .collect()
     }
+}
+
+impl MessageConverter for DefaultMessageConverter {
+    fn convert_messages(&mut self, messages: Vec<Message>) -> Result<Vec<serde_json::Value>> {
+        let anthropic_messages = self.convert_messages_with_cache(messages);
+        Ok(vec![serde_json::to_value(anthropic_messages)?])
+    }
+}
+
+/// Response structure for Anthropic error messages
+#[derive(Debug, Serialize, serde::Deserialize)]
+struct AnthropicErrorResponse {
+    #[serde(rename = "type")]
+    error_type: String,
+    error: AnthropicErrorPayload,
+}
+
+#[derive(Debug, Serialize, serde::Deserialize)]
+struct AnthropicErrorPayload {
+    #[serde(rename = "type")]
+    error_type: String,
+    message: String,
+}
+
+/// Rate limit information extracted from response headers
+#[derive(Debug, Default)]
+struct AnthropicRateLimitInfo {
+    requests_limit: Option<u32>,
+    requests_remaining: Option<u32>,
+    requests_reset: Option<DateTime<Utc>>,
+    tokens_limit: Option<u32>,
+    tokens_remaining: Option<u32>,
+    tokens_reset: Option<DateTime<Utc>>,
+    retry_after: Option<Duration>,
+}
+
+impl RateLimitHandler for AnthropicRateLimitInfo {
+    /// Extract rate limit information from response headers
+    fn from_response(response: &Response) -> Self {
+        let headers = response.headers();
+
+        fn parse_header<T: std::str::FromStr>(
+            headers: &reqwest::header::HeaderMap,
+            name: &str,
+        ) -> Option<T> {
+            headers
+                .get(name)
+                .and_then(|h| h.to_str().ok())
+                .and_then(|s| s.parse().ok())
+        }
+
+        fn parse_datetime(
+            headers: &reqwest::header::HeaderMap,
+            name: &str,
+        ) -> Option<DateTime<Utc>> {
+            headers
+                .get(name)
+                .and_then(|h| h.to_str().ok())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.into())
+        }
+
+        Self {
+            requests_limit: parse_header(headers, "anthropic-ratelimit-requests-limit"),
+            requests_remaining: parse_header(headers, "anthropic-ratelimit-requests-remaining"),
+            requests_reset: parse_datetime(headers, "anthropic-ratelimit-requests-reset"),
+            tokens_limit: parse_header(headers, "anthropic-ratelimit-tokens-limit"),
+            tokens_remaining: parse_header(headers, "anthropic-ratelimit-tokens-remaining"),
+            tokens_reset: parse_datetime(headers, "anthropic-ratelimit-tokens-reset"),
+            retry_after: parse_header::<u64>(headers, "retry-after").map(Duration::from_secs),
+        }
+    }
+
+    /// Calculate how long to wait before retrying based on rate limit information
+    fn get_retry_delay(&self) -> Duration {
+        // If we have a specific retry-after duration, use that
+        if let Some(retry_after) = self.retry_after {
+            return retry_after;
+        }
+
+        // Otherwise, calculate based on reset times
+        let now = Utc::now();
+        let mut shortest_wait = Duration::from_secs(60); // Default to 60 seconds if no information
+
+        // Check requests reset time
+        if let Some(reset_time) = self.requests_reset {
+            if reset_time > now {
+                shortest_wait = shortest_wait.min(Duration::from_secs(
+                    (reset_time - now).num_seconds().max(0) as u64,
+                ));
+            }
+        }
+
+        // Check tokens reset time
+        if let Some(reset_time) = self.tokens_reset {
+            if reset_time > now {
+                shortest_wait = shortest_wait.min(Duration::from_secs(
+                    (reset_time - now).num_seconds().max(0) as u64,
+                ));
+            }
+        }
+
+        // Add a small buffer to avoid hitting the limit exactly at reset time
+        shortest_wait + Duration::from_secs(1)
+    }
+
+    /// Log current rate limit status
+    fn log_status(&self) {
+        debug!(
+            "Rate limits - Requests: {}/{} (reset: {}), Tokens: {}/{} (reset: {})",
+            self.requests_remaining
+                .map_or("?".to_string(), |r| r.to_string()),
+            self.requests_limit
+                .map_or("?".to_string(), |l| l.to_string()),
+            self.requests_reset
+                .map_or("unknown".to_string(), |r| r.to_string()),
+            self.tokens_remaining
+                .map_or("?".to_string(), |r| r.to_string()),
+            self.tokens_limit.map_or("?".to_string(), |l| l.to_string()),
+            self.tokens_reset
+                .map_or("unknown".to_string(), |r| r.to_string()),
+        );
+    }
+}
+
+/// Cache control settings for Anthropic API request
+#[derive(Debug, Serialize)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    cache_type: String,
+}
+
+/// Cache state tracking for a specific content prefix
+#[derive(Debug)]
+struct CacheEntry {
+    count: u32,
+    last_used: SystemTime,
+    current_cache_position: Option<usize>,
+}
+
+/// System content block with optional cache control
+#[derive(Debug, Serialize)]
+struct SystemBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
+/// Anthropic-specific content block with cache control support
+#[derive(Debug, Serialize)]
+struct AnthropicContentBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    #[serde(flatten)]
+    content: AnthropicBlockContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
+/// Content variants for Anthropic content blocks
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum AnthropicBlockContent {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
+}
+
+/// Anthropic-specific message structure
+#[derive(Debug, Serialize)]
+struct AnthropicMessage {
+    role: String,
+    content: Vec<AnthropicContentBlock>,
+}
+
+#[derive(Debug, Serialize)]
+struct ThinkingConfiguration {
+    #[serde(rename = "type")]
+    thinking_type: String,
+    budget_tokens: usize,
+}
+
+/// Response structure for Anthropic API responses
+#[derive(Debug, Deserialize)]
+struct AnthropicResponse {
+    content: Vec<ContentBlock>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    id: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    model: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    role: String,
+    #[serde(rename = "type", default)]
+    #[allow(dead_code)]
+    response_type: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    stop_reason: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    stop_sequence: Option<String>,
+    usage: AnthropicUsage,
+}
+
+/// Usage information from Anthropic API
+#[derive(Debug, Deserialize)]
+struct AnthropicUsage {
+    #[serde(default)]
+    input_tokens: u32,
+    #[serde(default)]
+    output_tokens: u32,
+    #[serde(default)]
+    cache_creation_input_tokens: u32,
+    #[serde(default)]
+    cache_read_input_tokens: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamEventCommon {
+    index: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamErrorDetails {
+    #[serde(rename = "type")]
+    error_type: String,
+    message: String,
+    #[allow(dead_code)]
+    details: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum StreamEvent {
+    #[serde(rename = "message_start")]
+    MessageStart { message: MessageStart },
+    #[serde(rename = "content_block_start")]
+    ContentBlockStart {
+        #[serde(flatten)]
+        common: StreamEventCommon,
+        content_block: StreamContentBlock,
+    },
+    #[serde(rename = "content_block_delta")]
+    ContentBlockDelta {
+        #[serde(flatten)]
+        common: StreamEventCommon,
+        delta: ContentDelta,
+    },
+    #[serde(rename = "content_block_stop")]
+    ContentBlockStop {
+        #[serde(flatten)]
+        common: StreamEventCommon,
+    },
+    #[serde(rename = "message_delta")]
+    MessageDelta { usage: AnthropicUsage },
+    #[serde(rename = "message_stop")]
+    MessageStop,
+    #[serde(rename = "ping")]
+    Ping,
+    #[serde(rename = "error")]
+    Error { error: StreamErrorDetails },
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageStart {
+    #[allow(dead_code)]
+    id: String,
+    #[allow(dead_code)]
+    #[serde(rename = "type")]
+    message_type: String,
+    #[allow(dead_code)]
+    role: String,
+    #[allow(dead_code)]
+    model: String,
+    usage: AnthropicUsage,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamContentBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    // Fields for text blocks
+    text: Option<String>,
+    // Fields for thinking blocks
+    thinking: Option<String>,
+    signature: Option<String>,
+    // Fields for redacted_thinking blocks
+    data: Option<String>,
+    // Fields for tool use blocks
+    id: Option<String>,
+    name: Option<String>,
+    input: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum ContentDelta {
+    #[serde(rename = "thinking_delta")]
+    Thinking { thinking: String },
+    #[serde(rename = "signature_delta")]
+    Signature { signature: String },
+    #[serde(rename = "text_delta")]
+    Text { text: String },
+    #[serde(rename = "input_json_delta")]
+    InputJson { partial_json: String },
+}
+
+pub struct AnthropicClient {
+    client: Client,
+    base_url: String,
+    model: String,
+    recorder: Option<APIRecorder>,
+
+    // Customization points
+    auth_provider: Box<dyn AuthProvider>,
+    request_customizer: Box<dyn RequestCustomizer>,
+    message_converter: Box<dyn MessageConverter>,
+}
+
+impl AnthropicClient {
     pub fn default_base_url() -> String {
         "https://api.anthropic.com/v1".to_string()
     }
@@ -558,11 +619,12 @@ impl AnthropicClient {
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
             client: Client::new(),
-            api_key,
             base_url,
             model,
             recorder: None,
-            cache_state: HashMap::new(),
+            auth_provider: Box::new(ApiKeyAuth::new(api_key)),
+            request_customizer: Box::new(DefaultRequestCustomizer),
+            message_converter: Box::new(DefaultMessageConverter::new()),
         }
     }
 
@@ -575,21 +637,48 @@ impl AnthropicClient {
     ) -> Self {
         Self {
             client: Client::new(),
-            api_key,
             base_url,
             model,
             recorder: Some(APIRecorder::new(recording_path)),
-            cache_state: HashMap::new(),
+            auth_provider: Box::new(ApiKeyAuth::new(api_key)),
+            request_customizer: Box::new(DefaultRequestCustomizer),
+            message_converter: Box::new(DefaultMessageConverter::new()),
         }
     }
 
-    fn get_url(&self) -> String {
-        format!("{}/messages", self.base_url)
+    /// New constructor for customization
+    pub fn with_customization(
+        model: String,
+        base_url: String,
+        auth_provider: Box<dyn AuthProvider>,
+        request_customizer: Box<dyn RequestCustomizer>,
+        message_converter: Box<dyn MessageConverter>,
+    ) -> Self {
+        Self {
+            client: Client::new(),
+            base_url,
+            model,
+            recorder: None,
+            auth_provider,
+            request_customizer,
+            message_converter,
+        }
+    }
+
+    /// Set recorder for existing client
+    pub fn with_recorder<P: AsRef<std::path::Path>>(mut self, recording_path: P) -> Self {
+        self.recorder = Some(APIRecorder::new(recording_path));
+        self
+    }
+
+    fn get_url(&self, streaming: bool) -> String {
+        self.request_customizer
+            .customize_url(&self.base_url, streaming)
     }
 
     async fn send_with_retry(
         &mut self,
-        request: &AnthropicRequest,
+        request: &serde_json::Value,
         streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
     ) -> Result<LLMResponse> {
@@ -622,7 +711,7 @@ impl AnthropicClient {
 
     async fn try_send_request(
         &mut self,
-        request: &AnthropicRequest,
+        request: &serde_json::Value,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
         let accept_value = if streaming_callback.is_some() {
@@ -633,17 +722,29 @@ impl AnthropicClient {
 
         // Start recording before HTTP request to capture real latency
         if let Some(recorder) = &self.recorder {
-            let request_json = serde_json::to_value(request)?;
-            recorder.start_recording(request_json)?;
+            recorder.start_recording(request.clone())?;
         }
 
+        // Get auth headers
+        let auth_headers = self.auth_provider.get_auth_headers().await?;
+
+        // Build request
         let mut request_builder = self
             .client
-            .post(self.get_url())
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
+            .post(self.get_url(streaming_callback.is_some()))
             .header("accept", accept_value);
 
+        // Add auth headers
+        for (key, value) in auth_headers {
+            request_builder = request_builder.header(key, value);
+        }
+
+        // Add additional headers
+        for (key, value) in self.request_customizer.get_additional_headers() {
+            request_builder = request_builder.header(key, value);
+        }
+
+        // Add model-specific headers
         if self.model.starts_with("claude-3-7-sonnet") || self.model.starts_with("claude-sonnet-4")
         {
             request_builder = request_builder.header("anthropic-beta", "output-128k-2025-02-19");
@@ -917,10 +1018,25 @@ impl AnthropicClient {
                     Ok(()) => continue,
                     Err(e) if e.to_string().contains("Tool limit reached") => {
                         debug!("Tool limit reached, stopping streaming early. Collected {} blocks so far", blocks.len());
-                        // Important: Continue processing this chunk to completion to finalize the current content,
-                        // then break on the next iteration. This ensures the text that triggered the tool limit
-                        // error still gets added to the current block.
-                        // The break will happen after this chunk is fully processed.
+
+                        // Finalize the current block with any accumulated content
+                        if !blocks.is_empty() && !current_content.is_empty() {
+                            match blocks.last_mut().unwrap() {
+                                ContentBlock::Thinking { thinking, .. } => {
+                                    *thinking = current_content.clone();
+                                }
+                                ContentBlock::Text { text } => {
+                                    *text = current_content.clone();
+                                }
+                                ContentBlock::ToolUse { input, .. } => {
+                                    if let Ok(json) = serde_json::from_str(&current_content) {
+                                        *input = json;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
                         break; // Exit chunk processing loop early
                     }
                     Err(e) => return Err(e), // Propagate other errors
@@ -1056,18 +1172,30 @@ impl LLMProvider for AnthropicClient {
             (None, 8192)
         };
 
-        let anthropic_request = AnthropicRequest {
-            model: self.model.clone(),
-            thinking,
-            messages: self.convert_messages_with_cache(request.messages),
-            max_tokens,
-            temperature: 1.0,
-            system,
-            stream: streaming_callback.map(|_| true),
-            tool_choice,
-            tools,
-            stop_sequences: request.stop_sequences,
-        };
+        // Convert messages using the message converter
+        let converted_messages = self.message_converter.convert_messages(request.messages)?;
+        let messages_json = converted_messages.into_iter().next().unwrap_or_default();
+
+        let mut anthropic_request = serde_json::json!({
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": 1.0,
+            "system": system,
+            "stream": streaming_callback.is_some(),
+            "tool_choice": tool_choice,
+            "tools": tools
+        });
+
+        if let Some(thinking_config) = thinking {
+            anthropic_request["thinking"] = serde_json::to_value(thinking_config)?;
+        }
+
+        // Add the converted messages
+        anthropic_request["messages"] = messages_json;
+
+        // Allow request customizer to modify the request
+        self.request_customizer
+            .customize_request(&mut anthropic_request)?;
 
         self.send_with_retry(&anthropic_request, streaming_callback, 3)
             .await
