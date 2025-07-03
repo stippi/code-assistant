@@ -53,6 +53,15 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Get all tool names for a specific scope (used for stop sequences generation)
+    pub fn get_tool_names_for_scope(&self, scope: ToolScope) -> Vec<String> {
+        self.tools
+            .values()
+            .filter(|tool| tool.spec().supported_scopes.contains(&scope))
+            .map(|tool| tool.spec().name.to_string())
+            .collect()
+    }
+
     /// Register all default tools in the system
     /// This will be expanded as we implement more tools
     fn register_default_tools(&mut self) {

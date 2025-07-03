@@ -711,7 +711,26 @@ impl Agent {
                 }
                 ToolMode::Xml => None,
             },
-            stop_sequences: None,
+            stop_sequences: match self.tool_mode {
+                ToolMode::Native => None, // Stop sequences not needed for native tool mode
+                ToolMode::Xml => {
+                    // Generate stop sequences for all tool ending tags
+                    let tool_names =
+                        ToolRegistry::global().get_tool_names_for_scope(ToolScope::Agent);
+                    let stop_sequences: Vec<String> = tool_names
+                        .into_iter()
+                        .map(|tool_name| {
+                            format!("</{}{}>", crate::tools::TOOL_TAG_PREFIX, tool_name)
+                        })
+                        .collect();
+                    debug!(
+                        "Generated {} stop sequences for XML mode: {:?}",
+                        stop_sequences.len(),
+                        stop_sequences
+                    );
+                    Some(stop_sequences)
+                }
+            },
         };
 
         // Log messages for debugging
