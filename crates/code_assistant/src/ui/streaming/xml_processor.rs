@@ -355,18 +355,19 @@ impl XmlStreamProcessor {
                     }
 
                     TagType::ToolStart => {
+                        // Check if this would be the start of a second tool - if so, trigger tool limit
+                        if self.state.tool_counter >= 1 {
+                            // Return tool limit error to prevent second tool from starting
+                            return Err(UIError::IOError(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "Tool limit reached - only one tool per message allowed",
+                            )));
+                        }
+
                         // Extract the tool name from tag_info
                         if let Some(tool_name) = tag_info {
                             // For XML tools, generate ID based on request ID and tool counter
                             self.state.tool_counter += 1;
-                            
-                            // Check if this would be a second tool - if so, return tool limit error
-                            if self.state.tool_counter > 1 {
-                                return Err(UIError::IOError(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    "Tool limit reached - only one tool per message allowed",
-                                )));
-                            }
 
                             // Start a new tool section
                             self.state.in_tool = true;

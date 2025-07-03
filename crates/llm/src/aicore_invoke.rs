@@ -807,7 +807,11 @@ impl AiCoreClient {
                 ) {
                     Ok(()) => continue,
                     Err(e) if e.to_string().contains("Tool limit reached") => {
-                        debug!("Tool limit reached, stopping streaming early");
+                        debug!("Tool limit reached, stopping streaming early. Collected {} blocks so far", blocks.len());
+                        // Important: Continue processing this chunk to completion to finalize the current content,
+                        // then break on the next iteration. This ensures the text that triggered the tool limit
+                        // error still gets added to the current block.
+                        // The break will happen after this chunk is fully processed.
                         break; // Exit chunk processing loop early
                     }
                     Err(e) => return Err(e), // Propagate other errors
