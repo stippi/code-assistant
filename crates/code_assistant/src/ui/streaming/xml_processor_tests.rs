@@ -655,4 +655,44 @@ mod tests {
 
         assert_fragments_match(&expected_fragments, &fragments);
     }
+
+    #[test]
+    fn test_tool_limit_detection() {
+        // Test that second tool start triggers tool limit error
+        let input = concat!(
+            "<tool:read_files>\\n",
+            "<param:path>test.txt</param:path>\\n",
+            "</tool:read_files>\\n",
+            "<tool:write_file>\\n",  // This should trigger the tool limit
+            "<param:path>output.txt</param:path>\\n",
+            "</tool:write_file>"
+        );
+
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+
+        let mut processor = XmlStreamProcessor::new(ui_arc, 42);
+
+        // Process the input and expect an error
+        let result = processor.process(&StreamingChunk::Text(input.to_string()));
+        
+        // Should get a tool limit error
+        assert!(result.is_err(), "Expected tool limit error");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("Tool limit reached"),
+            "Error should mention tool limit: {}",
+            error_msg
+        );
+
+        // Should have processed the first tool successfully
+        let fragments = test_ui.get_fragments();
+        assert!(fragments.len() >= 3, "Should have at least tool name, parameter, and tool end for first tool");
+        
+        // First fragment should be the first tool
+        assert!(matches!(
+            fragments[0],
+            DisplayFragment::ToolName { ref name, .. } if name == "read_files"
+        ));
+    }
 }

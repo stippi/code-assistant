@@ -143,6 +143,19 @@ pub enum ApiError {
     Unknown(String),
 }
 
+/// Streaming-specific errors that can occur during streaming callbacks
+#[derive(Debug, thiserror::Error)]
+pub enum StreamingError {
+    #[error("Tool limit reached - only one tool per message allowed")]
+    ToolLimitReached,
+
+    #[error("Streaming cancelled by user")]
+    UserCancelled,
+
+    #[error("Streaming processor error: {0}")]
+    ProcessorError(String),
+}
+
 /// Context wrapper for API errors that includes rate limit information
 #[derive(Debug, thiserror::Error)]
 #[error("{error}")]

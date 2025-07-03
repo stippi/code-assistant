@@ -796,7 +796,7 @@ impl AiCoreClient {
             }
 
             while let Some(chunk) = response.chunk().await? {
-                process_chunk(
+                match process_chunk(
                     &chunk,
                     &mut line_buffer,
                     &mut blocks,
@@ -804,7 +804,14 @@ impl AiCoreClient {
                     &mut current_content,
                     callback,
                     &self.recorder,
-                )?;
+                ) {
+                    Ok(()) => continue,
+                    Err(e) if e.to_string().contains("Tool limit reached") => {
+                        debug!("Tool limit reached, stopping streaming early");
+                        break; // Exit chunk processing loop early
+                    }
+                    Err(e) => return Err(e), // Propagate other errors
+                }
             }
 
             // Process any remaining data in the buffer
