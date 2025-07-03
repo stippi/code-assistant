@@ -41,6 +41,8 @@ pub struct LLMRequest {
     pub messages: Vec<Message>,
     pub system_prompt: String,
     pub tools: Option<Vec<ToolDefinition>>,
+    /// Custom text sequences that will cause the model to stop generating
+    pub stop_sequences: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -216,6 +216,8 @@ struct AnthropicRequest {
     tool_choice: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop_sequences: Option<Vec<String>>,
 }
 
 /// Response structure for Anthropic API responses
@@ -1053,6 +1055,7 @@ impl LLMProvider for AnthropicClient {
             stream: streaming_callback.map(|_| true),
             tool_choice,
             tools,
+            stop_sequences: request.stop_sequences,
         };
 
         self.send_with_retry(&anthropic_request, streaming_callback, 3)

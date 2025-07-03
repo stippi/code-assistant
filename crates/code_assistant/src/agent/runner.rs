@@ -711,6 +711,7 @@ impl Agent {
                 }
                 ToolMode::Xml => None,
             },
+            stop_sequences: None,
         };
 
         // Log messages for debugging
