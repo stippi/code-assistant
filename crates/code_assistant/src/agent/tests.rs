@@ -1,6 +1,6 @@
 use super::*;
 use crate::agent::persistence::MockStatePersistence;
-use crate::agent::runner::parse_llm_response;
+use crate::agent::runner::parse_and_truncate_llm_response;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
     create_command_executor_mock, create_test_response, create_test_response_text,
@@ -33,7 +33,8 @@ fn test_flexible_xml_parsing() -> Result<()> {
     // Use a test request_id
     let request_id = 42;
 
-    let tool_requests = parse_llm_response(&response, request_id)?;
+    let (tool_requests, _truncated_response) =
+        parse_and_truncate_llm_response(&response, request_id)?;
     assert_eq!(tool_requests.len(), 1);
 
     let request = &tool_requests[0];
@@ -83,7 +84,8 @@ fn test_replacement_xml_parsing() -> Result<()> {
 
     // Use a test request_id
     let request_id = 42;
-    let tool_requests = parse_llm_response(&response, request_id)?;
+    let (tool_requests, _truncated_response) =
+        parse_and_truncate_llm_response(&response, request_id)?;
     assert_eq!(tool_requests.len(), 1);
 
     let request = &tool_requests[0];
@@ -127,7 +129,7 @@ async fn test_mixed_tool_start_end() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let result = parse_llm_response(&response, 1);
+    let result = parse_and_truncate_llm_response(&response, 1);
     println!("result: {:?}", result);
 
     // This should return an error, not Ok([])
@@ -177,7 +179,7 @@ fn test_ignore_non_tool_tags() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let result = parse_llm_response(&response, 1)?;
+    let (result, _truncated_response) = parse_and_truncate_llm_response(&response, 1)?;
 
     // Should successfully parse the tool while ignoring HTML tags
     assert_eq!(result.len(), 1);
@@ -212,7 +214,7 @@ fn test_html_between_tool_tags_should_error() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let result = parse_llm_response(&response, 1);
+    let result = parse_and_truncate_llm_response(&response, 1);
 
     // This should be an error since HTML tags between tool tags (but outside parameters) make the structure unclear
     assert!(
@@ -261,7 +263,7 @@ fn test_html_inside_parameter_allowed() -> Result<()> {
         rate_limit_info: None,
     };
 
-    let result = parse_llm_response(&response, 1)?;
+    let (result, _truncated_response) = parse_and_truncate_llm_response(&response, 1)?;
 
     // Should successfully parse - special characters inside parameter content are allowed
     assert_eq!(result.len(), 1);

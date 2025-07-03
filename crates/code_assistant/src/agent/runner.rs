@@ -221,15 +221,40 @@ impl Agent {
         loop {
             let messages = self.render_tool_results_in_messages();
 
-            // 1. Obtain LLM response (includes adding assistant message to history)
-            let (llm_response, request_id) = self.obtain_llm_response(messages).await?;
+            // 1. Get LLM response (without adding to history yet)
+            let (llm_response, request_id) = self.get_next_assistant_message(messages).await?;
 
-            // 2. Extract tool requests from LLM response and determine the next flow action
-            let (tool_requests, flow) = self
+            // 2. Add original LLM response to message history if it has content
+            if !llm_response.content.is_empty() {
+                self.append_message(Message {
+                    role: MessageRole::Assistant,
+                    content: MessageContent::Structured(llm_response.content.clone()),
+                    request_id: Some(request_id),
+                    usage: Some(llm_response.usage.clone()),
+                })?;
+            }
+
+            // 3. Extract tool requests from LLM response and get truncated response
+            let (tool_requests, flow, truncated_response) = self
                 .extract_tool_requests_from_response(&llm_response, request_id)
                 .await?;
 
-            // 3. Act based on the flow instruction
+            // 4. If we have a truncated response different from the original, update the last message
+            if !truncated_response.content.is_empty()
+                && !self.message_history.is_empty()
+                && truncated_response.content != llm_response.content
+            {
+                // Replace the last message with the truncated version
+                if let Some(last_msg) = self.message_history.last_mut() {
+                    if last_msg.role == MessageRole::Assistant {
+                        last_msg.content =
+                            MessageContent::Structured(truncated_response.content.clone());
+                        last_msg.usage = Some(truncated_response.usage.clone());
+                    }
+                }
+            }
+
+            // 5. Act based on the flow instruction
             match flow {
                 LoopFlow::GetUserInput => {
                     // In on-demand mode, we don't wait for user input
@@ -367,43 +392,22 @@ impl Agent {
         Ok(())
     }
 
-    /// Handles the interaction with the LLM to get the next assistant message.
-    /// Appends the assistant's message to the history only if it has content.
-    async fn obtain_llm_response(
-        &mut self,
-        messages: Vec<Message>,
-    ) -> Result<(llm::LLMResponse, u64)> {
-        let (llm_response, request_id) = self.get_next_assistant_message(messages).await?;
-
-        // Only add to message history if there's actual content
-        if !llm_response.content.is_empty() {
-            self.append_message(Message {
-                role: MessageRole::Assistant,
-                content: MessageContent::Structured(llm_response.content.clone()),
-                request_id: Some(request_id),
-                usage: Some(llm_response.usage.clone()),
-            })?;
-        }
-
-        Ok((llm_response, request_id))
-    }
-
-    /// Parses tool requests from the LLM response.
-    /// Returns a tuple of tool requests and a LoopFlow indicating what action should be taken next.
-    /// - If parsing succeeds and requests are empty: returns (empty vec, GetUserInput)
-    /// - If parsing succeeds and requests exist: returns (requests, Continue)
-    /// - If parsing fails: adds an error message to history and returns (empty vec, Continue)
+    /// Parses tool requests from the LLM response and returns a truncated response.
+    /// Returns a tuple of tool requests, LoopFlow, and truncated LLM response.
+    /// - If parsing succeeds and requests are empty: returns (empty vec, GetUserInput, truncated_response)
+    /// - If parsing succeeds and requests exist: returns (requests, Continue, truncated_response)
+    /// - If parsing fails: adds an error message to history and returns (empty vec, Continue, original_response)
     async fn extract_tool_requests_from_response(
         &mut self,
         llm_response: &llm::LLMResponse,
         request_counter: u64,
-    ) -> Result<(Vec<ToolRequest>, LoopFlow)> {
-        match parse_llm_response(llm_response, request_counter) {
-            Ok(requests) => {
+    ) -> Result<(Vec<ToolRequest>, LoopFlow, llm::LLMResponse)> {
+        match parse_and_truncate_llm_response(llm_response, request_counter) {
+            Ok((requests, truncated_response)) => {
                 if requests.is_empty() {
-                    Ok((requests, LoopFlow::GetUserInput))
+                    Ok((requests, LoopFlow::GetUserInput, truncated_response))
                 } else {
-                    Ok((requests, LoopFlow::Continue))
+                    Ok((requests, LoopFlow::Continue, truncated_response))
                 }
             }
             Err(e) => {
@@ -438,7 +442,8 @@ impl Agent {
                 };
 
                 self.append_message(error_msg)?;
-                Ok((Vec::new(), LoopFlow::Continue)) // Continue without user input on parsing errors
+                // Return original response for error cases
+                Ok((Vec::new(), LoopFlow::Continue, llm_response.clone())) // Continue without user input on parsing errors
             }
         }
     }
@@ -978,23 +983,33 @@ impl Agent {
     }
 }
 
-pub(crate) fn parse_llm_response(
+/// Parse tool requests from LLM response and return both requests and truncated response after first tool
+pub(crate) fn parse_and_truncate_llm_response(
     response: &llm::LLMResponse,
     request_id: u64,
-) -> Result<Vec<ToolRequest>> {
+) -> Result<(Vec<ToolRequest>, llm::LLMResponse)> {
     let mut tool_requests = Vec::new();
+    let mut truncated_content = Vec::new();
 
     for block in &response.content {
         if let ContentBlock::Text { text } = block {
-            // Use state-based parser for XML tool invocations
-            tool_requests.extend(parse_xml_tool_invocations(
-                text,
-                request_id,
-                tool_requests.len(),
-            )?);
-        }
+            // Parse XML tool invocations and get truncation position
+            let (block_tool_requests, truncated_text) =
+                parse_xml_tool_invocations_with_truncation(text, request_id, tool_requests.len())?;
 
-        if let ContentBlock::ToolUse { id, name, input } = block {
+            tool_requests.extend(block_tool_requests.clone());
+
+            // If tools were found in this text block, use truncated text
+            if !block_tool_requests.is_empty() {
+                truncated_content.push(ContentBlock::Text {
+                    text: truncated_text,
+                });
+                break; // Stop processing after first tool block
+            } else {
+                // No tools in this block, keep original text
+                truncated_content.push(block.clone());
+            }
+        } else if let ContentBlock::ToolUse { id, name, input } = block {
             // For ToolUse blocks, create ToolRequest directly
             let tool_request = ToolRequest {
                 id: id.clone(),
@@ -1002,8 +1017,91 @@ pub(crate) fn parse_llm_response(
                 input: input.clone(),
             };
             tool_requests.push(tool_request);
+
+            // Keep the ToolUse block in truncated content
+            truncated_content.push(block.clone());
+
+            // Stop processing after first tool (native mode)
+            break;
+        } else {
+            // Keep other blocks (Thinking, etc.) if no tools found yet
+            if tool_requests.is_empty() {
+                truncated_content.push(block.clone());
+            }
         }
     }
 
-    Ok(tool_requests)
+    // Create truncated response
+    let truncated_response = llm::LLMResponse {
+        content: truncated_content,
+        usage: response.usage.clone(),
+        rate_limit_info: response.rate_limit_info.clone(),
+    };
+
+    Ok((tool_requests, truncated_response))
+}
+
+/// Parse XML tool invocations and return both tool requests and truncated text
+fn parse_xml_tool_invocations_with_truncation(
+    text: &str,
+    request_id: u64,
+    start_tool_count: usize,
+) -> Result<(Vec<ToolRequest>, String)> {
+    // Parse tool requests using existing function
+    let all_tool_requests = parse_xml_tool_invocations(text, request_id, start_tool_count)?;
+
+    if all_tool_requests.is_empty() {
+        // No tools found, return original text
+        return Ok((all_tool_requests, text.to_string()));
+    }
+
+    // Only keep the first tool request to enforce single tool per message
+    let tool_requests = vec![all_tool_requests[0].clone()];
+
+    // Find the end position of the first tool to truncate text
+    let truncated_text = find_first_tool_end_and_truncate(text)?;
+
+    Ok((tool_requests, truncated_text))
+}
+
+/// Find the end of the first tool in text and truncate there
+fn find_first_tool_end_and_truncate(text: &str) -> Result<String> {
+    let mut current_pos = 0;
+    let mut in_tool = false;
+    let mut tool_depth = 0;
+
+    while current_pos < text.len() {
+        if let Some(tag_start) = text[current_pos..].find('<') {
+            let absolute_pos = current_pos + tag_start;
+
+            // Look for tool tags
+            if let Some(tag_end) = text[absolute_pos..].find('>') {
+                let tag_content = &text[absolute_pos + 1..absolute_pos + tag_end];
+
+                if tag_content.starts_with("tool:") {
+                    // Tool start tag
+                    in_tool = true;
+                    tool_depth += 1;
+                } else if tag_content.starts_with("/tool:") {
+                    // Tool end tag
+                    if in_tool {
+                        tool_depth -= 1;
+                        if tool_depth == 0 {
+                            // Found the end of the first tool, truncate here
+                            let end_pos = absolute_pos + tag_end + 1;
+                            return Ok(text[..end_pos].to_string());
+                        }
+                    }
+                }
+                current_pos = absolute_pos + tag_end + 1;
+            } else {
+                current_pos = absolute_pos + 1;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // No complete tool found, return original text
+    Ok(text.to_string())
 }
