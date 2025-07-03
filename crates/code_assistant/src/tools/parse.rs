@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{debug, trace};
 
-pub const TOOL_TAG_PREFIX: &str = "tool:";
+const TOOL_TAG_PREFIX: &str = "tool:";
 const PARAM_TAG_PREFIX: &str = "param:";
 
 /// Represents a parsed path with optional line ranges
