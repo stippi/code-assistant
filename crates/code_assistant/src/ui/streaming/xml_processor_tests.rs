@@ -13,7 +13,14 @@ fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
 
     // Split text into small chunks and process each one
     for chunk in chunk_str(text, chunk_size) {
-        processor.process(&StreamingChunk::Text(chunk)).unwrap();
+        match processor.process(&StreamingChunk::Text(chunk)) {
+            Ok(()) => continue,
+            Err(e) if e.to_string().contains("Tool limit reached") => {
+                // Tool limit reached, stop processing - this is expected behavior
+                break;
+            }
+            Err(e) => panic!("Unexpected error: {}", e),
+        }
     }
 
     test_ui
@@ -530,14 +537,14 @@ mod tests {
 
     #[test]
     fn test_param_tags_after_tool_context_treated_as_plain_text() {
-        // Test parameter tags that appear after a tool is closed
+        // Test that processing stops after tool completes, preventing orphaned param processing
         let input = "<tool:read_files>\n<param:path>test.txt</param:path>\n</tool:read_files>\n<param:orphaned>content</param:orphaned>";
 
         let test_ui = process_chunked_text(input, 10);
         let fragments = test_ui.get_fragments();
 
         let expected_fragments = vec![
-            // Valid tool and parameter
+            // Valid tool and parameter - processing stops after ToolEnd
             DisplayFragment::ToolName {
                 name: "read_files".to_string(),
                 id: "tool-42-1".to_string(),
@@ -550,8 +557,7 @@ mod tests {
             DisplayFragment::ToolEnd {
                 id: "tool-42-1".to_string(),
             },
-            // Orphaned parameter tags should be plain text
-            DisplayFragment::PlainText("<param:orphaned>content</param:orphaned>".to_string()),
+            // Note: orphaned parameter after tool is NOT processed due to tool limit
         ];
 
         assert_fragments_match(&expected_fragments, &fragments);
@@ -678,14 +684,15 @@ mod tests {
             "Second tool should not be processed due to tool limit"
         );
 
-        // Verify orphaned parameter between tools is present (processed before second tool triggers limit)
+        // Verify orphaned parameter between tools is NOT present (processing stopped after first tool)
         let orphaned_between: Vec<_> = fragments
             .iter()
             .filter(|f| matches!(f, DisplayFragment::PlainText(text) if text.contains("orphaned2")))
             .collect();
-        assert!(
-            orphaned_between.len() > 0,
-            "Should process content between tools before hitting limit"
+        assert_eq!(
+            orphaned_between.len(),
+            0,
+            "Should not process content after first tool due to tool limit"
         );
 
         // Verify orphaned parameter after all tools is NOT present (processing stopped at second tool start)

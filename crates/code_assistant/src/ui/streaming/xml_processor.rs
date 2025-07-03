@@ -355,15 +355,6 @@ impl XmlStreamProcessor {
                     }
 
                     TagType::ToolStart => {
-                        // Check if this would be the start of a second tool - if so, trigger tool limit
-                        if self.state.tool_counter >= 1 {
-                            // Return tool limit error to prevent second tool from starting
-                            return Err(UIError::IOError(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                "Tool limit reached - only one tool per message allowed",
-                            )));
-                        }
-
                         // Extract the tool name from tag_info
                         if let Some(tool_name) = tag_info {
                             // For XML tools, generate ID based on request ID and tool counter
@@ -394,6 +385,12 @@ impl XmlStreamProcessor {
                             // Send fragment for tool end with the original tool ID
                             self.ui
                                 .display_fragment(&DisplayFragment::ToolEnd { id: tool_id })?;
+
+                            // Always trigger tool limit after any tool completes to stop streaming
+                            return Err(UIError::IOError(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "Tool limit reached - only one tool per message allowed",
+                            )));
                         }
 
                         // Always reset tool state when we see any tool end tag
