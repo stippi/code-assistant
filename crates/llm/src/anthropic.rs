@@ -1182,16 +1182,18 @@ impl LLMProvider for AnthropicClient {
             "temperature": 1.0,
             "system": system,
             "stream": streaming_callback.is_some(),
-            "tool_choice": tool_choice,
-            "tools": tools
+            "messages": messages_json,
         });
 
         if let Some(thinking_config) = thinking {
             anthropic_request["thinking"] = serde_json::to_value(thinking_config)?;
         }
-
-        // Add the converted messages
-        anthropic_request["messages"] = messages_json;
+        if let Some(tool_choice) = tool_choice {
+            anthropic_request["tool_choice"] = tool_choice;
+        }
+        if let Some(tools) = tools {
+            anthropic_request["tools"] = serde_json::to_value(tools)?;
+        }
 
         // Allow request customizer to modify the request
         self.request_customizer
