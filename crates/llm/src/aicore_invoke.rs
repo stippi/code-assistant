@@ -808,10 +808,25 @@ impl AiCoreClient {
                     Ok(()) => continue,
                     Err(e) if e.to_string().contains("Tool limit reached") => {
                         debug!("Tool limit reached, stopping streaming early. Collected {} blocks so far", blocks.len());
-                        // Important: Continue processing this chunk to completion to finalize the current content,
-                        // then break on the next iteration. This ensures the text that triggered the tool limit
-                        // error still gets added to the current block.
-                        // The break will happen after this chunk is fully processed.
+                        
+                        // Finalize the current block with any accumulated content
+                        if !blocks.is_empty() && !current_content.is_empty() {
+                            match blocks.last_mut().unwrap() {
+                                ContentBlock::Thinking { thinking, .. } => {
+                                    *thinking = current_content.clone();
+                                }
+                                ContentBlock::Text { text } => {
+                                    *text = current_content.clone();
+                                }
+                                ContentBlock::ToolUse { input, .. } => {
+                                    if let Ok(json) = serde_json::from_str(&current_content) {
+                                        *input = json;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        
                         break; // Exit chunk processing loop early
                     }
                     Err(e) => return Err(e), // Propagate other errors
