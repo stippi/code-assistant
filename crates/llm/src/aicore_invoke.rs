@@ -730,8 +730,8 @@ impl AiCoreClient {
                                     ContentDelta::Thinking {
                                         thinking: delta_text,
                                     } => {
-                                        callback(&StreamingChunk::Thinking(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
+                                        callback(&StreamingChunk::Thinking(delta_text.clone()))?;
                                     }
                                     ContentDelta::Signature {
                                         signature: signature_delta,
@@ -744,8 +744,8 @@ impl AiCoreClient {
                                         }
                                     }
                                     ContentDelta::Text { text: delta_text } => {
-                                        callback(&StreamingChunk::Text(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
+                                        callback(&StreamingChunk::Text(delta_text.clone()))?;
                                     }
                                     ContentDelta::InputJson { partial_json } => {
                                         let (tool_name, tool_id) =
@@ -760,13 +760,12 @@ impl AiCoreClient {
                                                 }
                                             });
 
+                                        current_content.push_str(partial_json);
                                         callback(&StreamingChunk::InputJson {
                                             content: partial_json.clone(),
                                             tool_name,
                                             tool_id,
                                         })?;
-
-                                        current_content.push_str(partial_json);
                                     }
                                 }
                             }
@@ -808,7 +807,7 @@ impl AiCoreClient {
                     Ok(()) => continue,
                     Err(e) if e.to_string().contains("Tool limit reached") => {
                         debug!("Tool limit reached, stopping streaming early. Collected {} blocks so far", blocks.len());
-                        
+
                         // Finalize the current block with any accumulated content
                         if !blocks.is_empty() && !current_content.is_empty() {
                             match blocks.last_mut().unwrap() {
@@ -826,7 +825,7 @@ impl AiCoreClient {
                                 _ => {}
                             }
                         }
-                        
+
                         break; // Exit chunk processing loop early
                     }
                     Err(e) => return Err(e), // Propagate other errors

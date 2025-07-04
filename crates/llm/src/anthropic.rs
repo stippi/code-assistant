@@ -940,8 +940,8 @@ impl AnthropicClient {
                                     ContentDelta::Thinking {
                                         thinking: delta_text,
                                     } => {
-                                        callback(&StreamingChunk::Thinking(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
+                                        callback(&StreamingChunk::Thinking(delta_text.clone()))?;
                                     }
                                     ContentDelta::Signature {
                                         signature: signature_delta,
@@ -954,8 +954,8 @@ impl AnthropicClient {
                                         }
                                     }
                                     ContentDelta::Text { text: delta_text } => {
-                                        callback(&StreamingChunk::Text(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
+                                        callback(&StreamingChunk::Text(delta_text.clone()))?;
                                     }
                                     ContentDelta::InputJson { partial_json } => {
                                         let (tool_name, tool_id) =
@@ -970,13 +970,12 @@ impl AnthropicClient {
                                                 }
                                             });
 
+                                        current_content.push_str(partial_json);
                                         callback(&StreamingChunk::InputJson {
                                             content: partial_json.clone(),
                                             tool_name,
                                             tool_id,
                                         })?;
-
-                                        current_content.push_str(partial_json);
                                     }
                                 }
                             }
