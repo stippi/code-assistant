@@ -1,3 +1,4 @@
+use crate::agent::runner::parse_and_truncate_llm_response;
 use anyhow::Result;
 use axum::{routing::post, Router};
 use llm::types::*;
@@ -35,7 +36,6 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
         ">\n</tool",
         ":read_files",
         ">\n\n---", // Extra content that should be truncated
-        ">\n\n---", // More extra content
     ];
 
     // Create a mock Anthropic server that returns these exact chunks
@@ -199,48 +199,94 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
         *tool_limit_triggered.lock().unwrap()
     );
 
-    // Currently, the request fails completely when tool limit is reached
-    // This demonstrates the issue we need to fix: the LLM provider should
-    // handle tool limit errors gracefully and return a successful response
-    // with the content truncated at the appropriate point
+    assert!(result.is_ok());
 
-    if result.is_ok() {
-        println!("✅ LLM provider handled tool limit gracefully");
-        let response = result.unwrap();
+    let response = result.unwrap();
 
-        // Verify the response contains the complete text up to and including the tool
-        assert_eq!(response.content.len(), 1);
-        if let ContentBlock::Text { text } = &response.content[0] {
-            println!("Final LLM response text: '{}'", text);
-            println!("Text length: {}", text.len());
+    // Verify the response contains the complete text up to and including the tool
+    assert_eq!(response.content.len(), 1);
+    if let ContentBlock::Text { text } = &response.content[0] {
+        println!("Final LLM response text: '{}'", text);
+        println!("Text length: {}", text.len());
 
-            // Check that we have the complete tool text but not the extra content
-            assert!(text.contains("I'll help you refactor the Anthropic client:"));
-            assert!(text.contains("<tool:read_files>"));
-            assert!(text.contains("<param:project>code-assistant</param:project>"));
-            assert!(text.contains("<param:path>crates/llm/src/anthropic.rs</param:path>"));
-            assert!(
-                text.contains("</tool:read_files>"),
-                "Should contain complete tool"
-            );
-        } else {
-            panic!(
-                "Expected text content block, got: {:?}",
-                response.content[0]
-            );
+        // Check that we have the complete tool text but not the extra content
+        assert!(text.contains("I'll help you refactor the Anthropic client:"));
+        assert!(text.contains("<tool:read_files>"));
+        assert!(text.contains("<param:project>code-assistant</param:project>"));
+        assert!(text.contains("<param:path>crates/llm/src/anthropic.rs</param:path>"));
+        assert!(
+            text.contains("</tool:read_files>"),
+            "Should contain complete tool"
+        );
+
+        // Now test the parse_and_truncate_llm_response function from agent runner
+        println!("\n🔍 Testing parse_and_truncate_llm_response function:");
+        let request_id = 42;
+
+        match parse_and_truncate_llm_response(&response, request_id) {
+            Ok((tool_requests, truncated_response)) => {
+                println!("✅ parse_and_truncate_llm_response succeeded");
+                println!("Tool requests found: {}", tool_requests.len());
+                println!(
+                    "Truncated response content blocks: {}",
+                    truncated_response.content.len()
+                );
+
+                // Check that we parsed exactly one tool
+                assert_eq!(tool_requests.len(), 1, "Should parse exactly one tool");
+
+                let tool_request = &tool_requests[0];
+                println!("Tool name: {}", tool_request.name);
+                println!("Tool input: {}", tool_request.input);
+
+                assert_eq!(tool_request.name, "read_files");
+                assert_eq!(
+                    tool_request.input.get("project").unwrap().as_str().unwrap(),
+                    "code-assistant"
+                );
+                assert_eq!(
+                    tool_request.input.get("paths").unwrap().as_array().unwrap()[0],
+                    "crates/llm/src/anthropic.rs"
+                );
+
+                // Check the truncated response
+                if let ContentBlock::Text {
+                    text: truncated_text,
+                } = &truncated_response.content[0]
+                {
+                    println!("Truncated text: '{}'", truncated_text);
+                    println!("Truncated text length: {}", truncated_text.len());
+
+                    // The key test: truncated response should end exactly at the tool close tag
+                    assert!(
+                        truncated_text.ends_with("</tool:read_files>"),
+                        "Truncated text should end with complete tool close tag, but ends with: {}",
+                        &truncated_text[truncated_text.len().saturating_sub(20)..]
+                    );
+
+                    // Should NOT contain the extra content after the tool
+                    assert!(
+                        !truncated_text.contains("---"),
+                        "Truncated text should not contain extra content after tool: {}",
+                        truncated_text
+                    );
+                } else {
+                    panic!(
+                        "Expected Text content block in truncated response, got: {:?}",
+                        truncated_response.content[0]
+                    );
+                }
+            }
+            Err(e) => {
+                println!("❌ parse_and_truncate_llm_response failed: {:?}", e);
+                panic!("parse_and_truncate_llm_response should succeed with valid tool response");
+            }
         }
     } else {
-        println!("❌ LLM provider failed instead of handling tool limit gracefully");
-        println!("Error: {:?}", result.unwrap_err());
-
-        // This demonstrates the bug that needs to be fixed:
-        // When a tool limit is reached during streaming, the LLM provider should:
-        // 1. Stop processing new chunks
-        // 2. Finalize the content blocks with accumulated content
-        // 3. Return a successful LLMResponse with the content truncated appropriately
-        //
-        // Currently, it propagates the error and fails the entire request
-        println!("This test demonstrates that the LLM provider needs to handle tool limit errors gracefully");
+        panic!(
+            "Expected text content block, got: {:?}",
+            response.content[0]
+        );
     }
 
     // Verify that tool limit was triggered during processing

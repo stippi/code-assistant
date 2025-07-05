@@ -984,7 +984,7 @@ impl Agent {
 }
 
 /// Parse tool requests from LLM response and return both requests and truncated response after first tool
-pub(crate) fn parse_and_truncate_llm_response(
+pub fn parse_and_truncate_llm_response(
     response: &llm::LLMResponse,
     request_id: u64,
 ) -> Result<(Vec<ToolRequest>, llm::LLMResponse)> {

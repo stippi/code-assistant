@@ -2,7 +2,7 @@
 mod tests;
 
 pub mod persistence;
-mod runner;
+pub mod runner;
 mod tool_description_generator;
 mod types;
 
