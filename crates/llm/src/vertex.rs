@@ -527,15 +527,16 @@ impl VertexClient {
                     recorder.record_chunk(data)?;
                 }
                 if let Ok(response) = serde_json::from_str::<VertexResponse>(data) {
+                    // Always update usage metadata if present (including final responses)
+                    if let Some(usage_metadata) = response.usage_metadata {
+                        *usage = Some(usage_metadata);
+                    }
                     // Process candidates and their content parts if present
                     if let Some(candidate) = response.candidates.first() {
                         for part in &candidate.content.parts {
                             if let Some(text) = &part.text {
                                 // Check if this is a thinking part
                                 if part.thought == Some(true) {
-                                    // Stream thinking content
-                                    callback(&StreamingChunk::Thinking(text.clone()))?;
-
                                     // Check if we can extend the last thinking block or need to create a new one
                                     match blocks.last_mut() {
                                         Some(ContentBlock::Thinking {
@@ -560,10 +561,9 @@ impl VertexClient {
                                             });
                                         }
                                     }
+                                    // Stream thinking content
+                                    callback(&StreamingChunk::Thinking(text.clone()))?;
                                 } else {
-                                    // Regular text content
-                                    callback(&StreamingChunk::Text(text.clone()))?;
-
                                     // Check if we can extend the last text block or need to create a new one
                                     match blocks.last_mut() {
                                         Some(ContentBlock::Text { text: last_text }) => {
@@ -575,32 +575,30 @@ impl VertexClient {
                                             blocks.push(ContentBlock::Text { text: text.clone() });
                                         }
                                     }
+                                    // Regular text content
+                                    callback(&StreamingChunk::Text(text.clone()))?;
                                 }
                             } else if let Some(function_call) = &part.function_call {
                                 // Generate a tool ID that includes the function name for later extraction
                                 let tool_id = tool_id_generator.generate_id(&function_call.name);
+
+                                // Always create a new tool use block (they don't get extended)
+                                blocks.push(ContentBlock::ToolUse {
+                                    id: tool_id.clone(),
+                                    name: function_call.name.clone(),
+                                    input: function_call.args.clone(),
+                                });
 
                                 // Stream the JSON input for tools
                                 if let Ok(args_str) = serde_json::to_string(&function_call.args) {
                                     callback(&StreamingChunk::InputJson {
                                         content: args_str,
                                         tool_name: Some(function_call.name.clone()),
-                                        tool_id: Some(tool_id.clone()),
+                                        tool_id: Some(tool_id),
                                     })?;
                                 }
-
-                                // Always create a new tool use block (they don't get extended)
-                                blocks.push(ContentBlock::ToolUse {
-                                    id: tool_id,
-                                    name: function_call.name.clone(),
-                                    input: function_call.args.clone(),
-                                });
                             }
                         }
-                    }
-                    // Always update usage metadata if present (including final responses)
-                    if let Some(usage_metadata) = response.usage_metadata {
-                        *usage = Some(usage_metadata);
                     }
                 } else {
                     warn!("Failed to parse Vertex response from data: {}", data);
@@ -617,15 +615,26 @@ impl VertexClient {
             for c in chunk_str.chars() {
                 if c == '\n' {
                     if !line_buffer.is_empty() {
-                        process_sse_line(
+                        match process_sse_line(
                             &line_buffer,
                             &mut content_blocks,
                             &mut last_usage,
                             streaming_callback,
                             &self.tool_id_generator,
                             &self.recorder,
-                        )?;
-                        line_buffer.clear();
+                        ) {
+                            Ok(()) => {
+                                line_buffer.clear();
+                                continue;
+                            }
+                            Err(e) if e.to_string().contains("Tool limit reached") => {
+                                debug!("Tool limit reached, stopping streaming early. Collected {} blocks so far", content_blocks.len());
+
+                                line_buffer.clear(); // Make sure we stop processing
+                                break; // Exit chunk processing loop early
+                            }
+                            Err(e) => return Err(e), // Propagate other errors
+                        }
                     }
                 } else {
                     line_buffer.push(c);

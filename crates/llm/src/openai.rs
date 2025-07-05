@@ -529,15 +529,26 @@ impl OpenAIClient {
             for c in chunk_str.chars() {
                 if c == '\n' {
                     if !line_buffer.is_empty() {
-                        process_sse_line(
+                        match process_sse_line(
                             line_buffer,
                             accumulated_content,
                             current_tool,
                             accumulated_tool_calls,
                             callback,
                             usage,
-                        )?;
-                        line_buffer.clear();
+                        ) {
+                            Ok(()) => {
+                                line_buffer.clear();
+                                continue;
+                            }
+                            Err(e) if e.to_string().contains("Tool limit reached") => {
+                                debug!("Tool limit reached, stopping streaming early");
+
+                                line_buffer.clear(); // Make sure we stop processing
+                                break; // Exit chunk processing loop early
+                            }
+                            Err(e) => return Err(e), // Propagate other errors
+                        }
                     }
                 } else {
                     line_buffer.push(c);
@@ -564,7 +575,6 @@ impl OpenAIClient {
                     if let Some(delta) = chunk_response.choices.first() {
                         // Handle content streaming
                         if let Some(content) = &delta.delta.content {
-                            callback(&StreamingChunk::Text(content.clone()))?;
                             *accumulated_content = Some(
                                 accumulated_content
                                     .as_ref()
@@ -572,6 +582,7 @@ impl OpenAIClient {
                                     .clone()
                                     + content,
                             );
+                            callback(&StreamingChunk::Text(content.clone()))?;
                         }
 
                         // Handle tool calls
