@@ -213,57 +213,64 @@ impl DefaultMessageConverter {
                             },
                         }]
                     }
-                    MessageContent::Structured(blocks) => {
-                        blocks
-                            .into_iter()
-                            .enumerate()
-                            .map(|(block_index, block)| {
-                                let (block_type, content) = match block {
-                                    ContentBlock::Text { text } => {
-                                        ("text".to_string(), AnthropicBlockContent::Text { text })
-                                    }
-                                    ContentBlock::ToolUse { id, name, input } => (
-                                        "tool_use".to_string(),
-                                        AnthropicBlockContent::ToolUse { id, name, input },
-                                    ),
-                                    ContentBlock::ToolResult {
+                    MessageContent::Structured(blocks) => blocks
+                        .into_iter()
+                        .enumerate()
+                        .map(|(block_index, block)| {
+                            let (block_type, content) = match block {
+                                ContentBlock::Text { text } => {
+                                    ("text".to_string(), AnthropicBlockContent::Text { text })
+                                }
+                                ContentBlock::ToolUse { id, name, input } => (
+                                    "tool_use".to_string(),
+                                    AnthropicBlockContent::ToolUse { id, name, input },
+                                ),
+                                ContentBlock::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    is_error,
+                                } => (
+                                    "tool_result".to_string(),
+                                    AnthropicBlockContent::ToolResult {
                                         tool_use_id,
                                         content,
                                         is_error,
-                                    } => (
-                                        "tool_result".to_string(),
-                                        AnthropicBlockContent::ToolResult {
-                                            tool_use_id,
-                                            content,
-                                            is_error,
-                                        },
-                                    ),
-                                    // Thinking blocks sind nicht Teil der Anthropic API Request
-                                    ContentBlock::Thinking { .. }
-                                    | ContentBlock::RedactedThinking { .. } => {
-                                        // Skip thinking blocks in requests
-                                        return None;
-                                    }
-                                };
-
-                                Some(AnthropicContentBlock {
-                                    block_type,
-                                    content,
-                                    cache_control: if (old_cache_position == Some(msg_index)
-                                        || new_cache_position == Some(msg_index))
-                                        && block_index == 0
-                                    {
-                                        Some(CacheControl {
-                                            cache_type: "ephemeral".to_string(),
-                                        })
-                                    } else {
-                                        None
                                     },
-                                })
+                                ),
+                                ContentBlock::Thinking {
+                                    thinking,
+                                    signature,
+                                } => (
+                                    "thinking".to_string(),
+                                    AnthropicBlockContent::Thinking {
+                                        thinking,
+                                        signature,
+                                    },
+                                ),
+                                ContentBlock::RedactedThinking { data } => {
+                                    ("redacted_thinking".to_string(), {
+                                        AnthropicBlockContent::RedactedThinking { data }
+                                    })
+                                }
+                            };
+
+                            Some(AnthropicContentBlock {
+                                block_type,
+                                content,
+                                cache_control: if (old_cache_position == Some(msg_index)
+                                    || new_cache_position == Some(msg_index))
+                                    && block_index == 0
+                                {
+                                    Some(CacheControl {
+                                        cache_type: "ephemeral".to_string(),
+                                    })
+                                } else {
+                                    None
+                                },
                             })
-                            .filter_map(|x| x)
-                            .collect()
-                    }
+                        })
+                        .filter_map(|x| x)
+                        .collect(),
                 };
 
                 AnthropicMessage {
@@ -443,6 +450,13 @@ struct AnthropicContentBlock {
 enum AnthropicBlockContent {
     Text {
         text: String,
+    },
+    Thinking {
+        thinking: String,
+        signature: String,
+    },
+    RedactedThinking {
+        data: String,
     },
     ToolUse {
         id: String,
