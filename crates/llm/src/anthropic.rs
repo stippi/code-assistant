@@ -13,6 +13,285 @@ use std::str::{self};
 use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
+/// Trait for providing authentication headers
+#[async_trait]
+pub trait AuthProvider: Send + Sync {
+    async fn get_auth_headers(&self) -> Result<Vec<(String, String)>>;
+}
+
+/// Trait for customizing requests before sending
+pub trait RequestCustomizer: Send + Sync {
+    fn customize_request(&self, request: &mut serde_json::Value) -> Result<()>;
+    fn get_additional_headers(&self) -> Vec<(String, String)>;
+    fn customize_url(&self, base_url: &str, streaming: bool) -> String;
+}
+
+/// Trait for converting messages to the appropriate format
+pub trait MessageConverter: Send + Sync {
+    fn convert_messages(&mut self, messages: Vec<Message>) -> Result<Vec<serde_json::Value>>;
+}
+
+/// Default API key authentication provider
+pub struct ApiKeyAuth {
+    api_key: String,
+}
+
+impl ApiKeyAuth {
+    pub fn new(api_key: String) -> Self {
+        Self { api_key }
+    }
+}
+
+#[async_trait]
+impl AuthProvider for ApiKeyAuth {
+    async fn get_auth_headers(&self) -> Result<Vec<(String, String)>> {
+        Ok(vec![("x-api-key".to_string(), self.api_key.clone())])
+    }
+}
+
+/// Default request customizer for Anthropic API
+pub struct DefaultRequestCustomizer;
+
+impl RequestCustomizer for DefaultRequestCustomizer {
+    fn customize_request(&self, _request: &mut serde_json::Value) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_additional_headers(&self) -> Vec<(String, String)> {
+        vec![("anthropic-version".to_string(), "2023-06-01".to_string())]
+    }
+
+    fn customize_url(&self, base_url: &str, _streaming: bool) -> String {
+        format!("{}/messages", base_url)
+    }
+}
+
+/// Default message converter with Anthropic caching logic
+pub struct DefaultMessageConverter {
+    cache_state: HashMap<String, CacheEntry>,
+}
+
+impl Default for DefaultMessageConverter {
+    fn default() -> Self {
+        Self {
+            cache_state: HashMap::new(),
+        }
+    }
+}
+
+impl DefaultMessageConverter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Generate a stable cache key based on message windows
+    fn generate_stable_cache_key(&self, messages: &[Message]) -> String {
+        // Stable window: new hash every 10 messages
+        let stable_count = (messages.len() / 10) * 10;
+
+        // Hash the first stable_count messages
+        let stable_messages = &messages[..stable_count.min(messages.len())];
+
+        let mut hasher = DefaultHasher::new();
+        for msg in stable_messages {
+            // Hash role + content
+            match msg.role {
+                MessageRole::User => "user".hash(&mut hasher),
+                MessageRole::Assistant => "assistant".hash(&mut hasher),
+            };
+            match &msg.content {
+                MessageContent::Text(text) => {
+                    text.hash(&mut hasher);
+                }
+                MessageContent::Structured(blocks) => {
+                    for block in blocks {
+                        // Hash block discriminant and content
+                        std::mem::discriminant(block).hash(&mut hasher);
+                        match block {
+                            ContentBlock::Text { text } => text.hash(&mut hasher),
+                            ContentBlock::ToolUse { id, name, input } => {
+                                id.hash(&mut hasher);
+                                name.hash(&mut hasher);
+                                input.to_string().hash(&mut hasher);
+                            }
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            } => {
+                                tool_use_id.hash(&mut hasher);
+                                content.hash(&mut hasher);
+                                is_error.hash(&mut hasher);
+                            }
+                            ContentBlock::Thinking {
+                                thinking,
+                                signature,
+                            } => {
+                                thinking.hash(&mut hasher);
+                                signature.hash(&mut hasher);
+                            }
+                            ContentBlock::RedactedThinking { data } => {
+                                data.hash(&mut hasher);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        format!("cache_{}_{:x}", stable_count, hasher.finish())
+    }
+
+    /// Determine cache marker positions (old and new for smooth transitions)
+    fn get_cache_marker_positions(
+        &mut self,
+        messages: &[Message],
+    ) -> (Option<usize>, Option<usize>) {
+        let cache_key = self.generate_stable_cache_key(messages);
+
+        // Cleanup old entries (>5min = Anthropic cache lifetime)
+        let now = SystemTime::now();
+        self.cache_state.retain(|_, entry| {
+            now.duration_since(entry.last_used)
+                .unwrap_or(Duration::from_secs(0))
+                < Duration::from_secs(300)
+        });
+
+        let cache_key_for_debug = cache_key.clone();
+        let entry = self.cache_state.entry(cache_key).or_insert(CacheEntry {
+            count: 0,
+            last_used: now,
+            current_cache_position: None,
+        });
+
+        entry.count += 1;
+        entry.last_used = now;
+
+        // Move cache-marker every 5 requests
+        if entry.count % 5 == 0 {
+            // Calc new cache-marker position
+            let stable_count = (messages.len() / 10) * 10;
+            let new_cache_position = stable_count.saturating_sub(1);
+
+            let old_position = entry.current_cache_position;
+            entry.current_cache_position = Some(new_cache_position);
+
+            debug!(
+                "Moving cache marker from {:?} to {} for cache key {} (count: {})",
+                old_position, new_cache_position, cache_key_for_debug, entry.count
+            );
+
+            // Return old and new marker
+            (old_position, Some(new_cache_position))
+        } else {
+            // Return only the current marker
+            (entry.current_cache_position, None)
+        }
+    }
+
+    /// Convert generic messages to Anthropic-specific format with cache control
+    fn convert_messages_with_cache(&mut self, messages: Vec<Message>) -> Vec<AnthropicMessage> {
+        let (old_cache_position, new_cache_position) = self.get_cache_marker_positions(&messages);
+
+        messages
+            .into_iter()
+            .enumerate()
+            .map(|(msg_index, msg)| {
+                let content_blocks = match msg.content {
+                    MessageContent::Text(text) => {
+                        vec![AnthropicContentBlock {
+                            block_type: "text".to_string(),
+                            content: AnthropicBlockContent::Text { text },
+                            cache_control: if old_cache_position == Some(msg_index)
+                                || new_cache_position == Some(msg_index)
+                            {
+                                Some(CacheControl {
+                                    cache_type: "ephemeral".to_string(),
+                                })
+                            } else {
+                                None
+                            },
+                        }]
+                    }
+                    MessageContent::Structured(blocks) => blocks
+                        .into_iter()
+                        .enumerate()
+                        .map(|(block_index, block)| {
+                            let (block_type, content) = match block {
+                                ContentBlock::Text { text } => {
+                                    ("text".to_string(), AnthropicBlockContent::Text { text })
+                                }
+                                ContentBlock::ToolUse { id, name, input } => (
+                                    "tool_use".to_string(),
+                                    AnthropicBlockContent::ToolUse { id, name, input },
+                                ),
+                                ContentBlock::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    is_error,
+                                } => (
+                                    "tool_result".to_string(),
+                                    AnthropicBlockContent::ToolResult {
+                                        tool_use_id,
+                                        content,
+                                        is_error,
+                                    },
+                                ),
+                                ContentBlock::Thinking {
+                                    thinking,
+                                    signature,
+                                } => (
+                                    "thinking".to_string(),
+                                    AnthropicBlockContent::Thinking {
+                                        thinking,
+                                        signature,
+                                    },
+                                ),
+                                ContentBlock::RedactedThinking { data } => {
+                                    ("redacted_thinking".to_string(), {
+                                        AnthropicBlockContent::RedactedThinking { data }
+                                    })
+                                }
+                            };
+
+                            Some(AnthropicContentBlock {
+                                block_type,
+                                content,
+                                cache_control: if (old_cache_position == Some(msg_index)
+                                    || new_cache_position == Some(msg_index))
+                                    && block_index == 0
+                                {
+                                    Some(CacheControl {
+                                        cache_type: "ephemeral".to_string(),
+                                    })
+                                } else {
+                                    None
+                                },
+                            })
+                        })
+                        .filter_map(|x| x)
+                        .collect(),
+                };
+
+                AnthropicMessage {
+                    role: match msg.role {
+                        MessageRole::User => "user".to_string(),
+                        MessageRole::Assistant => "assistant".to_string(),
+                    },
+                    content: content_blocks,
+                }
+            })
+            .collect()
+    }
+}
+
+impl MessageConverter for DefaultMessageConverter {
+    fn convert_messages(&mut self, messages: Vec<Message>) -> Result<Vec<serde_json::Value>> {
+        let anthropic_messages = self.convert_messages_with_cache(messages);
+        Ok(vec![serde_json::to_value(anthropic_messages)?])
+    }
+}
+
 /// Response structure for Anthropic error messages
 #[derive(Debug, Serialize, serde::Deserialize)]
 struct AnthropicErrorResponse {
@@ -172,6 +451,13 @@ enum AnthropicBlockContent {
     Text {
         text: String,
     },
+    Thinking {
+        thinking: String,
+        signature: String,
+    },
+    RedactedThinking {
+        data: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -197,25 +483,6 @@ struct ThinkingConfiguration {
     #[serde(rename = "type")]
     thinking_type: String,
     budget_tokens: usize,
-}
-
-/// Anthropic-specific request structure
-#[derive(Debug, Serialize)]
-struct AnthropicRequest {
-    model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thinking: Option<ThinkingConfiguration>,
-    messages: Vec<AnthropicMessage>,
-    max_tokens: usize,
-    temperature: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<Vec<SystemBlock>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<serde_json::Value>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stream: Option<bool>,
 }
 
 /// Response structure for Anthropic API responses
@@ -348,207 +615,17 @@ enum ContentDelta {
 
 pub struct AnthropicClient {
     client: Client,
-    api_key: String,
     base_url: String,
     model: String,
     recorder: Option<APIRecorder>,
-    /// Cache state tracking per content prefix
-    cache_state: HashMap<String, CacheEntry>,
+
+    // Customization points
+    auth_provider: Box<dyn AuthProvider>,
+    request_customizer: Box<dyn RequestCustomizer>,
+    message_converter: Box<dyn MessageConverter>,
 }
 
 impl AnthropicClient {
-    /// Generate a stable cache key based on message windows
-    fn generate_stable_cache_key(&self, messages: &[Message]) -> String {
-        // Stable window: new hash every 10 messages
-        let stable_count = (messages.len() / 10) * 10;
-
-        // Hash the first stable_count messages
-        let stable_messages = &messages[..stable_count.min(messages.len())];
-
-        let mut hasher = DefaultHasher::new();
-        for msg in stable_messages {
-            // Hash role + content
-            match msg.role {
-                MessageRole::User => "user".hash(&mut hasher),
-                MessageRole::Assistant => "assistant".hash(&mut hasher),
-            };
-            match &msg.content {
-                MessageContent::Text(text) => {
-                    text.hash(&mut hasher);
-                }
-                MessageContent::Structured(blocks) => {
-                    for block in blocks {
-                        // Hash block discriminant and content
-                        std::mem::discriminant(block).hash(&mut hasher);
-                        match block {
-                            ContentBlock::Text { text } => text.hash(&mut hasher),
-                            ContentBlock::ToolUse { id, name, input } => {
-                                id.hash(&mut hasher);
-                                name.hash(&mut hasher);
-                                input.to_string().hash(&mut hasher);
-                            }
-                            ContentBlock::ToolResult {
-                                tool_use_id,
-                                content,
-                                is_error,
-                            } => {
-                                tool_use_id.hash(&mut hasher);
-                                content.hash(&mut hasher);
-                                is_error.hash(&mut hasher);
-                            }
-                            ContentBlock::Thinking {
-                                thinking,
-                                signature,
-                            } => {
-                                thinking.hash(&mut hasher);
-                                signature.hash(&mut hasher);
-                            }
-                            ContentBlock::RedactedThinking { data } => {
-                                data.hash(&mut hasher);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        format!("cache_{}_{:x}", stable_count, hasher.finish())
-    }
-
-    /// Determine cache marker positions (old and new for smooth transitions)
-    fn get_cache_marker_positions(
-        &mut self,
-        messages: &[Message],
-    ) -> (Option<usize>, Option<usize>) {
-        let cache_key = self.generate_stable_cache_key(messages);
-
-        // Cleanup old entries (>5min = Anthropic cache lifetime)
-        let now = SystemTime::now();
-        self.cache_state.retain(|_, entry| {
-            now.duration_since(entry.last_used)
-                .unwrap_or(Duration::from_secs(0))
-                < Duration::from_secs(300)
-        });
-
-        let cache_key_for_debug = cache_key.clone();
-        let entry = self.cache_state.entry(cache_key).or_insert(CacheEntry {
-            count: 0,
-            last_used: now,
-            current_cache_position: None,
-        });
-
-        entry.count += 1;
-        entry.last_used = now;
-
-        // Move cache-marker every 5 requests
-        if entry.count % 5 == 0 {
-            // Calc new cache-marker position
-            let stable_count = (messages.len() / 10) * 10;
-            let new_cache_position = stable_count.saturating_sub(1);
-
-            let old_position = entry.current_cache_position;
-            entry.current_cache_position = Some(new_cache_position);
-
-            debug!(
-                "Moving cache marker from {:?} to {} for cache key {} (count: {})",
-                old_position, new_cache_position, cache_key_for_debug, entry.count
-            );
-
-            // Return old and new marker
-            (old_position, Some(new_cache_position))
-        } else {
-            // Return only the current marker
-            (entry.current_cache_position, None)
-        }
-    }
-
-    /// Convert generic messages to Anthropic-specific format with cache control
-    fn convert_messages_with_cache(&mut self, messages: Vec<Message>) -> Vec<AnthropicMessage> {
-        let (old_cache_position, new_cache_position) = self.get_cache_marker_positions(&messages);
-
-        messages
-            .into_iter()
-            .enumerate()
-            .map(|(msg_index, msg)| {
-                let content_blocks = match msg.content {
-                    MessageContent::Text(text) => {
-                        vec![AnthropicContentBlock {
-                            block_type: "text".to_string(),
-                            content: AnthropicBlockContent::Text { text },
-                            cache_control: if old_cache_position == Some(msg_index)
-                                || new_cache_position == Some(msg_index)
-                            {
-                                Some(CacheControl {
-                                    cache_type: "ephemeral".to_string(),
-                                })
-                            } else {
-                                None
-                            },
-                        }]
-                    }
-                    MessageContent::Structured(blocks) => {
-                        blocks
-                            .into_iter()
-                            .enumerate()
-                            .map(|(block_index, block)| {
-                                let (block_type, content) = match block {
-                                    ContentBlock::Text { text } => {
-                                        ("text".to_string(), AnthropicBlockContent::Text { text })
-                                    }
-                                    ContentBlock::ToolUse { id, name, input } => (
-                                        "tool_use".to_string(),
-                                        AnthropicBlockContent::ToolUse { id, name, input },
-                                    ),
-                                    ContentBlock::ToolResult {
-                                        tool_use_id,
-                                        content,
-                                        is_error,
-                                    } => (
-                                        "tool_result".to_string(),
-                                        AnthropicBlockContent::ToolResult {
-                                            tool_use_id,
-                                            content,
-                                            is_error,
-                                        },
-                                    ),
-                                    // Thinking blocks sind nicht Teil der Anthropic API Request
-                                    ContentBlock::Thinking { .. }
-                                    | ContentBlock::RedactedThinking { .. } => {
-                                        // Skip thinking blocks in requests
-                                        return None;
-                                    }
-                                };
-
-                                Some(AnthropicContentBlock {
-                                    block_type,
-                                    content,
-                                    cache_control: if (old_cache_position == Some(msg_index)
-                                        || new_cache_position == Some(msg_index))
-                                        && block_index == 0
-                                    {
-                                        Some(CacheControl {
-                                            cache_type: "ephemeral".to_string(),
-                                        })
-                                    } else {
-                                        None
-                                    },
-                                })
-                            })
-                            .filter_map(|x| x)
-                            .collect()
-                    }
-                };
-
-                AnthropicMessage {
-                    role: match msg.role {
-                        MessageRole::User => "user".to_string(),
-                        MessageRole::Assistant => "assistant".to_string(),
-                    },
-                    content: content_blocks,
-                }
-            })
-            .collect()
-    }
     pub fn default_base_url() -> String {
         "https://api.anthropic.com/v1".to_string()
     }
@@ -556,11 +633,12 @@ impl AnthropicClient {
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
             client: Client::new(),
-            api_key,
             base_url,
             model,
             recorder: None,
-            cache_state: HashMap::new(),
+            auth_provider: Box::new(ApiKeyAuth::new(api_key)),
+            request_customizer: Box::new(DefaultRequestCustomizer),
+            message_converter: Box::new(DefaultMessageConverter::new()),
         }
     }
 
@@ -573,21 +651,48 @@ impl AnthropicClient {
     ) -> Self {
         Self {
             client: Client::new(),
-            api_key,
             base_url,
             model,
             recorder: Some(APIRecorder::new(recording_path)),
-            cache_state: HashMap::new(),
+            auth_provider: Box::new(ApiKeyAuth::new(api_key)),
+            request_customizer: Box::new(DefaultRequestCustomizer),
+            message_converter: Box::new(DefaultMessageConverter::new()),
         }
     }
 
-    fn get_url(&self) -> String {
-        format!("{}/messages", self.base_url)
+    /// New constructor for customization
+    pub fn with_customization(
+        model: String,
+        base_url: String,
+        auth_provider: Box<dyn AuthProvider>,
+        request_customizer: Box<dyn RequestCustomizer>,
+        message_converter: Box<dyn MessageConverter>,
+    ) -> Self {
+        Self {
+            client: Client::new(),
+            base_url,
+            model,
+            recorder: None,
+            auth_provider,
+            request_customizer,
+            message_converter,
+        }
+    }
+
+    /// Set recorder for existing client
+    pub fn with_recorder<P: AsRef<std::path::Path>>(mut self, recording_path: P) -> Self {
+        self.recorder = Some(APIRecorder::new(recording_path));
+        self
+    }
+
+    fn get_url(&self, streaming: bool) -> String {
+        self.request_customizer
+            .customize_url(&self.base_url, streaming)
     }
 
     async fn send_with_retry(
         &mut self,
-        request: &AnthropicRequest,
+        request: &serde_json::Value,
         streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
     ) -> Result<LLMResponse> {
@@ -620,7 +725,7 @@ impl AnthropicClient {
 
     async fn try_send_request(
         &mut self,
-        request: &AnthropicRequest,
+        request: &serde_json::Value,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
         let accept_value = if streaming_callback.is_some() {
@@ -631,17 +736,29 @@ impl AnthropicClient {
 
         // Start recording before HTTP request to capture real latency
         if let Some(recorder) = &self.recorder {
-            let request_json = serde_json::to_value(request)?;
-            recorder.start_recording(request_json)?;
+            recorder.start_recording(request.clone())?;
         }
 
+        // Get auth headers
+        let auth_headers = self.auth_provider.get_auth_headers().await?;
+
+        // Build request
         let mut request_builder = self
             .client
-            .post(self.get_url())
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
+            .post(self.get_url(streaming_callback.is_some()))
             .header("accept", accept_value);
 
+        // Add auth headers
+        for (key, value) in auth_headers {
+            request_builder = request_builder.header(key, value);
+        }
+
+        // Add additional headers
+        for (key, value) in self.request_customizer.get_additional_headers() {
+            request_builder = request_builder.header(key, value);
+        }
+
+        // Add model-specific headers
         if self.model.starts_with("claude-3-7-sonnet") || self.model.starts_with("claude-sonnet-4")
         {
             request_builder = request_builder.header("anthropic-beta", "output-128k-2025-02-19");
@@ -837,8 +954,8 @@ impl AnthropicClient {
                                     ContentDelta::Thinking {
                                         thinking: delta_text,
                                     } => {
-                                        callback(&StreamingChunk::Thinking(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
+                                        callback(&StreamingChunk::Thinking(delta_text.clone()))?;
                                     }
                                     ContentDelta::Signature {
                                         signature: signature_delta,
@@ -851,8 +968,8 @@ impl AnthropicClient {
                                         }
                                     }
                                     ContentDelta::Text { text: delta_text } => {
-                                        callback(&StreamingChunk::Text(delta_text.clone()))?;
                                         current_content.push_str(delta_text);
+                                        callback(&StreamingChunk::Text(delta_text.clone()))?;
                                     }
                                     ContentDelta::InputJson { partial_json } => {
                                         let (tool_name, tool_id) =
@@ -867,13 +984,12 @@ impl AnthropicClient {
                                                 }
                                             });
 
+                                        current_content.push_str(partial_json);
                                         callback(&StreamingChunk::InputJson {
                                             content: partial_json.clone(),
                                             tool_name,
                                             tool_id,
                                         })?;
-
-                                        current_content.push_str(partial_json);
                                     }
                                 }
                             }
@@ -903,7 +1019,7 @@ impl AnthropicClient {
             }
 
             while let Some(chunk) = response.chunk().await? {
-                process_chunk(
+                match process_chunk(
                     &chunk,
                     &mut line_buffer,
                     &mut blocks,
@@ -911,7 +1027,34 @@ impl AnthropicClient {
                     &mut current_content,
                     callback,
                     &self.recorder,
-                )?;
+                ) {
+                    Ok(()) => continue,
+                    Err(e) if e.to_string().contains("Tool limit reached") => {
+                        debug!("Tool limit reached, stopping streaming early. Collected {} blocks so far", blocks.len());
+
+                        // Finalize the current block with any accumulated content
+                        if !blocks.is_empty() && !current_content.is_empty() {
+                            match blocks.last_mut().unwrap() {
+                                ContentBlock::Thinking { thinking, .. } => {
+                                    *thinking = current_content.clone();
+                                }
+                                ContentBlock::Text { text } => {
+                                    *text = current_content.clone();
+                                }
+                                ContentBlock::ToolUse { input, .. } => {
+                                    if let Ok(json) = serde_json::from_str(&current_content) {
+                                        *input = json;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        line_buffer.clear(); // Make sure we stop processing
+                        break; // Exit chunk processing loop early
+                    }
+                    Err(e) => return Err(e), // Propagate other errors
+                }
             }
 
             // Process any remaining data in the buffer
@@ -1043,17 +1186,32 @@ impl LLMProvider for AnthropicClient {
             (None, 8192)
         };
 
-        let anthropic_request = AnthropicRequest {
-            model: self.model.clone(),
-            thinking,
-            messages: self.convert_messages_with_cache(request.messages),
-            max_tokens,
-            temperature: 1.0,
-            system,
-            stream: streaming_callback.map(|_| true),
-            tool_choice,
-            tools,
-        };
+        // Convert messages using the message converter
+        let converted_messages = self.message_converter.convert_messages(request.messages)?;
+        let messages_json = converted_messages.into_iter().next().unwrap_or_default();
+
+        let mut anthropic_request = serde_json::json!({
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": 1.0,
+            "system": system,
+            "stream": streaming_callback.is_some(),
+            "messages": messages_json,
+        });
+
+        if let Some(thinking_config) = thinking {
+            anthropic_request["thinking"] = serde_json::to_value(thinking_config)?;
+        }
+        if let Some(tool_choice) = tool_choice {
+            anthropic_request["tool_choice"] = tool_choice;
+        }
+        if let Some(tools) = tools {
+            anthropic_request["tools"] = serde_json::to_value(tools)?;
+        }
+
+        // Allow request customizer to modify the request
+        self.request_customizer
+            .customize_request(&mut anthropic_request)?;
 
         self.send_with_retry(&anthropic_request, streaming_callback, 3)
             .await

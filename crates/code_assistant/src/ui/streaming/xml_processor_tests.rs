@@ -13,7 +13,14 @@ fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
 
     // Split text into small chunks and process each one
     for chunk in chunk_str(text, chunk_size) {
-        processor.process(&StreamingChunk::Text(chunk)).unwrap();
+        match processor.process(&StreamingChunk::Text(chunk)) {
+            Ok(()) => continue,
+            Err(e) if e.to_string().contains("Tool limit reached") => {
+                // Tool limit reached, stop processing - this is expected behavior
+                break;
+            }
+            Err(e) => panic!("Unexpected error: {}", e),
+        }
     }
 
     test_ui
@@ -21,6 +28,8 @@ fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
 
 #[cfg(test)]
 mod tests {
+    use crate::ui::streaming::test_utils::print_fragments;
+
     use super::*;
 
     #[test]
@@ -76,6 +85,86 @@ mod tests {
 
         let fragments = test_ui.get_fragments();
         assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_text_and_multiple_tools() {
+        // Test that tool limit error occurs after first tool completes, preventing second tool processing
+        let input = concat!(
+            "Let me read a file:\n",
+            "\n",
+            "<tool:read_files>\n",
+            "<param:project>test</param:project>\n",
+            "<param:path>src/main.rs</param:path>\n",
+            "</tool:read_files>\n", // Tool limit error should occur here
+            "\n",
+            "And replace something in it:\n",
+            "\n",
+            "<tool:replace_in_file>\n",
+            "<param:project>test</param:project>\n",
+            "<param:path>src/main.rs</param:path>\n",
+            "<param:diff>\n",
+            ">>>>>>> SEARCH\n",
+            "use tracing::warn;\n",
+            "=======\n",
+            "use tracing::{error, warn};\n",
+            "<<<<<<< REPLACE\n",
+            "</param:path>\n",
+            "</tool:replace_in_file>\n",
+        );
+
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+
+        let mut processor = XmlStreamProcessor::new(ui_arc, 42);
+
+        // Process the input and expect an error
+        let result = processor.process(&StreamingChunk::Text(input.to_string()));
+
+        // Should get a tool limit error
+        assert!(result.is_err(), "Expected tool limit error");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("Tool limit reached"),
+            "Error should mention tool limit: {}",
+            error_msg
+        );
+
+        // Should have processed the first tool completely, but not the second tool
+        let fragments = test_ui.get_fragments();
+
+        // Verify first tool is present and complete
+        let first_tool_fragments: Vec<_> = fragments
+            .iter()
+            .filter(|f| match f {
+                DisplayFragment::ToolName { name, .. } if name == "read_files" => true,
+                DisplayFragment::ToolParameter { tool_id, .. } if tool_id == "tool-42-1" => true,
+                DisplayFragment::ToolEnd { id } if id == "tool-42-1" => true,
+                _ => false,
+            })
+            .collect();
+
+        assert!(
+            first_tool_fragments.len() >= 3,
+            "Should have at least tool name, parameter(s), and tool end for first tool"
+        );
+
+        // Verify second tool is NOT present (no fragments with tool-42-2 ID)
+        let second_tool_fragments: Vec<_> = fragments
+            .iter()
+            .filter(|f| match f {
+                DisplayFragment::ToolName { name, .. } if name == "replace_in_file" => true,
+                DisplayFragment::ToolParameter { tool_id, .. } if tool_id == "tool-42-2" => true,
+                DisplayFragment::ToolEnd { id } if id == "tool-42-2" => true,
+                _ => false,
+            })
+            .collect();
+
+        assert_eq!(
+            second_tool_fragments.len(),
+            0,
+            "Second tool should not be processed due to tool limit"
+        );
     }
 
     #[test]
@@ -397,6 +486,351 @@ mod tests {
                 "Please use <tool:read_files> to read <param:path>test.txt</param:path> and show me <thinking>what should I do</thinking>".to_string()
             ),
         ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_param_tags_outside_tool_context_treated_as_plain_text() {
+        // Test that parameter tags outside tool context are rendered as plain text
+        let input = "Some text <param:invalid>parameter content</param:invalid> more text";
+
+        let test_ui = process_chunked_text(input, 5);
+        let fragments = test_ui.get_fragments();
+
+        // Should be treated as plain text since there's no surrounding tool
+        let expected_fragments = vec![DisplayFragment::PlainText(
+            "Some text <param:invalid>parameter content</param:invalid> more text".to_string(),
+        )];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_param_tags_before_tool_context_treated_as_plain_text() {
+        // Test parameter tags that appear before any tool is opened
+        let input = "<param:orphaned>content</param:orphaned>\n<tool:read_files>\n<param:path>test.txt</param:path>\n</tool:read_files>";
+
+        let test_ui = process_chunked_text(input, 8);
+        let fragments = test_ui.get_fragments();
+
+        let expected_fragments = vec![
+            // Orphaned parameter tags should be plain text
+            DisplayFragment::PlainText("<param:orphaned>content</param:orphaned>".to_string()),
+            // Valid tool and parameter
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "test.txt".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(),
+            },
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_param_tags_after_tool_context_treated_as_plain_text() {
+        // Test that processing stops after tool completes, preventing orphaned param processing
+        let input = "<tool:read_files>\n<param:path>test.txt</param:path>\n</tool:read_files>\n<param:orphaned>content</param:orphaned>";
+
+        let test_ui = process_chunked_text(input, 10);
+        let fragments = test_ui.get_fragments();
+
+        let expected_fragments = vec![
+            // Valid tool and parameter - processing stops after ToolEnd
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "test.txt".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(),
+            },
+            // Note: orphaned parameter after tool is NOT processed due to tool limit
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_unclosed_param_tag_with_tool_closing() {
+        // Test the specific scenario where a parameter tag is not closed before tool ends
+        let input =
+            "<tool:edit_file>\n<param:diff>some content without closing tag\n</tool:edit_file>";
+
+        let test_ui = process_chunked_text(input, 12);
+        let fragments = test_ui.get_fragments();
+
+        let expected_fragments = vec![
+            DisplayFragment::ToolName {
+                name: "edit_file".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "diff".to_string(),
+                value: "some content without closing tag".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(),
+            },
+        ];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_param_end_tag_without_param_start() {
+        // Test parameter end tags that appear without corresponding start tags
+        let input = "Some text </param:invalid> more text";
+
+        let test_ui = process_chunked_text(input, 6);
+        let fragments = test_ui.get_fragments();
+
+        // Should be treated as plain text since there's no corresponding param start
+        let expected_fragments = vec![DisplayFragment::PlainText(
+            "Some text </param:invalid> more text".to_string(),
+        )];
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_multiple_tools_with_malformed_params() {
+        // Test that tool limit error occurs after first tool, preventing second tool processing
+        let input = concat!(
+            "<param:orphaned1>before tools</param:orphaned1>\n",
+            "<tool:first_tool>\n",
+            "<param:valid>content</param:valid>\n",
+            "</tool:first_tool>\n", // Tool limit error should occur here
+            "<param:orphaned2>between tools</param:orphaned2>\n",
+            "<tool:second_tool>\n",
+            "<param:also_valid>more content\n", // Missing closing tag
+            "</tool:second_tool>\n",
+            "<param:orphaned3>after tools</param:orphaned3>"
+        );
+
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+
+        let mut processor = XmlStreamProcessor::new(ui_arc, 42);
+
+        // Process the input and expect an error
+        let result = processor.process(&StreamingChunk::Text(input.to_string()));
+
+        // Should get a tool limit error
+        assert!(result.is_err(), "Expected tool limit error");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("Tool limit reached"),
+            "Error should mention tool limit: {}",
+            error_msg
+        );
+
+        // Should have processed orphaned param, first tool completely, but not the second tool
+        let fragments = test_ui.get_fragments();
+
+        // Verify orphaned parameter before first tool is present
+        let orphaned_before: Vec<_> = fragments
+            .iter()
+            .filter(|f| matches!(f, DisplayFragment::PlainText(text) if text.contains("orphaned1")))
+            .collect();
+        assert!(
+            orphaned_before.len() > 0,
+            "Should have orphaned parameter before first tool"
+        );
+
+        // Verify first tool is present and complete
+        let first_tool_fragments: Vec<_> = fragments
+            .iter()
+            .filter(|f| match f {
+                DisplayFragment::ToolName { name, .. } if name == "first_tool" => true,
+                DisplayFragment::ToolParameter { tool_id, .. } if tool_id == "tool-42-1" => true,
+                DisplayFragment::ToolEnd { id } if id == "tool-42-1" => true,
+                _ => false,
+            })
+            .collect();
+
+        assert!(
+            first_tool_fragments.len() >= 3,
+            "Should have at least tool name, parameter, and tool end for first tool"
+        );
+
+        // Verify second tool is NOT present (no fragments with tool-42-2 ID or second_tool name)
+        let second_tool_fragments: Vec<_> = fragments
+            .iter()
+            .filter(|f| match f {
+                DisplayFragment::ToolName { name, .. } if name == "second_tool" => true,
+                DisplayFragment::ToolParameter { tool_id, .. } if tool_id == "tool-42-2" => true,
+                DisplayFragment::ToolEnd { id } if id == "tool-42-2" => true,
+                _ => false,
+            })
+            .collect();
+
+        assert_eq!(
+            second_tool_fragments.len(),
+            0,
+            "Second tool should not be processed due to tool limit"
+        );
+
+        // Verify orphaned parameter between tools is NOT present (processing stopped after first tool)
+        let orphaned_between: Vec<_> = fragments
+            .iter()
+            .filter(|f| matches!(f, DisplayFragment::PlainText(text) if text.contains("orphaned2")))
+            .collect();
+        assert_eq!(
+            orphaned_between.len(),
+            0,
+            "Should not process content after first tool due to tool limit"
+        );
+
+        // Verify orphaned parameter after all tools is NOT present (processing stopped at second tool start)
+        let orphaned_after: Vec<_> = fragments
+            .iter()
+            .filter(|f| matches!(f, DisplayFragment::PlainText(text) if text.contains("orphaned3")))
+            .collect();
+        assert_eq!(
+            orphaned_after.len(),
+            0,
+            "Should not process content after tool limit is triggered"
+        );
+    }
+
+    #[test]
+    fn test_tool_limit_detection() {
+        // Test that tool limit error occurs after first tool ends (not at second tool start)
+        let input = concat!(
+            "Some text before first tool\n",
+            "<tool:read_files>\n",
+            "<param:path>test.txt</param:path>\n",
+            "</tool:read_files>\n", // Tool limit error should occur here
+            "Some text after first tool\n",
+            "<tool:write_file>\n",
+            "<param:path>output.txt</param:path>\n",
+            "</tool:write_file>"
+        );
+
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+
+        let mut processor = XmlStreamProcessor::new(ui_arc, 42);
+
+        // Process the input and expect an error
+        let result = processor.process(&StreamingChunk::Text(input.to_string()));
+
+        // Should get a tool limit error
+        assert!(result.is_err(), "Expected tool limit error");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("Tool limit reached"),
+            "Error should mention tool limit: {}",
+            error_msg
+        );
+
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("Some text before first tool".to_string()),
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "test.txt".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(),
+            },
+        ];
+
+        let fragments = test_ui.get_fragments();
+        print_fragments(&fragments);
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
+
+    #[test]
+    fn test_tool_limit_detection_with_realistic_chunks() {
+        let chunks = vec![
+            "I'll help",
+            " you ref",
+            "actor the A",
+            "nthropic client:",
+            "\n\n<tool",
+            ":",
+            "rea",
+            "d_",
+            "files",
+            ">\n<param",
+            ":",
+            "project",
+            ">",
+            "code-assistant",
+            "</param:project>",
+            "\n<param:",
+            "path",
+            ">",
+            "crates/ll",
+            "m/src/",
+            "anthropic.rs",
+            "</param:path",
+            ">\n</tool",
+            ":read_files",
+            ">\n\n---",
+            ">\n\n---",
+        ];
+
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+
+        let mut processor = XmlStreamProcessor::new(ui_arc, 42);
+
+        // Split text into small chunks and process each one
+        for chunk in chunks {
+            match processor.process(&StreamingChunk::Text(chunk.to_string())) {
+                Ok(()) => continue,
+                Err(e) if e.to_string().contains("Tool limit reached") => {
+                    // Tool limit reached, stop processing - this is expected behavior
+                    break;
+                }
+                Err(e) => panic!("Unexpected error: {}", e),
+            }
+        }
+
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("I'll help you refactor the Anthropic client:".to_string()),
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "project".to_string(),
+                value: "code-assistant".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "crates/llm/src/anthropic.rs".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(),
+            },
+        ];
+
+        let fragments = test_ui.get_fragments();
+        print_fragments(&fragments);
 
         assert_fragments_match(&expected_fragments, &fragments);
     }

@@ -184,7 +184,6 @@ impl<T: Render> AutoScrollContainer<T> {
         // Initialize expected position to current position to avoid false positives
         let current_position = self.scroll_handle.offset().y.0;
         self.last_set_scroll_position.set(current_position);
-        debug!("Task started with initial position: {}", current_position);
 
         let scroll_handle_orig = self.scroll_handle.clone();
         let autoscroll_active_orig = self.autoscroll_active.clone();
