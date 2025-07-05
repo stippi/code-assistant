@@ -357,12 +357,12 @@ impl XmlStreamProcessor {
                     TagType::ToolStart => {
                         // Extract the tool name from tag_info
                         if let Some(tool_name) = tag_info {
-                            // For XML tools, generate ID based on request ID and tool counter
-                            self.state.tool_counter += 1;
-
                             // Start a new tool section
                             self.state.in_tool = true;
                             self.state.tool_name = tool_name;
+
+                            // For XML tools, generate ID based on request ID and tool counter
+                            self.state.tool_counter += 1;
                             self.state.tool_id =
                                 format!("tool-{}-{}", self.request_id, self.state.tool_counter);
 
