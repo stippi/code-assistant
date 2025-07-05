@@ -826,6 +826,7 @@ impl AiCoreClient {
                             }
                         }
 
+                        line_buffer.clear(); // Make sure we stop processing
                         break; // Exit chunk processing loop early
                     }
                     Err(e) => return Err(e), // Propagate other errors

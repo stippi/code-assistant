@@ -759,4 +759,79 @@ mod tests {
 
         assert_fragments_match(&expected_fragments, &fragments);
     }
+
+    #[test]
+    fn test_tool_limit_detection_with_realistic_chunks() {
+        let chunks = vec![
+            "I'll help",
+            " you ref",
+            "actor the A",
+            "nthropic client:",
+            "\n\n<tool",
+            ":",
+            "rea",
+            "d_",
+            "files",
+            ">\n<param",
+            ":",
+            "project",
+            ">",
+            "code-assistant",
+            "</param:project>",
+            "\n<param:",
+            "path",
+            ">",
+            "crates/ll",
+            "m/src/",
+            "anthropic.rs",
+            "</param:path",
+            ">\n</tool",
+            ":read_files",
+            ">\n\n---",
+            ">\n\n---",
+        ];
+
+        let test_ui = TestUI::new();
+        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+
+        let mut processor = XmlStreamProcessor::new(ui_arc, 42);
+
+        // Split text into small chunks and process each one
+        for chunk in chunks {
+            match processor.process(&StreamingChunk::Text(chunk.to_string())) {
+                Ok(()) => continue,
+                Err(e) if e.to_string().contains("Tool limit reached") => {
+                    // Tool limit reached, stop processing - this is expected behavior
+                    break;
+                }
+                Err(e) => panic!("Unexpected error: {}", e),
+            }
+        }
+
+        let expected_fragments = vec![
+            DisplayFragment::PlainText("I'll help you refactor the Anthropic client:".to_string()),
+            DisplayFragment::ToolName {
+                name: "read_files".to_string(),
+                id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "project".to_string(),
+                value: "code-assistant".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolParameter {
+                name: "path".to_string(),
+                value: "crates/llm/src/anthropic.rs".to_string(),
+                tool_id: "tool-42-1".to_string(),
+            },
+            DisplayFragment::ToolEnd {
+                id: "tool-42-1".to_string(),
+            },
+        ];
+
+        let fragments = test_ui.get_fragments();
+        print_fragments(&fragments);
+
+        assert_fragments_match(&expected_fragments, &fragments);
+    }
 }
