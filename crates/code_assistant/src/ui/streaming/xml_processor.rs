@@ -424,13 +424,21 @@ impl XmlStreamProcessor {
                             // Log and treat parameter tags outside of tool context as plain text
                             warn!("Parameter tag found outside of tool context, treating as plain text");
                             // Process as a single character (the '<')
-                            let char_len = processing_text[absolute_tag_pos..].chars().next().map_or(1, |c| c.len_utf8());
-                            let char_text = &processing_text[absolute_tag_pos..absolute_tag_pos + char_len];
-                            
+                            let char_len = processing_text[absolute_tag_pos..]
+                                .chars()
+                                .next()
+                                .map_or(1, |c| c.len_utf8());
+                            let char_text =
+                                &processing_text[absolute_tag_pos..absolute_tag_pos + char_len];
+
                             if self.state.in_thinking {
-                                self.ui.display_fragment(&DisplayFragment::ThinkingText(char_text.to_string()))?;
+                                self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                    char_text.to_string(),
+                                ))?;
                             } else {
-                                self.ui.display_fragment(&DisplayFragment::PlainText(char_text.to_string()))?;
+                                self.ui.display_fragment(&DisplayFragment::PlainText(
+                                    char_text.to_string(),
+                                ))?;
                             }
                             current_pos = absolute_tag_pos + char_len;
                         }
@@ -438,7 +446,10 @@ impl XmlStreamProcessor {
 
                     TagType::ParamEnd => {
                         // Only process parameter end tags if we're actually in a parameter
-                        if self.state.in_param && self.state.in_tool && !self.state.tool_id.is_empty() {
+                        if self.state.in_param
+                            && self.state.in_tool
+                            && !self.state.tool_id.is_empty()
+                        {
                             // End parameter section
                             self.state.in_param = false;
                             self.state.param_name = String::new();
@@ -450,13 +461,21 @@ impl XmlStreamProcessor {
                             // Treat as plain text if not in valid parameter context
                             warn!("Parameter end tag found outside of parameter context, treating as plain text");
                             // Process as a single character (the '<')
-                            let char_len = processing_text[absolute_tag_pos..].chars().next().map_or(1, |c| c.len_utf8());
-                            let char_text = &processing_text[absolute_tag_pos..absolute_tag_pos + char_len];
-                            
+                            let char_len = processing_text[absolute_tag_pos..]
+                                .chars()
+                                .next()
+                                .map_or(1, |c| c.len_utf8());
+                            let char_text =
+                                &processing_text[absolute_tag_pos..absolute_tag_pos + char_len];
+
                             if self.state.in_thinking {
-                                self.ui.display_fragment(&DisplayFragment::ThinkingText(char_text.to_string()))?;
+                                self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                    char_text.to_string(),
+                                ))?;
                             } else {
-                                self.ui.display_fragment(&DisplayFragment::PlainText(char_text.to_string()))?;
+                                self.ui.display_fragment(&DisplayFragment::PlainText(
+                                    char_text.to_string(),
+                                ))?;
                             }
                             current_pos = absolute_tag_pos + char_len;
                         }
@@ -485,8 +504,9 @@ impl XmlStreamProcessor {
                                     })?;
                                 } else {
                                     // Treat as plain text if no tool context
-                                    self.ui
-                                        .display_fragment(&DisplayFragment::PlainText(single_char))?;
+                                    self.ui.display_fragment(&DisplayFragment::PlainText(
+                                        single_char,
+                                    ))?;
                                 }
                             } else {
                                 self.ui
