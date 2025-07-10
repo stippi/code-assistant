@@ -227,19 +227,25 @@ pub struct AiCoreClient {
 }
 
 impl AiCoreClient {
-    pub fn new(token_manager: Arc<TokenManager>, base_url: String) -> Self {
+    fn create_anthropic_client(
+        token_manager: Arc<TokenManager>,
+        base_url: String,
+    ) -> AnthropicClient {
         let auth_provider = Box::new(AiCoreAuthProvider::new(token_manager));
         let request_customizer = Box::new(AiCoreRequestCustomizer);
         let message_converter = Box::new(AiCoreMessageConverter::new());
 
-        let anthropic_client = AnthropicClient::with_customization(
-            "claude-3-5-sonnet-20241022".to_string(), // Default model, can be overridden
+        AnthropicClient::with_customization(
+            "ignored".to_string(), // Default model, can be overridden
             base_url,
             auth_provider,
             request_customizer,
             message_converter,
-        );
+        )
+    }
 
+    pub fn new(token_manager: Arc<TokenManager>, base_url: String) -> Self {
+        let anthropic_client = Self::create_anthropic_client(token_manager, base_url);
         Self { anthropic_client }
     }
 
@@ -249,18 +255,8 @@ impl AiCoreClient {
         base_url: String,
         recording_path: P,
     ) -> Self {
-        let auth_provider = Box::new(AiCoreAuthProvider::new(token_manager));
-        let request_customizer = Box::new(AiCoreRequestCustomizer);
-        let message_converter = Box::new(AiCoreMessageConverter::new());
-
-        let anthropic_client = AnthropicClient::with_customization(
-            "claude-3-5-sonnet-20241022".to_string(), // Default model, can be overridden
-            base_url,
-            auth_provider,
-            request_customizer,
-            message_converter,
-        )
-        .with_recorder(recording_path);
+        let anthropic_client =
+            Self::create_anthropic_client(token_manager, base_url).with_recorder(recording_path);
 
         Self { anthropic_client }
     }
@@ -273,12 +269,6 @@ impl LLMProvider for AiCoreClient {
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse> {
-        // AiCore specific modifications
-        if request.tools.is_some() {
-            // Change tool_choice to "any" for AiCore compatibility
-            // This will be handled by the request customizer if needed
-        }
-
         // Delegate to the wrapped AnthropicClient
         self.anthropic_client
             .send_message(request, streaming_callback)
