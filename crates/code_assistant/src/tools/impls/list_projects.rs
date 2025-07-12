@@ -72,7 +72,7 @@ impl Tool for ListProjectsTool {
             annotations: Some(json!({
                 "readOnlyHint": true
             })),
-            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            supported_scopes: &[ToolScope::McpServer],
         }
     }
 
