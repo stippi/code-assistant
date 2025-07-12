@@ -109,24 +109,21 @@ impl Agent {
     fn build_current_metadata(&self) -> Option<ChatMetadata> {
         // Only build metadata if we have a session ID
         self.session_id.as_ref().map(|session_id| {
-            // Calculate current context size from most recent assistant message
-            let current_context_size = self
-                .message_history
-                .iter()
-                .rev()
-                .find(|msg| matches!(msg.role, MessageRole::Assistant))
-                .and_then(|msg| msg.usage.as_ref())
-                .map(|usage| usage.input_tokens + usage.cache_read_input_tokens)
-                .unwrap_or(0);
-
-            // Calculate total usage across all messages
+            // Calculate total usage and find last usage across all messages
             let mut total_usage = llm::Usage::zero();
+            let mut last_usage = llm::Usage::zero();
+
             for message in &self.message_history {
                 if let Some(usage) = &message.usage {
                     total_usage.input_tokens += usage.input_tokens;
                     total_usage.output_tokens += usage.output_tokens;
                     total_usage.cache_creation_input_tokens += usage.cache_creation_input_tokens;
                     total_usage.cache_read_input_tokens += usage.cache_read_input_tokens;
+
+                    // For assistant messages, update last usage (most recent wins)
+                    if matches!(message.role, MessageRole::Assistant) {
+                        last_usage = usage.clone();
+                    }
                 }
             }
 
@@ -139,8 +136,8 @@ impl Agent {
                 created_at: SystemTime::now(),                 // Will be overridden by persistence
                 updated_at: SystemTime::now(),
                 message_count: self.message_history.len(),
-                current_context_size,
                 total_usage,
+                last_usage,
                 tokens_limit,
             }
         })

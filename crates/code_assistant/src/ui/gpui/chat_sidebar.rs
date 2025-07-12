@@ -6,7 +6,7 @@ use gpui::{
     div, prelude::*, px, AppContext, Context, Entity, FocusHandle, Focusable, MouseButton,
     MouseUpEvent, SharedString, Styled, Window,
 };
-use gpui_component::{ActiveTheme, StyledExt};
+use gpui_component::{ActiveTheme, Icon, StyledExt};
 use std::time::SystemTime;
 use tracing::{debug, trace, warn};
 
@@ -194,45 +194,61 @@ impl Render for ChatListItem {
             )
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(SharedString::from(formatted_date)),
-            )
-            .when(
-                self.metadata.total_usage.input_tokens > 0
-                    || self.metadata.total_usage.output_tokens > 0,
-                |s| {
-                    let mut token_elements = Vec::new();
+                    .child(SharedString::from(formatted_date))
+                    .when(
+                        self.metadata.last_usage.input_tokens > 0
+                            || self.metadata.last_usage.cache_read_input_tokens > 0,
+                        |d| {
+                            let mut token_elements = Vec::new();
 
-                    // Input tokens (blue)
-                    token_elements.push(div().text_color(cx.theme().info).child(
-                        SharedString::from(format!("{}", self.metadata.total_usage.input_tokens)),
-                    ));
+                            // Input tokens from last request with arrow_up icon
+                            if self.metadata.last_usage.input_tokens > 0 {
+                                token_elements.push(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(
+                                            Icon::default()
+                                                .path(SharedString::from("icons/arrow_up.svg"))
+                                                .text_color(cx.theme().muted_foreground),
+                                        )
+                                        .child(SharedString::from(format!(
+                                            "{}",
+                                            self.metadata.last_usage.input_tokens
+                                        ))),
+                                );
+                            }
 
-                    // Cache reads (cyan) - only if > 0
-                    if self.metadata.total_usage.cache_read_input_tokens > 0 {
-                        token_elements.push(div().text_color(cx.theme().info.opacity(0.7)).child(
-                            SharedString::from(format!(
-                                "{}",
-                                self.metadata.total_usage.cache_read_input_tokens
-                            )),
-                        ));
-                    }
+                            // Cache read tokens from last request with arrow_circle icon
+                            if self.metadata.last_usage.cache_read_input_tokens > 0 {
+                                token_elements.push(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(
+                                            Icon::default()
+                                                .path(SharedString::from("icons/arrow_circle.svg"))
+                                                .text_color(cx.theme().muted_foreground),
+                                        )
+                                        .child(SharedString::from(format!(
+                                            "{}",
+                                            self.metadata.last_usage.cache_read_input_tokens
+                                        ))),
+                                );
+                            }
 
-                    // Output tokens (green)
-                    token_elements.push(div().text_color(cx.theme().success).child(
-                        SharedString::from(format!("{}", self.metadata.total_usage.output_tokens)),
-                    ));
-
-                    // Context size (yellow) - only if > 0
-                    if self.metadata.current_context_size > 0 {
-                        token_elements.push(div().text_color(cx.theme().warning).child(
-                            SharedString::from(format!("/{}", self.metadata.current_context_size)),
-                        ));
-                    }
-
-                    s.child(div().flex().gap_1().text_xs().children(token_elements))
-                },
+                            d.child(div().flex().gap_2().children(token_elements))
+                        },
+                    ),
             )
     }
 }
