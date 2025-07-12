@@ -25,7 +25,10 @@ use crate::ui::gpui::{
 use crate::ui::{async_trait, DisplayFragment, StreamingState, UIError, UiEvent, UserInterface};
 use assets::Assets;
 use async_channel;
-use gpui::{actions, px, AppContext, AsyncApp, Entity, Global, Point};
+use gpui::{
+    actions, px, App, AppContext, AsyncApp, Entity, Global, KeyBinding, Menu, MenuItem, Point,
+    SharedString,
+};
 use gpui_component::input::InputState;
 use gpui_component::Root;
 pub use memory::MemoryView;
@@ -38,7 +41,7 @@ use tracing::{debug, error, trace, warn};
 
 use elements::MessageContainer;
 
-actions!(code_assistant, [CloseWindow]);
+actions!(code_assistant, [Quit, CloseWindow]);
 
 // Global UI event sender for chat components
 #[derive(Clone)]
@@ -102,6 +105,38 @@ pub struct Gpui {
 
     // UI components
     chat_sidebar: Arc<Mutex<Option<Entity<chat_sidebar::ChatSidebar>>>>,
+}
+
+fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+
+    cx.on_action(|_: &Quit, cx: &mut App| {
+        cx.quit();
+    });
+
+    use gpui_component::input::{Copy, Cut, Paste, Redo, Undo};
+    cx.set_menus(vec![
+        Menu {
+            name: "GPUI App".into(),
+            items: vec![MenuItem::action("Quit", Quit)],
+        },
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Undo", Undo, gpui::OsAction::Undo),
+                MenuItem::os_action("Redo", Redo, gpui::OsAction::Redo),
+                MenuItem::separator(),
+                MenuItem::os_action("Cut", Cut, gpui::OsAction::Cut),
+                MenuItem::os_action("Copy", Copy, gpui::OsAction::Copy),
+                MenuItem::os_action("Paste", Paste, gpui::OsAction::Paste),
+            ],
+        },
+        Menu {
+            name: "Window".into(),
+            items: vec![],
+        },
+    ]);
+    cx.activate(true);
 }
 
 // Implement Global trait for Gpui
@@ -208,6 +243,8 @@ impl Gpui {
             // Apply our custom theme colors
             theme::init_themes(cx);
 
+            init(cx);
+
             // Spawn task to receive UiEvents
             let rx = gpui_clone.event_receiver.lock().unwrap().clone();
             let async_gpui_clone = gpui_clone.clone();
@@ -279,68 +316,70 @@ impl Gpui {
             let bounds =
                 gpui::Bounds::centered(None, gpui::size(gpui::px(1400.0), gpui::px(700.0)), cx);
             // Open window with titlebar
-            let window_result = cx.open_window(
-                gpui::WindowOptions {
-                    window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
-                    titlebar: Some(gpui::TitlebarOptions {
-                        title: Some(gpui::SharedString::from("Code Assistant")),
-                        appears_transparent: true,
-                        traffic_light_position: Some(Point {
-                            x: px(16.),
-                            y: px(16.),
+            let window = cx
+                .open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+                        titlebar: Some(gpui::TitlebarOptions {
+                            title: Some(gpui::SharedString::from("Code Assistant")),
+                            appears_transparent: true,
+                            traffic_light_position: Some(Point {
+                                x: px(16.),
+                                y: px(16.),
+                            }),
                         }),
-                    }),
-                    ..Default::default()
-                },
-                |window, cx| {
-                    // Create TextInput with multi-line support
-                    let text_input = cx.new(|cx| {
-                        InputState::new(window, cx)
-                            .multi_line()
-                            .auto_grow(1, 8)
-                            .placeholder("Type your message...")
-                    });
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        // Create TextInput with multi-line support
+                        let text_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .multi_line()
+                                .auto_grow(1, 8)
+                                .placeholder("Type your message...")
+                        });
 
-                    // Create MessagesView
-                    let messages_view = cx.new(|cx| MessagesView::new(message_queue.clone(), cx));
+                        // Create MessagesView
+                        let messages_view =
+                            cx.new(|cx| MessagesView::new(message_queue.clone(), cx));
 
-                    // Create ChatSidebar and store it in Gpui
-                    let chat_sidebar = cx.new(|cx| chat_sidebar::ChatSidebar::new(cx));
-                    *gpui_clone.chat_sidebar.lock().unwrap() = Some(chat_sidebar.clone());
+                        // Create ChatSidebar and store it in Gpui
+                        let chat_sidebar = cx.new(|cx| chat_sidebar::ChatSidebar::new(cx));
+                        *gpui_clone.chat_sidebar.lock().unwrap() = Some(chat_sidebar.clone());
 
-                    // Create RootView
-                    let root_view = cx.new(|cx| {
-                        RootView::new(
-                            text_input,
-                            memory_view.clone(),
-                            messages_view,
-                            chat_sidebar.clone(),
-                            cx,
-                            input_value.clone(),
-                            input_requested.clone(),
-                            gpui_clone.streaming_state.clone(),
-                        )
-                    });
+                        // Create RootView
+                        let root_view = cx.new(|cx| {
+                            RootView::new(
+                                text_input,
+                                memory_view.clone(),
+                                messages_view,
+                                chat_sidebar.clone(),
+                                cx,
+                                input_value.clone(),
+                                input_requested.clone(),
+                                gpui_clone.streaming_state.clone(),
+                            )
+                        });
 
-                    // Wrap in Root component
-                    cx.new(|cx| Root::new(root_view.into(), window, cx))
-                },
-            );
+                        // Wrap in Root component
+                        cx.new(|cx| Root::new(root_view.into(), window, cx))
+                    },
+                )
+                .expect("failed to open window");
 
             // Focus the TextInput if window was created successfully
-            if let Ok(window_handle) = window_result {
-                window_handle
-                    .update(cx, |_root, window, cx| {
-                        // Get the MessageView from the Root
-                        if let Some(_view) =
-                            window.root::<gpui_component::Root>().and_then(|root| root)
-                        {
-                            // Activate window
-                            cx.activate(true);
-                        }
-                    })
-                    .ok();
-            }
+            window
+                .update(cx, |_root, window, cx| {
+                    window.activate_window();
+                    window.set_window_title(&SharedString::from("Code Assistant"));
+                    // Get the MessageView from the Root
+                    if let Some(_view) = window.root::<gpui_component::Root>().and_then(|root| root)
+                    {
+                        // Activate window
+                        cx.activate(true);
+                    }
+                })
+                .expect("failed to update window");
         });
     }
 
@@ -771,9 +810,9 @@ impl Gpui {
 
     // Handle backend responses
     fn handle_backend_response(&self, response: BackendResponse, _cx: &mut AsyncApp) {
-        debug!("UI: Received chat management response: {:?}", response);
         match response {
             BackendResponse::SessionCreated { session_id } => {
+                debug!("Received BackendResponse::SessionCreated");
                 *self.current_session_id.lock().unwrap() = Some(session_id.clone());
                 // Refresh the session list
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
@@ -783,12 +822,14 @@ impl Gpui {
                 }
             }
             BackendResponse::SessionDeleted { session_id: _ } => {
+                debug!("Received BackendResponse::SessionDeleted");
                 // Refresh the session list
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::ListSessions);
                 }
             }
             BackendResponse::SessionsListed { sessions } => {
+                debug!("Received BackendResponse::SessionsListed");
                 *self.chat_sessions.lock().unwrap() = sessions.clone();
                 self.push_event(UiEvent::UpdateChatList { sessions });
             }
