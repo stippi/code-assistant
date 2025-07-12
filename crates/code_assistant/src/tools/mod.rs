@@ -10,4 +10,4 @@ pub mod impls;
 mod tests;
 
 pub use parse::parse_xml_tool_invocations;
-pub use types::{AnnotatedToolDefinition, ToolRequest};
+pub use types::{AnnotatedToolDefinition, ParseError, ToolRequest};

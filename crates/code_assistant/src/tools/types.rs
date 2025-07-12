@@ -1,3 +1,4 @@
+use crate::tools::core::{Render, ResourcesTracker, ToolResult};
 use llm::ToolDefinition;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -47,5 +48,34 @@ impl From<&llm::ContentBlock> for ToolRequest {
         } else {
             panic!("Cannot convert non-ToolUse ContentBlock to ToolRequest")
         }
+    }
+}
+
+/// Represents a parse error that occurred when processing tool blocks
+/// This allows parse errors to be treated like regular tool results
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParseError {
+    pub error_message: String,
+}
+
+impl ParseError {
+    pub fn new(error_message: String) -> Self {
+        Self { error_message }
+    }
+}
+
+impl Render for ParseError {
+    fn render(&self, _tracker: &mut ResourcesTracker) -> String {
+        self.error_message.clone()
+    }
+
+    fn status(&self) -> String {
+        "Parse Error".to_string()
+    }
+}
+
+impl ToolResult for ParseError {
+    fn is_success(&self) -> bool {
+        false
     }
 }

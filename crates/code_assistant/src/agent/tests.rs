@@ -628,20 +628,6 @@ async fn test_parse_error_handling() -> Result<()> {
 }
 
 #[test]
-fn test_failed_tool_id_generation() -> Result<()> {
-    // Test that our failed tool ID generation follows the expected format
-    use crate::agent::runner::Agent;
-
-    let tool_id = Agent::generate_failed_tool_id(123, 0);
-    assert_eq!(tool_id, "failed-tool-123-0");
-
-    let tool_id2 = Agent::generate_failed_tool_id(456, 2);
-    assert_eq!(tool_id2, "failed-tool-456-2");
-
-    Ok(())
-}
-
-#[test]
 fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
     use crate::persistence::ChatSession;
     use crate::session::instance::SessionInstance;
@@ -668,11 +654,11 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
                 request_id: Some(1),
                 usage: None,
             },
-            // Failed tool error message in XML mode - should be filtered out
+            // Parse error message in XML mode - should be filtered out
             Message {
                 role: MessageRole::User,
                 content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                    tool_use_id: "failed-tool-1-0".to_string(),
+                    tool_use_id: "tool-1-0".to_string(),
                     content:
                         "Tool error: Unknown tool 'invalid_tool'. Please use only available tools."
                             .to_string(),

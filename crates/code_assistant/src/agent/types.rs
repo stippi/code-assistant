@@ -31,6 +31,24 @@ impl Clone for ToolExecution {
 }
 
 impl ToolExecution {
+    /// Create a ToolExecution for a parse error
+    pub fn create_parse_error(tool_id: String, error_message: String) -> Self {
+        use crate::tools::{ParseError, ToolRequest};
+        use serde_json::Value;
+
+        let parse_error = ParseError::new(error_message);
+        let tool_request = ToolRequest {
+            id: tool_id,
+            name: "parse_error".to_string(),
+            input: Value::Null,
+        };
+
+        Self {
+            tool_request,
+            result: Box::new(parse_error),
+        }
+    }
+
     /// Serialize the tool execution to a storable format
     pub fn serialize(&self) -> Result<crate::persistence::SerializedToolExecution> {
         // Try to serialize the result, but fallback to a simple representation if it fails
@@ -57,6 +75,19 @@ impl ToolExecution {
 impl crate::persistence::SerializedToolExecution {
     /// Deserialize back to a ToolExecution
     pub fn deserialize(&self) -> Result<ToolExecution> {
+        // Special handling for parse errors
+        if self.tool_name == "parse_error" {
+            use crate::tools::ParseError;
+
+            let parse_error: ParseError = serde_json::from_value(self.result_json.clone())?;
+            let result: Box<dyn AnyOutput> = Box::new(parse_error);
+
+            return Ok(ToolExecution {
+                tool_request: self.tool_request.clone(),
+                result,
+            });
+        }
+
         let tool = ToolRegistry::global()
             .get(&self.tool_name)
             .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", self.tool_name))?;

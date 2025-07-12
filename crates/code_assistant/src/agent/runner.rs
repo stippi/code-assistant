@@ -61,11 +61,6 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Generate a failed tool ID using request ID and error index
-    pub fn generate_failed_tool_id(request_id: u64, error_index: usize) -> String {
-        format!("failed-tool-{}-{}", request_id, error_index)
-    }
-
     /// Formats an error, particularly ToolErrors, into a user-friendly string.
     fn format_error_for_user(error: &anyhow::Error) -> String {
         if let Some(tool_error) = error.downcast_ref::<ToolError>() {
@@ -416,12 +411,18 @@ impl Agent {
                 let error_msg = match self.tool_mode {
                     ToolMode::Xml => {
                         // For XML mode, create structured tool-result message like regular tool results
-                        // Generate our own tool ID since XML mode doesn't have LLM-provided tool IDs
-                        let failed_tool_id = Self::generate_failed_tool_id(request_counter, 0);
+                        // Generate normal tool ID for consistency with UI expectations
+                        let tool_id = format!("tool-{}-0", request_counter);
+
+                        // Create and store a ToolExecution for the parse error
+                        let tool_execution =
+                            ToolExecution::create_parse_error(tool_id.clone(), error_text.clone());
+                        self.tool_executions.push(tool_execution);
+
                         Message {
                             role: MessageRole::User,
                             content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                                tool_use_id: failed_tool_id,
+                                tool_use_id: tool_id,
                                 content: error_text,
                                 is_error: Some(true),
                             }]),
