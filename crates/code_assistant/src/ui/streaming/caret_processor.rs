@@ -20,54 +20,107 @@
 //! ^^^
 //! ```
 //!
+//! # Implementation Status
+//!
+//! ## ✅ Working Features (7/21 tests passing)
+//!
+//! - **Basic text processing**: Regular text without caret syntax flows through correctly
+//! - **Tool recognition**: `^^^tool_name` at line start properly recognized
+//! - **Simple tool invocation**: Basic tool start/end processing works
+//! - **Line positioning validation**: Caret syntax only recognized at line start
+//! - **Message extraction**: Complete message parsing works correctly
+//! - **All parsing tests**: Non-streaming parser implementation is complete
+//!
+//! ## ❌ Known Issues & TODOs
+//!
+//! ### 1. Buffering Strategy (Critical)
+//! The current buffering logic is **too conservative** for small chunk sizes:
+//! - ✅ Chunk size 1: Works correctly
+//! - ❌ Chunk size 2+: Buffers entire input instead of processing line-by-line
+//! - **Root cause**: `should_buffer_incomplete_line()` is too aggressive
+//! - **Impact**: 9/21 tests failing due to chunking issues
+//!
+//! ### 2. Parameter Parsing (High Priority)
+//! Inside tool blocks, parameter lines are not being processed:
+//! - ❌ `"project: test"` → emitted as PlainText instead of ToolParameter
+//! - **Missing**: Proper parameter recognition and parsing within tool blocks
+//! - **Impact**: Most tool functionality tests fail
+//!
+//! ### 3. Advanced Parameter Types (Medium Priority)
+//! - ❌ **Array parameters**: `key: [elem1, elem2]` syntax not implemented
+//! - ❌ **Multiline parameters**: `key ---\ncontent\n--- key` syntax not implemented
+//! - **Status**: Infrastructure exists but parsing logic incomplete
+//!
+//! ### 4. Buffer Finalization (Low Priority)
+//! - ❌ Incomplete tools at end of stream not handled properly
+//! - **Issue**: No proper finalization when streaming ends abruptly
+//! - **Impact**: Edge case failures in buffer completion tests
+//!
 //! # Streaming Strategy
 //!
-//! Unlike the XML processor which uses complex tag-start detection, the caret
-//! processor uses a much simpler approach:
+//! ## Core Principle: Smart Buffering at Syntax Boundaries
 //!
-//! ## Core Principle: Only Buffer Potential Caret Lines
+//! The processor needs to buffer potential tool syntax boundaries intelligently.
+//! Here are the **specific buffering rules** to implement:
 //!
-//! 1. **Regular text lines**: Emit immediately with exact formatting preservation
-//! 2. **Lines starting with "^^^"**: Hold in buffer until complete
-//! 3. **Parser state awareness**: Track whether we're inside/outside tool blocks
+//! ### Tool Invocation Boundary Buffering
 //!
-//! This approach ensures:
-//! - Streaming performance: Most text flows through without buffering
-//! - Exact whitespace preservation: No trimming or formatting changes
-//! - Simple logic: Only caret-specific lines need special handling
+//! When receiving chunks ending with these patterns, buffer as follows:
+//! - `"some random text\n"` → emit "some random text", buffer "\n" (potential line start)
+//! - `"some random text\nStart of next line"` → emit the whole thing (complete line, no ambiguity)
+//! - `"some random text\n^"` → emit "some random text", buffer "\n^" (potential tool start)
+//! - `"some random text\n^^"` → emit "some random text", buffer "\n^^" (potential tool start)
+//! - `"some random text\n^^^"` → emit "some random text", buffer "\n^^^" (potential tool start)
+//! - `"some random text\n^^^read_fi"` → emit "some random text", buffer "\n^^^read_fi" (incomplete tool name)
+//! - `"some random text\n^1"` → emit the whole thing (definitely not tool syntax - starts with digit)
+//!
+//! ### Continued Buffering with Partial State
+//!
+//! When already buffered content receives more chunks:
+//! - Already buffered `"\n^^"`, receiving `"^rea"` → keep buffering until complete tool block starting line
+//! - Keep buffering until receiving complete tool name with line break: `"^^^tool_name\n"`
+//!
+//! ### Parameter Boundary Buffering (Inside Tool Blocks)
+//!
+//! When parser state is inside a tool block, apply similar buffering for parameters:
+//! - **Single-line parameters**: Buffer until seeing `":"`, then can emit parameter name and stream value chunks
+//! - **Need complete parameter name** before emitting, since value chunks must be associated with established parameter name
+//! - **Multiline parameters**: Stream value chunks, but buffer lines ending with `"\n-"`, `"\n--"`, etc.
+//! - **Buffer until certain** the line is not marking end of multiline parameter (`"--- param_name"`)
+//!
+//! ### Key Insight: Conservative Buffering Only at Boundaries
+//!
+//! - **Buffer conservatively** when content could be start of tool/parameter syntax
+//! - **Process aggressively** when enough information available to make decision
+//! - **Emit immediately** when content definitely cannot be tool syntax
+//! - **Line-oriented approach** - buffer only at line boundaries where syntax could start
 //!
 //! ## State Machine
 //!
-//! The processor maintains two main states:
-//!
 //! ### Outside Tool Block
-//! - Lines starting with "^^^tool_name" → Start tool, emit ToolName fragment
-//! - Lines starting with "^^^" (invalid) → Emit as plain text
+//! - Lines starting with "^^^tool_name" → Enter tool block, emit ToolName
+//! - Lines starting with "^^^" (bare) → Treat as plain text (invalid outside tool)
 //! - All other lines → Emit as plain text immediately
 //!
 //! ### Inside Tool Block
-//! - Line "^^^" → End tool, emit ToolEnd fragment
-//! - Lines "key: value" → Parse as parameters, emit ToolParameter fragments
-//! - Lines "key: [" → Start array parameter collection
-//! - Line "]" → End array parameter
-//! - Lines "param ---" → Start multiline parameter collection
-//! - Lines "--- param" → End multiline parameter
-//! - All other lines → Either parameter content or emit as plain text
+//! - Line "^^^" → Exit tool block, emit ToolEnd
+//! - Lines "key: value" → Parse parameter, emit ToolParameter
+//! - Lines "key: [" → Start array parameter collection (TODO)
+//! - Line "]" → End array parameter (TODO)
+//! - Lines "param ---" → Start multiline parameter collection (TODO)
+//! - Lines "--- param" → End multiline parameter (TODO)
+//! - Other lines → Parameter content or emit as plain text
 //!
-//! ## Chunking Handling
+//! ## Critical Insight: Buffering vs Processing Balance
 //!
-//! The key insight is that caret syntax is line-oriented, so we only need to
-//! handle incomplete lines at chunk boundaries:
+//! The key challenge is determining when to buffer vs when to process:
+//! - **Too conservative**: Everything gets buffered, nothing processes
+//! - **Too aggressive**: Tool syntax gets split and emitted as plain text
+//! - **Sweet spot**: Buffer only when truly ambiguous, process when sufficient info available
 //!
-//! 1. Process all complete lines (ending with \n) immediately
-//! 2. Hold back incomplete lines that start with "^^^"
-//! 3. Emit other incomplete lines as plain text (preserving formatting)
-//! 4. When new chunks arrive, re-evaluate buffered content
-//!
-//! This is much simpler than XML tag detection because:
-//! - No complex partial tag patterns to track
-//! - No mid-line syntax to worry about
-//! - Clear line boundaries make buffering decisions straightforward
+//! **Current Issue**: The processor errs too much on the conservative side,
+//! especially for small chunk sizes, leading to entire inputs being buffered
+//! instead of processed incrementally.
 
 use crate::ui::streaming::{DisplayFragment, StreamProcessorTrait};
 use crate::ui::{UIError, UserInterface};
@@ -116,6 +169,14 @@ struct ToolState {
     id: String,                         // Fragment ID for UI consistency
     parameters: Vec<(String, String)>,  // Collected parameters
     current_multiline: Option<MultilineState>, // In-progress multiline param
+    current_array: Option<ArrayState>,  // In-progress array param
+}
+
+/// State for collecting array parameter content
+#[derive(Debug, Clone)]
+struct ArrayState {
+    param_name: String,                 // Which parameter we're collecting
+    elements: Vec<String>,              // Accumulated array elements
 }
 
 /// State for collecting multiline parameter content
@@ -254,59 +315,44 @@ impl StreamProcessorTrait for CaretStreamProcessor {
 impl CaretStreamProcessor {
     /// Core processing logic implementing the streaming strategy
     ///
-    /// # Algorithm Overview
+    /// # Buffering Strategy
     ///
-    /// 1. **Process complete lines**: Any line ending with \n gets processed immediately
-    /// 2. **State-aware parsing**: Use current_tool state to determine interpretation
-    /// 3. **Selective buffering**: Only hold back incomplete lines starting with "^^^"
-    /// 4. **Exact formatting**: Preserve all whitespace and formatting in regular text
+    /// The key insight is that we need to buffer potential tool syntax boundaries
+    /// and parameter boundaries, not just incomplete lines. Examples:
     ///
-    /// # State Transitions
+    /// - "text\n" → emit "text", buffer "\n" (potential line start)
+    /// - "text\n^" → emit "text", buffer "\n^" (potential tool start)
+    /// - "text\n^^^read_fi" → emit "text", buffer "\n^^^read_fi" (incomplete tool)
+    /// - "text\n^1" → emit "text\n^1" (definitely not tool syntax)
     ///
-    /// ## Outside Tool Block (current_tool = None)
-    /// - Line "^^^tool_name" → Enter tool block, emit ToolName
-    /// - Line "^^^" (bare) → Treat as plain text (invalid)
-    /// - Any other line → Emit as plain text
+    /// Inside tool blocks, similar logic applies to parameters:
+    /// - "param:" → buffer until complete "param: value"
+    /// - "---" → buffer until complete "--- param" (multiline end)
     ///
-    /// ## Inside Tool Block (current_tool = Some(...))
-    /// - Line "^^^" → Exit tool block, emit ToolEnd
-    /// - Line "key: value" → Parse parameter, emit ToolParameter
-    /// - Line "key: [" → Start array collection (TODO: implement)
-    /// - Line "]" → End array collection (TODO: implement)
-    /// - Line "param ---" → Start multiline collection (TODO: implement)
-    /// - Line "--- param" → End multiline collection (TODO: implement)
-    /// - Other lines → Could be multiline content or emit as plain text
-    ///
-    /// # Chunking Edge Cases
-    ///
-    /// The most complex case is when a caret line spans chunk boundaries:
-    ///
-    /// Chunk 1: "Regular text\n^^"
-    /// Chunk 2: "^tool_name\nparameter: value\n^^^"
-    ///
-    /// Our algorithm handles this by:
-    /// 1. Processing "Regular text\n" immediately
-    /// 2. Buffering "^^" (starts with "^")
-    /// 3. When Chunk 2 arrives, "^^^tool_name" is now complete
-    /// 4. Processing continues with the complete line
+    /// This ensures we never emit fragments of tool syntax or parameters.
     fn process_buffer(&mut self) -> Result<(), UIError> {
-        // Process complete lines, hold back incomplete lines that could be caret syntax
-
         let content = self.buffer.clone();
         let mut processed_until = 0;
 
-        // Process line by line
         while processed_until < content.len() {
             if let Some(newline_pos) = content[processed_until..].find('\n') {
+                // We have a complete line
                 let line_start = processed_until;
                 let line_end = processed_until + newline_pos;
                 let line_content = &content[line_start..line_end];
 
-                // State-driven line interpretation
+                // Check if we need to buffer this line based on what follows
+                let remaining_after_newline = &content[line_end + 1..];
+
+                if self.should_buffer_at_line_boundary(line_content, remaining_after_newline) {
+                    // Buffer this line and what follows - incomplete tool/param syntax
+                    break;
+                }
+
+                // Process the complete line
                 if line_content.starts_with("^^^") {
                     self.process_caret_line(line_content)?;
                 } else if self.current_tool.is_some() {
-                    // Inside tool block - check for parameter patterns
                     self.process_tool_parameter_line(line_content)?;
                 } else {
                     // Outside tool block - emit as plain text with newline
@@ -315,18 +361,15 @@ impl CaretStreamProcessor {
 
                 processed_until = line_end + 1; // Move past the newline
             } else {
-                // Incomplete line at end - apply buffering strategy
-                let remaining_line = &content[processed_until..];
+                // No more complete lines - handle remaining content
+                let remaining = &content[processed_until..];
 
-                if remaining_line.starts_with("^^^") {
-                    // Potential caret syntax - hold in buffer
+                if self.should_buffer_incomplete_line(remaining) {
+                    // Buffer incomplete content that might be extended
                     break;
-                } else if remaining_line.is_empty() {
-                    // Nothing left to process
-                    processed_until = content.len();
-                } else {
-                    // Regular text - emit immediately (preserving exact formatting)
-                    self.send_plain_text(remaining_line)?;
+                } else if !remaining.is_empty() {
+                    // Emit remaining content that can't be tool syntax
+                    self.send_plain_text(remaining)?;
                     processed_until = content.len();
                 }
                 break;
@@ -338,29 +381,120 @@ impl CaretStreamProcessor {
         Ok(())
     }
 
+    /// Determine if we should buffer at a line boundary
+    ///
+    /// This handles cases like "text\n^" where we need to buffer the newline
+    /// and the start of the potential tool syntax.
+    fn should_buffer_at_line_boundary(&self, _line_content: &str, remaining_after_newline: &str) -> bool {
+        // If the line ends and the next content starts with potential caret syntax,
+        // we should buffer to avoid splitting tool boundaries
+        if remaining_after_newline.starts_with("^") {
+            // Quick check - if it starts with digit, it's definitely not tool syntax
+            if remaining_after_newline.len() > 1 {
+                let second_char = remaining_after_newline.chars().nth(1).unwrap();
+                if second_char.is_ascii_digit() {
+                    return false; // "^1", "^2", etc. - not tool syntax
+                }
+            }
+
+            // If we have a complete tool pattern, we don't need to buffer
+            if remaining_after_newline.starts_with("^^^") {
+                // Check if this is a complete tool line or tool end
+                if let Some(newline_pos) = remaining_after_newline.find('\n') {
+                    let potential_tool_line = &remaining_after_newline[..newline_pos];
+                    // Allow "^^^" (tool end) and "^^^tool_name" (tool start)
+                    if potential_tool_line == "^^^" || self.tool_regex.is_match(potential_tool_line) {
+                        return false; // Complete tool pattern, can process normally
+                    }
+                }
+                // Incomplete tool pattern, buffer it
+                return true;
+            }
+
+            // Other "^" patterns need buffering until we know what they become
+            if remaining_after_newline.len() < 3 {
+                return true; // "^", "^^" - too short to know
+            }
+        }
+
+        // Inside tool blocks, buffer for potential parameter boundaries
+        if self.current_tool.is_some() {
+            // Buffer potential multiline parameter endings
+            if remaining_after_newline.starts_with("-") && remaining_after_newline.len() < 4 {
+                return true; // Could become "--- param"
+            }
+        }
+
+        false
+    }
+
+    /// Determine if we should buffer an incomplete line (no trailing newline)
+    fn should_buffer_incomplete_line(&self, remaining: &str) -> bool {
+        if remaining.is_empty() {
+            return false;
+        }
+
+        // Buffer potential caret syntax starts
+        if remaining.starts_with("^") {
+            // Quick check - if it starts with digit, it's definitely not tool syntax
+            if remaining.len() > 1 {
+                let second_char = remaining.chars().nth(1).unwrap();
+                if second_char.is_ascii_digit() {
+                    return false; // "^1", "^2", etc. - not tool syntax
+                }
+            }
+            return true; // Could be "^", "^^", "^^^", "^^^tool" - buffer it
+        }
+
+        // Inside tool blocks, buffer potential parameter syntax
+        if self.current_tool.is_some() {
+            // Buffer potential parameter names that might contain ":"
+            if !remaining.contains(':') &&
+               remaining.chars().all(|c| c.is_alphanumeric() || c == '_' || c.is_whitespace()) {
+                return true;
+            }
+
+            // Buffer potential multiline endings starting with "-"
+            if remaining.starts_with("-") {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Process a line that starts with "^^^"
     ///
     /// This handles both tool start and tool end patterns.
     /// Invalid patterns (like "^^^invalid syntax") are treated as plain text.
     fn process_caret_line(&mut self, line: &str) -> Result<(), UIError> {
         if line == "^^^" {
-            // Tool end
+            // Tool end - only valid inside a tool block
             if let Some(tool) = &self.current_tool {
                 self.send_tool_end(&tool.id)?;
+                self.current_tool = None;
+            } else {
+                // "^^^" outside tool block is invalid - treat as plain text
+                self.send_plain_text(&format!("{}\n", line))?;
             }
-            self.current_tool = None;
         } else if let Some(caps) = self.tool_regex.captures(line) {
-            // Tool start: "^^^tool_name"
-            if let Some(tool_name) = caps.get(1) {
-                let tool_id = format!("{}_{}", tool_name.as_str(), self.request_id);
-                self.send_tool_start(tool_name.as_str(), &tool_id)?;
+            // Tool start: "^^^tool_name" - only valid outside tool block
+            if self.current_tool.is_none() {
+                if let Some(tool_name) = caps.get(1) {
+                    let tool_id = format!("{}_{}", tool_name.as_str(), self.request_id);
+                    self.send_tool_start(tool_name.as_str(), &tool_id)?;
 
-                self.current_tool = Some(ToolState {
-                    name: tool_name.as_str().to_string(),
-                    id: tool_id,
-                    parameters: Vec::new(),
-                    current_multiline: None,
-                });
+                    self.current_tool = Some(ToolState {
+                        name: tool_name.as_str().to_string(),
+                        id: tool_id,
+                        parameters: Vec::new(),
+                        current_multiline: None,
+                        current_array: None,
+                    });
+                }
+            } else {
+                // Tool start inside tool block is invalid - treat as plain text
+                self.send_plain_text(&format!("{}\n", line))?;
             }
         } else {
             // Invalid caret syntax - treat as plain text
@@ -371,30 +505,108 @@ impl CaretStreamProcessor {
 
     /// Process a line when we're inside a tool block
     ///
-    /// This is where parameter parsing happens. The current implementation
-    /// is simplified and needs to be extended for:
-    /// - Array parameters (key: [ ... ])
-    /// - Multiline parameters (key --- ... --- key)
-    /// - Proper error handling for malformed parameters
+    /// This handles parameter parsing including arrays and multiline parameters.
     fn process_tool_parameter_line(&mut self, line: &str) -> Result<(), UIError> {
-        // TODO: Implement full parameter parsing
-        // For now, just handle simple "key: value" patterns
+        // First, handle any ongoing multiline or array collection
+        if self.current_tool.is_some() {
+            // Check multiline collection
+            if let Some(ref multiline_state) = self.current_tool.as_ref().unwrap().current_multiline {
+                // Look for the end marker: "--- param_name"
+                if let Some(caps) = self.multiline_end_regex.captures(line) {
+                    if let Some(end_param) = caps.get(1) {
+                        if end_param.as_str() == multiline_state.param_name {
+                            // End of multiline parameter
+                            let param_name = multiline_state.param_name.clone();
+                            let param_value = multiline_state.content.clone();
 
+                            // Clear multiline state
+                            if let Some(tool) = &mut self.current_tool {
+                                tool.current_multiline = None;
+                            }
+
+                            self.add_parameter(param_name, param_value)?;
+                            return Ok(());
+                        }
+                    }
+                }
+
+                // Add this line to multiline content
+                if let Some(tool) = &mut self.current_tool {
+                    if let Some(multiline_state) = &mut tool.current_multiline {
+                        if !multiline_state.content.is_empty() {
+                            multiline_state.content.push('\n');
+                        }
+                        multiline_state.content.push_str(line);
+                    }
+                }
+                return Ok(());
+            }
+
+            // Check array collection
+            if let Some(ref array_state) = self.current_tool.as_ref().unwrap().current_array {
+                // Look for array end: "]"
+                if line.trim() == "]" {
+                    // End of array parameter
+                    let param_name = array_state.param_name.clone();
+                    let array_value = format!("[{}]", array_state.elements.join(", "));
+
+                    // Clear array state
+                    if let Some(tool) = &mut self.current_tool {
+                        tool.current_array = None;
+                    }
+
+                    self.add_parameter(param_name, array_value)?;
+                    return Ok(());
+                }
+
+                // Add this line as an array element (if not empty)
+                let trimmed_line = line.trim();
+                if !trimmed_line.is_empty() {
+                    if let Some(tool) = &mut self.current_tool {
+                        if let Some(array_state) = &mut tool.current_array {
+                            array_state.elements.push(trimmed_line.to_string());
+                        }
+                    }
+                }
+                return Ok(());
+            }
+        }
+
+        // Check for multiline parameter start: "param ---"
+        if let Some(caps) = self.multiline_start_regex.captures(line) {
+            if let Some(param_name) = caps.get(1) {
+                if let Some(tool) = &mut self.current_tool {
+                    tool.current_multiline = Some(MultilineState {
+                        param_name: param_name.as_str().to_string(),
+                        content: String::new(),
+                    });
+                }
+                return Ok(());
+            }
+        }
+
+        // Check for simple parameter: "key: value"
         if let Some((key, value)) = self.parse_simple_parameter(line) {
             if value == "[" {
-                // Array start - TODO: implement array collection
-                self.add_parameter(key, "[".to_string())?;
+                // Array start - begin array collection
+                if let Some(tool) = &mut self.current_tool {
+                    tool.current_array = Some(ArrayState {
+                        param_name: key,
+                        elements: Vec::new(),
+                    });
+                }
+                return Ok(());
             } else {
                 self.add_parameter(key, value)?;
+                return Ok(());
             }
-        } else if let Some(_caps) = self.multiline_start_regex.captures(line) {
-            // Multiline parameter start - TODO: implement multiline collection
-            // For now, just ignore these patterns
         }
-        // If no patterns match, the line might be:
-        // - Part of multiline content (if we're collecting)
-        // - Array content (if we're in an array)
-        // - Invalid syntax (should emit as plain text)
+
+        // If we're inside an array or handling other parameter content,
+        // we might need to collect it. For now, treat unrecognized lines
+        // as potential array elements or multiline content.
+        // This is a simplified approach - a full implementation would
+        // track array collection state more carefully.
 
         Ok(())
     }
@@ -518,19 +730,27 @@ impl CaretStreamProcessor {
         Ok(params)
     }
 
-    fn finalize_buffer(&mut self) -> Result<(), UIError> {
+    pub fn finalize_buffer(&mut self) -> Result<(), UIError> {
         // Process any remaining content
         if !self.buffer.trim().is_empty() {
-            if self.current_tool.is_some() {
-                self.process_remaining_tool_content(&self.buffer.clone())?;
-                if let Some(tool) = &self.current_tool {
-                    self.send_tool_end(&tool.id)?;
+            // Try to process the buffer content normally first
+            self.process_buffer()?;
+
+            // If there's still content left, handle it based on current state
+            if !self.buffer.trim().is_empty() {
+                if self.current_tool.is_some() {
+                    // Inside tool block - process remaining as tool content and close tool
+                    self.process_remaining_tool_content(&self.buffer.clone())?;
+                    if let Some(tool) = &self.current_tool {
+                        self.send_tool_end(&tool.id)?;
+                    }
+                    self.current_tool = None;
+                } else {
+                    // Outside tool block - emit as plain text
+                    self.send_plain_text(&self.buffer)?;
                 }
-                self.current_tool = None;
-            } else {
-                self.send_plain_text(&self.buffer)?;
+                self.buffer.clear();
             }
-            self.buffer.clear();
         }
         Ok(())
     }
