@@ -214,3 +214,153 @@ content: |
 ---
 
 **Result** – we keep the single-tool-per-turn safety contract while allowing any number of syntaxes to coexist, decoupled from the core agent loop.
+
+---
+
+## 8 Konkrete Änderungsstellen im Code
+
+Nach Analyse des bestehenden Codes sind folgende spezifische Änderungen erforderlich:
+
+### 8.1 Core-Typen erweitern
+
+**Datei:** `crates/code_assistant/src/types.rs:230-235`
+- `ToolMode` enum um `Caret` Variante erweitern
+- Eventuell umbenennen zu `ToolSyntax` für bessere Klarheit
+- `ValueEnum` Implementation entsprechend anpassen
+
+### 8.2 Agent Runner anpassen
+
+**Datei:** `crates/code_assistant/src/agent/runner.rs`
+
+**Funktionen die geändert werden müssen:**
+- `parse_and_truncate_llm_response()` (Zeile ~680): Aktuell fest verdrahtet mit `parse_xml_tool_invocations_with_truncation()`
+- `create_stream_processor()` call (Zeile ~420): Verwendet `self.tool_mode` direkt
+- `get_next_assistant_message()` (Zeile ~420ff): Branching auf `self.tool_mode` für Tool-Definition
+
+**Konkrete Änderungen:**
+```rust
+// Statt direktem branching auf ToolMode:
+match self.tool_mode {
+    ToolMode::Native => messages,
+    ToolMode::Xml => self.convert_tool_results_to_text(messages),
+}
+
+// Registry-basierter Ansatz:
+let parser = ParserRegistry::get(self.tool_mode);
+let converted_messages = parser.convert_messages_for_llm(messages);
+```
+
+### 8.3 Tool Parsing erweitern
+
+**Datei:** `crates/code_assistant/src/tools/parse.rs`
+
+**Neue Funktionen hinzufügen:**
+- `parse_caret_tool_invocations()` - analog zu `parse_xml_tool_invocations()`
+- `parse_caret_tool_invocations_with_truncation()` - analog zu bestehender XML-Funktion
+- `find_first_caret_tool_end_and_truncate()` - analog zu `find_first_tool_end_and_truncate()`
+
+**Bestehende Funktionen anpassen:**
+- `parse_and_truncate_llm_response()` in `runner.rs` muss auf Parser-Registry umgestellt werden
+
+### 8.4 Streaming Processors erweitern
+
+**Datei:** `crates/code_assistant/src/ui/streaming/mod.rs`
+
+**Neue Trait einführen:**
+```rust
+pub trait ToolInvocationParser: Send + Sync {
+    fn extract_requests(
+        &mut self,
+        response: &llm::LLMResponse,
+        req_id: u64,
+        order_offset: usize,
+    ) -> anyhow::Result<Vec<ToolRequest>>;
+
+    fn stream_processor(
+        &self,
+        ui: Arc<Box<dyn UserInterface>>,
+        request_id: u64,
+    ) -> Box<dyn StreamProcessorTrait>;
+}
+```
+
+**Factory Funktion erweitern:**
+```rust
+// Statt:
+pub fn create_stream_processor(
+    tool_mode: ToolMode,
+    ui: Arc<Box<dyn UserInterface>>,
+    request_id: u64,
+) -> Box<dyn StreamProcessorTrait>
+
+// Registry-basiert:
+pub fn create_stream_processor(
+    tool_syntax: ToolSyntax,
+    ui: Arc<Box<dyn UserInterface>>,
+    request_id: u64,
+) -> Box<dyn StreamProcessorTrait> {
+    ParserRegistry::get(tool_syntax).stream_processor(ui, request_id)
+}
+```
+
+### 8.5 Neue Dateien erstellen
+
+**Neue Dateien:**
+- `crates/code_assistant/src/ui/streaming/caret_processor.rs`
+- `crates/code_assistant/src/ui/streaming/caret_processor_tests.rs`
+- `crates/code_assistant/src/tools/parser_registry.rs`
+
+### 8.6 CLI Integration
+
+**Datei:** `crates/code_assistant/src/main.rs` (vermutlich)
+- CLI-Argument für `--tool-syntax` erweitern um `caret` Option
+- Config-Parsing entsprechend anpassen
+
+### 8.7 Systemprompte anpassen
+
+**Datei:** `crates/code_assistant/resources/system_message_tools.md`
+- Dokumentation für Caret-Syntax hinzufügen
+- Beispiele für beide Syntaxformen bereitstellen
+
+### 8.8 Konkrete Parser-Implementierung
+
+**Caret Tool Parsing Logik:**
+```rust
+// Regex für Caret-Block-Erkennung:
+static CARET_TOOL_REGEX: &str = r"(?m)^\^\^\^([a-zA-Z0-9_]+)$";
+
+// Parsing-Algorithmus:
+1. Regex-Match für `^^^tool_name`
+2. Header bis `---` als YAML/RFC822 parsen
+3. Rest als `content` behandeln (falls nicht im Header definiert)
+4. Array-Parameter: sowohl YAML-Listen als auch wiederholte Keys unterstützen
+```
+
+### 8.9 Testing-Infrastruktur
+
+**Bestehende Test-Patterns erweitern:**
+- `crates/code_assistant/src/ui/streaming/xml_processor_tests.rs` als Template
+- `crates/code_assistant/src/ui/streaming/json_processor_tests.rs` als Template
+- `crates/code_assistant/src/tools/tests.rs` erweitern
+
+### 8.10 Backward Compatibility
+
+**Wichtige Kompatibilitäts-Überlegungen:**
+- Bestehende Prompts und Konfigurationen müssen weiterhin funktionieren
+- Default bleibt XML-Syntax
+- Migrations-Pfad für bestehende Sessions berücksichtigen
+- Feature-Flag oder graduelle Einführung erwägen
+
+### 8.11 Zusätzliche Fundstellen
+
+**Import-Statements überprüfen:**
+- Alle Module die `ToolMode` importieren müssen entsprechend angepasst werden
+- Besonders `use super::ToolMode;` Statements in verschiedenen Dateien
+
+**System Message Templating:**
+- `crates/code_assistant/src/agent/runner.rs:get_system_prompt()` - Auswahl des korrekten System-Prompts basierend auf Tool-Syntax
+- Template-Ersetzung `{{tools}}` muss für alle Syntax-Modi funktionieren
+
+**Error Handling:**
+- `crates/code_assistant/src/agent/runner.rs:format_error_for_user()` - Error-Messages müssen syntax-spezifisch sein
+- Tool-Result-Konvertierung in verschiedenen Modi
