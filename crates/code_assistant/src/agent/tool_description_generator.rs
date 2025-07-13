@@ -1,6 +1,13 @@
 use crate::tools::core::{ToolRegistry, ToolScope};
 use serde_json::Value;
 
+/// Tool syntax for documentation generation
+#[derive(Clone, Copy)]
+pub enum DocumentationSyntax {
+    Xml,
+    Caret,
+}
+
 /// Convert a parameter value to documentation text based on its JSON Schema
 fn format_parameter_doc(name: &str, param: &Value, is_in_required_list: bool) -> String {
     let mut doc = format!("- {}", name);

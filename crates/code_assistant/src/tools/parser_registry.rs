@@ -26,6 +26,10 @@ pub trait ToolInvocationParser: Send + Sync {
         ui: Arc<Box<dyn UserInterface>>,
         request_id: u64,
     ) -> Box<dyn StreamProcessorTrait>;
+
+    /// Generate tool documentation in this parser's syntax format.
+    /// Returns None if this parser doesn't need tool documentation (e.g., Native mode).
+    fn generate_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> Option<String>;
 }
 
 /// Parse Caret tool requests from LLM response and return both requests and truncated response after first tool
@@ -288,7 +292,10 @@ impl ToolInvocationParser for XmlParser {
         Box::new(XmlStreamProcessor::new(ui, request_id))
     }
 
-
+    fn generate_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> Option<String> {
+        // Use existing XML documentation generator
+        Some(crate::agent::tool_description_generator::generate_tool_documentation(scope))
+    }
 }
 
 /// Caret-based tool invocation parser
@@ -312,6 +319,172 @@ impl ToolInvocationParser for CaretParser {
         use crate::ui::streaming::CaretStreamProcessor;
         use crate::ui::streaming::StreamProcessorTrait;
         Box::new(CaretStreamProcessor::new(ui, request_id))
+    }
+
+    fn generate_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> Option<String> {
+        // Generate caret-style documentation
+        Some(self.generate_caret_tool_documentation(scope))
+    }
+}
+
+impl CaretParser {
+    fn generate_caret_tool_documentation(&self, scope: crate::tools::core::ToolScope) -> String {
+        use crate::tools::core::ToolRegistry;
+
+        let registry = ToolRegistry::global();
+        let tool_defs = registry.get_tool_definitions_for_scope(scope);
+
+        let mut docs = String::new();
+
+        for tool in tool_defs {
+            // Skip tools with no parameters
+            if !tool
+                .parameters
+                .get("properties")
+                .map_or(false, |p| p.is_object())
+            {
+                continue;
+            }
+
+            // Tool header
+            docs.push_str(&format!("## {}\n", tool.name));
+            docs.push_str(&format!("Description: {}\n", tool.description));
+
+            // Tool parameters
+            docs.push_str("Parameters:\n");
+            docs.push_str(&self.generate_caret_parameters_doc(&tool.parameters));
+            docs.push_str("\n");
+
+            // Tool usage
+            docs.push_str("Usage:\n");
+            docs.push_str(&self.generate_caret_usage_example(&tool.name, &tool.parameters));
+            docs.push_str("\n");
+        }
+
+        docs
+    }
+
+    fn generate_caret_parameters_doc(&self, parameters: &serde_json::Value) -> String {
+        let mut docs = Vec::new();
+
+        // Get the properties object
+        if let Some(properties) = parameters.get("properties").and_then(|p| p.as_object()) {
+            // Get required fields array
+            let required_fields = parameters
+                .get("required")
+                .and_then(|r| r.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<&str>>())
+                .unwrap_or_default();
+
+            // Process each parameter
+            for (name, param) in properties {
+                let is_required = required_fields.contains(&name.as_str());
+                docs.push(self.format_caret_parameter_doc(name, param, is_required));
+            }
+        }
+
+        docs.join("\n")
+    }
+
+    fn format_caret_parameter_doc(&self, name: &str, param: &serde_json::Value, is_required: bool) -> String {
+        let mut doc = format!("- {}", name);
+
+        // Add required flag if needed
+        if is_required {
+            doc.push_str(" (required)");
+        }
+
+        // Add description if available
+        if let Some(description) = param.get("description") {
+            if let Some(desc_str) = description.as_str() {
+                // Remove any (required) markers from the description since we handle it separately
+                let desc_str = desc_str.replace("(required)", "").trim().to_string();
+                doc.push_str(&format!(": {}", desc_str));
+            }
+        }
+
+        doc
+    }
+
+    fn generate_caret_usage_example(&self, tool_name: &str, parameters: &serde_json::Value) -> String {
+        let mut example = format!("^^^{}\n", tool_name);
+
+        // Get the properties object
+        if let Some(properties) = parameters.get("properties").and_then(|p| p.as_object()) {
+            // Get required fields array
+            let required_fields = parameters
+                .get("required")
+                .and_then(|r| r.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<&str>>())
+                .unwrap_or_default();
+
+            // Add required parameters first
+            for (name, prop) in properties
+                .iter()
+                .filter(|(name, _)| required_fields.contains(&name.as_str()))
+            {
+                self.generate_caret_parameter_example(&mut example, name, prop);
+            }
+
+            // Then add optional parameters
+            for (name, prop) in properties
+                .iter()
+                .filter(|(name, _)| !required_fields.contains(&name.as_str()))
+            {
+                self.generate_caret_parameter_example(&mut example, name, prop);
+            }
+        }
+
+        example.push_str("^^^\n");
+        example
+    }
+
+    fn generate_caret_parameter_example(&self, example: &mut String, name: &str, prop: &serde_json::Value) {
+        // Determine if this parameter is an array
+        let is_array = prop.get("type").and_then(|t| t.as_str()) == Some("array");
+
+        // Check if this is a multiline content parameter
+        let is_multiline =
+            name == "content" || name == "command_line" || name == "diff" || name == "message";
+
+        // Generate appropriate placeholder text
+        let placeholder = if name == "project" {
+            "project-name".to_string()
+        } else if name == "path" || name == "paths" {
+            "File path here".to_string()
+        } else if name == "regex" {
+            "Your regex pattern here".to_string()
+        } else if name == "command_line" {
+            "Your command here".to_string()
+        } else if name == "working_dir" {
+            "Working directory here (optional)".to_string()
+        } else if name == "url" {
+            "https://example.com/docs".to_string()
+        } else if name == "query" {
+            "Your search query here".to_string()
+        } else if name == "hits_page_number" {
+            "1".to_string()
+        } else if name == "max_depth" {
+            "level (optional)".to_string()
+        } else {
+            format!("{} here", name)
+        };
+
+        if is_array {
+            // Array parameter
+            example.push_str(&format!("{}: [\n", name));
+            example.push_str(&format!("{}\n", placeholder));
+            example.push_str(&format!("Another {} here\n", name));
+            example.push_str("]\n");
+        } else if is_multiline {
+            // Multiline parameter
+            example.push_str(&format!("{} ---\n", name));
+            example.push_str(&format!("Your {} here\n", name));
+            example.push_str(&format!("--- {}\n", name));
+        } else {
+            // Simple parameter
+            example.push_str(&format!("{}: {}\n", name, placeholder));
+        }
     }
 }
 
@@ -338,7 +511,10 @@ impl ToolInvocationParser for JsonParser {
         Box::new(JsonStreamProcessor::new(ui, request_id))
     }
 
-
+    fn generate_tool_documentation(&self, _scope: crate::tools::core::ToolScope) -> Option<String> {
+        // Native mode uses API-provided tool definitions, no custom documentation needed
+        None
+    }
 }
 
 /// Registry for tool invocation parsers

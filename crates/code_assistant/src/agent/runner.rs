@@ -1,5 +1,4 @@
 use crate::agent::persistence::AgentStatePersistence;
-use crate::agent::tool_description_generator::generate_tool_documentation;
 use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
 use crate::persistence::ChatMetadata;
@@ -560,27 +559,19 @@ impl Agent {
         // Generate the system message
         let mut system_message = match self.tool_syntax {
             ToolSyntax::Native => SYSTEM_MESSAGE.to_string(),
-            ToolSyntax::Xml => {
-                // For XML tool mode, get the base template and replace the {{tools}} placeholder
+            _ => {
+                // For XML and Caret modes, get the base template and replace the {{tools}} placeholder
                 let mut base = SYSTEM_MESSAGE_TOOLS.to_string();
 
-                // Only generate tools documentation for XML mode
-                let tools_doc = generate_tool_documentation(ToolScope::Agent);
-
-                // Replace the {{tools}} placeholder with the generated documentation
-                base = base.replace("{{tools}}", &tools_doc);
-
-                base
-            }
-            ToolSyntax::Caret => {
-                // For caret tool mode, get the base template and replace the {{tools}} placeholder
-                let mut base = SYSTEM_MESSAGE_TOOLS.to_string();
-
-                // Generate tools documentation for caret mode
-                let tools_doc = generate_tool_documentation(ToolScope::Agent);
-
-                // Replace the {{tools}} placeholder with the generated documentation
-                base = base.replace("{{tools}}", &tools_doc);
+                // Get parser and generate syntax-specific tools documentation
+                let parser = ParserRegistry::get(self.tool_syntax);
+                if let Some(tools_doc) = parser.generate_tool_documentation(ToolScope::Agent) {
+                    // Replace the {{tools}} placeholder with the generated documentation
+                    base = base.replace("{{tools}}", &tools_doc);
+                } else {
+                    // Fallback to empty tools section if no documentation needed
+                    base = base.replace("{{tools}}", "");
+                }
 
                 base
             }
