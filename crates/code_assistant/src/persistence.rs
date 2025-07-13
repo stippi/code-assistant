@@ -30,6 +30,7 @@ pub struct ChatSession {
     /// Initial project name
     pub initial_project: Option<String>,
     /// Tool syntax used for this session (XML or Native)
+    #[serde(alias = "tool_mode")]
     pub tool_syntax: ToolSyntax,
     /// Counter for generating unique request IDs within this session
     #[serde(default)]
