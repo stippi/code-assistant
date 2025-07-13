@@ -1,4 +1,3 @@
-
 //! Tests for the caret stream processor
 //!
 //! # Current Test Status: 7/21 Passing ✅
@@ -164,7 +163,10 @@ async fn test_caret_simple_tool() {
     ));
 
     // Should end with ToolEnd
-    assert!(matches!(fragments.last(), Some(DisplayFragment::ToolEnd { .. })));
+    assert!(matches!(
+        fragments.last(),
+        Some(DisplayFragment::ToolEnd { .. })
+    ));
 }
 
 #[tokio::test]
@@ -178,6 +180,7 @@ async fn test_caret_multiline_tool() {
     processor
         .process(&StreamingChunk::Text(content.to_string()))
         .unwrap();
+    processor.finalize_buffer().unwrap();
 
     let fragments = test_ui.get_fragments();
     assert!(fragments.len() >= 3);
@@ -196,7 +199,10 @@ async fn test_caret_multiline_tool() {
     assert!(content_param.is_some());
 
     // Should end with ToolEnd
-    assert!(matches!(fragments.last(), Some(DisplayFragment::ToolEnd { .. })));
+    assert!(matches!(
+        fragments.last(),
+        Some(DisplayFragment::ToolEnd { .. })
+    ));
 }
 
 #[tokio::test]
@@ -207,7 +213,9 @@ async fn test_extract_fragments_from_complete_message() {
 
     let message = Message {
         role: MessageRole::Assistant,
-        content: MessageContent::Text("I'll create the file for you.\n\n^^^list_projects\n^^^".to_string()),
+        content: MessageContent::Text(
+            "I'll create the file for you.\n\n^^^list_projects\n^^^".to_string(),
+        ),
         request_id: None,
         usage: None,
     };
@@ -224,17 +232,16 @@ async fn test_extract_fragments_from_complete_message() {
     ));
 
     // Check for tool name
-    let tool_name_fragment = fragments.iter().find(|f| {
-        matches!(f, DisplayFragment::ToolName { name, .. } if name == "list_projects")
-    });
+    let tool_name_fragment = fragments
+        .iter()
+        .find(|f| matches!(f, DisplayFragment::ToolName { name, .. } if name == "list_projects"));
     assert!(tool_name_fragment.is_some());
 
     // Check for tool end
-    assert!(fragments.iter().any(|f| matches!(f, DisplayFragment::ToolEnd { .. })));
+    assert!(fragments
+        .iter()
+        .any(|f| matches!(f, DisplayFragment::ToolEnd { .. })));
 }
-
-// Removed test_regex_behavior_with_partial_matches as it was testing
-// assumptions that may not be correct for our streaming approach
 
 /// Test that demonstrates the core line-oriented requirement of caret syntax
 ///
@@ -271,24 +278,27 @@ fn test_caret_must_start_at_line_beginning() {
         DisplayFragment::PlainText("Some text ^^^not_a_tool and more text\n".to_string()),
         DisplayFragment::ToolName {
             name: "real_tool".to_string(),
-            id: "ignored".to_string(),
+            id: "real_tool_42".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "ignored".to_string(),
+            id: "real_tool_42".to_string(),
         },
     ];
 
     // First test with no chunking to see if it works at all
-    let test_ui = process_chunked_text(input, input.len());
-    let fragments = test_ui.get_fragments();
-    println!("No chunking - Actual fragments: {:?}", fragments);
+    let test_ui_no_chunking = process_chunked_text(input, input.len());
+    let fragments_no_chunking = test_ui_no_chunking.get_fragments();
+    println!(
+        "No chunking - Actual fragments: {:?}",
+        fragments_no_chunking
+    );
+    assert_eq!(expected_fragments, fragments_no_chunking);
 
     // Then test with chunking
-    let test_ui = process_chunked_text(input, 5);
-    let fragments = test_ui.get_fragments();
-    println!("With chunking - Actual fragments: {:?}", fragments);
-
-    assert_fragments_match(&expected_fragments, &fragments);
+    let test_ui_chunked = process_chunked_text(input, 5);
+    let fragments_chunked = test_ui_chunked.get_fragments();
+    println!("With chunking - Actual fragments: {:?}", fragments_chunked);
+    assert_eq!(expected_fragments, fragments_chunked);
 }
 
 #[test]
@@ -296,9 +306,9 @@ fn test_simple_text_processing() {
     // Test that simple text without caret syntax works correctly
     let input = "Hello world\nThis is a test\n";
 
-    let expected_fragments = vec![
-        DisplayFragment::PlainText("Hello world\nThis is a test\n".to_string()),
-    ];
+    let expected_fragments = vec![DisplayFragment::PlainText(
+        "Hello world\nThis is a test\n".to_string(),
+    )];
 
     let test_ui = process_chunked_text(input, 1);
     let raw_fragments = test_ui.get_raw_fragments();
@@ -362,15 +372,15 @@ fn test_caret_chunked_across_tool_opening() {
         DisplayFragment::PlainText("Let me help you.\n".to_string()),
         DisplayFragment::ToolName {
             name: "read_files".to_string(),
-            id: "ignored".to_string(),
+            id: "read_files_42".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),
             value: "test".to_string(),
-            tool_id: "ignored".to_string(),
+            tool_id: "read_files_42".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "ignored".to_string(),
+            id: "read_files_42".to_string(),
         },
     ];
 
@@ -380,7 +390,7 @@ fn test_caret_chunked_across_tool_opening() {
         let fragments = test_ui.get_fragments();
 
         println!("Chunk size: {}, Fragments: {:?}", chunk_size, fragments);
-        assert_fragments_match(&expected_fragments, &fragments);
+        assert_eq!(expected_fragments, fragments);
     }
 }
 
@@ -392,10 +402,10 @@ fn test_caret_chunked_across_tool_closing() {
     let expected_fragments = vec![
         DisplayFragment::ToolName {
             name: "list_projects".to_string(),
-            id: "ignored".to_string(),
+            id: "list_projects_42".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "ignored".to_string(),
+            id: "list_projects_42".to_string(),
         },
     ];
 
@@ -403,7 +413,7 @@ fn test_caret_chunked_across_tool_closing() {
     for chunk_size in [1, 2, 3] {
         let test_ui = process_chunked_text(input, chunk_size);
         let fragments = test_ui.get_fragments();
-        assert_fragments_match(&expected_fragments, &fragments);
+        assert_eq!(expected_fragments, fragments);
     }
 }
 
@@ -415,27 +425,27 @@ fn test_caret_array_syntax_proper_formatting() {
     let expected_fragments = vec![
         DisplayFragment::ToolName {
             name: "read_files".to_string(),
-            id: "ignored".to_string(),
+            id: "read_files_42".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),
             value: "test".to_string(),
-            tool_id: "ignored".to_string(),
+            tool_id: "read_files_42".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "paths".to_string(),
-            value: "[src/main.rs, Cargo.toml]".to_string(), // This is how the current implementation formats arrays
-            tool_id: "ignored".to_string(),
+            value: "[\"src/main.rs\",\"Cargo.toml\"]".to_string(),
+            tool_id: "read_files_42".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "ignored".to_string(),
+            id: "read_files_42".to_string(),
         },
     ];
 
     let test_ui = process_chunked_text(input, 3);
     let fragments = test_ui.get_fragments();
 
-    assert_fragments_match(&expected_fragments, &fragments);
+    assert_eq!(expected_fragments, fragments);
 }
 
 #[test]
@@ -446,20 +456,20 @@ fn test_caret_array_syntax_chunked() {
     let expected_fragments = vec![
         DisplayFragment::ToolName {
             name: "read_files".to_string(),
-            id: "ignored".to_string(),
+            id: "read_files_42".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),
             value: "test".to_string(),
-            tool_id: "ignored".to_string(),
+            tool_id: "read_files_42".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "paths".to_string(),
-            value: "[src/main.rs, Cargo.toml]".to_string(),
-            tool_id: "ignored".to_string(),
+            value: "[\"src/main.rs\",\"Cargo.toml\"]".to_string(),
+            tool_id: "read_files_42".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "ignored".to_string(),
+            id: "read_files_42".to_string(),
         },
     ];
 
@@ -467,7 +477,7 @@ fn test_caret_array_syntax_chunked() {
     for chunk_size in [1, 2, 4, 8] {
         let test_ui = process_chunked_text(input, chunk_size);
         let fragments = test_ui.get_fragments();
-        assert_fragments_match(&expected_fragments, &fragments);
+        assert_eq!(expected_fragments, fragments);
     }
 }
 
@@ -479,20 +489,20 @@ fn test_caret_multiline_parameter_chunked() {
     let expected_fragments = vec![
         DisplayFragment::ToolName {
             name: "write_file".to_string(),
-            id: "ignored".to_string(),
+            id: "write_file_42".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),
             value: "test".to_string(),
-            tool_id: "ignored".to_string(),
+            tool_id: "write_file_42".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "content".to_string(),
             value: "Hello\nWorld".to_string(),
-            tool_id: "ignored".to_string(),
+            tool_id: "write_file_42".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "ignored".to_string(),
+            id: "write_file_42".to_string(),
         },
     ];
 
@@ -500,7 +510,7 @@ fn test_caret_multiline_parameter_chunked() {
     for chunk_size in [1, 3, 5, 7] {
         let test_ui = process_chunked_text(input, chunk_size);
         let fragments = test_ui.get_fragments();
-        assert_fragments_match(&expected_fragments, &fragments);
+        assert_eq!(expected_fragments, fragments);
     }
 }
 
@@ -510,20 +520,22 @@ fn test_caret_false_positive_prevention() {
     let input = "Here's some code:\n```\n^^^not-a-tool\n```\nAnd here's a real tool:\n^^^list_projects\n^^^";
 
     let expected_fragments = vec![
-        DisplayFragment::PlainText("Here's some code:\n```\n^^^not-a-tool\n```\nAnd here's a real tool:".to_string()),
+        DisplayFragment::PlainText(
+            "Here's some code:\n```\n^^^not-a-tool\n```\nAnd here's a real tool:\n".to_string(),
+        ),
         DisplayFragment::ToolName {
             name: "list_projects".to_string(),
-            id: "ignored".to_string(),
+            id: "list_projects_42".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "ignored".to_string(),
+            id: "list_projects_42".to_string(),
         },
     ];
 
     let test_ui = process_chunked_text(input, 4);
     let fragments = test_ui.get_fragments();
 
-    assert_fragments_match(&expected_fragments, &fragments);
+    assert_eq!(expected_fragments, fragments);
 }
 
 #[test]
@@ -534,22 +546,30 @@ fn test_caret_incomplete_tool_at_buffer_end() {
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
 
     // Send partial tool syntax
-    processor.process(&StreamingChunk::Text("^^^list_proj".to_string())).unwrap();
+    processor
+        .process(&StreamingChunk::Text("^^^list_proj".to_string()))
+        .unwrap();
 
     // At this point, no tool should be emitted yet (it's incomplete)
     let fragments = test_ui.get_fragments();
-    assert!(fragments.is_empty(), "No fragments should be emitted for incomplete tool");
+    assert!(
+        fragments.is_empty(),
+        "No fragments should be emitted for incomplete tool"
+    );
 
     // Complete the tool
-    processor.process(&StreamingChunk::Text("ects\n^^^".to_string())).unwrap();
+    processor
+        .process(&StreamingChunk::Text("ects\n^^^".to_string()))
+        .unwrap();
+    processor.finalize_buffer().unwrap();
 
     // Now the tool should be complete
     let fragments = test_ui.get_fragments();
     assert!(fragments.len() >= 2, "Should have tool name and tool end");
 
-    let tool_name = fragments.iter().find(|f| {
-        matches!(f, DisplayFragment::ToolName { name, .. } if name == "list_projects")
-    });
+    let tool_name = fragments
+        .iter()
+        .find(|f| matches!(f, DisplayFragment::ToolName { name, .. } if name == "list_projects"));
     assert!(tool_name.is_some(), "Should find the complete tool name");
 }
 
@@ -565,35 +585,44 @@ fn test_caret_raw_vs_merged_fragments() {
     let merged_fragments = test_ui.get_fragments();
 
     // Raw fragments should have more individual text pieces
-    let raw_text_count = raw_fragments.iter().filter(|f| matches!(f, DisplayFragment::PlainText(_))).count();
-    let merged_text_count = merged_fragments.iter().filter(|f| matches!(f, DisplayFragment::PlainText(_))).count();
+    let raw_text_count = raw_fragments
+        .iter()
+        .filter(|f| matches!(f, DisplayFragment::PlainText(_)))
+        .count();
+    let merged_text_count = merged_fragments
+        .iter()
+        .filter(|f| matches!(f, DisplayFragment::PlainText(_)))
+        .count();
 
     // Due to chunking, we should have more raw text fragments than merged ones
-    assert!(raw_text_count >= merged_text_count,
+    assert!(
+        raw_text_count >= merged_text_count,
         "Raw fragments ({}) should have at least as many text fragments as merged ({})",
-        raw_text_count, merged_text_count);
+        raw_text_count,
+        merged_text_count
+    );
 
     // The merged result should still be correct
     let expected_fragments = vec![
-        DisplayFragment::PlainText("Let me help you".to_string()),
+        DisplayFragment::PlainText("Let me\n help you\n\n".to_string()),
         DisplayFragment::ToolName {
             name: "read_files".to_string(),
-            id: "ignored".to_string(),
+            id: "read_files_42".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),
             value: "test".to_string(),
-            tool_id: "ignored".to_string(),
+            tool_id: "read_files_42".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "path".to_string(),
             value: "src/main.rs".to_string(),
-            tool_id: "ignored".to_string(),
+            tool_id: "read_files_42".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "ignored".to_string(),
+            id: "read_files_42".to_string(),
         },
     ];
 
-    assert_fragments_match(&expected_fragments, &merged_fragments);
+    assert_eq!(expected_fragments, merged_fragments);
 }
