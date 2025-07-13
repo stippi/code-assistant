@@ -660,3 +660,35 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_tool_use_docs_generation() {
+    use crate::agent::ToolSyntax;
+    use crate::tools::core::ToolScope;
+    use crate::tools::ParserRegistry;
+
+    // Test XML documentation
+    let xml_parser = ParserRegistry::get(ToolSyntax::Xml);
+    if let Some(xml_docs) = xml_parser.generate_tool_documentation(ToolScope::Agent) {
+        println!("=== XML Tool Documentation ===");
+        println!("{}", &xml_docs[..1500.min(xml_docs.len())]);
+        println!("...\n");
+    }
+
+    // Test Caret documentation
+    let caret_parser = ParserRegistry::get(ToolSyntax::Caret);
+    if let Some(caret_docs) = caret_parser.generate_tool_documentation(ToolScope::Agent) {
+        println!("=== Caret Tool Documentation ===");
+        println!("{}", &caret_docs[..1500.min(caret_docs.len())]);
+        println!("...\n");
+    }
+
+    // Test Native documentation (should be None)
+    let native_parser = ParserRegistry::get(ToolSyntax::Native);
+    if let Some(_) = native_parser.generate_tool_documentation(ToolScope::Agent) {
+        println!("Native parser unexpectedly returned documentation");
+    } else {
+        println!("=== Native Tool Documentation ===");
+        println!("None (as expected - uses API tool definitions)\n");
+    }
+}
