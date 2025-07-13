@@ -105,7 +105,7 @@ Available options:
 - `-p, --provider <PROVIDER>`: LLM provider to use [ai-core, anthropic, open-ai, ollama, vertex, open-router] (default: anthropic)
 - `-m, --model <MODEL>`: Model name to use (provider-specific defaults: anthropic="claude-sonnet-4-20250514", open-ai="gpt-4o", vertex="gemini-2.5-pro-preview-06-05", open-router="anthropic/claude-3-7-sonnet", ollama=required)
 - `--base-url <BASE_URL>`: API base URL for the LLM provider to use
-- `--tool-syntax <TOOL_SYNTAX>`: Tool invocation syntax [native, xml] (default: xml) - `native` = tools via API, `xml` = custom system message
+- `--tool-syntax <TOOL_SYNTAX>`: Tool invocation syntax [native, xml, caret] (default: xml) - `native` = tools via API, `xml` = custom system message with XML tags, `caret` = custom system message with triple-caret blocks
 - `--num-ctx <NUM_CTX>`: Context window size in tokens (default: 8192, only relevant for Ollama)
 - `--record <RECORD>`: Record API responses to a file (only supported for Anthropic provider currently)
 - `--playback <PLAYBACK>`: Play back a recorded session from a file
