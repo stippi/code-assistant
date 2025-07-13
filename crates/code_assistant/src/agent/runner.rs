@@ -437,6 +437,15 @@ impl Agent {
                             usage: None,
                         }
                     }
+                    ToolSyntax::Caret => {
+                        // For caret mode, use text message like native mode
+                        Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Text(error_text),
+                            request_id: None,
+                            usage: None,
+                        }
+                    }
                 };
 
                 self.append_message(error_msg)?;
@@ -556,6 +565,18 @@ impl Agent {
                 let mut base = SYSTEM_MESSAGE_TOOLS.to_string();
 
                 // Only generate tools documentation for XML mode
+                let tools_doc = generate_tool_documentation(ToolScope::Agent);
+
+                // Replace the {{tools}} placeholder with the generated documentation
+                base = base.replace("{{tools}}", &tools_doc);
+
+                base
+            }
+            ToolSyntax::Caret => {
+                // For caret tool mode, get the base template and replace the {{tools}} placeholder
+                let mut base = SYSTEM_MESSAGE_TOOLS.to_string();
+
+                // Generate tools documentation for caret mode
                 let tools_doc = generate_tool_documentation(ToolScope::Agent);
 
                 // Replace the {{tools}} placeholder with the generated documentation
@@ -714,6 +735,7 @@ impl Agent {
                     ))
                 }
                 ToolSyntax::Xml => None,
+                ToolSyntax::Caret => None,
             },
             stop_sequences: None,
         };

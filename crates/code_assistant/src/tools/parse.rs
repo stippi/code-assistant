@@ -104,6 +104,69 @@ enum ParseState {
     },
 }
 
+pub fn parse_caret_tool_invocations(
+    text: &str,
+    request_id: u64,
+    start_tool_count: usize,
+) -> Result<Vec<ToolRequest>> {
+    let mut tool_requests = Vec::new();
+    let tool_regex = regex::Regex::new(r"(?m)^\^\^\^([a-zA-Z0-9_]+)$").unwrap();
+    let multiline_start_regex = regex::Regex::new(r"(?m)^([a-zA-Z0-9_]+)\s+---\s*$").unwrap();
+    let multiline_end_regex = regex::Regex::new(r"(?m)^---\s+([a-zA-Z0-9_]+)\s*$").unwrap();
+    let tool_end_regex = regex::Regex::new(r"(?m)^\^\^\^$").unwrap();
+
+    let mut remaining_text = text;
+
+    while let Some(tool_match) = tool_regex.find(remaining_text) {
+        // Extract tool name
+        let tool_name = tool_regex
+            .captures(&remaining_text[tool_match.start()..])
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str())
+            .ok_or_else(|| ToolError::ParseError("Failed to extract tool name".to_string()))?;
+
+        // Check if the tool exists in the registry
+        if ToolRegistry::global().get(tool_name).is_none() {
+            return Err(ToolError::UnknownTool(tool_name.to_string()).into());
+        }
+
+        // Find the end of this tool block
+        let tool_start = tool_match.end();
+        let remaining_after_tool = &remaining_text[tool_start..];
+
+        let tool_content = if let Some(end_match) = tool_end_regex.find(remaining_after_tool) {
+            let content = &remaining_after_tool[..end_match.start()];
+            remaining_text = &remaining_after_tool[end_match.end()..];
+            content
+        } else {
+            // No end found, treat rest as tool content
+            remaining_text = "";
+            remaining_after_tool
+        };
+
+        // Parse parameters from tool content
+        let tool_params = parse_caret_tool_parameters(tool_content, &multiline_start_regex, &multiline_end_regex)?;
+
+        // Generate a unique tool ID
+        let tool_id = format!(
+            "tool-{}-{}",
+            request_id,
+            start_tool_count + tool_requests.len() + 1
+        );
+
+        // Create a ToolRequest
+        let tool_request = ToolRequest {
+            id: tool_id,
+            name: tool_name.to_string(),
+            input: tool_params,
+        };
+
+        tool_requests.push(tool_request);
+    }
+
+    Ok(tool_requests)
+}
+
 pub fn parse_xml_tool_invocations(
     text: &str,
     request_id: u64,
@@ -343,6 +406,112 @@ pub fn parse_xml_tool_invocations(
     }
 
     Ok(tool_requests)
+}
+
+fn parse_caret_tool_parameters(
+    content: &str,
+    multiline_start_regex: &regex::Regex,
+    multiline_end_regex: &regex::Regex,
+) -> Result<Value> {
+    let mut params: HashMap<String, Vec<String>> = HashMap::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i].trim();
+
+        if line.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        // Check for simple key: value parameters
+        if let Some((key, value)) = parse_simple_caret_parameter(line) {
+            // Handle array syntax: key: [
+            if value == "[" {
+                let mut array_content = Vec::new();
+                i += 1;
+
+                // Collect array elements until ]
+                while i < lines.len() {
+                    let array_line = lines[i].trim();
+                    if array_line == "]" {
+                        break;
+                    }
+                    if !array_line.is_empty() {
+                        array_content.push(array_line.to_string());
+                    }
+                    i += 1;
+                }
+
+                params.insert(key, array_content);
+            } else {
+                params.entry(key).or_default().push(value);
+            }
+            i += 1;
+            continue;
+        }
+
+        // Check for multiline parameter start
+        if let Some(caps) = multiline_start_regex.captures(line) {
+            if let Some(param_name) = caps.get(1) {
+                let mut multiline_content = String::new();
+                i += 1;
+
+                // Collect content until end marker
+                while i < lines.len() {
+                    if let Some(end_caps) = multiline_end_regex.captures(lines[i]) {
+                        if let Some(end_param) = end_caps.get(1) {
+                            if end_param.as_str() == param_name.as_str() {
+                                break;
+                            }
+                        }
+                    }
+
+                    if !multiline_content.is_empty() {
+                        multiline_content.push('\n');
+                    }
+                    multiline_content.push_str(lines[i]);
+                    i += 1;
+                }
+
+                params.entry(param_name.as_str().to_string()).or_default().push(multiline_content);
+            }
+            i += 1;
+            continue;
+        }
+
+        i += 1;
+    }
+
+    // Convert parameters to JSON using the ToolRegistry
+    // For now, we'll create a simplified conversion since we don't have the tool name here
+    let mut result = serde_json::Map::new();
+    for (key, values) in params {
+        if values.len() == 1 {
+            result.insert(key, Value::String(values[0].clone()));
+        } else if !values.is_empty() {
+            result.insert(key, Value::Array(values.into_iter().map(Value::String).collect()));
+        }
+    }
+
+    Ok(Value::Object(result))
+}
+
+fn parse_simple_caret_parameter(line: &str) -> Option<(String, String)> {
+    if let Some((key, value)) = line.split_once(':') {
+        let key = key.trim();
+        let value = value.trim();
+
+        // Skip lines that look like multiline markers
+        if value == "---" || key.is_empty() {
+            return None;
+        }
+
+        Some((key.to_string(), value.to_string()))
+    } else {
+        None
+    }
 }
 
 fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
@@ -1152,5 +1321,138 @@ mod tests {
             "Error should mention unexpected content: {}",
             error_message
         );
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_simple() {
+        let text = concat!(
+            "^^^list_projects\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "list_projects");
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_multiline() {
+        let text = concat!(
+            "^^^read_files\n",
+            "project: test\n",
+            "content ---\n",
+            "This is multiline content\n",
+            "with several lines\n",
+            "--- content\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "read_files");
+        assert_eq!(result[0].input["project"], "test");
+        assert!(result[0].input["content"].as_str().unwrap().contains("multiline content"));
+        assert!(result[0].input["content"].as_str().unwrap().contains("several lines"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_array() {
+        let text = concat!(
+            "^^^read_files\n",
+            "project: test\n",
+            "paths: [\n",
+            "src/main.rs\n",
+            "Cargo.toml\n",
+            "README.md\n",
+            "]\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "read_files");
+        assert_eq!(result[0].input["project"], "test");
+        assert!(result[0].input["paths"].is_array());
+        let paths_array = result[0].input["paths"].as_array().unwrap();
+        assert_eq!(paths_array.len(), 3);
+        assert_eq!(paths_array[0], "src/main.rs");
+        assert_eq!(paths_array[1], "Cargo.toml");
+        assert_eq!(paths_array[2], "README.md");
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_multiple_multiline() {
+        let text = concat!(
+            "^^^read_files\n",
+            "project: test\n",
+            "diff ---\n",
+            "old code here\n",
+            "--- diff\n",
+            "comment ---\n",
+            "This change fixes a bug\n",
+            "--- comment\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "read_files");
+        assert_eq!(result[0].input["project"], "test");
+        assert_eq!(result[0].input["diff"], "old code here");
+        assert_eq!(result[0].input["comment"], "This change fixes a bug");
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_with_text_before() {
+        let text = concat!(
+            "I'll help you with that.\n\n",
+            "^^^list_projects\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "list_projects");
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_no_tools() {
+        let text = "This is just plain text with no tools.";
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_unknown_tool() {
+        let text = concat!(
+            "^^^unknown_tool\n",
+            "param: value\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text, 123, 0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown tool: unknown_tool"));
+    }
+
+    #[test]
+    fn test_parse_simple_caret_parameter() {
+        assert_eq!(
+            parse_simple_caret_parameter("key: value"),
+            Some(("key".to_string(), "value".to_string()))
+        );
+
+        assert_eq!(
+            parse_simple_caret_parameter("  project  :  test-project  "),
+            Some(("project".to_string(), "test-project".to_string()))
+        );
+
+        // Should skip multiline markers
+        assert_eq!(parse_simple_caret_parameter("content: ---"), None);
+        assert_eq!(parse_simple_caret_parameter("content ---"), None);
+
+        // Should skip lines without colon
+        assert_eq!(parse_simple_caret_parameter("just text"), None);
     }
 }

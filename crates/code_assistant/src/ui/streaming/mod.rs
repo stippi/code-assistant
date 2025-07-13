@@ -6,9 +6,12 @@ use crate::ui::UserInterface;
 use llm::{Message, StreamingChunk};
 use std::sync::Arc;
 
+mod caret_processor;
 mod json_processor;
 mod xml_processor;
 
+#[cfg(test)]
+mod caret_processor_tests;
 #[cfg(test)]
 mod json_processor_tests;
 #[cfg(test)]
@@ -54,6 +57,7 @@ pub trait StreamProcessorTrait: Send + Sync {
 }
 
 // Export the concrete implementations
+pub use caret_processor::CaretStreamProcessor;
 pub use json_processor::JsonStreamProcessor;
 pub use xml_processor::XmlStreamProcessor;
 
@@ -66,5 +70,6 @@ pub fn create_stream_processor(
     match tool_syntax {
         ToolSyntax::Xml => Box::new(XmlStreamProcessor::new(ui, request_id)),
         ToolSyntax::Native => Box::new(JsonStreamProcessor::new(ui, request_id)),
+        ToolSyntax::Caret => Box::new(CaretStreamProcessor::new(ui, request_id)),
     }
 }

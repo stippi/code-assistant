@@ -1,7 +1,7 @@
 //! Parser registry for different tool invocation syntaxes
 
 use crate::agent::ToolSyntax;
-use crate::tools::{parse_xml_tool_invocations, ToolRequest};
+use crate::tools::{parse_caret_tool_invocations, parse_xml_tool_invocations, ToolRequest};
 use crate::ui::streaming::StreamProcessorTrait;
 use crate::ui::UserInterface;
 use anyhow::Result;
@@ -26,6 +26,50 @@ pub trait ToolInvocationParser: Send + Sync {
         ui: Arc<Box<dyn UserInterface>>,
         request_id: u64,
     ) -> Box<dyn StreamProcessorTrait>;
+}
+
+/// Parse Caret tool requests from LLM response and return both requests and truncated response after first tool
+fn parse_and_truncate_caret_response(
+    response: &LLMResponse,
+    request_id: u64,
+) -> Result<(Vec<ToolRequest>, LLMResponse)> {
+    let mut tool_requests = Vec::new();
+    let mut truncated_content = Vec::new();
+
+    for block in &response.content {
+        if let ContentBlock::Text { text } = block {
+            // Parse Caret tool invocations and get truncation position
+            let (block_tool_requests, truncated_text) =
+                parse_caret_tool_invocations_with_truncation(text, request_id, tool_requests.len())?;
+
+            tool_requests.extend(block_tool_requests.clone());
+
+            // If tools were found in this text block, use truncated text
+            if !block_tool_requests.is_empty() {
+                truncated_content.push(ContentBlock::Text {
+                    text: truncated_text,
+                });
+                break; // Stop processing after first tool block
+            } else {
+                // No tools in this block, keep original text
+                truncated_content.push(block.clone());
+            }
+        } else {
+            // Keep other blocks (Thinking, etc.) if no tools found yet
+            if tool_requests.is_empty() {
+                truncated_content.push(block.clone());
+            }
+        }
+    }
+
+    // Create truncated response
+    let truncated_response = LLMResponse {
+        content: truncated_content,
+        usage: response.usage.clone(),
+        rate_limit_info: response.rate_limit_info.clone(),
+    };
+
+    Ok((tool_requests, truncated_response))
 }
 
 /// Parse XML tool requests from LLM response and return both requests and truncated response after first tool
@@ -113,6 +157,29 @@ fn parse_and_truncate_json_response(
     Ok((tool_requests, truncated_response))
 }
 
+/// Parse Caret tool invocations and return both tool requests and truncated text
+fn parse_caret_tool_invocations_with_truncation(
+    text: &str,
+    request_id: u64,
+    start_tool_count: usize,
+) -> Result<(Vec<ToolRequest>, String)> {
+    // Parse tool requests using existing function
+    let all_tool_requests = parse_caret_tool_invocations(text, request_id, start_tool_count)?;
+
+    if all_tool_requests.is_empty() {
+        // No tools found, return original text
+        return Ok((all_tool_requests, text.to_string()));
+    }
+
+    // Only keep the first tool request to enforce single tool per message
+    let tool_requests = vec![all_tool_requests[0].clone()];
+
+    // Find the end position of the first tool to truncate text
+    let truncated_text = find_first_caret_tool_end_and_truncate(text)?;
+
+    Ok((tool_requests, truncated_text))
+}
+
 /// Parse XML tool invocations and return both tool requests and truncated text
 fn parse_xml_tool_invocations_with_truncation(
     text: &str,
@@ -134,6 +201,26 @@ fn parse_xml_tool_invocations_with_truncation(
     let truncated_text = find_first_tool_end_and_truncate(text)?;
 
     Ok((tool_requests, truncated_text))
+}
+
+/// Find the end of the first caret tool and truncate there
+fn find_first_caret_tool_end_and_truncate(text: &str) -> Result<String> {
+    let tool_start_regex = regex::Regex::new(r"(?m)^\^\^\^([a-zA-Z0-9_]+)$").unwrap();
+    let tool_end_regex = regex::Regex::new(r"(?m)^\^\^\^$").unwrap();
+
+    // Find the first tool start
+    if let Some(start_match) = tool_start_regex.find(text) {
+        let after_start = &text[start_match.end()..];
+
+        // Find the corresponding tool end
+        if let Some(end_match) = tool_end_regex.find(after_start) {
+            let end_pos = start_match.end() + end_match.end();
+            return Ok(text[..end_pos].to_string());
+        }
+    }
+
+    // No complete tool found, return original text
+    Ok(text.to_string())
 }
 
 /// Find the end of the first tool in text and truncate there
@@ -204,6 +291,30 @@ impl ToolInvocationParser for XmlParser {
 
 }
 
+/// Caret-based tool invocation parser
+pub struct CaretParser;
+
+impl ToolInvocationParser for CaretParser {
+    fn extract_requests(
+        &self,
+        response: &LLMResponse,
+        req_id: u64,
+        _order_offset: usize,
+    ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
+        parse_and_truncate_caret_response(response, req_id)
+    }
+
+    fn stream_processor(
+        &self,
+        ui: Arc<Box<dyn UserInterface>>,
+        request_id: u64,
+    ) -> Box<dyn StreamProcessorTrait> {
+        use crate::ui::streaming::CaretStreamProcessor;
+        use crate::ui::streaming::StreamProcessorTrait;
+        Box::new(CaretStreamProcessor::new(ui, request_id))
+    }
+}
+
 /// JSON-based (native) tool invocation parser
 pub struct JsonParser;
 
@@ -239,6 +350,7 @@ impl ParserRegistry {
         match syntax {
             ToolSyntax::Xml => Box::new(XmlParser),
             ToolSyntax::Native => Box::new(JsonParser),
+            ToolSyntax::Caret => Box::new(CaretParser),
         }
     }
 }

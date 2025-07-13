@@ -234,18 +234,21 @@ pub enum ToolSyntax {
     Native,
     /// Tools through custom system message with XML tags
     Xml,
+    /// Tools through custom system message with triple-caret blocks
+    Caret,
 }
 
 /// Implements ValueEnum for ToolSyntax to use with clap
 impl ValueEnum for ToolSyntax {
     fn value_variants<'a>() -> &'a [Self] {
-        &[Self::Native, Self::Xml]
+        &[Self::Native, Self::Xml, Self::Caret]
     }
 
     fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
         match self {
             Self::Native => Some(clap::builder::PossibleValue::new("native")),
             Self::Xml => Some(clap::builder::PossibleValue::new("xml")),
+            Self::Caret => Some(clap::builder::PossibleValue::new("caret")),
         }
     }
 }

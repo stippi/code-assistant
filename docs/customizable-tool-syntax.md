@@ -6,7 +6,7 @@
 
 ---
 
-## 1 Motivation
+## 1 Motivation
 
 The agent currently understands **two hard-wired invocation syntaxes**
 
@@ -23,7 +23,7 @@ We want to:
 
 ---
 
-## 2 Existing Architecture (quick recap)
+## 2 Existing Architecture (quick recap)
 
 ```
 agent/runner.rs
@@ -41,34 +41,37 @@ Coupling points:
 
 ---
 
-## 3 Triple-Caret Block — Specification (v0)
+## 3 Triple-Caret Block — Specification (v1)
 
 ````text
 ^^^write_file
 project: code-assistant
 path: src/lib.rs
----
-content: |
-  //! hello
-  fn main() {}
+content ---
+//! hello
+fn main() {}
+--- content
 ^^^
 ````
 
 * Leading & trailing fence: `^^^` at column 0.
 * Opening fence MUST include the *tool name* after the fence.
-* Header is RFC 822 / YAML-like `key: value` list until the line `---`.
-* Everything after `---` is assigned to `content` **unless** the header already supplied `content`.
+* Header contains single-line parameters as `key: value` pairs.
+* Multi-line parameters use `paramname ---` to start and `--- paramname` to end the block.
+* Multiple multi-line parameters are supported in the same tool invocation.
 * Exactly one tool block per assistant message (maintains current safety property).
 
 This format:
 
-* costs 6 tokens for the wrapper vs ~20 with XML,
-* can be parsed with a **single pass regex** (`^\\^\\^([a-zA-Z0-9_]+)$` etc.).
-* is human-friendly (copy/paste into editors).
+* costs ~8 tokens for the wrapper vs ~20 with XML,
+* eliminates indentation errors (no YAML-style indentation required),
+* supports multiple multi-line parameters cleanly,
+* can be parsed with straightforward regex patterns,
+* is human-friendly (copy/paste into editors without formatting concerns).
 
 ---
 
-## 4 Extensibility Design
+## 4 Extensibility Design
 
 ### 4.1 Introduce a Parser Trait
 
@@ -97,28 +100,30 @@ pub trait ToolInvocationParser: Send + Sync {
 
 #### Handling array-valued parameters
 
-Array parameters defined in the canonical JSON spec can be expressed in the
-fence header in two interchangeable ways:
+Array parameters defined in the canonical JSON spec are expressed using
+explicit bracket notation:
 
 ```text
 ^^^read_files
-paths:
-  - src/main.rs
-  - Cargo.toml
-^^^
-
-# or – repeating the key
-
-^^^read_files
-path: src/main.rs
-path: Cargo.toml
+project: my_proj
+paths: [
+src/main.rs
+Cargo.toml
+docs/README.md
+]
 ^^^
 ```
 
-The caret parser merges duplicate keys or YAML lists into a single
-`serde_json::Value::Array` so the produced `ToolRequest::input` matches the
-existing schema.  Supplying a single scalar value is still supported for
-back-compatibility.
+**Array Syntax Rules:**
+- Arrays are enclosed in `[` and `]`
+- One element per line
+- No indentation required (consistent with multi-line parameter design)
+- Empty lines within arrays are ignored
+- No comma-separated single-line arrays
+
+The caret parser converts bracket arrays into `serde_json::Value::Array` so the
+produced `ToolRequest::input` matches the existing schema. Supplying a single
+scalar value is still supported for back-compatibility.
 
 ```rust
 enum ToolSyntax { Xml, Json, Caret }
@@ -149,7 +154,7 @@ Streaming processor: trivial—no incremental param display required; whole bloc
 
 ---
 
-## 5 Migration & Compatibility
+## 5 Migration & Compatibility
 
 * Default remains **XML** to avoid breaking any existing prompt templates.
 * Native JSON path unchanged.
@@ -193,9 +198,9 @@ Streaming processor: trivial—no incremental param display required; whole bloc
 
 ---
 
-## 7 Appendix — Quick Examples
+## 7 Appendix — Quick Examples
 
-### read_files
+### read_files (single parameter)
 
 ````text
 ^^^read_files
@@ -204,33 +209,58 @@ path: src/main.rs
 ^^^
 ````
 
-### replace_in_file (multi-line)
+### read_files (array parameter)
+
+````text
+^^^read_files
+project: my_proj
+paths: [
+src/main.rs
+Cargo.toml
+docs/README.md
+]
+^^^
+````
+
+### replace_in_file (multi-line diff parameter)
 
 ````text
 ^^^replace_in_file
 project: cool_proj
 path: src/lib.rs
----
-diff: |
-  <<<<<<< SEARCH
-  old()
-  =======
-  new()
-  >>>>>>> REPLACE
+diff ---
+[SEARCH/REPLACE block content here]
+--- diff
 ^^^
 ````
 
-### Arbitrary content field
+### write_file (multi-line content parameter)
 
 ````text
 ^^^write_file
 project: notes
 path: design.md
----
-content: |
-  # Title
-  Multiline
-  body.
+content ---
+# Title
+Multiline
+body.
+--- content
+^^^
+````
+
+### Multiple multi-line parameters example
+
+````text
+^^^replace_in_file
+project: my_proj
+path: src/main.rs
+diff ---
+[SEARCH/REPLACE block for code changes]
+--- diff
+comment ---
+This change updates the function name
+to better reflect its purpose.
+--- comment
 ^^^
 ````
 
@@ -351,12 +381,15 @@ pub fn create_stream_processor(
 ```rust
 // Regex für Caret-Block-Erkennung:
 static CARET_TOOL_REGEX: &str = r"(?m)^\^\^\^([a-zA-Z0-9_]+)$";
+static MULTILINE_START_REGEX: &str = r"(?m)^([a-zA-Z0-9_]+)\s+---\s*$";
+static MULTILINE_END_REGEX: &str = r"(?m)^---\s+([a-zA-Z0-9_]+)\s*$";
 
 // Parsing-Algorithmus:
 1. Regex-Match für `^^^tool_name`
-2. Header bis `---` als YAML/RFC822 parsen
-3. Rest als `content` behandeln (falls nicht im Header definiert)
-4. Array-Parameter: sowohl YAML-Listen als auch wiederholte Keys unterstützen
+2. Header-Bereich: `key: value` Zeilen als einzeilige Parameter parsen
+3. Multi-line-Bereiche: `paramname ---` bis `--- paramname` als mehrzeilige Parameter
+4. Array-Parameter: sowohl YAML-Listen als auch wiederholte Keys/Blöcke unterstützen
+5. Keine implizite `content`-Behandlung - alle Parameter explizit definiert
 ```
 
 ### 8.9 Testing-Infrastruktur
