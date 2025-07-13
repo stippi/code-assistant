@@ -26,9 +26,6 @@ pub trait ToolInvocationParser: Send + Sync {
         ui: Arc<Box<dyn UserInterface>>,
         request_id: u64,
     ) -> Box<dyn StreamProcessorTrait>;
-
-    /// Convert messages for LLM request based on tool mode
-    fn convert_messages_for_llm(&self, messages: Vec<llm::Message>) -> Vec<llm::Message>;
 }
 
 /// Parse XML tool requests from LLM response and return both requests and truncated response after first tool
@@ -204,12 +201,7 @@ impl ToolInvocationParser for XmlParser {
         Box::new(XmlStreamProcessor::new(ui, request_id))
     }
 
-    fn convert_messages_for_llm(&self, messages: Vec<llm::Message>) -> Vec<llm::Message> {
-        // For XML mode, we need to convert tool results to text
-        // This functionality will be implemented when we have access to tool executions
-        // For now, return messages as-is
-        messages
-    }
+
 }
 
 /// JSON-based (native) tool invocation parser
@@ -235,10 +227,7 @@ impl ToolInvocationParser for JsonParser {
         Box::new(JsonStreamProcessor::new(ui, request_id))
     }
 
-    fn convert_messages_for_llm(&self, messages: Vec<llm::Message>) -> Vec<llm::Message> {
-        // For native mode, no conversion needed
-        messages
-    }
+
 }
 
 /// Registry for tool invocation parsers

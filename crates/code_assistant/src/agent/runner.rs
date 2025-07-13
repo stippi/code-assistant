@@ -696,11 +696,11 @@ impl Agent {
             .await?;
         debug!("Starting LLM request with ID: {}", request_id);
 
-        // Convert messages based on tool syntax using parser registry
-        let parser = ParserRegistry::get(self.tool_syntax);
+        // Convert messages based on tool syntax
+        // Native mode keeps ToolUse blocks, all other syntaxes convert to text
         let converted_messages = match self.tool_syntax {
-            ToolSyntax::Native => parser.convert_messages_for_llm(messages), // No conversion needed
-            ToolSyntax::Xml => self.convert_tool_results_to_text(messages), // Convert ToolResults to Text (keep existing logic for now)
+            ToolSyntax::Native => messages, // No conversion needed
+            _ => self.convert_tool_results_to_text(messages), // Convert ToolResults to Text
         };
 
         // Create the LLM request with appropriate tools

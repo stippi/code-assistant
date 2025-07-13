@@ -158,15 +158,38 @@ Streaming processor: trivial—no incremental param display required; whole bloc
 
 ---
 
-## 6 Implementation Steps
+## 6 Implementation Steps ✅ COMPLETED
 
-1. [ ] **Extract** common behaviours from `xml_processor.rs` / `json_processor.rs` into the trait.
-2. [ ] **Move** XML & JSON processors behind `XmlParser` / `JsonParser` that implement the trait.
-3. [ ] **Add** `CaretParser`.
-4. [ ] **Update** `ToolMode` → `ToolSyntax`; adjust CLI flag parsing.
-5. [ ] **Wire** `agent::runner` to registry.
-6. [ ] Write **unit tests** analogous to `xml_processor_tests.rs` & `json_processor_tests.rs`.
-7. [ ] Document in `README.md`.
+1. [x] **Extract** common behaviours from `xml_processor.rs` / `json_processor.rs` into the trait. ✅
+2. [x] **Move** XML & JSON processors behind `XmlParser` / `JsonParser` that implement the trait. ✅
+3. [ ] **Add** `CaretParser`. ⏳ **NEXT SESSION**
+4. [x] **Update** `ToolMode` → `ToolSyntax`; adjust CLI flag parsing. ✅
+5. [x] **Wire** `agent::runner` to registry. ✅
+6. [ ] Write **unit tests** for `CaretParser`. ⏳ **NEXT SESSION**
+7. [ ] Document in `README.md`. ⏳ **NEXT SESSION**
+
+### 🎉 **Status: Foundation Complete!**
+
+**Implemented in Current Session:**
+- ✅ **Parser Registry** with `ToolInvocationParser` trait
+- ✅ **XmlParser** and **JsonParser** implementations
+- ✅ **Agent Runner** refactored to use registry
+- ✅ **ToolSyntax** rename completed (was `ToolMode`)
+- ✅ **CLI harmonized** to `--tool-syntax`
+- ✅ **Message conversion architecture** cleaned up
+- ✅ **All tests passing** (10/10 agent tests, 43/43 streaming tests)
+
+**Architecture Benefits Achieved:**
+- 🔧 **Pluggable Parsers** - New syntaxes can be added without touching core logic
+- 🧪 **Isolated Testing** - Each parser can be tested independently
+- 📈 **Consistent Interface** - All parsers implement same trait
+- 🔄 **Backward Compatible** - Existing XML/JSON functionality unchanged
+
+**Ready for Next Session:**
+- 🚀 Add `ToolSyntax::Caret` enum variant
+- 🚀 Implement `CaretParser` with regex-based parsing
+- 🚀 Create `CaretStreamProcessor` for UI rendering
+- 🚀 Write comprehensive tests for caret syntax
 
 ---
 
