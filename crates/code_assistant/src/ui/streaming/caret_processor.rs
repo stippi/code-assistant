@@ -103,11 +103,116 @@ impl StreamProcessorTrait for CaretStreamProcessor {
 
 impl CaretStreamProcessor {
     fn process_buffer(&mut self) -> Result<(), UIError> {
-        while let Some(pos) = self.buffer.find('\n') {
-            let line = self.buffer.drain(..=pos).collect::<String>();
-            self.process_line(line.trim_end())?;
+        loop {
+            // Check if we should process any content from the buffer
+            if let Some(to_emit) = self.get_content_to_emit()? {
+                if to_emit.is_empty() {
+                    break;
+                }
+
+                // For complete lines, process them
+                if to_emit.ends_with('\n') {
+                    self.process_line(to_emit.trim_end())?;
+                } else {
+                    // For partial content that's safe to emit, send as plain text
+                    self.send_plain_text(&to_emit)?;
+                }
+
+                // Remove the processed content from buffer
+                self.buffer.drain(..to_emit.len());
+            } else {
+                break;
+            }
         }
         Ok(())
+    }
+
+    /// Determines what content can be safely emitted from the current buffer
+    /// Returns None if we need to wait for more input, or Some(content) to emit
+    fn get_content_to_emit(&self) -> Result<Option<String>, UIError> {
+        if self.buffer.is_empty() {
+            return Ok(None);
+        }
+
+        // When outside a tool block, we can be more aggressive about emitting content
+        if matches!(self.state, ParserState::OutsideTool) {
+            return self.get_content_to_emit_outside_tool();
+        }
+
+        // When inside tool blocks, only emit complete lines for parameter processing
+        if let Some(newline_pos) = self.buffer.find('\n') {
+            let line_content = &self.buffer[..=newline_pos];
+            return Ok(Some(line_content.to_string()));
+        }
+
+        // Inside tool block with no complete line - wait for more input
+        Ok(None)
+    }
+
+    /// Determines what content to emit when outside a tool block
+    /// This is where we implement smart buffering - only buffer potential tool syntax
+    fn get_content_to_emit_outside_tool(&self) -> Result<Option<String>, UIError> {
+        // When outside a tool, we want to emit content line by line to process tool syntax
+        // But we need to be smart about partial lines that could be tool syntax
+
+        if let Some(newline_pos) = self.buffer.find('\n') {
+            // We have at least one complete line
+            let line_with_newline = &self.buffer[..=newline_pos];
+            let line_content = line_with_newline.trim_end();
+
+            // Check if this line is tool syntax
+            if self.tool_regex.is_match(line_content) || line_content == "^^^" {
+                // This is tool syntax, emit as a complete line for processing
+                return Ok(Some(line_with_newline.to_string()));
+            } else {
+                // Not tool syntax, emit as plain text
+                return Ok(Some(line_with_newline.to_string()));
+            }
+        }
+
+        // No complete line yet - check if we should buffer or emit
+        let remaining = &self.buffer;
+
+        // If what we have definitely cannot be tool syntax, emit it
+        if !self.could_be_tool_syntax_start(remaining) {
+            return Ok(Some(remaining.to_string()));
+        }
+
+        // Potential tool syntax - keep buffering
+        Ok(None)
+    }
+
+    /// Check if a line could potentially be the start of caret tool syntax
+    /// This is used to decide whether to buffer or emit content immediately
+    fn could_be_tool_syntax_start(&self, line: &str) -> bool {
+        // Empty line - could become anything
+        if line.is_empty() {
+            return false; // Empty lines are never tool syntax
+        }
+
+        // Check if line starts with caret characters
+        if line.starts_with("^^^") {
+            // If we have at least 3 carets, check if it could be valid tool name
+            let after_carets = &line[3..];
+            if after_carets.is_empty() {
+                return true; // Still building the tool name
+            }
+
+            // Check if what follows could be a valid tool name
+            // Tool names must be alphanumeric + underscore
+            after_carets
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_')
+        } else if line.starts_with("^^") {
+            // Could become ^^^tool_name
+            true
+        } else if line.starts_with("^") {
+            // Could become ^^^tool_name
+            true
+        } else {
+            // Doesn't start with caret, definitely not tool syntax
+            false
+        }
     }
 
     fn process_line(&mut self, line: &str) -> Result<(), UIError> {

@@ -626,3 +626,74 @@ fn test_caret_raw_vs_merged_fragments() {
 
     assert_eq!(expected_fragments, merged_fragments);
 }
+
+/// Test that verifies the core streaming requirement:
+/// Content should be emitted as it comes, not buffered in complete lines
+#[test]
+fn test_streaming_vs_buffering_behavior() {
+    println!("\n=== Testing Streaming vs Buffering Behavior ===");
+
+    let test_ui = TestUI::new();
+    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+
+    // Send regular text that cannot be tool syntax
+    // This should be emitted immediately, not buffered until complete line
+    processor.process(&StreamingChunk::Text("Hello ".to_string())).unwrap();
+
+    let fragments_after_hello = test_ui.get_raw_fragments();
+    println!("After 'Hello ': {:?}", fragments_after_hello);
+
+    // Key assertion: text that cannot be tool syntax should be emitted immediately
+    assert!(!fragments_after_hello.is_empty(),
+            "Regular text should be emitted immediately, not buffered until complete line");
+    assert!(matches!(fragments_after_hello[0], DisplayFragment::PlainText(ref text) if text == "Hello "));
+
+    // Send more text
+    processor.process(&StreamingChunk::Text("world\n".to_string())).unwrap();
+
+    let fragments_after_world = test_ui.get_raw_fragments();
+    println!("After 'world\\n': {:?}", fragments_after_world);
+
+    // Should have additional content
+    assert!(fragments_after_world.len() >= 2);
+
+    // Now test buffering behavior with potential tool syntax
+    processor.process(&StreamingChunk::Text("^".to_string())).unwrap();
+
+    let fragments_after_caret = test_ui.get_raw_fragments();
+    println!("After '^': {:?}", fragments_after_caret);
+
+    // The single caret should be buffered (not emitted) since it could be start of tool syntax
+    // We should have the same number of fragments as before the caret
+    let fragments_count_before_caret = fragments_after_world.len();
+    assert_eq!(fragments_after_caret.len(), fragments_count_before_caret,
+               "Single caret should be buffered, not emitted immediately");
+
+    // Send more carets to complete potential tool syntax
+    processor.process(&StreamingChunk::Text("^^list".to_string())).unwrap();
+
+    let fragments_after_tool_start = test_ui.get_raw_fragments();
+    println!("After '^^list': {:?}", fragments_after_tool_start);
+
+    // Still building tool name, should still be buffered
+    assert_eq!(fragments_after_tool_start.len(), fragments_count_before_caret,
+               "Incomplete tool name should still be buffered");
+
+    // Complete the tool line
+    processor.process(&StreamingChunk::Text("_projects\n".to_string())).unwrap();
+
+    let fragments_after_complete_tool = test_ui.get_raw_fragments();
+    println!("After complete tool line: {:?}", fragments_after_complete_tool);
+
+    // Now should have emitted the tool name
+    assert!(fragments_after_complete_tool.len() > fragments_count_before_caret,
+            "Complete tool syntax should be processed and emitted");
+
+    // Should have a ToolName fragment
+    let has_tool_name = fragments_after_complete_tool.iter()
+        .any(|f| matches!(f, DisplayFragment::ToolName { name, .. } if name == "list_projects"));
+    assert!(has_tool_name, "Should have emitted ToolName fragment");
+
+    println!("✅ Streaming vs buffering behavior test passed!");
+}
