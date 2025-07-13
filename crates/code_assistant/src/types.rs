@@ -227,17 +227,17 @@ pub struct SearchResult {
     pub match_ranges: Vec<Vec<(usize, usize)>>, // Match positions for each line, aligned with match_lines
 }
 
-/// Specifies the tool integration mode
+/// Specifies the tool invocation syntax
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum ToolMode {
+pub enum ToolSyntax {
     /// Native tools via API
     Native,
     /// Tools through custom system message with XML tags
     Xml,
 }
 
-/// Implements ValueEnum for ToolMode to use with clap
-impl ValueEnum for ToolMode {
+/// Implements ValueEnum for ToolSyntax to use with clap
+impl ValueEnum for ToolSyntax {
     fn value_variants<'a>() -> &'a [Self] {
         &[Self::Native, Self::Xml]
     }

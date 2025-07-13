@@ -151,7 +151,7 @@ impl SessionInstance {
         let mut events = Vec::new();
 
         // Convert session messages to UI data
-        let mut messages_data = self.convert_messages_to_ui_data(self.session.tool_mode)?;
+        let mut messages_data = self.convert_messages_to_ui_data(self.session.tool_syntax)?;
         let tool_results = self.convert_tool_executions_to_ui_data()?;
 
         // If currently streaming, add incomplete message as additional MessageData
@@ -181,7 +181,7 @@ impl SessionInstance {
     /// Convert session messages to UI MessageData format
     pub fn convert_messages_to_ui_data(
         &self,
-        tool_mode: crate::types::ToolMode,
+        tool_syntax: crate::types::ToolSyntax,
     ) -> Result<Vec<MessageData>, anyhow::Error> {
         // Create dummy UI for stream processor
         struct DummyUI;
@@ -214,7 +214,7 @@ impl SessionInstance {
         }
 
         let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
-        let mut processor = create_stream_processor(tool_mode, dummy_ui, 0);
+        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0);
 
         let mut messages_data = Vec::new();
 

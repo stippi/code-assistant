@@ -306,7 +306,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
-        ToolMode::Native,
+        ToolSyntax::Native,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
@@ -413,7 +413,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
-        ToolMode::Xml,
+        ToolSyntax::Xml,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
@@ -533,7 +533,7 @@ async fn test_parse_error_handling() -> Result<()> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
-        ToolMode::Native,
+        ToolSyntax::Native,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
@@ -697,14 +697,14 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
         working_memory: crate::types::WorkingMemory::default(),
         init_path: None,
         initial_project: None,
-        tool_mode: ToolMode::Xml,
+        tool_syntax: ToolSyntax::Xml,
         next_request_id: 1,
     };
 
     let session_instance = SessionInstance::new(session);
 
     // Test the UI message conversion - should filter out tool-result and empty messages
-    let ui_messages = session_instance.convert_messages_to_ui_data(ToolMode::Xml)?;
+    let ui_messages = session_instance.convert_messages_to_ui_data(ToolSyntax::Xml)?;
 
     // Should only have 3 messages:
     // 1. "Hello, please help me" (user)

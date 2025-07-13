@@ -4,10 +4,9 @@ use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
 use crate::persistence::ChatMetadata;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
-use crate::tools::parse_xml_tool_invocations;
-use crate::tools::ToolRequest;
+use crate::tools::{ParserRegistry, ToolRequest};
 use crate::types::*;
-use crate::ui::{streaming::create_stream_processor, UiEvent, UserInterface};
+use crate::ui::{UiEvent, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
 use llm::{
@@ -20,7 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 use tracing::{debug, trace, warn};
 
-use super::ToolMode;
+use super::ToolSyntax;
 
 // System messages
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
@@ -39,7 +38,7 @@ enum LoopFlow {
 pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
-    tool_mode: ToolMode,
+    tool_syntax: ToolSyntax,
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
@@ -80,7 +79,7 @@ impl Agent {
 
     pub fn new(
         llm_provider: Box<dyn LLMProvider>,
-        tool_mode: ToolMode,
+        tool_syntax: ToolSyntax,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         ui: Arc<Box<dyn UserInterface>>,
@@ -90,7 +89,7 @@ impl Agent {
         Self {
             working_memory: WorkingMemory::default(),
             llm_provider,
-            tool_mode,
+            tool_syntax,
             project_manager,
             ui,
             command_executor,
@@ -394,7 +393,8 @@ impl Agent {
         llm_response: &llm::LLMResponse,
         request_counter: u64,
     ) -> Result<(Vec<ToolRequest>, LoopFlow, llm::LLMResponse)> {
-        match parse_and_truncate_llm_response(llm_response, request_counter) {
+        let parser = ParserRegistry::get(self.tool_syntax);
+        match parser.extract_requests(llm_response, request_counter, 0) {
             Ok((requests, truncated_response)) => {
                 if requests.is_empty() {
                     Ok((requests, LoopFlow::GetUserInput, truncated_response))
@@ -405,8 +405,8 @@ impl Agent {
             Err(e) => {
                 let error_text = Self::format_error_for_user(&e);
 
-                let error_msg = match self.tool_mode {
-                    ToolMode::Xml => {
+                let error_msg = match self.tool_syntax {
+                    ToolSyntax::Xml => {
                         // For XML mode, create structured tool-result message like regular tool results
                         // Generate normal tool ID for consistency with UI expectations
                         let tool_id = format!("tool-{}-0", request_counter);
@@ -427,7 +427,7 @@ impl Agent {
                             usage: None,
                         }
                     }
-                    ToolMode::Native => {
+                    ToolSyntax::Native => {
                         // For native mode, keep text message since parsing errors occur before
                         // we have any LLM-provided tool IDs to reference
                         Message {
@@ -549,9 +549,9 @@ impl Agent {
         }
 
         // Generate the system message
-        let mut system_message = match self.tool_mode {
-            ToolMode::Native => SYSTEM_MESSAGE.to_string(),
-            ToolMode::Xml => {
+        let mut system_message = match self.tool_syntax {
+            ToolSyntax::Native => SYSTEM_MESSAGE.to_string(),
+            ToolSyntax::Xml => {
                 // For XML tool mode, get the base template and replace the {{tools}} placeholder
                 let mut base = SYSTEM_MESSAGE_TOOLS.to_string();
 
@@ -696,23 +696,24 @@ impl Agent {
             .await?;
         debug!("Starting LLM request with ID: {}", request_id);
 
-        // Convert messages based on tool mode
-        let converted_messages = match self.tool_mode {
-            ToolMode::Native => messages, // No conversion needed
-            ToolMode::Xml => self.convert_tool_results_to_text(messages), // Convert ToolResults to Text
+        // Convert messages based on tool syntax using parser registry
+        let parser = ParserRegistry::get(self.tool_syntax);
+        let converted_messages = match self.tool_syntax {
+            ToolSyntax::Native => parser.convert_messages_for_llm(messages), // No conversion needed
+            ToolSyntax::Xml => self.convert_tool_results_to_text(messages), // Convert ToolResults to Text (keep existing logic for now)
         };
 
         // Create the LLM request with appropriate tools
         let request = LLMRequest {
             messages: converted_messages,
             system_prompt: self.get_system_prompt(),
-            tools: match self.tool_mode {
-                ToolMode::Native => {
+            tools: match self.tool_syntax {
+                ToolSyntax::Native => {
                     Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
                         ToolRegistry::global().get_tool_definitions_for_scope(ToolScope::Agent),
                     ))
                 }
-                ToolMode::Xml => None,
+                ToolSyntax::Xml => None,
             },
             stop_sequences: None,
         };
@@ -732,11 +733,10 @@ impl Agent {
         }
 
         // Create a StreamProcessor with the UI and request ID
-        let processor = Arc::new(Mutex::new(create_stream_processor(
-            self.tool_mode,
-            self.ui.clone(),
-            request_id,
-        )));
+        let parser = ParserRegistry::get(self.tool_syntax);
+        let processor = Arc::new(Mutex::new(
+            parser.stream_processor(self.ui.clone(), request_id),
+        ));
 
         let ui_for_callback = self.ui.clone();
         let streaming_callback: StreamingCallback = Box::new(move |chunk: &StreamingChunk| {
@@ -982,124 +982,12 @@ impl Agent {
 }
 
 /// Parse tool requests from LLM response and return both requests and truncated response after first tool
+/// This is a wrapper that defaults to XML parsing for backward compatibility
 pub fn parse_and_truncate_llm_response(
     response: &llm::LLMResponse,
     request_id: u64,
 ) -> Result<(Vec<ToolRequest>, llm::LLMResponse)> {
-    let mut tool_requests = Vec::new();
-    let mut truncated_content = Vec::new();
-
-    for block in &response.content {
-        if let ContentBlock::Text { text } = block {
-            // Parse XML tool invocations and get truncation position
-            let (block_tool_requests, truncated_text) =
-                parse_xml_tool_invocations_with_truncation(text, request_id, tool_requests.len())?;
-
-            tool_requests.extend(block_tool_requests.clone());
-
-            // If tools were found in this text block, use truncated text
-            if !block_tool_requests.is_empty() {
-                truncated_content.push(ContentBlock::Text {
-                    text: truncated_text,
-                });
-                break; // Stop processing after first tool block
-            } else {
-                // No tools in this block, keep original text
-                truncated_content.push(block.clone());
-            }
-        } else if let ContentBlock::ToolUse { id, name, input } = block {
-            // For ToolUse blocks, create ToolRequest directly
-            let tool_request = ToolRequest {
-                id: id.clone(),
-                name: name.clone(),
-                input: input.clone(),
-            };
-            tool_requests.push(tool_request);
-
-            // Keep the ToolUse block in truncated content
-            truncated_content.push(block.clone());
-
-            // Stop processing after first tool (native mode)
-            break;
-        } else {
-            // Keep other blocks (Thinking, etc.) if no tools found yet
-            if tool_requests.is_empty() {
-                truncated_content.push(block.clone());
-            }
-        }
-    }
-
-    // Create truncated response
-    let truncated_response = llm::LLMResponse {
-        content: truncated_content,
-        usage: response.usage.clone(),
-        rate_limit_info: response.rate_limit_info.clone(),
-    };
-
-    Ok((tool_requests, truncated_response))
-}
-
-/// Parse XML tool invocations and return both tool requests and truncated text
-fn parse_xml_tool_invocations_with_truncation(
-    text: &str,
-    request_id: u64,
-    start_tool_count: usize,
-) -> Result<(Vec<ToolRequest>, String)> {
-    // Parse tool requests using existing function
-    let all_tool_requests = parse_xml_tool_invocations(text, request_id, start_tool_count)?;
-
-    if all_tool_requests.is_empty() {
-        // No tools found, return original text
-        return Ok((all_tool_requests, text.to_string()));
-    }
-
-    // Only keep the first tool request to enforce single tool per message
-    let tool_requests = vec![all_tool_requests[0].clone()];
-
-    // Find the end position of the first tool to truncate text
-    let truncated_text = find_first_tool_end_and_truncate(text)?;
-
-    Ok((tool_requests, truncated_text))
-}
-
-/// Find the end of the first tool in text and truncate there
-fn find_first_tool_end_and_truncate(text: &str) -> Result<String> {
-    let mut current_pos = 0;
-    let mut in_tool = false;
-    let mut tool_depth = 0;
-
-    while current_pos < text.len() {
-        if let Some(tag_start) = text[current_pos..].find('<') {
-            let absolute_pos = current_pos + tag_start;
-
-            // Look for tool tags
-            if let Some(tag_end) = text[absolute_pos..].find('>') {
-                let tag_content = &text[absolute_pos + 1..absolute_pos + tag_end];
-
-                if tag_content.starts_with("tool:") {
-                    // Tool start tag
-                    in_tool = true;
-                    tool_depth += 1;
-                } else if tag_content.starts_with("/tool:") {
-                    // Tool end tag
-                    if in_tool {
-                        tool_depth -= 1;
-                        if tool_depth == 0 {
-                            // Found the end of the first tool, truncate here
-                            let end_pos = absolute_pos + tag_end + 1;
-                            return Ok(text[..end_pos].to_string());
-                        }
-                    }
-                }
-                current_pos = absolute_pos + tag_end + 1;
-            } else {
-                current_pos = absolute_pos + 1;
-            }
-        } else {
-            break;
-        }
-    }
-
-    // No complete tool found, return original text
-    Ok(text.to_string())
+    // Default to XML parser for backward compatibility with existing tests
+    let parser = ParserRegistry::get(ToolSyntax::Xml);
+    parser.extract_requests(response, request_id, 0)
 }

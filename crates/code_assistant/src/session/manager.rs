@@ -9,7 +9,7 @@ use crate::agent::ToolExecution;
 use crate::config::ProjectManager;
 use crate::persistence::{generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence};
 use crate::session::instance::SessionInstance;
-use crate::types::{ToolMode, WorkingMemory};
+use crate::types::{ToolSyntax, WorkingMemory};
 use crate::ui::UserInterface;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
@@ -34,7 +34,7 @@ pub struct SessionManager {
 /// Configuration needed to create new agents
 #[derive(Clone)]
 pub struct AgentConfig {
-    pub tool_mode: ToolMode,
+    pub tool_syntax: ToolSyntax,
     pub init_path: Option<PathBuf>,
     pub initial_project: Option<String>,
 }
@@ -65,7 +65,7 @@ impl SessionManager {
             working_memory: WorkingMemory::default(),
             init_path: self.agent_config.init_path.clone(),
             initial_project: self.agent_config.initial_project.clone(),
-            tool_mode: self.agent_config.tool_mode,
+            tool_syntax: self.agent_config.tool_syntax,
             next_request_id: 1,
         };
 
@@ -184,7 +184,7 @@ impl SessionManager {
 
         let mut agent = crate::agent::Agent::new(
             llm_provider,
-            session_instance.session.tool_mode,
+            session_instance.session.tool_syntax,
             project_manager,
             command_executor,
             session_instance.create_proxy_ui(ui.clone()),
