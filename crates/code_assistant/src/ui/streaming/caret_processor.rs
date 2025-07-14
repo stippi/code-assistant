@@ -9,6 +9,18 @@ use std::sync::Arc;
 enum ParserState {
     OutsideTool,
     InsideTool,
+    CollectingName {
+        partial_name: String,
+        tool_id: String,
+    },
+    CollectingType {
+        param_name: String,
+        tool_id: String,
+    },
+    CollectingValue {
+        param_name: String,
+        tool_id: String,
+    },
     CollectingMultiline {
         param_name: String,
         content: String,
@@ -121,7 +133,16 @@ impl CaretStreamProcessor {
                 // Remove the processed content from buffer
                 self.buffer.drain(..to_emit.len());
             } else {
-                break;
+                // If we can't emit anything, check for complete patterns without newlines
+                let trimmed = self.buffer.trim();
+                if trimmed == "^^^" && !matches!(self.state, ParserState::OutsideTool) {
+                    // Process the tool closing marker
+                    self.process_line("^^^")?;
+                    self.buffer.clear();
+                } else {
+                    // Nothing more to process - buffered newlines will remain for trimming
+                    break;
+                }
             }
         }
         Ok(())
@@ -134,27 +155,44 @@ impl CaretStreamProcessor {
             return Ok(None);
         }
 
-        // When outside a tool block, we can be more aggressive about emitting content
-        if matches!(self.state, ParserState::OutsideTool) {
-            return self.get_content_to_emit_outside_tool();
-        }
+        match &self.state {
+            ParserState::OutsideTool => self.get_content_to_emit_outside_tool(),
 
-        // When inside tool blocks, only emit complete lines for parameter processing
-        if let Some(newline_pos) = self.buffer.find('\n') {
-            let line_content = &self.buffer[..=newline_pos];
-            return Ok(Some(line_content.to_string()));
-        }
+            ParserState::InsideTool => {
+                // Inside tool blocks, only emit complete lines for parameter processing
+                if let Some(newline_pos) = self.buffer.find('\n') {
+                    let line_content = &self.buffer[..=newline_pos];
+                    return Ok(Some(line_content.to_string()));
+                }
+                Ok(None)
+            }
 
-        // Inside tool block with no complete line - wait for more input
-        Ok(None)
+            ParserState::CollectingMultiline { .. } => {
+                // During multiline collection, we can stream content chunks
+                // But we need to be careful about lines that might end the multiline block
+                self.get_content_to_emit_multiline()
+            }
+
+            ParserState::CollectingValue { .. } => {
+                // During value collection, we can stream the value content
+                // But need to watch for line endings that might indicate parameter end
+                self.get_content_to_emit_value()
+            }
+
+            // For other states, be conservative and wait for complete lines
+            _ => {
+                if let Some(newline_pos) = self.buffer.find('\n') {
+                    let line_content = &self.buffer[..=newline_pos];
+                    return Ok(Some(line_content.to_string()));
+                }
+                Ok(None)
+            }
+        }
     }
 
     /// Determines what content to emit when outside a tool block
-    /// This is where we implement smart buffering - only buffer potential tool syntax
+    /// We buffer standalone newlines to provide natural trimming at block boundaries
     fn get_content_to_emit_outside_tool(&self) -> Result<Option<String>, UIError> {
-        // When outside a tool, we want to emit content line by line to process tool syntax
-        // But we need to be smart about partial lines that could be tool syntax
-
         if let Some(newline_pos) = self.buffer.find('\n') {
             // We have at least one complete line
             let line_with_newline = &self.buffer[..=newline_pos];
@@ -172,6 +210,11 @@ impl CaretStreamProcessor {
 
         // No complete line yet - check if we should buffer or emit
         let remaining = &self.buffer;
+
+        // Buffer standalone newlines for boundary trimming
+        if remaining == "\n" {
+            return Ok(None);
+        }
 
         // If what we have definitely cannot be tool syntax, emit it
         if !self.could_be_tool_syntax_start(remaining) {
@@ -215,11 +258,78 @@ impl CaretStreamProcessor {
         }
     }
 
+    /// Determines what content to emit when collecting multiline parameter content
+    /// We can stream content but need to watch for potential end markers
+    fn get_content_to_emit_multiline(&self) -> Result<Option<String>, UIError> {
+        if let ParserState::CollectingMultiline { param_name, .. } = &self.state {
+            // Look for potential end markers: "--- param_name"
+            if let Some(newline_pos) = self.buffer.find('\n') {
+                let line_content = &self.buffer[..newline_pos];
+
+                // Check if this line could be the end marker
+                if let Some(caps) = self.multiline_end_regex.captures(line_content) {
+                    if caps.get(1).map_or(false, |m| m.as_str() == param_name) {
+                        // This is the end marker, emit the complete line for processing
+                        return Ok(Some(self.buffer[..=newline_pos].to_string()));
+                    }
+                }
+
+                // Not an end marker, we can emit this line as part of the content
+                // But we'll let the normal processing handle it to build up the content properly
+                return Ok(Some(self.buffer[..=newline_pos].to_string()));
+            }
+
+            // No complete line yet, check if we have partial content that could be an end marker
+            if self.buffer.trim().starts_with("---") {
+                // Might be start of end marker, keep buffering
+                return Ok(None);
+            }
+
+            // Partial content that definitely isn't an end marker could be emitted,
+            // but for now let's be conservative and wait for complete lines
+            Ok(None)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Determines what content to emit when collecting parameter values
+    /// We can stream value content but watch for line boundaries
+    fn get_content_to_emit_value(&self) -> Result<Option<String>, UIError> {
+        // For now, be conservative and wait for complete lines
+        // This could be enhanced to stream value content more aggressively
+        if let Some(newline_pos) = self.buffer.find('\n') {
+            let line_content = &self.buffer[..=newline_pos];
+            return Ok(Some(line_content.to_string()));
+        }
+        Ok(None)
+    }
+
     fn process_line(&mut self, line: &str) -> Result<(), UIError> {
         let state = self.state.clone();
         match state {
             ParserState::OutsideTool => self.process_line_outside_tool(line),
             ParserState::InsideTool => self.process_line_inside_tool(line),
+
+            // New granular states for enhanced streaming
+            ParserState::CollectingName { partial_name: _, tool_id: _ } => {
+                // For now, treat this the same as InsideTool - this could be enhanced later
+                self.state = ParserState::InsideTool;
+                self.process_line_inside_tool(line)
+            }
+
+            ParserState::CollectingType { param_name: _, tool_id: _ } => {
+                // For now, treat this the same as InsideTool - this could be enhanced later
+                self.state = ParserState::InsideTool;
+                self.process_line_inside_tool(line)
+            }
+
+            ParserState::CollectingValue { param_name: _, tool_id: _ } => {
+                // For now, treat this the same as InsideTool - this could be enhanced later
+                self.state = ParserState::InsideTool;
+                self.process_line_inside_tool(line)
+            }
+
             ParserState::CollectingMultiline {
                 param_name,
                 mut content,
@@ -294,6 +404,7 @@ impl CaretStreamProcessor {
         if line == "^^^" {
             self.send_tool_end(&self.current_tool_id)?;
             self.state = ParserState::OutsideTool;
+            // Note: Any trailing newlines after this will be buffered and trimmed naturally
         } else if let Some(caps) = self.multiline_start_regex.captures(line) {
             let param_name = caps.get(1).unwrap().as_str().to_string();
             self.state = ParserState::CollectingMultiline {
@@ -317,46 +428,7 @@ impl CaretStreamProcessor {
         Ok(())
     }
 
-    pub fn finalize_buffer(&mut self) -> Result<(), UIError> {
-        if !self.buffer.is_empty() {
-            let buffer_clone = self.buffer.clone();
-            self.process_line(&buffer_clone)?;
-            self.buffer.clear();
-        }
 
-        match self.state.clone() {
-            ParserState::InsideTool => {
-                self.send_tool_end(&self.current_tool_id)?;
-            }
-            ParserState::CollectingMultiline {
-                param_name,
-                content,
-                tool_id,
-            } => {
-                self.send_tool_parameter(&param_name, content.trim_end(), &tool_id)?;
-                self.send_tool_end(&tool_id)?;
-            }
-            ParserState::CollectingArray {
-                param_name,
-                elements,
-                tool_id,
-            } => {
-                let value = format!(
-                    "[{}]",
-                    elements
-                        .iter()
-                        .map(|e| format!("\"{}\"", e))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                );
-                self.send_tool_parameter(&param_name, &value, &tool_id)?;
-                self.send_tool_end(&tool_id)?;
-            }
-            _ => {}
-        }
-        self.state = ParserState::OutsideTool;
-        Ok(())
-    }
 
     fn parse_tool_parameters(&self, content: &str) -> Result<Vec<(String, String)>, UIError> {
         let mut params = Vec::new();
