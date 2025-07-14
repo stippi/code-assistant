@@ -1,11 +1,10 @@
 use crate::{
-    anthropic::{AnthropicClient, AuthProvider, MessageConverter, RequestCustomizer},
+    anthropic::{AnthropicClient, AuthProvider, DefaultMessageConverter, RequestCustomizer},
     types::*,
     LLMProvider, StreamingCallback,
 };
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -71,157 +70,6 @@ impl RequestCustomizer for AiCoreRequestCustomizer {
     }
 }
 
-/// AiCore message converter - converts messages to AiCore format without caching
-pub struct AiCoreMessageConverter;
-
-/// AiCore message structure
-#[derive(Debug, Serialize)]
-struct AiCoreMessage {
-    role: String,
-    content: Vec<AiCoreContentBlock>,
-}
-
-/// AiCore content block structure
-#[derive(Debug, Serialize)]
-struct AiCoreContentBlock {
-    #[serde(rename = "type")]
-    block_type: String,
-    #[serde(flatten)]
-    content: AiCoreBlockContent,
-}
-
-/// Content variants for AiCore content blocks
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-enum AiCoreBlockContent {
-    Text {
-        text: String,
-    },
-    Thinking {
-        thinking: String,
-        signature: String,
-    },
-    RedactedThinking {
-        data: String,
-    },
-    ToolUse {
-        id: String,
-        name: String,
-        input: serde_json::Value,
-    },
-    ToolResult {
-        tool_use_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        content: Option<Vec<AiCoreToolResultContent>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        is_error: Option<bool>,
-    },
-}
-
-/// Tool result content for AiCore
-#[derive(Debug, Serialize)]
-struct AiCoreToolResultContent {
-    #[serde(rename = "type")]
-    content_type: String,
-    #[serde(flatten)]
-    data: AiCoreToolResultData,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-enum AiCoreToolResultData {
-    Text { text: String },
-}
-
-impl MessageConverter for AiCoreMessageConverter {
-    fn convert_messages(&mut self, messages: Vec<Message>) -> Result<Vec<serde_json::Value>> {
-        let aicore_messages = self.convert_messages_to_aicore(messages);
-        Ok(vec![serde_json::to_value(aicore_messages)?])
-    }
-}
-
-impl AiCoreMessageConverter {
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Convert LLM messages to AiCore format (removes internal fields like request_id)
-    fn convert_messages_to_aicore(&self, messages: Vec<Message>) -> Vec<AiCoreMessage> {
-        messages
-            .into_iter()
-            .map(|msg| AiCoreMessage {
-                role: match msg.role {
-                    MessageRole::User => "user".to_string(),
-                    MessageRole::Assistant => "assistant".to_string(),
-                },
-                content: self.convert_content_to_aicore(msg.content),
-            })
-            .collect()
-    }
-
-    /// Convert LLM message content to AiCore format
-    fn convert_content_to_aicore(&self, content: MessageContent) -> Vec<AiCoreContentBlock> {
-        match content {
-            MessageContent::Text(text) => {
-                vec![AiCoreContentBlock {
-                    block_type: "text".to_string(),
-                    content: AiCoreBlockContent::Text { text },
-                }]
-            }
-            MessageContent::Structured(blocks) => blocks
-                .into_iter()
-                .map(|block| self.convert_content_block_to_aicore(block))
-                .collect(),
-        }
-    }
-
-    /// Convert a single content block to AiCore format
-    fn convert_content_block_to_aicore(&self, block: ContentBlock) -> AiCoreContentBlock {
-        match block {
-            ContentBlock::Text { text } => AiCoreContentBlock {
-                block_type: "text".to_string(),
-                content: AiCoreBlockContent::Text { text },
-            },
-            ContentBlock::ToolUse { id, name, input } => AiCoreContentBlock {
-                block_type: "tool_use".to_string(),
-                content: AiCoreBlockContent::ToolUse { id, name, input },
-            },
-            ContentBlock::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
-            } => {
-                let tool_content = Some(vec![AiCoreToolResultContent {
-                    content_type: "text".to_string(),
-                    data: AiCoreToolResultData::Text { text: content },
-                }]);
-                AiCoreContentBlock {
-                    block_type: "tool_result".to_string(),
-                    content: AiCoreBlockContent::ToolResult {
-                        tool_use_id,
-                        content: tool_content,
-                        is_error,
-                    },
-                }
-            }
-            ContentBlock::Thinking {
-                thinking,
-                signature,
-            } => AiCoreContentBlock {
-                block_type: "thinking".to_string(),
-                content: AiCoreBlockContent::Thinking {
-                    thinking,
-                    signature,
-                },
-            },
-            ContentBlock::RedactedThinking { data } => AiCoreContentBlock {
-                block_type: "redacted_thinking".to_string(),
-                content: AiCoreBlockContent::RedactedThinking { data },
-            },
-        }
-    }
-}
-
 pub struct AiCoreClient {
     anthropic_client: AnthropicClient,
 }
@@ -233,7 +81,7 @@ impl AiCoreClient {
     ) -> AnthropicClient {
         let auth_provider = Box::new(AiCoreAuthProvider::new(token_manager));
         let request_customizer = Box::new(AiCoreRequestCustomizer);
-        let message_converter = Box::new(AiCoreMessageConverter::new());
+        let message_converter = Box::new(DefaultMessageConverter::new());
 
         AnthropicClient::with_customization(
             "ignored".to_string(), // Default model, can be overridden
