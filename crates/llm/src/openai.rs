@@ -163,29 +163,29 @@ impl RateLimitHandler for OpenAIRateLimitInfo {
 
         fn parse_duration(headers: &reqwest::header::HeaderMap, name: &str) -> Option<Duration> {
             headers.get(name).and_then(|h| h.to_str().ok()).map(|s| {
-                // Parse OpenAI's duration format (e.g., "1s", "6m0s")
-                let mut seconds = 0u64;
+                // Parse OpenAI's duration format (e.g., "1s", "6m0s", "7.66s", "2m59.56s")
+                let mut total_seconds = 0.0f64;
                 let mut current_num = String::new();
 
                 for c in s.chars() {
                     match c {
-                        '0'..='9' => current_num.push(c),
+                        '0'..='9' | '.' => current_num.push(c),
                         'm' => {
-                            if let Ok(mins) = current_num.parse::<u64>() {
-                                seconds += mins * 60;
+                            if let Ok(mins) = current_num.parse::<f64>() {
+                                total_seconds += mins * 60.0;
                             }
                             current_num.clear();
                         }
                         's' => {
-                            if let Ok(secs) = current_num.parse::<u64>() {
-                                seconds += secs;
+                            if let Ok(secs) = current_num.parse::<f64>() {
+                                total_seconds += secs;
                             }
                             current_num.clear();
                         }
                         _ => current_num.clear(),
                     }
                 }
-                Duration::from_secs(seconds)
+                Duration::from_secs_f64(total_seconds)
             })
         }
 
