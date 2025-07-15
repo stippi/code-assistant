@@ -24,8 +24,8 @@ use config::DefaultProjectManager;
 use llm::auth::TokenManager;
 use llm::config::{AiCoreConfig, DeploymentConfig};
 use llm::{
-    AiCoreClient, AnthropicClient, LLMProvider, OllamaClient, OpenAIClient, OpenRouterClient,
-    VertexClient,
+    AiCoreClient, AnthropicClient, GroqClient, LLMProvider, OllamaClient, OpenAIClient,
+    OpenRouterClient, VertexClient,
 };
 use std::io;
 use std::path::PathBuf;
@@ -37,10 +37,11 @@ use tracing_subscriber::fmt::SubscriberBuilder;
 enum LLMProviderType {
     AiCore,
     Anthropic,
-    OpenAI,
+    Groq,
     Ollama,
-    Vertex,
+    OpenAI,
     OpenRouter,
+    Vertex,
 }
 
 // Define the application arguments
@@ -234,10 +235,19 @@ async fn create_llm_client(
             }
         }
 
+        LLMProviderType::Groq => {
+            let api_key = std::env::var("GROQ_API_KEY")
+                .context("GROQ_API_KEY environment variable not set")?;
+            let model_name = model.unwrap_or_else(|| "moonshotai/kimi-k2-instruct".to_string());
+            let base_url = base_url.unwrap_or(GroqClient::default_base_url());
+
+            Ok(Box::new(GroqClient::new(api_key, model_name, base_url)))
+        }
+
         LLMProviderType::OpenAI => {
             let api_key = std::env::var("OPENAI_API_KEY")
                 .context("OPENAI_API_KEY environment variable not set")?;
-            let model_name = model.unwrap_or_else(|| "gpt-4o".to_string());
+            let model_name = model.unwrap_or_else(|| "gpt-4.1".to_string());
             let base_url = base_url.unwrap_or(OpenAIClient::default_base_url());
 
             Ok(Box::new(OpenAIClient::new(api_key, model_name, base_url)))
@@ -275,7 +285,7 @@ async fn create_llm_client(
         LLMProviderType::OpenRouter => {
             let api_key = std::env::var("OPENROUTER_API_KEY")
                 .context("OPENROUTER_API_KEY environment variable not set")?;
-            let model = model.unwrap_or_else(|| "anthropic/claude-3-7-sonnet".to_string());
+            let model = model.unwrap_or_else(|| "anthropic/claude-sonnet-4".to_string());
             let base_url = base_url.unwrap_or(OpenRouterClient::default_base_url());
 
             Ok(Box::new(OpenRouterClient::new(api_key, model, base_url)))

@@ -20,6 +20,7 @@ pub mod anthropic_playback;
 pub mod auth;
 pub mod config;
 pub mod display;
+pub mod groq;
 pub mod ollama;
 pub mod openai;
 pub mod openrouter;
@@ -29,6 +30,7 @@ pub mod vertex;
 
 pub use aicore_invoke::AiCoreClient;
 pub use anthropic::AnthropicClient;
+pub use groq::GroqClient;
 pub use ollama::OllamaClient;
 pub use openai::OpenAIClient;
 pub use openrouter::OpenRouterClient;
