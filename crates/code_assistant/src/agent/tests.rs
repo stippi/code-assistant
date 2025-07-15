@@ -160,6 +160,102 @@ async fn test_mixed_tool_start_end() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_missing_closing_param_tag() -> Result<()> {
+    let text = concat!(
+        "Let me examine the current parsing logic more closely and then fix it:\n",
+        "\n",
+        "<tool:replace_in_file>\n",
+        "<param:project>code-assistant</param:project>\n",
+        "<param:path>crates/llm/src/openai.rs</param:path>\n",
+        "<param:diff>\n",
+        "<<<<<<< SEARCH\n",
+        "        fn parse_duration(headers: &reqwest::header::HeaderMap, name: &str) -> Option<Duration> {\n",
+        "            headers.get(name).and_then(|h| h.to_str().ok()).map(|s| {\n",
+        "                // Parse OpenAI's duration format (e.g., \"1s\", \"6m0s\")\n",
+        "                let mut seconds = 0u64;\n",
+        "                let mut current_num = String::new();\n",
+        "\n",
+        "                for c in s.chars() {\n",
+        "                    match c {\n",
+        "                        '0'..='9' => current_num.push(c),\n",
+        "                        'm' => {\n",
+        "                            if let Ok(mins) = current_num.parse::<u64>() {\n",
+        "                                seconds += mins * 60;\n",
+        "                            }\n",
+        "                            current_num.clear();\n",
+        "                        }\n",
+        "                        's' => {\n",
+        "                            if let Ok(secs) = current_num.parse::<u64>() {\n",
+        "                                seconds += secs;\n",
+        "                            }\n",
+        "                            current_num.clear();\n",
+        "                        }\n",
+        "                        _ => current_num.clear(),\n",
+        "                    }\n",
+        "                }\n",
+        "                Duration::from_secs(seconds)\n",
+        "            })\n",
+        "        }\n",
+        "=======\n",
+        "        fn parse_duration(headers: &reqwest::header::HeaderMap, name: &str) -> Option<Duration> {\n",
+        "            headers.get(name).and_then(|h| h.to_str().ok()).map(|s| {\n",
+        "                // Parse OpenAI's duration format (e.g., \"1s\", \"6m0s\", \"7.66s\", \"2m59.56s\")\n",
+        "                let mut total_seconds = 0.0f64;\n",
+        "                let mut current_num = String::new();\n",
+        "                \n",
+        "                for c in s.chars() {\n",
+        "                    match c {\n",
+        "                        '0'..='9' | '.' => current_num.push(c),\n",
+        "                        'm' => {\n",
+        "                            if let Ok(mins) = current_num.parse::<f64>() {\n",
+        "                                total_seconds += mins * 60.0;\n",
+        "                            }\n",
+        "                            current_num.clear();\n",
+        "                        }\n",
+        "                        's' => {\n",
+        "                            if let Ok(secs) = current_num.parse::<f64>() {\n",
+        "                                total_seconds += secs;\n",
+        "                            }\n",
+        "                            current_num.clear();\n",
+        "                        }\n",
+        "                        _ => current_num.clear(),\n",
+        "                    }\n",
+        "                }\n",
+        "                Duration::from_secs_f64(total_seconds)\n",
+        "            })\n",
+        "        }\n",
+        ">>>>>>> REPLACE\n",
+        "</tool:replace_in_file>\n",
+    )
+    .to_string();
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let result = parse_and_truncate_llm_response(&response, 1);
+    println!("result: {:?}", result);
+
+    // This should return an error, not Ok([])
+    assert!(
+        result.is_err(),
+        "Expected ParseError for missing </param:diff> close tag"
+    );
+
+    // if let Err(ref error) = result {
+    //     let error_msg = error.to_string();
+    //     assert!(
+    //         error_msg.contains("</param:diff>"),
+    //         "Error should mention missing closing tag: {}",
+    //         error_msg
+    //     );
+    // }
+
+    Ok(())
+}
+
 #[test]
 fn test_ignore_non_tool_tags() -> Result<()> {
     let text = concat!(

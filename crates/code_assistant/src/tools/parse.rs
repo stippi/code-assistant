@@ -145,7 +145,11 @@ pub fn parse_caret_tool_invocations(
         };
 
         // Parse parameters from tool content
-        let tool_params = parse_caret_tool_parameters(tool_content, &multiline_start_regex, &multiline_end_regex)?;
+        let tool_params = parse_caret_tool_parameters(
+            tool_content,
+            &multiline_start_regex,
+            &multiline_end_regex,
+        )?;
 
         // Generate a unique tool ID
         let tool_id = format!(
@@ -231,11 +235,6 @@ pub fn parse_xml_tool_invocations(
                         ParseState::InTool {
                             tool_name: current_tool,
                             start_pos,
-                        }
-                        | ParseState::InParam {
-                            tool_name: current_tool,
-                            start_pos,
-                            ..
                         } => {
                             if tool_name != current_tool {
                                 // Mismatched closing tag
@@ -277,6 +276,16 @@ pub fn parse_xml_tool_invocations(
                             state = ParseState::SearchingForTool;
                             current_pos = abs_tag_end + 1;
                             continue;
+                        }
+                        ParseState::InParam {
+                            param_name: current_param,
+                            ..
+                        } => {
+                            // We're still inside a parameter when trying to close the tool - this is an error
+                            return Err(ToolError::ParseError(format!(
+                                "Malformed tool invocation: unclosed parameter '{}' in tool '{}' - missing closing tag '</param:{}>'",
+                                current_param, tool_name, current_param
+                            )).into());
                         }
                     }
                 }
@@ -475,7 +484,10 @@ fn parse_caret_tool_parameters(
                     i += 1;
                 }
 
-                params.entry(param_name.as_str().to_string()).or_default().push(multiline_content);
+                params
+                    .entry(param_name.as_str().to_string())
+                    .or_default()
+                    .push(multiline_content);
             }
             i += 1;
             continue;
@@ -491,7 +503,10 @@ fn parse_caret_tool_parameters(
         if values.len() == 1 {
             result.insert(key, Value::String(values[0].clone()));
         } else if !values.is_empty() {
-            result.insert(key, Value::Array(values.into_iter().map(Value::String).collect()));
+            result.insert(
+                key,
+                Value::Array(values.into_iter().map(Value::String).collect()),
+            );
         }
     }
 
@@ -1325,10 +1340,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_caret_tool_invocations_simple() {
-        let text = concat!(
-            "^^^list_projects\n",
-            "^^^"
-        );
+        let text = concat!("^^^list_projects\n", "^^^");
 
         let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
         assert_eq!(result.len(), 1);
@@ -1351,8 +1363,14 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
         assert_eq!(result[0].input["project"], "test");
-        assert!(result[0].input["content"].as_str().unwrap().contains("multiline content"));
-        assert!(result[0].input["content"].as_str().unwrap().contains("several lines"));
+        assert!(result[0].input["content"]
+            .as_str()
+            .unwrap()
+            .contains("multiline content"));
+        assert!(result[0].input["content"]
+            .as_str()
+            .unwrap()
+            .contains("several lines"));
     }
 
     #[tokio::test]
@@ -1404,11 +1422,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_caret_tool_invocations_with_text_before() {
-        let text = concat!(
-            "I'll help you with that.\n\n",
-            "^^^list_projects\n",
-            "^^^"
-        );
+        let text = concat!("I'll help you with that.\n\n", "^^^list_projects\n", "^^^");
 
         let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
         assert_eq!(result.len(), 1);
@@ -1425,15 +1439,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_caret_tool_invocations_unknown_tool() {
-        let text = concat!(
-            "^^^unknown_tool\n",
-            "param: value\n",
-            "^^^"
-        );
+        let text = concat!("^^^unknown_tool\n", "param: value\n", "^^^");
 
         let result = parse_caret_tool_invocations(text, 123, 0);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown tool: unknown_tool"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown tool: unknown_tool"));
     }
 
     #[test]
