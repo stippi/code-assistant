@@ -950,47 +950,86 @@ impl Agent {
         };
 
         // Execute the tool - could fail with ParseError or other errors
-        let result = tool
-            .invoke(&mut context, tool_request.input.clone())
-            .await?;
+        let result = match tool.invoke(&mut context, tool_request.input.clone()).await {
+            Ok(result) => {
+                // Tool executed successfully (but may have failed functionally)
+                let success = result.is_success();
 
-        // Get success status from result
-        let success = result.is_success();
+                // Determine UI status based on result
+                let status = if success {
+                    crate::ui::ToolStatus::Success
+                } else {
+                    crate::ui::ToolStatus::Error
+                };
 
-        // Determine UI status based on result
-        let status = if success {
-            crate::ui::ToolStatus::Success
-        } else {
-            crate::ui::ToolStatus::Error
+                // Generate status string from result
+                let short_output = result.as_render().status();
+
+                // Generate isolated output from result
+                let mut resources_tracker = ResourcesTracker::new();
+                let output = result.as_render().render(&mut resources_tracker);
+
+                // Update tool status with result
+                self.ui
+                    .send_event(UiEvent::UpdateToolStatus {
+                        tool_id: tool_request.id.clone(),
+                        status,
+                        message: Some(short_output),
+                        output: Some(output),
+                    })
+                    .await?;
+
+                // Create and store the ToolExecution record
+                let tool_execution = ToolExecution {
+                    tool_request: tool_request.clone(),
+                    result,
+                };
+
+                // Store the execution record
+                self.tool_executions.push(tool_execution);
+
+                Ok(success)
+            }
+            Err(e) => {
+                // Tool execution failed (parameter error, etc.)
+                let error_text = Self::format_error_for_user(&e);
+
+                // Update UI status to error
+                self.ui
+                    .send_event(UiEvent::UpdateToolStatus {
+                        tool_id: tool_request.id.clone(),
+                        status: crate::ui::ToolStatus::Error,
+                        message: Some(error_text.clone()),
+                        output: Some(error_text.clone()),
+                    })
+                    .await?;
+
+                // Create a ToolExecution record for the error
+                let tool_execution = if let Some(tool_error) = e.downcast_ref::<ToolError>() {
+                    match tool_error {
+                        ToolError::ParseError(_) => {
+                            // For parse errors, create a parse error execution
+                            ToolExecution::create_parse_error(tool_request.id.clone(), error_text)
+                        }
+                        ToolError::UnknownTool(_) => {
+                            // This shouldn't happen since we check above, but handle it
+                            ToolExecution::create_parse_error(tool_request.id.clone(), error_text)
+                        }
+                    }
+                } else {
+                    // For other error types, also create a parse error record
+                    ToolExecution::create_parse_error(tool_request.id.clone(), error_text)
+                };
+
+                // Store the execution record
+                self.tool_executions.push(tool_execution);
+
+                // Return the error to be handled by manage_tool_execution
+                Err(e)
+            }
         };
 
-        // Generate status string from result
-        let short_output = result.as_render().status();
-
-        // Generate isolated output from result
-        let mut resources_tracker = ResourcesTracker::new();
-        let output = result.as_render().render(&mut resources_tracker);
-
-        // Update tool status with result
-        self.ui
-            .send_event(UiEvent::UpdateToolStatus {
-                tool_id: tool_request.id.clone(),
-                status,
-                message: Some(short_output),
-                output: Some(output),
-            })
-            .await?;
-
-        // Create and store the ToolExecution record
-        let tool_execution = ToolExecution {
-            tool_request: tool_request.clone(),
-            result,
-        };
-
-        // Store the execution record
-        self.tool_executions.push(tool_execution);
-
-        Ok(success)
+        result
     }
 }
 
