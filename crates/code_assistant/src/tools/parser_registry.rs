@@ -44,7 +44,11 @@ fn parse_and_truncate_caret_response(
         if let ContentBlock::Text { text } = block {
             // Parse Caret tool invocations and get truncation position
             let (block_tool_requests, truncated_text) =
-                parse_caret_tool_invocations_with_truncation(text, request_id, tool_requests.len())?;
+                parse_caret_tool_invocations_with_truncation(
+                    text,
+                    request_id,
+                    tool_requests.len(),
+                )?;
 
             tool_requests.extend(block_tool_requests.clone());
 
@@ -120,45 +124,25 @@ fn parse_and_truncate_xml_response(
     Ok((tool_requests, truncated_response))
 }
 
-/// Parse JSON tool requests from LLM response and return both requests and truncated response after first tool
-fn parse_and_truncate_json_response(
+/// Extract JSON tool requests from LLM response and return both requests and original response
+fn parse_and_json_response(
     response: &LLMResponse,
     _request_id: u64,
 ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
     let mut tool_requests = Vec::new();
-    let mut truncated_content = Vec::new();
 
     for block in &response.content {
         if let ContentBlock::ToolUse { id, name, input } = block {
-            // For ToolUse blocks, create ToolRequest directly
             let tool_request = ToolRequest {
                 id: id.clone(),
                 name: name.clone(),
                 input: input.clone(),
             };
             tool_requests.push(tool_request);
-
-            // Keep the ToolUse block in truncated content
-            truncated_content.push(block.clone());
-
-            // Stop processing after first tool (native mode)
-            break;
-        } else {
-            // Keep other blocks if no tools found yet
-            if tool_requests.is_empty() {
-                truncated_content.push(block.clone());
-            }
         }
     }
 
-    // Create truncated response
-    let truncated_response = LLMResponse {
-        content: truncated_content,
-        usage: response.usage.clone(),
-        rate_limit_info: response.rate_limit_info.clone(),
-    };
-
-    Ok((tool_requests, truncated_response))
+    Ok((tool_requests, response.clone()))
 }
 
 /// Parse Caret tool invocations and return both tool requests and truncated text
@@ -386,7 +370,12 @@ impl CaretParser {
         docs.join("\n")
     }
 
-    fn format_caret_parameter_doc(&self, name: &str, param: &serde_json::Value, is_required: bool) -> String {
+    fn format_caret_parameter_doc(
+        &self,
+        name: &str,
+        param: &serde_json::Value,
+        is_required: bool,
+    ) -> String {
         let mut doc = format!("- {}", name);
 
         // Add required flag if needed
@@ -406,7 +395,11 @@ impl CaretParser {
         doc
     }
 
-    fn generate_caret_usage_example(&self, tool_name: &str, parameters: &serde_json::Value) -> String {
+    fn generate_caret_usage_example(
+        &self,
+        tool_name: &str,
+        parameters: &serde_json::Value,
+    ) -> String {
         let mut example = format!("^^^{}\n", tool_name);
 
         // Get the properties object
@@ -439,7 +432,12 @@ impl CaretParser {
         example
     }
 
-    fn generate_caret_parameter_example(&self, example: &mut String, name: &str, prop: &serde_json::Value) {
+    fn generate_caret_parameter_example(
+        &self,
+        example: &mut String,
+        name: &str,
+        prop: &serde_json::Value,
+    ) {
         // Determine if this parameter is an array
         let is_array = prop.get("type").and_then(|t| t.as_str()) == Some("array");
 
@@ -498,7 +496,7 @@ impl ToolInvocationParser for JsonParser {
         req_id: u64,
         _order_offset: usize,
     ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
-        parse_and_truncate_json_response(response, req_id)
+        parse_and_json_response(response, req_id)
     }
 
     fn stream_processor(
