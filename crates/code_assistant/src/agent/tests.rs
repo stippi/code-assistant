@@ -1,11 +1,11 @@
 use super::*;
 use crate::agent::persistence::MockStatePersistence;
-use crate::agent::runner::parse_and_truncate_llm_response;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
     create_command_executor_mock, create_test_response, create_test_response_text,
     MockProjectManager, MockUI,
 };
+use crate::tests::utils::parse_and_truncate_llm_response;
 use crate::types::*;
 use crate::UserInterface;
 use anyhow::Result;

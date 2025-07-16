@@ -1,4 +1,4 @@
-use crate::agent::runner::parse_and_truncate_llm_response;
+use crate::tests::utils::parse_and_truncate_llm_response;
 use anyhow::Result;
 use axum::{routing::post, Router};
 use llm::types::*;
