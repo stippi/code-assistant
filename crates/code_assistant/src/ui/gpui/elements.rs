@@ -60,11 +60,6 @@ pub struct MessageContainer {
     /// each new request (see `UiEvent::StreamingStarted` in gpui/mod). When the user cancels
     /// streaming, all blocks that were created for that last, canceled request are removed.
     current_request_id: Arc<Mutex<u64>>,
-    /// Set to `true` in UiEvent::StreamingStarted, and set to false when the first streaming chunk
-    /// is received. A progress spinner is showing while it is `true`.
-    waiting_for_content: Arc<Mutex<bool>>,
-    /// Rate limit countdown in seconds (None = no rate limiting)
-    rate_limit_countdown: Arc<Mutex<Option<u64>>>,
 }
 
 impl MessageContainer {
@@ -73,34 +68,12 @@ impl MessageContainer {
             elements: Arc::new(Mutex::new(Vec::new())),
             role,
             current_request_id: Arc::new(Mutex::new(0)),
-            waiting_for_content: Arc::new(Mutex::new(false)),
-            rate_limit_countdown: Arc::new(Mutex::new(None)),
         }
     }
 
     // Set the current request ID for this message container
     pub fn set_current_request_id(&self, request_id: u64) {
         *self.current_request_id.lock().unwrap() = request_id;
-    }
-
-    // Set waiting for content flag
-    pub fn set_waiting_for_content(&self, waiting: bool) {
-        *self.waiting_for_content.lock().unwrap() = waiting;
-    }
-
-    // Check if waiting for content
-    pub fn is_waiting_for_content(&self) -> bool {
-        *self.waiting_for_content.lock().unwrap()
-    }
-
-    // Set rate limit countdown
-    pub fn set_rate_limit_countdown(&self, seconds: Option<u64>) {
-        *self.rate_limit_countdown.lock().unwrap() = seconds;
-    }
-
-    // Get rate limit countdown
-    pub fn get_rate_limit_countdown(&self) -> Option<u64> {
-        *self.rate_limit_countdown.lock().unwrap()
     }
 
     // Remove all blocks with the given request ID
@@ -141,9 +114,6 @@ impl MessageContainer {
     pub fn add_text_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
         self.finish_any_thinking_blocks(cx);
 
-        // Clear waiting_for_content flag on first content
-        self.set_waiting_for_content(false);
-
         let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::TextBlock(TextBlock {
@@ -158,9 +128,6 @@ impl MessageContainer {
     #[allow(dead_code)]
     pub fn add_thinking_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
         self.finish_any_thinking_blocks(cx);
-
-        // Clear waiting_for_content flag on first content
-        self.set_waiting_for_content(false);
 
         let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
@@ -178,9 +145,6 @@ impl MessageContainer {
         cx: &mut Context<Self>,
     ) {
         self.finish_any_thinking_blocks(cx);
-
-        // Clear waiting_for_content flag on first content
-        self.set_waiting_for_content(false);
 
         let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
@@ -240,9 +204,6 @@ impl MessageContainer {
     pub fn add_or_append_to_text_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
         self.finish_any_thinking_blocks(cx);
 
-        // Clear waiting_for_content flag on first content
-        self.set_waiting_for_content(false);
-
         let content = content.into();
         let mut elements = self.elements.lock().unwrap();
 
@@ -278,9 +239,6 @@ impl MessageContainer {
         content: impl Into<String>,
         cx: &mut Context<Self>,
     ) {
-        // Clear waiting_for_content flag on first content
-        self.set_waiting_for_content(false);
-
         let content = content.into();
         let mut elements = self.elements.lock().unwrap();
 

@@ -102,6 +102,8 @@ pub struct Gpui {
     // Current chat state
     current_session_id: Arc<Mutex<Option<String>>>,
     chat_sessions: Arc<Mutex<Vec<ChatMetadata>>>,
+    current_session_activity_state:
+        Arc<Mutex<Option<crate::session::instance::SessionActivityState>>>,
 
     // UI components
     chat_sidebar: Arc<Mutex<Option<Entity<chat_sidebar::ChatSidebar>>>>,
@@ -201,6 +203,7 @@ impl Gpui {
 
             current_session_id: Arc::new(Mutex::new(None)),
             chat_sessions: Arc::new(Mutex::new(Vec::new())),
+            current_session_activity_state: Arc::new(Mutex::new(None)),
 
             chat_sidebar: Arc::new(Mutex::new(None)),
         }
@@ -340,8 +343,13 @@ impl Gpui {
                         });
 
                         // Create MessagesView
-                        let messages_view =
-                            cx.new(|cx| MessagesView::new(message_queue.clone(), cx));
+                        let messages_view = cx.new(|cx| {
+                            MessagesView::new(
+                                message_queue.clone(),
+                                gpui_clone.current_session_activity_state.clone(),
+                                cx,
+                            )
+                        });
 
                         // Create ChatSidebar and store it in Gpui
                         let chat_sidebar = cx.new(|cx| chat_sidebar::ChatSidebar::new(cx));
@@ -484,6 +492,8 @@ impl Gpui {
                 // Update current session ID if provided
                 if let Some(session_id) = session_id {
                     *self.current_session_id.lock().unwrap() = Some(session_id);
+                    // Reset activity state when switching sessions - it will be updated by subsequent events
+                    *self.current_session_activity_state.lock().unwrap() = None;
                 }
 
                 // Clear existing messages
@@ -551,6 +561,25 @@ impl Gpui {
                     }
                 }
 
+                // Ensure we always end with an Assistant container
+                // This is crucial for sessions that are waiting for responses or actively running agents
+                {
+                    let mut queue = self.message_queue.lock().unwrap();
+                    let needs_assistant_container = if let Some(last) = queue.last() {
+                        cx.update_entity(last, |message, _cx| message.is_user_message())
+                            .expect("Failed to check container role")
+                    } else {
+                        true // Empty queue needs an assistant container
+                    };
+
+                    if needs_assistant_container {
+                        let assistant_container = cx
+                            .new(|cx| MessageContainer::with_role(MessageRole::Assistant, cx))
+                            .expect("Failed to create assistant container");
+                        queue.push(assistant_container);
+                    }
+                }
+
                 cx.refresh().expect("Failed to refresh windows");
             }
             UiEvent::StreamingStarted(request_id) => {
@@ -570,7 +599,6 @@ impl Gpui {
                         .new(|cx| {
                             let container = MessageContainer::with_role(MessageRole::Assistant, cx);
                             container.set_current_request_id(request_id);
-                            container.set_waiting_for_content(true);
                             container
                         })
                         .expect("Failed to create new container");
@@ -580,7 +608,6 @@ impl Gpui {
                     if let Some(last_message) = queue.last() {
                         cx.update_entity(last_message, |container, cx| {
                             container.set_current_request_id(request_id);
-                            container.set_waiting_for_content(true);
                             cx.notify();
                         })
                         .expect("Failed to update existing container");
@@ -662,31 +689,6 @@ impl Gpui {
                     warn!("UI: No backend event sender available");
                 }
             }
-            UiEvent::RateLimitNotification { seconds_remaining } => {
-                debug!(
-                    "UI: RateLimitNotification event: {} seconds remaining",
-                    seconds_remaining
-                );
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    cx.update_entity(&last, |message, cx| {
-                        message.set_rate_limit_countdown(Some(seconds_remaining));
-                        cx.notify();
-                    })
-                    .expect("Failed to update entity");
-                }
-            }
-            UiEvent::ClearRateLimit => {
-                debug!("UI: ClearRateLimit event");
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    cx.update_entity(&last, |message, cx| {
-                        message.set_rate_limit_countdown(None);
-                        cx.notify();
-                    })
-                    .expect("Failed to update entity");
-                }
-            }
             UiEvent::UpdateSessionMetadata { metadata } => {
                 debug!(
                     "UI: UpdateSessionMetadata event for session {}",
@@ -719,6 +721,36 @@ impl Gpui {
                     debug!("UI: Updated chat sidebar for session metadata change");
                 } else {
                     debug!("UI: No chat sidebar entity available for metadata update");
+                }
+            }
+            UiEvent::UpdateSessionActivityState {
+                session_id,
+                activity_state,
+            } => {
+                debug!(
+                    "UI: UpdateSessionActivityState event for session {} with state {:?}",
+                    session_id, activity_state
+                );
+
+                // Update the chat sidebar
+                if let Some(chat_sidebar_entity) = self.chat_sidebar.lock().unwrap().as_ref() {
+                    cx.update_entity(chat_sidebar_entity, |sidebar, cx| {
+                        sidebar.update_single_session_activity_state(
+                            session_id.clone(),
+                            activity_state.clone(),
+                            cx,
+                        );
+                    })
+                    .expect("Failed to update chat sidebar activity state");
+                }
+
+                // Update current session activity state for messages view
+                if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
+                    if current_session_id == &session_id {
+                        *self.current_session_activity_state.lock().unwrap() =
+                            Some(activity_state.clone());
+                        cx.refresh().expect("Failed to refresh windows");
+                    }
                 }
             }
         }
@@ -958,11 +990,12 @@ impl UserInterface for Gpui {
         }
     }
 
-    fn notify_rate_limit(&self, seconds_remaining: u64) {
-        self.push_event(UiEvent::RateLimitNotification { seconds_remaining });
+    fn notify_rate_limit(&self, _seconds_remaining: u64) {
+        // This is not handled here, but in the ProxyUI of each SessionInstance.
+        // We receive separate events for SessionActivityState
     }
 
     fn clear_rate_limit(&self) {
-        self.push_event(UiEvent::ClearRateLimit);
+        // See notify_rate_limit()
     }
 }

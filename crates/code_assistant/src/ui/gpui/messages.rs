@@ -9,16 +9,22 @@ use std::sync::{Arc, Mutex};
 /// MessagesView - Component responsible for displaying the message history
 pub struct MessagesView {
     message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
+    current_session_activity_state:
+        Arc<Mutex<Option<crate::session::instance::SessionActivityState>>>,
     focus_handle: FocusHandle,
 }
 
 impl MessagesView {
     pub fn new(
         message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
+        current_session_activity_state: Arc<
+            Mutex<Option<crate::session::instance::SessionActivityState>>,
+        >,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             message_queue,
+            current_session_activity_state,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -45,14 +51,10 @@ impl Render for MessagesView {
             rgb(0x0A8A55) // Light mode user accent
         };
 
-        // Render the messages content
-        v_flex()
-            .id("messages")
-            .p_2()
-            .bg(cx.theme().card)
-            .gap_2()
-            .text_size(px(16.))
-            .children(messages.into_iter().map(|msg| {
+        // Collect all message elements first
+        let message_elements: Vec<_> = messages
+            .into_iter()
+            .map(|msg| {
                 // Create message container with appropriate styling based on role
                 let mut message_container = div().p_3();
 
@@ -94,62 +96,80 @@ impl Render for MessagesView {
                     message_container
                 };
 
-                // Render all block elements
+                // Render all block elements (but no longer render waiting content here)
                 let elements = msg.read(cx).elements();
-                let mut container_children = vec![];
-
-                // Add all existing blocks
-                for element in elements {
-                    container_children.push(element.into_any_element());
-                }
-
-                // Add loading indicator if waiting for content
-                if msg.read(cx).is_waiting_for_content() {
-                    let rate_limit_countdown = msg.read(cx).get_rate_limit_countdown();
-
-                    let (message_text, icon_color) = if let Some(seconds) = rate_limit_countdown {
-                        (
-                            format!("Rate limited - retrying in {}s...", seconds),
-                            cx.theme().warning,
-                        )
-                    } else {
-                        ("Waiting for response...".to_string(), cx.theme().info)
-                    };
-
-                    container_children.push(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .p_2()
-                            .child(
-                                svg()
-                                    .size(px(16.))
-                                    .path(SharedString::from("icons/arrow_circle.svg"))
-                                    .text_color(icon_color)
-                                    .with_animation(
-                                        "loading_indicator",
-                                        Animation::new(std::time::Duration::from_secs(2))
-                                            .repeat()
-                                            .with_easing(bounce(ease_in_out)),
-                                        |svg, delta| {
-                                            svg.with_transformation(Transformation::rotate(
-                                                percentage(delta),
-                                            ))
-                                        },
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_color(icon_color)
-                                    .text_size(px(12.))
-                                    .child(message_text),
-                            )
-                            .into_any_element(),
-                    );
-                }
+                let container_children: Vec<_> = elements
+                    .into_iter()
+                    .map(|element| element.into_any_element())
+                    .collect();
 
                 message_container.children(container_children)
-            }))
+            })
+            .collect();
+
+        // Create the base messages container
+        let mut messages_container = v_flex()
+            .id("messages")
+            .p_2()
+            .bg(cx.theme().card)
+            .gap_2()
+            .text_size(px(16.))
+            .children(message_elements);
+
+        // Add waiting UI based on current session activity state (below all messages)
+        let current_activity_state = self.current_session_activity_state.lock().unwrap().clone();
+        if let Some(activity_state) = current_activity_state {
+            if matches!(
+                activity_state,
+                crate::session::instance::SessionActivityState::WaitingForResponse
+                    | crate::session::instance::SessionActivityState::RateLimited { .. }
+            ) {
+                let (message_text, icon_color) = match activity_state {
+                    crate::session::instance::SessionActivityState::RateLimited {
+                        seconds_remaining,
+                    } => (
+                        format!("Rate limited - retrying in {}s...", seconds_remaining),
+                        cx.theme().warning,
+                    ),
+                    crate::session::instance::SessionActivityState::WaitingForResponse => {
+                        ("Waiting for response...".to_string(), cx.theme().info)
+                    }
+                    _ => unreachable!(),
+                };
+
+                messages_container = messages_container.child(
+                    div()
+                        .p_3()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            svg()
+                                .size(px(16.))
+                                .path(SharedString::from("icons/arrow_circle.svg"))
+                                .text_color(icon_color)
+                                .with_animation(
+                                    "loading_indicator",
+                                    Animation::new(std::time::Duration::from_secs(2))
+                                        .repeat()
+                                        .with_easing(bounce(ease_in_out)),
+                                    |svg, delta| {
+                                        svg.with_transformation(Transformation::rotate(percentage(
+                                            delta,
+                                        )))
+                                    },
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_color(icon_color)
+                                .text_size(px(12.))
+                                .child(message_text),
+                        ),
+                );
+            }
+        }
+
+        messages_container
     }
 }

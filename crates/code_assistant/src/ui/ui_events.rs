@@ -1,4 +1,5 @@
 use crate::persistence::ChatMetadata;
+use crate::session::instance::SessionActivityState;
 use crate::types::WorkingMemory;
 use crate::ui::gpui::elements::MessageRole;
 use crate::ui::{DisplayFragment, ToolStatus};
@@ -72,11 +73,12 @@ pub enum UiEvent {
     ClearMessages,
     /// Send user message to active session (triggers agent)
     SendUserMessage { message: String, session_id: String },
-    /// Notify about rate limiting with countdown
-    RateLimitNotification { seconds_remaining: u64 },
-    /// Clear rate limit notification
-    ClearRateLimit,
     /// Update metadata for a single session without refreshing the entire list
     #[allow(dead_code)]
     UpdateSessionMetadata { metadata: ChatMetadata },
+    /// Update activity state for a single session
+    UpdateSessionActivityState {
+        session_id: String,
+        activity_state: SessionActivityState,
+    },
 }
