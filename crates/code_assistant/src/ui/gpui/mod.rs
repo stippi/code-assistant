@@ -362,6 +362,7 @@ impl Gpui {
                                 memory_view.clone(),
                                 messages_view,
                                 chat_sidebar.clone(),
+                                window,
                                 cx,
                                 input_value.clone(),
                                 input_requested.clone(),

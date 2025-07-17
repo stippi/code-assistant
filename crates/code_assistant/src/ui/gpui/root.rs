@@ -12,7 +12,7 @@ use gpui::{
     div, prelude::*, px, rgba, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
     MouseButton, MouseUpEvent,
 };
-use gpui_component::input::InputState;
+use gpui_component::input::{InputState, InputEvent};
 use gpui_component::input::TextInput;
 use gpui_component::ActiveTheme;
 use std::sync::{Arc, Mutex};
@@ -36,6 +36,8 @@ pub struct RootView {
     chat_sessions: Vec<ChatMetadata>,
     // Streaming state - shared with Gpui
     streaming_state: Arc<Mutex<StreamingState>>,
+    // Subscription to text input events
+    _input_subscription: gpui::Subscription,
 }
 
 impl RootView {
@@ -44,6 +46,7 @@ impl RootView {
         memory_view: Entity<MemoryView>,
         messages_view: Entity<MessagesView>,
         chat_sidebar: Entity<ChatSidebar>,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
         input_value: Arc<Mutex<Option<String>>>,
         input_requested: Arc<Mutex<bool>>,
@@ -52,6 +55,9 @@ impl RootView {
         // Create the auto-scroll container that wraps the messages view
         let auto_scroll_container =
             cx.new(|_cx| AutoScrollContainer::new("messages", messages_view));
+
+        // Subscribe to text input events
+        let input_subscription = cx.subscribe_in(&text_input, window, Self::on_input_event);
 
         let mut root_view = Self {
             text_input,
@@ -67,6 +73,7 @@ impl RootView {
             current_session_id: None,
             chat_sessions: Vec::new(),
             streaming_state,
+            _input_subscription: input_subscription,
         };
 
         // Request initial chat session list
@@ -180,6 +187,36 @@ impl RootView {
         // Set streaming state to StopRequested
         *self.streaming_state.lock().unwrap() = StreamingState::StopRequested;
         cx.notify();
+    }
+
+    // Handle text input events for draft functionality
+    fn on_input_event(
+        &mut self,
+        _input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut gpui::Window,
+        _cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::Change(text) => {
+                debug!("🎯 TEXT INPUT CHANGED: '{}' (length: {})", text, text.len());
+                if let Some(session_id) = &self.current_session_id {
+                    debug!("🎯 Current session: {}", session_id);
+                    // TODO: Implement draft saving here
+                } else {
+                    debug!("🎯 No current session - draft not saved");
+                }
+            }
+            InputEvent::Focus => {
+                debug!("🎯 TEXT INPUT FOCUSED");
+            }
+            InputEvent::Blur => {
+                debug!("🎯 TEXT INPUT BLURRED");
+            }
+            InputEvent::PressEnter { secondary } => {
+                debug!("🎯 TEXT INPUT ENTER PRESSED (secondary: {})", secondary);
+            }
+        }
     }
 }
 
