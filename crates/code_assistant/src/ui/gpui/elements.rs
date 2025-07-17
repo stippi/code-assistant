@@ -792,7 +792,7 @@ impl Render for BlockView {
                     crate::ui::gpui::theme::colors::tool_block_icon(&cx.theme(), &block.status);
                 let tool_name_color =
                     crate::ui::gpui::theme::colors::tool_block_name(&cx.theme(), &block.status);
-                let border_color = crate::ui::gpui::theme::colors::tool_border_by_status(
+                let status_color = crate::ui::gpui::theme::colors::tool_border_by_status(
                     &cx.theme(),
                     &block.status,
                 );
@@ -833,6 +833,7 @@ impl Render for BlockView {
                     .rounded(px(4.))
                     .my_2()
                     .bg(tool_bg)
+                    .shadow_xs()
                     .flex()
                     .flex_row()
                     .overflow_hidden()
@@ -844,7 +845,7 @@ impl Render for BlockView {
                             .min_h_full()
                             .overflow_hidden()
                             // Use a child with enough width to avoid reducing the corner radius
-                            .child(div().w(px(8.)).h_full().rounded(px(4.)).bg(border_color)),
+                            .child(div().w(px(8.)).h_full().rounded(px(4.)).bg(status_color)),
                         div().flex_grow().min_w_0().relative().child(
                             div().w_full().flex().flex_col().p_1().children({
                                 let mut elements = Vec::new();
@@ -912,7 +913,7 @@ impl Render for BlockView {
                                                 .cursor_pointer()
                                                 .size(px(24.))
                                                 .rounded_full()
-                                                .hover(|s| s.bg(border_color.opacity(0.2)))
+                                                .hover(|s| s.bg(status_color.opacity(0.2)))
                                                 .child(file_icons::render_icon(
                                                     &chevron_icon,
                                                     16.0,
@@ -1121,7 +1122,6 @@ impl Render for BlockView {
                             }
                         }),
                     ])
-                    .shadow_sm()
                     .into_any_element()
             }
         }
