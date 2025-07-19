@@ -275,10 +275,10 @@ fn test_caret_must_start_at_line_beginning() {
         DisplayFragment::PlainText("Some text ^^^not_a_tool and more text\n".to_string()),
         DisplayFragment::ToolName {
             name: "real_tool".to_string(),
-            id: "real_tool_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "real_tool_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
     ];
 
@@ -414,10 +414,10 @@ fn test_caret_chunked_across_tool_closing() {
     let expected_fragments = vec![
         DisplayFragment::ToolName {
             name: "list_projects".to_string(),
-            id: "list_projects_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "list_projects_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
     ];
 
@@ -437,20 +437,20 @@ fn test_caret_array_syntax_proper_formatting() {
     let expected_fragments = vec![
         DisplayFragment::ToolName {
             name: "read_files".to_string(),
-            id: "read_files_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),
             value: "test".to_string(),
-            tool_id: "read_files_42".to_string(),
+            tool_id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "paths".to_string(),
             value: "[\"src/main.rs\",\"Cargo.toml\"]".to_string(),
-            tool_id: "read_files_42".to_string(),
+            tool_id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "read_files_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
     ];
 
@@ -468,20 +468,20 @@ fn test_caret_array_syntax_chunked() {
     let expected_fragments = vec![
         DisplayFragment::ToolName {
             name: "read_files".to_string(),
-            id: "read_files_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),
             value: "test".to_string(),
-            tool_id: "read_files_42".to_string(),
+            tool_id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "paths".to_string(),
             value: "[\"src/main.rs\",\"Cargo.toml\"]".to_string(),
-            tool_id: "read_files_42".to_string(),
+            tool_id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "read_files_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
     ];
 
@@ -501,20 +501,20 @@ fn test_caret_multiline_parameter_chunked() {
     let expected_fragments = vec![
         DisplayFragment::ToolName {
             name: "write_file".to_string(),
-            id: "write_file_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),
             value: "test".to_string(),
-            tool_id: "write_file_42".to_string(),
+            tool_id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "content".to_string(),
             value: "Hello\nWorld".to_string(),
-            tool_id: "write_file_42".to_string(),
+            tool_id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "write_file_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
     ];
 
@@ -537,10 +537,10 @@ fn test_caret_false_positive_prevention() {
         ),
         DisplayFragment::ToolName {
             name: "list_projects".to_string(),
-            id: "list_projects_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "list_projects_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
     ];
 
@@ -619,20 +619,20 @@ fn test_caret_raw_vs_merged_fragments() {
         DisplayFragment::PlainText("Let me\n help you\n\n".to_string()),
         DisplayFragment::ToolName {
             name: "read_files".to_string(),
-            id: "read_files_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "project".to_string(),
             value: "test".to_string(),
-            tool_id: "read_files_42".to_string(),
+            tool_id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolParameter {
             name: "path".to_string(),
             value: "src/main.rs".to_string(),
-            tool_id: "read_files_42".to_string(),
+            tool_id: "tool-42-1".to_string(),
         },
         DisplayFragment::ToolEnd {
-            id: "read_files_42".to_string(),
+            id: "tool-42-1".to_string(),
         },
     ];
 

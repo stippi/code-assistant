@@ -842,3 +842,250 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_caret_array_parsing() -> Result<()> {
+    use crate::tools::ParserRegistry;
+
+    let text = concat!(
+        "^^^read_files\n",
+        "project: code-assistant\n",
+        "paths: [\n",
+        "docs/customizable-tool-syntax.md\n",
+        "]\n",
+        "^^^"
+    );
+
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text: text.to_string() }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
+
+    assert_eq!(tool_requests.len(), 1);
+    assert_eq!(tool_requests[0].name, "read_files");
+    assert_eq!(
+        tool_requests[0].input.get("project").unwrap().as_str().unwrap(),
+        "code-assistant"
+    );
+
+    // This should be an array, not a string
+    let paths = tool_requests[0].input.get("paths").unwrap();
+    println!("paths value: {:?}", paths);
+    println!("paths type: {:?}", paths);
+
+    if paths.is_array() {
+        let paths_array = paths.as_array().unwrap();
+        assert_eq!(paths_array.len(), 1);
+        assert_eq!(paths_array[0], "docs/customizable-tool-syntax.md");
+    } else {
+        panic!("Expected paths to be an array, but got: {:?}", paths);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_caret_empty_array_parsing() -> Result<()> {
+    use crate::tools::ParserRegistry;
+
+    let text = concat!(
+        "^^^read_files\n",
+        "project: code-assistant\n",
+        "paths: [\n",
+        "]\n",
+        "^^^"
+    );
+
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text: text.to_string() }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
+
+    assert_eq!(tool_requests.len(), 1);
+    assert_eq!(tool_requests[0].name, "read_files");
+
+    // Empty array should still be an array
+    let paths = tool_requests[0].input.get("paths").unwrap();
+    assert!(paths.is_array());
+    assert_eq!(paths.as_array().unwrap().len(), 0);
+
+    Ok(())
+}
+
+#[test]
+fn test_caret_multiple_arrays_parsing() -> Result<()> {
+    use crate::tools::ParserRegistry;
+
+    let text = concat!(
+        "^^^search_files\n",
+        "project: code-assistant\n",
+        "paths: [\n",
+        "src/\n",
+        "docs/\n",
+        "]\n",
+        "regex: single-value\n",
+        "extensions: [\n",
+        "rs\n",
+        "md\n",
+        "toml\n",
+        "]\n",
+        "^^^"
+    );
+
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text: text.to_string() }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
+
+    assert_eq!(tool_requests.len(), 1);
+    assert_eq!(tool_requests[0].name, "search_files");
+
+    // Check single value parameter
+    let regex = tool_requests[0].input.get("regex").unwrap();
+    assert!(regex.is_string());
+    assert_eq!(regex.as_str().unwrap(), "single-value");
+
+    // Check first array parameter
+    let paths = tool_requests[0].input.get("paths").unwrap();
+    assert!(paths.is_array());
+    let paths_array = paths.as_array().unwrap();
+    assert_eq!(paths_array.len(), 2);
+    assert_eq!(paths_array[0], "src/");
+    assert_eq!(paths_array[1], "docs/");
+
+    // Check second array parameter
+    let extensions = tool_requests[0].input.get("extensions").unwrap();
+    assert!(extensions.is_array());
+    let ext_array = extensions.as_array().unwrap();
+    assert_eq!(ext_array.len(), 3);
+    assert_eq!(ext_array[0], "rs");
+    assert_eq!(ext_array[1], "md");
+    assert_eq!(ext_array[2], "toml");
+
+    Ok(())
+}
+
+#[test]
+fn test_caret_array_with_multiline_parsing() -> Result<()> {
+    use crate::tools::ParserRegistry;
+
+    let text = concat!(
+        "^^^write_file\n",
+        "project: code-assistant\n",
+        "path: test.txt\n",
+        "tags: [\n",
+        "important\n",
+        "test-file\n",
+        "]\n",
+        "content ---\n",
+        "This is the file content\n",
+        "with multiple lines\n",
+        "--- content\n",
+        "^^^"
+    );
+
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text: text.to_string() }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
+
+    assert_eq!(tool_requests.len(), 1);
+    assert_eq!(tool_requests[0].name, "write_file");
+
+    // Check single parameters
+    assert_eq!(
+        tool_requests[0].input.get("project").unwrap().as_str().unwrap(),
+        "code-assistant"
+    );
+    assert_eq!(
+        tool_requests[0].input.get("path").unwrap().as_str().unwrap(),
+        "test.txt"
+    );
+
+    // Check array parameter
+    let tags = tool_requests[0].input.get("tags").unwrap();
+    assert!(tags.is_array());
+    let tags_array = tags.as_array().unwrap();
+    assert_eq!(tags_array.len(), 2);
+    assert_eq!(tags_array[0], "important");
+    assert_eq!(tags_array[1], "test-file");
+
+    // Check multiline parameter
+    let content = tool_requests[0].input.get("content").unwrap();
+    assert!(content.is_string());
+    assert_eq!(
+        content.as_str().unwrap(),
+        "This is the file content\nwith multiple lines"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_original_caret_issue_reproduction() -> Result<()> {
+    use crate::tools::ParserRegistry;
+
+    // This is the exact block that was reported as failing
+    let text = concat!(
+        "^^^read_files\n",
+        "project: code-assistant\n",
+        "paths: [\n",
+        "docs/customizable-tool-syntax.md\n",
+        "]\n",
+        "^^^"
+    );
+
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text: text.to_string() }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let result = parser.extract_requests(&response, 123, 0);
+
+    match result {
+        Ok((tool_requests, _truncated_response)) => {
+            assert_eq!(tool_requests.len(), 1);
+            assert_eq!(tool_requests[0].name, "read_files");
+            assert_eq!(
+                tool_requests[0].input.get("project").unwrap().as_str().unwrap(),
+                "code-assistant"
+            );
+
+            // This was the original issue - paths should be parsed as an array, not a string
+            let paths = tool_requests[0].input.get("paths").unwrap();
+
+            // Before the fix, this would fail with: "invalid type: string, expected a sequence"
+            // Now it should work correctly
+            assert!(paths.is_array(), "paths should be an array, not a string");
+            let paths_array = paths.as_array().unwrap();
+            assert_eq!(paths_array.len(), 1);
+            assert_eq!(paths_array[0], "docs/customizable-tool-syntax.md");
+
+            println!("✅ Original issue has been fixed!");
+            println!("   paths parsed as: {:?}", paths);
+        },
+        Err(e) => {
+            panic!("Parser should not fail anymore, but got error: {}", e);
+        }
+    }
+
+    Ok(())
+}

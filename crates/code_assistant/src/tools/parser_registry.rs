@@ -129,7 +129,7 @@ fn parse_and_truncate_xml_response(
 }
 
 /// Extract JSON tool requests from LLM response and return both requests and original response
-fn parse_and_json_response(
+fn parse_json_response(
     response: &LLMResponse,
     _request_id: u64,
 ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
@@ -746,7 +746,7 @@ impl ToolInvocationParser for JsonParser {
         req_id: u64,
         _order_offset: usize,
     ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
-        parse_and_json_response(response, req_id)
+        parse_json_response(response, req_id)
     }
 
     fn stream_processor(

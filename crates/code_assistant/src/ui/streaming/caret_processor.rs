@@ -36,6 +36,7 @@ enum ParserState {
 pub struct CaretStreamProcessor {
     ui: Arc<Box<dyn UserInterface>>,
     request_id: u64,
+    tool_index: u64,
     buffer: String,
     state: ParserState,
     tool_regex: Regex,
@@ -49,6 +50,7 @@ impl StreamProcessorTrait for CaretStreamProcessor {
         Self {
             ui,
             request_id,
+            tool_index: 0,
             buffer: String::new(),
             state: ParserState::OutsideTool,
             tool_regex: Regex::new(r"^\^\^\^([a-zA-Z0-9_]+)$").unwrap(),
@@ -70,42 +72,90 @@ impl StreamProcessorTrait for CaretStreamProcessor {
         &mut self,
         message: &Message,
     ) -> Result<Vec<DisplayFragment>, UIError> {
-        let text = if let MessageContent::Text(text) = &message.content {
-            text
-        } else {
-            return Ok(vec![]);
-        };
-
         let mut fragments = Vec::new();
-        if let Some(plain_text) = text.split("^^^").next() {
-            if !plain_text.is_empty() {
-                fragments.push(DisplayFragment::PlainText(plain_text.to_string()));
+
+        // For User messages, don't process caret syntax - just create a single PlainText fragment
+        if message.role == llm::MessageRole::User {
+            match &message.content {
+                MessageContent::Text(text) => {
+                    if !text.trim().is_empty() {
+                        fragments.push(DisplayFragment::PlainText(text.clone()));
+                    }
+                }
+                MessageContent::Structured(blocks) => {
+                    // For structured user messages, combine all text into a single fragment
+                    let mut combined_text = String::new();
+                    for block in blocks {
+                        match block {
+                            llm::ContentBlock::Text { text } => {
+                                combined_text.push_str(text);
+                            }
+                            llm::ContentBlock::ToolResult { content, .. } => {
+                                // Include tool result content for user messages
+                                combined_text.push_str(content);
+                            }
+                            _ => {} // Skip other block types for user messages
+                        }
+                    }
+                    if !combined_text.trim().is_empty() {
+                        fragments.push(DisplayFragment::PlainText(combined_text));
+                    }
+                }
             }
-        }
-
-        let tool_blocks = text.split("^^^").skip(1);
-        for block in tool_blocks {
-            if let Some(tool_name) = block.lines().next().map(|l| l.trim()) {
-                if tool_name.is_empty() {
-                    continue;
+        } else {
+            // For Assistant messages, process normally with caret syntax parsing
+            match &message.content {
+                MessageContent::Text(text) => {
+                    // Process text for caret syntax
+                    fragments.extend(self.extract_fragments_from_text(text, message.request_id)?);
                 }
-                let tool_id = format!("{}_{}", tool_name, self.request_id);
-                fragments.push(DisplayFragment::ToolName {
-                    name: tool_name.to_string(),
-                    id: tool_id.clone(),
-                });
+                MessageContent::Structured(blocks) => {
+                    for block in blocks {
+                        match block {
+                            llm::ContentBlock::Thinking { thinking, .. } => {
+                                fragments.push(DisplayFragment::ThinkingText(thinking.clone()));
+                            }
+                            llm::ContentBlock::Text { text } => {
+                                // Process text for caret syntax
+                                fragments.extend(
+                                    self.extract_fragments_from_text(text, message.request_id)?,
+                                );
+                            }
+                            llm::ContentBlock::ToolUse { id, name, input } => {
+                                // Convert JSON ToolUse to caret-style fragments
+                                fragments.push(DisplayFragment::ToolName {
+                                    name: name.clone(),
+                                    id: id.clone(),
+                                });
 
-                let tool_content = block.lines().skip(1).collect::<Vec<_>>().join("\n");
-                let params = self.parse_tool_parameters(&tool_content)?;
+                                // Parse JSON input into caret-style tool parameters
+                                if let Some(obj) = input.as_object() {
+                                    for (key, value) in obj {
+                                        let value_str = if value.is_string() {
+                                            value.as_str().unwrap_or("").to_string()
+                                        } else {
+                                            value.to_string()
+                                        };
 
-                for (name, value) in params {
-                    fragments.push(DisplayFragment::ToolParameter {
-                        name,
-                        value,
-                        tool_id: tool_id.clone(),
-                    });
+                                        fragments.push(DisplayFragment::ToolParameter {
+                                            name: key.clone(),
+                                            value: value_str,
+                                            tool_id: id.clone(),
+                                        });
+                                    }
+                                }
+
+                                fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
+                            }
+                            llm::ContentBlock::ToolResult { .. } => {
+                                // Tool results are typically not part of assistant messages
+                            }
+                            llm::ContentBlock::RedactedThinking { .. } => {
+                                // Redacted thinking blocks are not displayed
+                            }
+                        }
+                    }
                 }
-                fragments.push(DisplayFragment::ToolEnd { id: tool_id });
             }
         }
 
@@ -114,6 +164,134 @@ impl StreamProcessorTrait for CaretStreamProcessor {
 }
 
 impl CaretStreamProcessor {
+    /// Extract fragments from text without sending to UI (used for session loading)
+    fn extract_fragments_from_text(
+        &self,
+        text: &str,
+        request_id: Option<u64>,
+    ) -> Result<Vec<DisplayFragment>, UIError> {
+        let mut fragments = Vec::new();
+        let lines: Vec<&str> = text.lines().collect();
+        let mut current_pos = 0;
+        let mut tool_index = 1;
+        let request_id = if let Some(req_id) = request_id {
+            req_id
+        } else {
+            1
+        };
+
+        while current_pos < lines.len() {
+            // Look for tool start pattern: ^^^tool_name on its own line
+            if let Some(tool_start_idx) = self.find_tool_start(&lines[current_pos..]) {
+                let absolute_tool_start = current_pos + tool_start_idx;
+
+                // Add any plain text before the tool block
+                if tool_start_idx > 0 {
+                    let plain_text_lines = &lines[current_pos..absolute_tool_start];
+                    let plain_text = plain_text_lines.join("\n");
+                    if !plain_text.trim().is_empty() {
+                        fragments.push(DisplayFragment::PlainText(plain_text));
+                    }
+                }
+
+                // Parse the tool block
+                if let Some((tool_fragments, tool_end_idx)) =
+                    self.parse_tool_block(&lines[absolute_tool_start..], request_id, tool_index)?
+                {
+                    fragments.extend(tool_fragments);
+                    current_pos = absolute_tool_start + tool_end_idx + 1; // +1 to skip the ^^^ line
+                    tool_index += 1;
+                } else {
+                    // No valid tool block found, treat as plain text
+                    fragments.push(DisplayFragment::PlainText(
+                        lines[absolute_tool_start].to_string(),
+                    ));
+                    current_pos = absolute_tool_start + 1;
+                }
+            } else {
+                // No more tool blocks, add remaining lines as plain text
+                let remaining_lines = &lines[current_pos..];
+                let remaining_text = remaining_lines.join("\n");
+                if !remaining_text.trim().is_empty() {
+                    fragments.push(DisplayFragment::PlainText(remaining_text));
+                }
+                break;
+            }
+        }
+
+        Ok(fragments)
+    }
+
+    /// Find the next tool start pattern in the given lines
+    /// Returns the relative index of the line containing ^^^tool_name
+    fn find_tool_start(&self, lines: &[&str]) -> Option<usize> {
+        for (idx, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if self.tool_regex.is_match(trimmed) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    /// Parse a complete tool block starting from ^^^tool_name
+    /// Returns (fragments, end_line_index) where end_line_index is the index of the closing ^^^
+    fn parse_tool_block(
+        &self,
+        lines: &[&str],
+        request_id: u64,
+        tool_index: u64,
+    ) -> Result<Option<(Vec<DisplayFragment>, usize)>, UIError> {
+        if lines.is_empty() {
+            return Ok(None);
+        }
+
+        // First line should be ^^^tool_name
+        let first_line = lines[0].trim();
+        if let Some(caps) = self.tool_regex.captures(first_line) {
+            let tool_name = caps.get(1).unwrap().as_str();
+            let tool_id = format!("tool-{}-{}", request_id, tool_index);
+
+            // Find the closing ^^^
+            let mut tool_end_idx = None;
+            for (idx, line) in lines.iter().enumerate().skip(1) {
+                if line.trim() == "^^^" {
+                    tool_end_idx = Some(idx);
+                    break;
+                }
+            }
+
+            if let Some(end_idx) = tool_end_idx {
+                let mut fragments = Vec::new();
+
+                // Add tool name fragment
+                fragments.push(DisplayFragment::ToolName {
+                    name: tool_name.to_string(),
+                    id: tool_id.clone(),
+                });
+
+                // Parse parameters between start and end
+                let param_lines = &lines[1..end_idx];
+                let param_content = param_lines.join("\n");
+                let params = self.parse_tool_parameters(&param_content)?;
+
+                for (name, value) in params {
+                    fragments.push(DisplayFragment::ToolParameter {
+                        name,
+                        value,
+                        tool_id: tool_id.clone(),
+                    });
+                }
+
+                // Add tool end fragment
+                fragments.push(DisplayFragment::ToolEnd { id: tool_id });
+
+                return Ok(Some((fragments, end_idx)));
+            }
+        }
+
+        Ok(None)
+    }
     fn process_buffer(&mut self) -> Result<(), UIError> {
         loop {
             // Check if we should process any content from the buffer
@@ -400,7 +578,8 @@ impl CaretStreamProcessor {
     fn process_line_outside_tool(&mut self, line: &str) -> Result<(), UIError> {
         if let Some(caps) = self.tool_regex.captures(line) {
             let tool_name = caps.get(1).unwrap().as_str();
-            self.current_tool_id = format!("{}_{}", tool_name, self.request_id);
+            self.tool_index += 1; // Increment first, so first tool gets index 1
+            self.current_tool_id = format!("tool-{}-{}", self.request_id, self.tool_index);
             self.send_tool_start(tool_name, &self.current_tool_id)?;
             self.state = ParserState::InsideTool;
         } else {
