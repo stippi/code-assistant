@@ -37,7 +37,7 @@ enum ParserState {
 pub struct CaretStreamProcessor {
     ui: Arc<Box<dyn UserInterface>>,
     request_id: u64,
-    tool_index: u64,
+    tool_counter: u64,
     buffer: String,
     state: ParserState,
     tool_regex: Regex,
@@ -51,7 +51,7 @@ impl StreamProcessorTrait for CaretStreamProcessor {
         Self {
             ui,
             request_id,
-            tool_index: 0,
+            tool_counter: 0,
             buffer: String::new(),
             state: ParserState::OutsideTool,
             tool_regex: Regex::new(r"^\^\^\^([a-zA-Z0-9_]+)$").unwrap(),
@@ -174,7 +174,7 @@ impl CaretStreamProcessor {
         let mut fragments = Vec::new();
         let lines: Vec<&str> = text.lines().collect();
         let mut current_pos = 0;
-        let mut tool_index = 1;
+        let mut tool_counter = 1;
         let request_id = if let Some(req_id) = request_id {
             req_id
         } else {
@@ -197,11 +197,11 @@ impl CaretStreamProcessor {
 
                 // Parse the tool block
                 if let Some((tool_fragments, tool_end_idx)) =
-                    self.parse_tool_block(&lines[absolute_tool_start..], request_id, tool_index)?
+                    self.parse_tool_block(&lines[absolute_tool_start..], request_id, tool_counter)?
                 {
                     fragments.extend(tool_fragments);
                     current_pos = absolute_tool_start + tool_end_idx + 1; // +1 to skip the ^^^ line
-                    tool_index += 1;
+                    tool_counter += 1;
                 } else {
                     // No valid tool block found, treat as plain text
                     fragments.push(DisplayFragment::PlainText(
@@ -241,7 +241,7 @@ impl CaretStreamProcessor {
         &self,
         lines: &[&str],
         request_id: u64,
-        tool_index: u64,
+        tool_counter: u64,
     ) -> Result<Option<(Vec<DisplayFragment>, usize)>, UIError> {
         if lines.is_empty() {
             return Ok(None);
@@ -251,7 +251,7 @@ impl CaretStreamProcessor {
         let first_line = lines[0].trim();
         if let Some(caps) = self.tool_regex.captures(first_line) {
             let tool_name = caps.get(1).unwrap().as_str();
-            let tool_id = format!("tool-{}-{}", request_id, tool_index);
+            let tool_id = format!("tool-{}-{}", request_id, tool_counter);
 
             // Find the closing ^^^
             let mut tool_end_idx = None;
@@ -591,8 +591,8 @@ impl CaretStreamProcessor {
     fn process_line_outside_tool(&mut self, line: &str) -> Result<(), UIError> {
         if let Some(caps) = self.tool_regex.captures(line) {
             let tool_name = caps.get(1).unwrap().as_str();
-            self.tool_index += 1; // Increment first, so first tool gets index 1
-            self.current_tool_id = format!("tool-{}-{}", self.request_id, self.tool_index);
+            self.tool_counter += 1; // Increment first, so first tool gets counter 1
+            self.current_tool_id = format!("tool-{}-{}", self.request_id, self.tool_counter);
             self.send_tool_start(tool_name, &self.current_tool_id)?;
             self.state = ParserState::InsideTool;
         } else {
