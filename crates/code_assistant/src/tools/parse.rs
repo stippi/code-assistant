@@ -154,8 +154,14 @@ pub fn parse_caret_tool_invocations(
         // Convert parameters to JSON using schema-based approach if tool exists, otherwise use fallback
         let tool_params = if ToolRegistry::global().get(tool_name).is_some() {
             // Use schema-based conversion for registered tools
-            convert_xml_params_to_json(tool_name, &raw_params, &ToolRegistry::global())
-                .map_err(|e| ToolError::ParseError(format!("Error converting caret parameters to JSON: {}", e)))?
+            convert_xml_params_to_json(tool_name, &raw_params, &ToolRegistry::global()).map_err(
+                |e| {
+                    ToolError::ParseError(format!(
+                        "Error converting caret parameters to JSON: {}",
+                        e
+                    ))
+                },
+            )?
         } else {
             // Fallback to legacy conversion for unregistered tools (mainly for tests)
             convert_raw_params_to_json_fallback(&raw_params)

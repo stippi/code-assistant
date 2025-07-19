@@ -857,7 +857,9 @@ fn test_caret_array_parsing() -> Result<()> {
     );
 
     let response = LLMResponse {
-        content: vec![ContentBlock::Text { text: text.to_string() }],
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -868,7 +870,12 @@ fn test_caret_array_parsing() -> Result<()> {
     assert_eq!(tool_requests.len(), 1);
     assert_eq!(tool_requests[0].name, "read_files");
     assert_eq!(
-        tool_requests[0].input.get("project").unwrap().as_str().unwrap(),
+        tool_requests[0]
+            .input
+            .get("project")
+            .unwrap()
+            .as_str()
+            .unwrap(),
         "code-assistant"
     );
 
@@ -901,7 +908,9 @@ fn test_caret_empty_array_parsing() -> Result<()> {
     );
 
     let response = LLMResponse {
-        content: vec![ContentBlock::Text { text: text.to_string() }],
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -941,7 +950,9 @@ fn test_caret_multiple_arrays_parsing() -> Result<()> {
     );
 
     let response = LLMResponse {
-        content: vec![ContentBlock::Text { text: text.to_string() }],
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -997,7 +1008,9 @@ fn test_caret_array_with_multiline_parsing() -> Result<()> {
     );
 
     let response = LLMResponse {
-        content: vec![ContentBlock::Text { text: text.to_string() }],
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -1010,11 +1023,21 @@ fn test_caret_array_with_multiline_parsing() -> Result<()> {
 
     // Check single parameters
     assert_eq!(
-        tool_requests[0].input.get("project").unwrap().as_str().unwrap(),
+        tool_requests[0]
+            .input
+            .get("project")
+            .unwrap()
+            .as_str()
+            .unwrap(),
         "code-assistant"
     );
     assert_eq!(
-        tool_requests[0].input.get("path").unwrap().as_str().unwrap(),
+        tool_requests[0]
+            .input
+            .get("path")
+            .unwrap()
+            .as_str()
+            .unwrap(),
         "test.txt"
     );
 
@@ -1052,7 +1075,9 @@ fn test_original_caret_issue_reproduction() -> Result<()> {
     );
 
     let response = LLMResponse {
-        content: vec![ContentBlock::Text { text: text.to_string() }],
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -1065,7 +1090,12 @@ fn test_original_caret_issue_reproduction() -> Result<()> {
             assert_eq!(tool_requests.len(), 1);
             assert_eq!(tool_requests[0].name, "read_files");
             assert_eq!(
-                tool_requests[0].input.get("project").unwrap().as_str().unwrap(),
+                tool_requests[0]
+                    .input
+                    .get("project")
+                    .unwrap()
+                    .as_str()
+                    .unwrap(),
                 "code-assistant"
             );
 
@@ -1081,7 +1111,7 @@ fn test_original_caret_issue_reproduction() -> Result<()> {
 
             println!("✅ Original issue has been fixed!");
             println!("   paths parsed as: {:?}", paths);
-        },
+        }
         Err(e) => {
             panic!("Parser should not fail anymore, but got error: {}", e);
         }
