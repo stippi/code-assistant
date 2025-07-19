@@ -3,7 +3,6 @@ mod tests;
 
 pub mod persistence;
 pub mod runner;
-pub mod tool_description_generator;
 mod types;
 
 pub use crate::types::ToolSyntax;

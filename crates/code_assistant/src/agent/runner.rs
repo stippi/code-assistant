@@ -3,7 +3,7 @@ use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
 use crate::persistence::ChatMetadata;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
-use crate::tools::{ParserRegistry, ToolRequest};
+use crate::tools::{generate_system_message, ParserRegistry, ToolRequest};
 use crate::types::*;
 use crate::ui::{UiEvent, UserInterface};
 use crate::utils::CommandExecutor;
@@ -19,10 +19,6 @@ use std::time::SystemTime;
 use tracing::{debug, trace, warn};
 
 use super::ToolSyntax;
-
-// System messages
-const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
-const SYSTEM_MESSAGE_TOOLS: &str = include_str!("../../resources/system_message_tools.md");
 
 /// Defines control flow for the agent loop.
 enum LoopFlow {
@@ -556,26 +552,8 @@ impl Agent {
             return cached.clone();
         }
 
-        // Generate the system message
-        let mut system_message = match self.tool_syntax {
-            ToolSyntax::Native => SYSTEM_MESSAGE.to_string(),
-            _ => {
-                // For XML and Caret modes, get the base template and replace the {{tools}} placeholder
-                let mut base = SYSTEM_MESSAGE_TOOLS.to_string();
-
-                // Get parser and generate syntax-specific tools documentation
-                let parser = ParserRegistry::get(self.tool_syntax);
-                if let Some(tools_doc) = parser.generate_tool_documentation(ToolScope::Agent) {
-                    // Replace the {{tools}} placeholder with the generated documentation
-                    base = base.replace("{{tools}}", &tools_doc);
-                } else {
-                    // Fallback to empty tools section if no documentation needed
-                    base = base.replace("{{tools}}", "");
-                }
-
-                base
-            }
-        };
+        // Generate the system message using the tools module
+        let mut system_message = generate_system_message(self.tool_syntax, ToolScope::Agent);
 
         // Add project information
         let mut project_info = String::new();
