@@ -13,7 +13,7 @@ mod root;
 pub mod simple_renderers;
 pub mod theme;
 
-use crate::persistence::ChatMetadata;
+use crate::persistence::{ChatMetadata, DraftStorage};
 use crate::types::WorkingMemory;
 use crate::ui::gpui::{
     content_renderer::ContentRenderer,
@@ -35,6 +35,7 @@ pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, error, trace, warn};
@@ -107,6 +108,10 @@ pub struct Gpui {
 
     // UI components
     chat_sidebar: Arc<Mutex<Option<Entity<chat_sidebar::ChatSidebar>>>>,
+
+    // Draft storage system
+    draft_storage: Arc<DraftStorage>,
+    session_drafts: Arc<Mutex<HashMap<String, String>>>,
 }
 
 fn init(cx: &mut App) {
@@ -186,6 +191,20 @@ impl Gpui {
         let event_sender = Arc::new(Mutex::new(tx));
         let event_receiver = Arc::new(Mutex::new(rx));
 
+        // Initialize draft storage (using default config directory)
+        let draft_storage = Arc::new(
+            DraftStorage::new(
+                dirs::config_dir()
+                    .unwrap_or_else(|| std::env::current_dir().unwrap())
+                    .join("code-assistant"),
+            )
+            .unwrap_or_else(|e| {
+                warn!("Failed to initialize draft storage: {}, using fallback", e);
+                DraftStorage::new(std::env::temp_dir().join("code-assistant-drafts"))
+                    .expect("Failed to create fallback draft storage")
+            }),
+        );
+
         Self {
             message_queue,
             input_value,
@@ -206,6 +225,10 @@ impl Gpui {
             current_session_activity_state: Arc::new(Mutex::new(None)),
 
             chat_sidebar: Arc::new(Mutex::new(None)),
+
+            // Draft storage system
+            draft_storage,
+            session_drafts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -839,6 +862,76 @@ impl Gpui {
 
     pub fn get_current_session_id(&self) -> Option<String> {
         self.current_session_id.lock().unwrap().clone()
+    }
+
+    // Draft management methods
+    pub fn save_draft_for_session(&self, session_id: &str, content: &str) {
+        // Update in-memory cache
+        {
+            let mut drafts = self.session_drafts.lock().unwrap();
+            if content.is_empty() {
+                drafts.remove(session_id);
+            } else {
+                drafts.insert(session_id.to_string(), content.to_string());
+            }
+        }
+
+        // Save to disk (non-blocking)
+        let draft_storage = self.draft_storage.clone();
+        let session_id = session_id.to_string();
+        let content = content.to_string();
+
+        tokio::spawn(async move {
+            if let Err(e) = draft_storage.save_draft(&session_id, &content) {
+                warn!("Failed to save draft for session {}: {}", session_id, e);
+            }
+        });
+    }
+
+    pub fn load_draft_for_session(&self, session_id: &str) -> Option<String> {
+        // First check in-memory cache
+        {
+            let drafts = self.session_drafts.lock().unwrap();
+            if let Some(draft) = drafts.get(session_id) {
+                return Some(draft.clone());
+            }
+        }
+
+        // Load from disk and cache it
+        match self.draft_storage.load_draft(session_id) {
+            Ok(Some(draft)) => {
+                // Cache the loaded draft
+                {
+                    let mut drafts = self.session_drafts.lock().unwrap();
+                    drafts.insert(session_id.to_string(), draft.clone());
+                }
+                Some(draft)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                warn!("Failed to load draft for session {}: {}", session_id, e);
+                None
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn clear_draft_for_session(&self, session_id: &str) {
+        // Remove from in-memory cache
+        {
+            let mut drafts = self.session_drafts.lock().unwrap();
+            drafts.remove(session_id);
+        }
+
+        // Clear from disk (non-blocking)
+        let draft_storage = self.draft_storage.clone();
+        let session_id = session_id.to_string();
+
+        tokio::spawn(async move {
+            if let Err(e) = draft_storage.clear_draft(&session_id) {
+                warn!("Failed to clear draft for session {}: {}", session_id, e);
+            }
+        });
     }
 
     // Handle backend responses

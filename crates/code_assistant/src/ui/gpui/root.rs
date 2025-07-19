@@ -12,8 +12,8 @@ use gpui::{
     div, prelude::*, px, rgba, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
     MouseButton, MouseUpEvent,
 };
-use gpui_component::input::{InputState, InputEvent};
 use gpui_component::input::TextInput;
+use gpui_component::input::{InputEvent, InputState};
 use gpui_component::ActiveTheme;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
@@ -195,28 +195,67 @@ impl RootView {
         _input: &Entity<InputState>,
         event: &InputEvent,
         _window: &mut gpui::Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         match event {
             InputEvent::Change(text) => {
-                debug!("🎯 TEXT INPUT CHANGED: '{}' (length: {})", text, text.len());
                 if let Some(session_id) = &self.current_session_id {
-                    debug!("🎯 Current session: {}", session_id);
-                    // TODO: Implement draft saving here
-                } else {
-                    debug!("🎯 No current session - draft not saved");
+                    debug!("Current session: {} - saving draft", session_id);
+                    // Save draft immediately for now (no debouncing for simplicity)
+                    if let Some(gpui) = cx.try_global::<Gpui>() {
+                        gpui.save_draft_for_session(session_id, text);
+                    }
                 }
             }
-            InputEvent::Focus => {
-                debug!("🎯 TEXT INPUT FOCUSED");
-            }
-            InputEvent::Blur => {
-                debug!("🎯 TEXT INPUT BLURRED");
-            }
+            InputEvent::Focus => {}
+            InputEvent::Blur => {}
             InputEvent::PressEnter { secondary } => {
-                debug!("🎯 TEXT INPUT ENTER PRESSED (secondary: {})", secondary);
+                debug!("ENTER pressed (secondary: {})", secondary);
+                // Potentially send message:
+                // Shift-ENTER should only add a new linebreak
+                // ENTER should send the message, but it should reuse the existing method that also the Send button uses.
+                if let (Some(_session_id), Some(_gpui)) =
+                    (&self.current_session_id, cx.try_global::<Gpui>())
+                {
+                    // TODO: Don't clear draft here, but in the method that sends the message
+                    // gpui.clear_draft_for_session(session_id);
+                }
             }
         }
+    }
+
+    // Handle session change: load new draft (no need to save current - already saved on every change)
+    fn handle_session_change(
+        &mut self,
+        _previous_session_id: Option<String>,
+        new_session_id: Option<String>,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let gpui = cx.try_global::<Gpui>();
+
+        // Determine what value to set in the input field
+        let input_value = if let (Some(new_id), Some(gpui)) = (new_session_id, &gpui) {
+            if let Some(draft) = gpui.load_draft_for_session(&new_id) {
+                debug!(
+                    "Loading draft for new session {}: {} characters",
+                    new_id,
+                    draft.len()
+                );
+                draft
+            } else {
+                debug!("No draft found for new session: {}", new_id);
+                "".to_string()
+            }
+        } else {
+            // No new session, clear the text input
+            debug!("No new session, clearing text input");
+            "".to_string()
+        };
+
+        self.text_input.update(cx, |text_input, cx| {
+            text_input.set_value(input_value, window, cx);
+        });
     }
 }
 
@@ -241,6 +280,7 @@ impl Render for RootView {
 
         // Update chat sidebar if needed
         if self.chat_sessions != chat_sessions || self.current_session_id != current_session_id {
+            let previous_session_id = self.current_session_id.clone();
             self.chat_sessions = chat_sessions.clone();
             self.current_session_id = current_session_id.clone();
 
@@ -248,6 +288,16 @@ impl Render for RootView {
                 sidebar.update_sessions(chat_sessions.clone(), cx);
                 sidebar.set_selected_session(current_session_id.clone(), cx);
             });
+
+            // Handle session change: load draft for new session
+            if previous_session_id != current_session_id {
+                self.handle_session_change(
+                    previous_session_id,
+                    current_session_id.clone(),
+                    window,
+                    cx,
+                );
+            }
         }
 
         // Main container with titlebar and content
