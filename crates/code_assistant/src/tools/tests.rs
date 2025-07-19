@@ -695,13 +695,13 @@ fn test_tool_use_docs_generation() {
     // Test syntax documentation
     println!("=== XML Syntax Documentation ===");
     if let Some(xml_syntax) = xml_parser.generate_syntax_documentation() {
-        println!("{}", &xml_syntax[..500.min(xml_syntax.len())]);
+        println!("{}", &xml_syntax[..1500.min(xml_syntax.len())]);
         println!("...\n");
     }
 
     println!("=== Caret Syntax Documentation ===");
     if let Some(caret_syntax) = caret_parser.generate_syntax_documentation() {
-        println!("{}", &caret_syntax[..500.min(caret_syntax.len())]);
+        println!("{}", &caret_syntax[..1500.min(caret_syntax.len())]);
         println!("...\n");
     }
 
