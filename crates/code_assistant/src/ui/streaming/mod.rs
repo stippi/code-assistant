@@ -1,14 +1,17 @@
 //! Streaming processor for handling chunks from LLM providers
 
-use crate::agent::ToolMode;
+use crate::agent::ToolSyntax;
 use crate::ui::UIError;
 use crate::ui::UserInterface;
 use llm::{Message, StreamingChunk};
 use std::sync::Arc;
 
+mod caret_processor;
 mod json_processor;
 mod xml_processor;
 
+#[cfg(test)]
+mod caret_processor_tests;
 #[cfg(test)]
 mod json_processor_tests;
 #[cfg(test)]
@@ -54,17 +57,19 @@ pub trait StreamProcessorTrait: Send + Sync {
 }
 
 // Export the concrete implementations
+pub use caret_processor::CaretStreamProcessor;
 pub use json_processor::JsonStreamProcessor;
 pub use xml_processor::XmlStreamProcessor;
 
-/// Factory function to create the appropriate processor based on tool mode
+/// Factory function to create the appropriate processor based on tool syntax
 pub fn create_stream_processor(
-    tool_mode: ToolMode,
+    tool_syntax: ToolSyntax,
     ui: Arc<Box<dyn UserInterface>>,
     request_id: u64,
 ) -> Box<dyn StreamProcessorTrait> {
-    match tool_mode {
-        ToolMode::Xml => Box::new(XmlStreamProcessor::new(ui, request_id)),
-        ToolMode::Native => Box::new(JsonStreamProcessor::new(ui, request_id)),
+    match tool_syntax {
+        ToolSyntax::Xml => Box::new(XmlStreamProcessor::new(ui, request_id)),
+        ToolSyntax::Native => Box::new(JsonStreamProcessor::new(ui, request_id)),
+        ToolSyntax::Caret => Box::new(CaretStreamProcessor::new(ui, request_id)),
     }
 }

@@ -227,25 +227,28 @@ pub struct SearchResult {
     pub match_ranges: Vec<Vec<(usize, usize)>>, // Match positions for each line, aligned with match_lines
 }
 
-/// Specifies the tool integration mode
+/// Specifies the tool invocation syntax
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum ToolMode {
+pub enum ToolSyntax {
     /// Native tools via API
     Native,
     /// Tools through custom system message with XML tags
     Xml,
+    /// Tools through custom system message with triple-caret blocks
+    Caret,
 }
 
-/// Implements ValueEnum for ToolMode to use with clap
-impl ValueEnum for ToolMode {
+/// Implements ValueEnum for ToolSyntax to use with clap
+impl ValueEnum for ToolSyntax {
     fn value_variants<'a>() -> &'a [Self] {
-        &[Self::Native, Self::Xml]
+        &[Self::Native, Self::Xml, Self::Caret]
     }
 
     fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
         match self {
             Self::Native => Some(clap::builder::PossibleValue::new("native")),
             Self::Xml => Some(clap::builder::PossibleValue::new("xml")),
+            Self::Caret => Some(clap::builder::PossibleValue::new("caret")),
         }
     }
 }

@@ -105,7 +105,7 @@ Available options:
 - `-p, --provider <PROVIDER>`: LLM provider to use [ai-core, anthropic, open-ai, ollama, vertex, open-router] (default: anthropic)
 - `-m, --model <MODEL>`: Model name to use (provider-specific defaults: anthropic="claude-sonnet-4-20250514", open-ai="gpt-4o", vertex="gemini-2.5-pro-preview-06-05", open-router="anthropic/claude-3-7-sonnet", ollama=required)
 - `--base-url <BASE_URL>`: API base URL for the LLM provider to use
-- `--tools-type <TOOLS_TYPE>`: Type of tool declaration [native, xml] (default: xml) - `native` = tools via API, `xml` = custom system message
+- `--tool-syntax <TOOL_SYNTAX>`: Tool invocation syntax [native, xml, caret] (default: xml) - `native` = tools via API, `xml` = custom system message with XML tags, `caret` = custom system message with triple-caret blocks
 - `--num-ctx <NUM_CTX>`: Context window size in tokens (default: 8192, only relevant for Ollama)
 - `--record <RECORD>`: Record API responses to a file (only supported for Anthropic provider currently)
 - `--playback <PLAYBACK>`: Play back a recorded session from a file
@@ -162,6 +162,9 @@ Available options:
 This section is not really a roadmap, as the items are in no particular order.
 Below are some topics that are likely the next focus.
 
+- **Block Replacing in Changed Files**: When streaming a tool use block, we already know the LLM attempts to use `replace_in_file` and we know in which file quite early.
+  If we also know this file has changed since the LLM last read it, we can block the attempt with an appropriate error message.
+- **Compact Tool Use Failures**: When the LLM produces an invalid tool call, or a mismatching search block, we should be able to strip the failed attempt from the message history, saving tokens.
 - **Improve UI**: There are various ways in which the UI can be improved.
 - **Add Memory Tools**: Add tools that facilitate building up a knowledge base useful work working in a given project.
 - **Security**: Ideally, the execution for all tools would run in some sort of sandbox that restricts access to the files in the project tracked by git.

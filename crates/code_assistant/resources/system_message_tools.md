@@ -20,27 +20,7 @@ TOOL USE
 
 You have access to a set of tools. You can use one tool per message, and will receive the result of that tool use in the user's response. You use tools step-by-step to accomplish a given task, with each tool use informed by the result of the previous tool use.
 
-# Tool Use Formatting
-
-Tool use is formatted using XML-style tags. The tool name is prefixed by 'tool:' and enclosed in opening and closing tags, and each parameter is similarly prefixed with 'param:' and enclosed within its own set of tags. Here's the structure:
-
-<tool:tool_name>
-<param:parameter1_name>value1</param:parameter1_name>
-<param:parameter2_name>
-value can stretch
-multiple lines
-</param:parameter2_name>
-...
-</tool:tool_name>
-
-For example:
-
-<tool:read_files>
-<param:project>frontend</param:project>
-<param:path>src/main.js</param:path>
-</tool:read_files>
-
-Always adhere to this format for the tool use to ensure proper parsing and execution.
+{{syntax}}
 
 # Tools
 

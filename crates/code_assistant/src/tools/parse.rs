@@ -104,10 +104,91 @@ enum ParseState {
     },
 }
 
+pub fn parse_caret_tool_invocations(
+    text: &str,
+    request_id: u64,
+    _start_tool_count: usize,
+) -> Result<Vec<ToolRequest>> {
+    let mut tool_requests = Vec::new();
+    let tool_regex = regex::Regex::new(r"(?m)^\^\^\^([a-zA-Z0-9_]+)$").unwrap();
+    let multiline_start_regex = regex::Regex::new(r"(?m)^([a-zA-Z0-9_]+)\s+---\s*$").unwrap();
+    let multiline_end_regex = regex::Regex::new(r"(?m)^---\s+([a-zA-Z0-9_]+)\s*$").unwrap();
+    let tool_end_regex = regex::Regex::new(r"(?m)^\^\^\^$").unwrap();
+
+    let mut remaining_text = text;
+
+    while let Some(tool_match) = tool_regex.find(remaining_text) {
+        // Extract tool name
+        let tool_name = tool_regex
+            .captures(&remaining_text[tool_match.start()..])
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str())
+            .ok_or_else(|| ToolError::ParseError("Failed to extract tool name".to_string()))?;
+
+        // Check if the tool exists in the registry
+        if ToolRegistry::global().get(tool_name).is_none() {
+            return Err(ToolError::UnknownTool(tool_name.to_string()).into());
+        }
+
+        // Find the end of this tool block
+        let tool_start = tool_match.end();
+        let remaining_after_tool = &remaining_text[tool_start..];
+
+        let tool_content = if let Some(end_match) = tool_end_regex.find(remaining_after_tool) {
+            let content = &remaining_after_tool[..end_match.start()];
+            remaining_text = &remaining_after_tool[end_match.end()..];
+            content
+        } else {
+            // No end found, treat rest as tool content
+            remaining_text = "";
+            remaining_after_tool
+        };
+
+        // Parse parameters from tool content (returns raw HashMap)
+        let raw_params = parse_caret_tool_parameters_raw(
+            tool_content,
+            &multiline_start_regex,
+            &multiline_end_regex,
+        )?;
+
+        // Convert parameters to JSON using schema-based approach if tool exists, otherwise use fallback
+        let tool_params = if ToolRegistry::global().get(tool_name).is_some() {
+            // Use schema-based conversion for registered tools
+            convert_xml_params_to_json(tool_name, &raw_params, &ToolRegistry::global()).map_err(
+                |e| {
+                    ToolError::ParseError(format!(
+                        "Error converting caret parameters to JSON: {}",
+                        e
+                    ))
+                },
+            )?
+        } else {
+            // Fallback to legacy conversion for unregistered tools (mainly for tests)
+            convert_raw_params_to_json_fallback(&raw_params)
+        };
+
+        // Generate a unique tool ID: tool-<request_id>-<tool_index_in_request>
+        // First tool in the request gets index 1, second gets index 2, etc.
+        let tool_index = tool_requests.len() + 1;
+        let tool_id = format!("tool-{}-{}", request_id, tool_index);
+
+        // Create a ToolRequest
+        let tool_request = ToolRequest {
+            id: tool_id,
+            name: tool_name.to_string(),
+            input: tool_params,
+        };
+
+        tool_requests.push(tool_request);
+    }
+
+    Ok(tool_requests)
+}
+
 pub fn parse_xml_tool_invocations(
     text: &str,
     request_id: u64,
-    start_tool_count: usize,
+    _start_tool_count: usize,
 ) -> Result<Vec<ToolRequest>> {
     let mut tool_requests = Vec::new();
     let mut state = ParseState::SearchingForTool;
@@ -168,11 +249,6 @@ pub fn parse_xml_tool_invocations(
                         ParseState::InTool {
                             tool_name: current_tool,
                             start_pos,
-                        }
-                        | ParseState::InParam {
-                            tool_name: current_tool,
-                            start_pos,
-                            ..
                         } => {
                             if tool_name != current_tool {
                                 // Mismatched closing tag
@@ -194,12 +270,10 @@ pub fn parse_xml_tool_invocations(
                                 return Err(ToolError::UnknownTool(parsed_tool_name).into());
                             }
 
-                            // Generate a unique tool ID
-                            let tool_id = format!(
-                                "tool-{}-{}",
-                                request_id,
-                                start_tool_count + tool_requests.len() + 1
-                            );
+                            // Generate a unique tool ID: tool-<request_id>-<tool_index_in_request>
+                            // First tool in the request gets index 1, second gets index 2, etc.
+                            let tool_index = tool_requests.len() + 1;
+                            let tool_id = format!("tool-{}-{}", request_id, tool_index);
 
                             // Create a ToolRequest
                             let tool_request = ToolRequest {
@@ -214,6 +288,16 @@ pub fn parse_xml_tool_invocations(
                             state = ParseState::SearchingForTool;
                             current_pos = abs_tag_end + 1;
                             continue;
+                        }
+                        ParseState::InParam {
+                            param_name: current_param,
+                            ..
+                        } => {
+                            // We're still inside a parameter when trying to close the tool - this is an error
+                            return Err(ToolError::ParseError(format!(
+                                "Malformed tool invocation: unclosed parameter '{}' in tool '{}' - missing closing tag '</param:{}>'",
+                                current_param, tool_name, current_param
+                            )).into());
                         }
                     }
                 }
@@ -343,6 +427,120 @@ pub fn parse_xml_tool_invocations(
     }
 
     Ok(tool_requests)
+}
+
+fn parse_caret_tool_parameters_raw(
+    content: &str,
+    multiline_start_regex: &regex::Regex,
+    multiline_end_regex: &regex::Regex,
+) -> Result<HashMap<String, Vec<String>>> {
+    let mut params: HashMap<String, Vec<String>> = HashMap::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i].trim();
+
+        if line.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        // Check for simple key: value parameters
+        if let Some((key, value)) = parse_simple_caret_parameter(line) {
+            // Handle array syntax: key: [
+            if value == "[" {
+                let mut array_content = Vec::new();
+                i += 1;
+
+                // Collect array elements until ]
+                while i < lines.len() {
+                    let array_line = lines[i].trim();
+                    if array_line == "]" {
+                        break;
+                    }
+                    if !array_line.is_empty() {
+                        array_content.push(array_line.to_string());
+                    }
+                    i += 1;
+                }
+
+                params.insert(key, array_content);
+            } else {
+                params.entry(key).or_default().push(value);
+            }
+            i += 1;
+            continue;
+        }
+
+        // Check for multiline parameter start
+        if let Some(caps) = multiline_start_regex.captures(line) {
+            if let Some(param_name) = caps.get(1) {
+                let mut multiline_content = String::new();
+                i += 1;
+
+                // Collect content until end marker
+                while i < lines.len() {
+                    if let Some(end_caps) = multiline_end_regex.captures(lines[i]) {
+                        if let Some(end_param) = end_caps.get(1) {
+                            if end_param.as_str() == param_name.as_str() {
+                                break;
+                            }
+                        }
+                    }
+
+                    if !multiline_content.is_empty() {
+                        multiline_content.push('\n');
+                    }
+                    multiline_content.push_str(lines[i]);
+                    i += 1;
+                }
+
+                params
+                    .entry(param_name.as_str().to_string())
+                    .or_default()
+                    .push(multiline_content);
+            }
+            i += 1;
+            continue;
+        }
+
+        i += 1;
+    }
+
+    Ok(params)
+}
+
+/// Convert raw parameters to JSON without schema validation (fallback for unregistered tools)
+fn convert_raw_params_to_json_fallback(params: &HashMap<String, Vec<String>>) -> Value {
+    let mut result = serde_json::Map::new();
+    for (key, values) in params {
+        if values.len() == 1 {
+            result.insert(key.clone(), Value::String(values[0].clone()));
+        } else if !values.is_empty() {
+            result.insert(
+                key.clone(),
+                Value::Array(values.iter().map(|v| Value::String(v.clone())).collect()),
+            );
+        }
+    }
+    Value::Object(result)
+}
+
+fn parse_simple_caret_parameter(line: &str) -> Option<(String, String)> {
+    if let Some((key, value)) = line.split_once(':') {
+        let key = key.trim();
+        let value = value.trim();
+
+        // Skip lines that look like multiline markers
+        if value == "---" || key.is_empty() {
+            return None;
+        }
+
+        Some((key.to_string(), value.to_string()))
+    } else {
+        None
+    }
 }
 
 fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
@@ -605,6 +803,7 @@ pub fn convert_xml_params_to_json(
 
     // Create base object
     let mut result = json!({});
+    let mut processed_params = std::collections::HashSet::new();
 
     // Access properties from schema
     if let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) {
@@ -618,11 +817,11 @@ pub fn convert_xml_params_to_json(
             match prop_type {
                 // For arrays - handle both singular and plural forms
                 "array" => {
-                    // First try exact property name
-                    let values_exact = params.get(prop_name).filter(|v| !v.is_empty());
+                    // First try exact property name (including empty arrays)
+                    let values_exact = params.get(prop_name);
 
                     // If not found, try alternative singular/plural form
-                    let values = if values_exact.is_none() {
+                    let (values, used_param_name) = if values_exact.is_none() {
                         // Get alternative name (singular/plural form)
                         let alt_name = if prop_name.ends_with('s') {
                             // Remove the 's' at the end for singular form
@@ -632,14 +831,19 @@ pub fn convert_xml_params_to_json(
                             format!("{}s", prop_name)
                         };
 
-                        params.get(&alt_name).filter(|v| !v.is_empty())
+                        if let Some(alt_values) = params.get(&alt_name) {
+                            (Some(alt_values), alt_name)
+                        } else {
+                            (None, prop_name.clone())
+                        }
                     } else {
-                        values_exact
+                        (values_exact, prop_name.clone())
                     };
 
-                    // If we have values, add them as an array
+                    // If we have values (including empty arrays), add them as an array
                     if let Some(array_values) = values {
                         result[prop_name] = json!(array_values);
+                        processed_params.insert(used_param_name);
                     }
                 }
                 // For all other types, use normal parameter handling
@@ -690,7 +894,19 @@ pub fn convert_xml_params_to_json(
                             result[prop_name] = json!(param_values[0]);
                         }
                     }
+                    processed_params.insert(prop_name.clone());
                 }
+            }
+        }
+    }
+
+    // Add any unprocessed parameters as-is (for backward compatibility with tests)
+    for (param_name, param_values) in params {
+        if !processed_params.contains(param_name) && !param_values.is_empty() {
+            if param_values.len() == 1 {
+                result[param_name] = json!(param_values[0]);
+            } else {
+                result[param_name] = json!(param_values);
             }
         }
     }
@@ -1152,5 +1368,350 @@ mod tests {
             "Error should mention unexpected content: {}",
             error_message
         );
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_simple() {
+        let text = concat!("^^^list_projects\n", "^^^");
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "list_projects");
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_multiline() {
+        let text = concat!(
+            "^^^write_file\n",
+            "project: test\n",
+            "path: test.txt\n",
+            "content ---\n",
+            "This is multiline content\n",
+            "with several lines\n",
+            "--- content\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "write_file");
+        assert_eq!(result[0].input["project"], "test");
+        assert_eq!(result[0].input["path"], "test.txt");
+        assert!(result[0].input["content"]
+            .as_str()
+            .unwrap()
+            .contains("multiline content"));
+        assert!(result[0].input["content"]
+            .as_str()
+            .unwrap()
+            .contains("several lines"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_array() {
+        let text = concat!(
+            "^^^read_files\n",
+            "project: test\n",
+            "paths: [\n",
+            "src/main.rs\n",
+            "Cargo.toml\n",
+            "README.md\n",
+            "]\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "read_files");
+        assert_eq!(result[0].input["project"], "test");
+        assert!(result[0].input["paths"].is_array());
+        let paths_array = result[0].input["paths"].as_array().unwrap();
+        assert_eq!(paths_array.len(), 3);
+        assert_eq!(paths_array[0], "src/main.rs");
+        assert_eq!(paths_array[1], "Cargo.toml");
+        assert_eq!(paths_array[2], "README.md");
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_multiple_multiline() {
+        let text = concat!(
+            "^^^replace_in_file\n",
+            "project: test\n",
+            "path: test.rs\n",
+            "diff ---\n",
+            "old code here\n",
+            "--- diff\n",
+            "comment ---\n",
+            "This change fixes a bug\n",
+            "--- comment\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "replace_in_file");
+        assert_eq!(result[0].input["project"], "test");
+        assert_eq!(result[0].input["path"], "test.rs");
+        assert_eq!(result[0].input["diff"], "old code here");
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_with_text_before() {
+        let text = concat!("I'll help you with that.\n\n", "^^^list_projects\n", "^^^");
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "list_projects");
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_no_tools() {
+        let text = "This is just plain text with no tools.";
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_unknown_tool() {
+        let text = concat!("^^^unknown_tool\n", "param: value\n", "^^^");
+
+        let result = parse_caret_tool_invocations(text, 123, 0);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown tool: unknown_tool"));
+    }
+
+    #[test]
+    fn test_parse_simple_caret_parameter() {
+        assert_eq!(
+            parse_simple_caret_parameter("key: value"),
+            Some(("key".to_string(), "value".to_string()))
+        );
+
+        assert_eq!(
+            parse_simple_caret_parameter("  project  :  test-project  "),
+            Some(("project".to_string(), "test-project".to_string()))
+        );
+
+        // Should skip multiline markers
+        assert_eq!(parse_simple_caret_parameter("content: ---"), None);
+        assert_eq!(parse_simple_caret_parameter("content ---"), None);
+
+        // Should skip lines without colon
+        assert_eq!(parse_simple_caret_parameter("just text"), None);
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_array_vs_single_value() {
+        // Test that single value parameters remain as strings with write_file (has single path param)
+        let text_single = concat!(
+            "^^^write_file\n",
+            "project: test\n",
+            "path: single-file.txt\n",
+            "content: test content\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text_single, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "write_file");
+        assert_eq!(result[0].input["project"], "test");
+
+        // Single path should be a string
+        let path = &result[0].input["path"];
+        assert!(path.is_string());
+        assert_eq!(path.as_str().unwrap(), "single-file.txt");
+
+        // Test that array parameters are always arrays, even with single element
+        let text_array = concat!(
+            "^^^read_files\n",
+            "project: test\n",
+            "paths: [\n",
+            "single-file.txt\n",
+            "]\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text_array, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "read_files");
+        assert_eq!(result[0].input["project"], "test");
+
+        // Array with single element should still be an array
+        let paths = &result[0].input["paths"];
+        assert!(paths.is_array());
+        let paths_array = paths.as_array().unwrap();
+        assert_eq!(paths_array.len(), 1);
+        assert_eq!(paths_array[0], "single-file.txt");
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_empty_and_whitespace_arrays() {
+        // Test with different array scenarios for read_files paths parameter
+        let text_empty = concat!(
+            "^^^read_files\n",
+            "project: test\n",
+            "paths: [\n",
+            "]\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text_empty, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "read_files");
+
+        // Empty array should be empty
+        let empty_array = result[0].input["paths"].as_array().unwrap();
+        assert_eq!(empty_array.len(), 0);
+
+        // Test with whitespace-only and mixed content
+        let text_mixed = concat!(
+            "^^^read_files\n",
+            "project: test\n",
+            "paths: [\n",
+            "file1.txt\n",
+            "  \n",
+            "file2.txt\n",
+            "\t\n",
+            "]\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text_mixed, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "read_files");
+
+        // Mixed array should only contain non-empty elements (whitespace trimmed)
+        let mixed_array = result[0].input["paths"].as_array().unwrap();
+        assert_eq!(mixed_array.len(), 2);
+        assert_eq!(mixed_array[0], "file1.txt");
+        assert_eq!(mixed_array[1], "file2.txt");
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_multiline_and_array_mix() {
+        // Test a combination of array parameters and numeric parameters
+        let text = concat!(
+            "^^^list_files\n",
+            "project: test\n",
+            "paths: [\n",
+            "src/main.rs\n",
+            "docs/README.md\n",
+            "]\n",
+            "max_depth: 3\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "list_files");
+
+        // Single parameters should be strings
+        assert_eq!(result[0].input["project"].as_str().unwrap(), "test");
+
+        // Array parameters should be arrays
+        let paths = result[0].input["paths"].as_array().unwrap();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], "src/main.rs");
+        assert_eq!(paths[1], "docs/README.md");
+
+        // Numeric parameters should be converted properly
+        assert!(result[0].input["max_depth"].is_number());
+        assert_eq!(result[0].input["max_depth"].as_u64().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_with_numeric_parameters() {
+        // Test with list_files that has max_depth as integer parameter
+        let text = concat!(
+            "^^^list_files\n",
+            "project: test\n",
+            "paths: [\n",
+            "src\n",
+            "docs\n",
+            "]\n",
+            "max_depth: 3\n",
+            "^^^"
+        );
+
+        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "list_files");
+
+        // String parameters should remain strings
+        assert_eq!(result[0].input["project"].as_str().unwrap(), "test");
+
+        // Array parameters should be arrays
+        let paths = result[0].input["paths"].as_array().unwrap();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], "src");
+        assert_eq!(paths[1], "docs");
+
+        // Integer parameters should be converted to numbers
+        assert!(result[0].input["max_depth"].is_number());
+        assert_eq!(result[0].input["max_depth"].as_u64().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_tool_id_format() {
+        let text = concat!(
+            "^^^list_files\n",
+            "project: test\n",
+            "paths: [\n",
+            "src\n",
+            "]\n",
+            "^^^"
+        );
+
+        // Test with specific request_id (start_tool_count is not used anymore)
+        let request_id = 456;
+        let start_tool_count = 0; // Not used in new format
+
+        let result = parse_caret_tool_invocations(text, request_id, start_tool_count).unwrap();
+        assert_eq!(result.len(), 1);
+
+        // Tool ID should follow the format: "tool-<request_id>-<tool_index_in_request>"
+        // First tool in request gets index 1
+        let expected_id = format!("tool-{}-{}", request_id, 1);
+        assert_eq!(result[0].id, expected_id);
+        assert_eq!(result[0].id, "tool-456-1");
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_multiple_tools_id_format() {
+        let text = concat!(
+            "^^^list_projects\n",
+            "^^^\n",
+            "^^^list_files\n",
+            "project: test\n",
+            "paths: [\n",
+            "src\n",
+            "]\n",
+            "^^^\n",
+            "^^^write_file\n",
+            "project: test\n",
+            "path: test.txt\n",
+            "content: hello\n",
+            "^^^"
+        );
+
+        let request_id = 789;
+        let result = parse_caret_tool_invocations(text, request_id, 0).unwrap();
+        assert_eq!(result.len(), 3);
+
+        // First tool should get index 1
+        assert_eq!(result[0].id, "tool-789-1");
+        assert_eq!(result[0].name, "list_projects");
+
+        // Second tool should get index 2
+        assert_eq!(result[1].id, "tool-789-2");
+        assert_eq!(result[1].name, "list_files");
+
+        // Third tool should get index 3
+        assert_eq!(result[2].id, "tool-789-3");
+        assert_eq!(result[2].name, "write_file");
     }
 }

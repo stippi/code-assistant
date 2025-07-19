@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
 use crate::tools::ToolRequest;
-use crate::types::{ToolMode, WorkingMemory};
+use crate::types::{ToolSyntax, WorkingMemory};
 
 /// A complete chat session with all its data
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -29,8 +29,9 @@ pub struct ChatSession {
     pub init_path: Option<PathBuf>,
     /// Initial project name
     pub initial_project: Option<String>,
-    /// Tool mode used for this session (XML or Native)
-    pub tool_mode: ToolMode,
+    /// Tool syntax used for this session (XML or Native)
+    #[serde(alias = "tool_mode")]
+    pub tool_syntax: ToolSyntax,
     /// Counter for generating unique request IDs within this session
     #[serde(default)]
     pub next_request_id: u64,
@@ -250,4 +251,180 @@ fn calculate_session_usage(session: &ChatSession) -> (llm::Usage, llm::Usage, Op
     // This could be added later if needed, but tokens_limit is usually constant per provider
 
     (total_usage, last_usage, tokens_limit)
+}
+
+/// Draft attachment types for extensibility
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DraftAttachment {
+    #[serde(rename = "text")]
+    Text { content: String },
+    #[serde(rename = "image")]
+    Image { content: String, mime_type: String }, // Base64 encoded
+    #[serde(rename = "file")]
+    File {
+        content: String,
+        filename: String,
+        mime_type: String,
+    },
+}
+
+/// Complete draft structure for a session
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionDraft {
+    pub session_id: String,
+    pub created_at: SystemTime,
+    pub updated_at: SystemTime,
+    /// The main message text that the user types
+    pub message: String,
+    /// Additional attachments (images, files, etc.)
+    pub attachments: Vec<DraftAttachment>,
+}
+
+impl SessionDraft {
+    pub fn new(session_id: String) -> Self {
+        let now = SystemTime::now();
+        Self {
+            session_id,
+            created_at: now,
+            updated_at: now,
+            message: String::new(),
+            attachments: Vec::new(),
+        }
+    }
+
+    pub fn set_message(&mut self, message: String) {
+        self.updated_at = SystemTime::now();
+        self.message = message;
+    }
+
+    pub fn get_message(&self) -> String {
+        self.message.clone()
+    }
+}
+
+/// Storage for draft messages per session
+#[derive(Debug, Clone)]
+pub struct DraftStorage {
+    drafts_dir: PathBuf,
+}
+
+impl DraftStorage {
+    /// Create a new DraftStorage instance
+    pub fn new(base_dir: PathBuf) -> Result<Self> {
+        let drafts_dir = base_dir.join("drafts");
+
+        // Create drafts directory if it doesn't exist
+        if !drafts_dir.exists() {
+            std::fs::create_dir_all(&drafts_dir)?;
+            debug!("Created drafts directory: {}", drafts_dir.display());
+        }
+
+        Ok(Self { drafts_dir })
+    }
+
+    /// Get the path for a draft file for a given session
+    fn draft_file_path(&self, session_id: &str) -> PathBuf {
+        self.drafts_dir.join(format!("{}.json", session_id))
+    }
+
+    /// Save a draft for a session
+    pub fn save_draft(&self, session_id: &str, text_content: &str) -> Result<()> {
+        let file_path = self.draft_file_path(session_id);
+
+        if text_content.is_empty() {
+            // If content is empty, delete the draft file
+            if file_path.exists() {
+                std::fs::remove_file(&file_path)?;
+                debug!("Deleted empty draft for session: {}", session_id);
+            }
+        } else {
+            // Load existing draft or create new one
+            let mut draft = self
+                .load_draft_struct(session_id)?
+                .unwrap_or_else(|| SessionDraft::new(session_id.to_string()));
+
+            // Update message content
+            draft.set_message(text_content.to_string());
+
+            // Save as JSON
+            let json = serde_json::to_string_pretty(&draft)?;
+            std::fs::write(&file_path, json)?;
+            debug!(
+                "Saved draft for session {}: {} characters",
+                session_id,
+                text_content.len()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Load a draft message for a session (backward compatibility)
+    pub fn load_draft(&self, session_id: &str) -> Result<Option<String>> {
+        let draft = self.load_draft_struct(session_id)?;
+        Ok(draft.map(|d| d.get_message()))
+    }
+
+    /// Load the complete draft structure for a session
+    pub fn load_draft_struct(&self, session_id: &str) -> Result<Option<SessionDraft>> {
+        let file_path = self.draft_file_path(session_id);
+
+        if !file_path.exists() {
+            return Ok(None);
+        }
+
+        let json_content = std::fs::read_to_string(&file_path)?;
+        let draft: SessionDraft = serde_json::from_str(&json_content)?;
+
+        let message = draft.get_message();
+        debug!(
+            "Loaded draft for session {}: {} characters",
+            session_id,
+            message.len()
+        );
+        Ok(Some(draft))
+    }
+
+    /// Clear a draft for a session (used when message is sent)
+    pub fn clear_draft(&self, session_id: &str) -> Result<()> {
+        let file_path = self.draft_file_path(session_id);
+
+        if file_path.exists() {
+            std::fs::remove_file(&file_path)?;
+            debug!("Cleared draft for session: {}", session_id);
+        }
+
+        Ok(())
+    }
+
+    /// Clean up old drafts for sessions that no longer exist
+    #[allow(dead_code)]
+    pub fn cleanup_orphaned_drafts(&self, existing_session_ids: &[String]) -> Result<()> {
+        if !self.drafts_dir.exists() {
+            return Ok(());
+        }
+
+        let mut cleaned_count = 0;
+        for entry in std::fs::read_dir(&self.drafts_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                if let Some(session_id) = file_name.strip_suffix(".json") {
+                    if !existing_session_ids.contains(&session_id.to_string()) {
+                        std::fs::remove_file(&path)?;
+                        cleaned_count += 1;
+                        debug!("Cleaned up orphaned draft: {}", session_id);
+                    }
+                }
+            }
+        }
+
+        if cleaned_count > 0 {
+            info!("Cleaned up {} orphaned draft files", cleaned_count);
+        }
+
+        Ok(())
+    }
 }

@@ -13,6 +13,25 @@ use crate::ui::{DisplayFragment, UIError, UserInterface};
 use async_trait::async_trait;
 use tracing::{debug, error, trace};
 
+/// Represents the current activity state of a session
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionActivityState {
+    /// No agent running, waiting for user input
+    Idle,
+    /// Agent loop is active (running tools, processing)
+    AgentRunning,
+    /// Agent sent LLM request, waiting for first streaming chunk
+    WaitingForResponse,
+    /// Agent is rate limited with countdown
+    RateLimited { seconds_remaining: u64 },
+}
+
+impl Default for SessionActivityState {
+    fn default() -> Self {
+        SessionActivityState::Idle
+    }
+}
+
 /// Represents a single session instance with its own agent and state
 pub struct SessionInstance {
     /// The session data (messages, metadata, etc.)
@@ -29,6 +48,9 @@ pub struct SessionInstance {
 
     /// Whether this session is currently connected to the UI
     pub is_ui_connected: Arc<Mutex<bool>>,
+
+    /// Current activity state of this session
+    pub activity_state: Arc<Mutex<SessionActivityState>>,
 }
 
 impl SessionInstance {
@@ -39,7 +61,18 @@ impl SessionInstance {
             task_handle: None,
             fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
             is_ui_connected: Arc::new(Mutex::new(false)),
+            activity_state: Arc::new(Mutex::new(SessionActivityState::Idle)),
         }
+    }
+
+    /// Get the current activity state
+    pub fn get_activity_state(&self) -> SessionActivityState {
+        self.activity_state.lock().unwrap().clone()
+    }
+
+    /// Set the activity state
+    pub fn set_activity_state(&self, state: SessionActivityState) {
+        *self.activity_state.lock().unwrap() = state;
     }
 
     /// Get all buffered fragments and optionally clear the buffer
@@ -142,6 +175,8 @@ impl SessionInstance {
             real_ui,
             self.fragment_buffer.clone(),
             self.is_ui_connected.clone(),
+            self.activity_state.clone(),
+            self.session.id.clone(),
         )))
     }
 
@@ -151,7 +186,7 @@ impl SessionInstance {
         let mut events = Vec::new();
 
         // Convert session messages to UI data
-        let mut messages_data = self.convert_messages_to_ui_data(self.session.tool_mode)?;
+        let mut messages_data = self.convert_messages_to_ui_data(self.session.tool_syntax)?;
         let tool_results = self.convert_tool_executions_to_ui_data()?;
 
         // If currently streaming, add incomplete message as additional MessageData
@@ -175,13 +210,19 @@ impl SessionInstance {
             memory: self.session.working_memory.clone(),
         });
 
+        // Add current activity state for this session
+        events.push(UiEvent::UpdateSessionActivityState {
+            session_id: self.session.id.clone(),
+            activity_state: self.get_activity_state(),
+        });
+
         Ok(events)
     }
 
     /// Convert session messages to UI MessageData format
     pub fn convert_messages_to_ui_data(
         &self,
-        tool_mode: crate::types::ToolMode,
+        tool_syntax: crate::types::ToolSyntax,
     ) -> Result<Vec<MessageData>, anyhow::Error> {
         // Create dummy UI for stream processor
         struct DummyUI;
@@ -214,7 +255,7 @@ impl SessionInstance {
         }
 
         let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
-        let mut processor = create_stream_processor(tool_mode, dummy_ui, 0);
+        let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0);
 
         let mut messages_data = Vec::new();
 
@@ -310,18 +351,24 @@ struct ProxyUI {
     real_ui: Arc<Box<dyn UserInterface>>,
     fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
     is_session_connected: Arc<Mutex<bool>>,
+    session_activity_state: Arc<Mutex<SessionActivityState>>,
+    session_id: String,
 }
 
 impl ProxyUI {
     pub fn new(
         real_ui: Arc<Box<dyn UserInterface>>,
         fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
-        is_session_active: Arc<Mutex<bool>>,
+        is_session_connected: Arc<Mutex<bool>>,
+        session_activity_state: Arc<Mutex<SessionActivityState>>,
+        session_id: String,
     ) -> Self {
         Self {
             real_ui,
             fragment_buffer,
-            is_session_connected: is_session_active,
+            is_session_connected,
+            session_activity_state,
+            session_id,
         }
     }
 
@@ -332,23 +379,60 @@ impl ProxyUI {
             .map(|active| *active)
             .unwrap_or(false)
     }
+
+    /// Update activity state and broadcast the change to the UI
+    fn update_activity_state(&self, new_state: SessionActivityState) {
+        // Update our internal state
+        if let Ok(mut state) = self.session_activity_state.lock() {
+            if *state != new_state {
+                *state = new_state.clone();
+
+                // Always broadcast activity state changes to UI (regardless of connection status)
+                // This ensures the chat sidebar shows current activity for all sessions
+                let _ = tokio::runtime::Handle::try_current().map(|_| {
+                    let ui = self.real_ui.clone();
+                    let session_id = self.session_id.clone();
+                    let activity_state = new_state;
+                    tokio::spawn(async move {
+                        let _ = ui
+                            .send_event(UiEvent::UpdateSessionActivityState {
+                                session_id,
+                                activity_state,
+                            })
+                            .await;
+                    });
+                });
+            }
+        }
+    }
 }
 
 #[async_trait]
 impl UserInterface for ProxyUI {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
-        // Handle special events that need buffer management
+        // Handle special events that need buffer management and activity state updates
         match &event {
             UiEvent::StreamingStarted(_) => {
                 // Clear fragment buffer at start of new LLM request
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
                 }
+                // Update activity state to waiting for response
+                self.update_activity_state(SessionActivityState::WaitingForResponse);
             }
             UiEvent::StreamingStopped { .. } => {
                 // Clear fragment buffer when LLM request ends - fragments are now part of message history
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
+                }
+                // Update activity state back to agent running (it will be set to idle when agent completes)
+                let current_state = self.session_activity_state.lock().unwrap().clone();
+                if matches!(
+                    current_state,
+                    SessionActivityState::WaitingForResponse
+                        | SessionActivityState::RateLimited { .. }
+                ) {
+                    self.update_activity_state(SessionActivityState::AgentRunning);
                 }
             }
             _ => {}
@@ -380,6 +464,12 @@ impl UserInterface for ProxyUI {
             }
         }
 
+        // First fragment indicates streaming has started - transition from WaitingForResponse
+        let current_state = self.session_activity_state.lock().unwrap().clone();
+        if matches!(current_state, SessionActivityState::WaitingForResponse) {
+            self.update_activity_state(SessionActivityState::AgentRunning);
+        }
+
         // Only forward to real UI if session is connected
         if self.is_connected() {
             self.real_ui.display_fragment(fragment)
@@ -397,6 +487,9 @@ impl UserInterface for ProxyUI {
     }
 
     fn notify_rate_limit(&self, seconds_remaining: u64) {
+        // Update session activity state and broadcast
+        self.update_activity_state(SessionActivityState::RateLimited { seconds_remaining });
+
         if self.is_connected() {
             self.real_ui.notify_rate_limit(seconds_remaining);
         }
@@ -404,6 +497,9 @@ impl UserInterface for ProxyUI {
     }
 
     fn clear_rate_limit(&self) {
+        // Update session activity state back to waiting for response
+        self.update_activity_state(SessionActivityState::WaitingForResponse);
+
         if self.is_connected() {
             self.real_ui.clear_rate_limit();
         }

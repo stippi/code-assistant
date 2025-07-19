@@ -1,11 +1,11 @@
 use super::*;
 use crate::agent::persistence::MockStatePersistence;
-use crate::agent::runner::parse_and_truncate_llm_response;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
     create_command_executor_mock, create_test_response, create_test_response_text,
     MockProjectManager, MockUI,
 };
+use crate::tests::utils::parse_and_truncate_llm_response;
 use crate::types::*;
 use crate::UserInterface;
 use anyhow::Result;
@@ -160,6 +160,102 @@ async fn test_mixed_tool_start_end() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_missing_closing_param_tag() -> Result<()> {
+    let text = concat!(
+        "Let me examine the current parsing logic more closely and then fix it:\n",
+        "\n",
+        "<tool:replace_in_file>\n",
+        "<param:project>code-assistant</param:project>\n",
+        "<param:path>crates/llm/src/openai.rs</param:path>\n",
+        "<param:diff>\n",
+        "<<<<<<< SEARCH\n",
+        "        fn parse_duration(headers: &reqwest::header::HeaderMap, name: &str) -> Option<Duration> {\n",
+        "            headers.get(name).and_then(|h| h.to_str().ok()).map(|s| {\n",
+        "                // Parse OpenAI's duration format (e.g., \"1s\", \"6m0s\")\n",
+        "                let mut seconds = 0u64;\n",
+        "                let mut current_num = String::new();\n",
+        "\n",
+        "                for c in s.chars() {\n",
+        "                    match c {\n",
+        "                        '0'..='9' => current_num.push(c),\n",
+        "                        'm' => {\n",
+        "                            if let Ok(mins) = current_num.parse::<u64>() {\n",
+        "                                seconds += mins * 60;\n",
+        "                            }\n",
+        "                            current_num.clear();\n",
+        "                        }\n",
+        "                        's' => {\n",
+        "                            if let Ok(secs) = current_num.parse::<u64>() {\n",
+        "                                seconds += secs;\n",
+        "                            }\n",
+        "                            current_num.clear();\n",
+        "                        }\n",
+        "                        _ => current_num.clear(),\n",
+        "                    }\n",
+        "                }\n",
+        "                Duration::from_secs(seconds)\n",
+        "            })\n",
+        "        }\n",
+        "=======\n",
+        "        fn parse_duration(headers: &reqwest::header::HeaderMap, name: &str) -> Option<Duration> {\n",
+        "            headers.get(name).and_then(|h| h.to_str().ok()).map(|s| {\n",
+        "                // Parse OpenAI's duration format (e.g., \"1s\", \"6m0s\", \"7.66s\", \"2m59.56s\")\n",
+        "                let mut total_seconds = 0.0f64;\n",
+        "                let mut current_num = String::new();\n",
+        "                \n",
+        "                for c in s.chars() {\n",
+        "                    match c {\n",
+        "                        '0'..='9' | '.' => current_num.push(c),\n",
+        "                        'm' => {\n",
+        "                            if let Ok(mins) = current_num.parse::<f64>() {\n",
+        "                                total_seconds += mins * 60.0;\n",
+        "                            }\n",
+        "                            current_num.clear();\n",
+        "                        }\n",
+        "                        's' => {\n",
+        "                            if let Ok(secs) = current_num.parse::<f64>() {\n",
+        "                                total_seconds += secs;\n",
+        "                            }\n",
+        "                            current_num.clear();\n",
+        "                        }\n",
+        "                        _ => current_num.clear(),\n",
+        "                    }\n",
+        "                }\n",
+        "                Duration::from_secs_f64(total_seconds)\n",
+        "            })\n",
+        "        }\n",
+        ">>>>>>> REPLACE\n",
+        "</tool:replace_in_file>\n",
+    )
+    .to_string();
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text { text }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let result = parse_and_truncate_llm_response(&response, 1);
+    println!("result: {:?}", result);
+
+    // This should return an error, not Ok([])
+    assert!(
+        result.is_err(),
+        "Expected ParseError for missing </param:diff> close tag"
+    );
+
+    // if let Err(ref error) = result {
+    //     let error_msg = error.to_string();
+    //     assert!(
+    //         error_msg.contains("</param:diff>"),
+    //         "Error should mention missing closing tag: {}",
+    //         error_msg
+    //     );
+    // }
+
+    Ok(())
+}
+
 #[test]
 fn test_ignore_non_tool_tags() -> Result<()> {
     let text = concat!(
@@ -306,7 +402,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
-        ToolMode::Native,
+        ToolSyntax::Native,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
@@ -413,7 +509,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
-        ToolMode::Xml,
+        ToolSyntax::Xml,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
@@ -533,7 +629,7 @@ async fn test_parse_error_handling() -> Result<()> {
 
     let mut agent = Agent::new(
         Box::new(mock_llm),
-        ToolMode::Native,
+        ToolSyntax::Native,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
         Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
@@ -697,14 +793,14 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
         working_memory: crate::types::WorkingMemory::default(),
         init_path: None,
         initial_project: None,
-        tool_mode: ToolMode::Xml,
+        tool_syntax: ToolSyntax::Xml,
         next_request_id: 1,
     };
 
     let session_instance = SessionInstance::new(session);
 
     // Test the UI message conversion - should filter out tool-result and empty messages
-    let ui_messages = session_instance.convert_messages_to_ui_data(ToolMode::Xml)?;
+    let ui_messages = session_instance.convert_messages_to_ui_data(ToolSyntax::Xml)?;
 
     // Should only have 3 messages:
     // 1. "Hello, please help me" (user)
@@ -743,6 +839,283 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
             text.contains("Thank you for the help!"),
         _ => false,
     }));
+
+    Ok(())
+}
+
+#[test]
+fn test_caret_array_parsing() -> Result<()> {
+    use crate::tools::ParserRegistry;
+
+    let text = concat!(
+        "^^^read_files\n",
+        "project: code-assistant\n",
+        "paths: [\n",
+        "docs/customizable-tool-syntax.md\n",
+        "]\n",
+        "^^^"
+    );
+
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
+
+    assert_eq!(tool_requests.len(), 1);
+    assert_eq!(tool_requests[0].name, "read_files");
+    assert_eq!(
+        tool_requests[0]
+            .input
+            .get("project")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "code-assistant"
+    );
+
+    // This should be an array, not a string
+    let paths = tool_requests[0].input.get("paths").unwrap();
+    println!("paths value: {:?}", paths);
+    println!("paths type: {:?}", paths);
+
+    if paths.is_array() {
+        let paths_array = paths.as_array().unwrap();
+        assert_eq!(paths_array.len(), 1);
+        assert_eq!(paths_array[0], "docs/customizable-tool-syntax.md");
+    } else {
+        panic!("Expected paths to be an array, but got: {:?}", paths);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_caret_empty_array_parsing() -> Result<()> {
+    use crate::tools::ParserRegistry;
+
+    let text = concat!(
+        "^^^read_files\n",
+        "project: code-assistant\n",
+        "paths: [\n",
+        "]\n",
+        "^^^"
+    );
+
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
+
+    assert_eq!(tool_requests.len(), 1);
+    assert_eq!(tool_requests[0].name, "read_files");
+
+    // Empty array should still be an array
+    let paths = tool_requests[0].input.get("paths").unwrap();
+    assert!(paths.is_array());
+    assert_eq!(paths.as_array().unwrap().len(), 0);
+
+    Ok(())
+}
+
+#[test]
+fn test_caret_multiple_arrays_parsing() -> Result<()> {
+    use crate::tools::ParserRegistry;
+
+    let text = concat!(
+        "^^^search_files\n",
+        "project: code-assistant\n",
+        "paths: [\n",
+        "src/\n",
+        "docs/\n",
+        "]\n",
+        "regex: single-value\n",
+        "extensions: [\n",
+        "rs\n",
+        "md\n",
+        "toml\n",
+        "]\n",
+        "^^^"
+    );
+
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
+
+    assert_eq!(tool_requests.len(), 1);
+    assert_eq!(tool_requests[0].name, "search_files");
+
+    // Check single value parameter
+    let regex = tool_requests[0].input.get("regex").unwrap();
+    assert!(regex.is_string());
+    assert_eq!(regex.as_str().unwrap(), "single-value");
+
+    // Check first array parameter
+    let paths = tool_requests[0].input.get("paths").unwrap();
+    assert!(paths.is_array());
+    let paths_array = paths.as_array().unwrap();
+    assert_eq!(paths_array.len(), 2);
+    assert_eq!(paths_array[0], "src/");
+    assert_eq!(paths_array[1], "docs/");
+
+    // Check second array parameter
+    let extensions = tool_requests[0].input.get("extensions").unwrap();
+    assert!(extensions.is_array());
+    let ext_array = extensions.as_array().unwrap();
+    assert_eq!(ext_array.len(), 3);
+    assert_eq!(ext_array[0], "rs");
+    assert_eq!(ext_array[1], "md");
+    assert_eq!(ext_array[2], "toml");
+
+    Ok(())
+}
+
+#[test]
+fn test_caret_array_with_multiline_parsing() -> Result<()> {
+    use crate::tools::ParserRegistry;
+
+    let text = concat!(
+        "^^^write_file\n",
+        "project: code-assistant\n",
+        "path: test.txt\n",
+        "tags: [\n",
+        "important\n",
+        "test-file\n",
+        "]\n",
+        "content ---\n",
+        "This is the file content\n",
+        "with multiple lines\n",
+        "--- content\n",
+        "^^^"
+    );
+
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let (tool_requests, _truncated_response) = parser.extract_requests(&response, 123, 0)?;
+
+    assert_eq!(tool_requests.len(), 1);
+    assert_eq!(tool_requests[0].name, "write_file");
+
+    // Check single parameters
+    assert_eq!(
+        tool_requests[0]
+            .input
+            .get("project")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "code-assistant"
+    );
+    assert_eq!(
+        tool_requests[0]
+            .input
+            .get("path")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        "test.txt"
+    );
+
+    // Check array parameter
+    let tags = tool_requests[0].input.get("tags").unwrap();
+    assert!(tags.is_array());
+    let tags_array = tags.as_array().unwrap();
+    assert_eq!(tags_array.len(), 2);
+    assert_eq!(tags_array[0], "important");
+    assert_eq!(tags_array[1], "test-file");
+
+    // Check multiline parameter
+    let content = tool_requests[0].input.get("content").unwrap();
+    assert!(content.is_string());
+    assert_eq!(
+        content.as_str().unwrap(),
+        "This is the file content\nwith multiple lines"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_original_caret_issue_reproduction() -> Result<()> {
+    use crate::tools::ParserRegistry;
+
+    // This is the exact block that was reported as failing
+    let text = concat!(
+        "^^^read_files\n",
+        "project: code-assistant\n",
+        "paths: [\n",
+        "docs/customizable-tool-syntax.md\n",
+        "]\n",
+        "^^^"
+    );
+
+    let response = LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let result = parser.extract_requests(&response, 123, 0);
+
+    match result {
+        Ok((tool_requests, _truncated_response)) => {
+            assert_eq!(tool_requests.len(), 1);
+            assert_eq!(tool_requests[0].name, "read_files");
+            assert_eq!(
+                tool_requests[0]
+                    .input
+                    .get("project")
+                    .unwrap()
+                    .as_str()
+                    .unwrap(),
+                "code-assistant"
+            );
+
+            // This was the original issue - paths should be parsed as an array, not a string
+            let paths = tool_requests[0].input.get("paths").unwrap();
+
+            // Before the fix, this would fail with: "invalid type: string, expected a sequence"
+            // Now it should work correctly
+            assert!(paths.is_array(), "paths should be an array, not a string");
+            let paths_array = paths.as_array().unwrap();
+            assert_eq!(paths_array.len(), 1);
+            assert_eq!(paths_array[0], "docs/customizable-tool-syntax.md");
+
+            println!("✅ Original issue has been fixed!");
+            println!("   paths parsed as: {:?}", paths);
+        }
+        Err(e) => {
+            panic!("Parser should not fail anymore, but got error: {}", e);
+        }
+    }
 
     Ok(())
 }

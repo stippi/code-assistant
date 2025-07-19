@@ -12,8 +12,8 @@ use gpui::{
     div, prelude::*, px, rgba, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
     MouseButton, MouseUpEvent,
 };
-use gpui_component::input::InputState;
 use gpui_component::input::TextInput;
+use gpui_component::input::{InputEvent, InputState};
 use gpui_component::ActiveTheme;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
@@ -36,6 +36,8 @@ pub struct RootView {
     chat_sessions: Vec<ChatMetadata>,
     // Streaming state - shared with Gpui
     streaming_state: Arc<Mutex<StreamingState>>,
+    // Subscription to text input events
+    _input_subscription: gpui::Subscription,
 }
 
 impl RootView {
@@ -44,6 +46,7 @@ impl RootView {
         memory_view: Entity<MemoryView>,
         messages_view: Entity<MessagesView>,
         chat_sidebar: Entity<ChatSidebar>,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
         input_value: Arc<Mutex<Option<String>>>,
         input_requested: Arc<Mutex<bool>>,
@@ -52,6 +55,9 @@ impl RootView {
         // Create the auto-scroll container that wraps the messages view
         let auto_scroll_container =
             cx.new(|_cx| AutoScrollContainer::new("messages", messages_view));
+
+        // Subscribe to text input events
+        let input_subscription = cx.subscribe_in(&text_input, window, Self::on_input_event);
 
         let mut root_view = Self {
             text_input,
@@ -67,6 +73,7 @@ impl RootView {
             current_session_id: None,
             chat_sessions: Vec::new(),
             streaming_state,
+            _input_subscription: input_subscription,
         };
 
         // Request initial chat session list
@@ -166,6 +173,13 @@ impl RootView {
 
                 // Clear the input field
                 text_input.set_value("", window, cx);
+
+                // Clear draft when message is sent
+                if let (Some(session_id), Some(gpui)) =
+                    (&self.current_session_id, cx.try_global::<Gpui>())
+                {
+                    gpui.clear_draft_for_session(session_id);
+                }
             }
         });
         cx.notify();
@@ -180,6 +194,75 @@ impl RootView {
         // Set streaming state to StopRequested
         *self.streaming_state.lock().unwrap() = StreamingState::StopRequested;
         cx.notify();
+    }
+
+    // Handle text input events for draft functionality
+    fn on_input_event(
+        &mut self,
+        _input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::Change(text) => {
+                if let Some(session_id) = &self.current_session_id {
+                    debug!("Current session: {} - saving draft", session_id);
+                    // Save draft immediately for now (no debouncing for simplicity)
+                    if let Some(gpui) = cx.try_global::<Gpui>() {
+                        gpui.save_draft_for_session(session_id, text);
+                    }
+                }
+            }
+            InputEvent::Focus => {}
+            InputEvent::Blur => {}
+            InputEvent::PressEnter { secondary } => {
+                debug!("ENTER pressed (secondary: {})", secondary);
+                // Potentially send message:
+                // Shift-ENTER should only add a new linebreak
+                // ENTER should send the message, but it should reuse the existing method that also the Send button uses.
+                if let (Some(_session_id), Some(_gpui)) =
+                    (&self.current_session_id, cx.try_global::<Gpui>())
+                {
+                    // TODO: Don't clear draft here, but in the method that sends the message
+                    // gpui.clear_draft_for_session(session_id);
+                }
+            }
+        }
+    }
+
+    // Handle session change: load new draft (no need to save current - already saved on every change)
+    fn handle_session_change(
+        &mut self,
+        _previous_session_id: Option<String>,
+        new_session_id: Option<String>,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let gpui = cx.try_global::<Gpui>();
+
+        // Determine what value to set in the input field
+        let input_value = if let (Some(new_id), Some(gpui)) = (new_session_id, &gpui) {
+            if let Some(draft) = gpui.load_draft_for_session(&new_id) {
+                debug!(
+                    "Loading draft for new session {}: {} characters",
+                    new_id,
+                    draft.len()
+                );
+                draft
+            } else {
+                debug!("No draft found for new session: {}", new_id);
+                "".to_string()
+            }
+        } else {
+            // No new session, clear the text input
+            debug!("No new session, clearing text input");
+            "".to_string()
+        };
+
+        self.text_input.update(cx, |text_input, cx| {
+            text_input.set_value(input_value, window, cx);
+        });
     }
 }
 
@@ -204,6 +287,7 @@ impl Render for RootView {
 
         // Update chat sidebar if needed
         if self.chat_sessions != chat_sessions || self.current_session_id != current_session_id {
+            let previous_session_id = self.current_session_id.clone();
             self.chat_sessions = chat_sessions.clone();
             self.current_session_id = current_session_id.clone();
 
@@ -211,6 +295,16 @@ impl Render for RootView {
                 sidebar.update_sessions(chat_sessions.clone(), cx);
                 sidebar.set_selected_session(current_session_id.clone(), cx);
             });
+
+            // Handle session change: load draft for new session
+            if previous_session_id != current_session_id {
+                self.handle_session_change(
+                    previous_session_id,
+                    current_session_id.clone(),
+                    window,
+                    cx,
+                );
+            }
         }
 
         // Main container with titlebar and content

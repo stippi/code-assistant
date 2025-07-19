@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::agent::types::ToolExecution;
 use crate::persistence::{ChatSession, SerializedToolExecution};
 use crate::session::SessionManager;
-use crate::types::{ToolMode, WorkingMemory};
+use crate::types::{ToolSyntax, WorkingMemory};
 
 use std::time::SystemTime;
 use tracing::{debug, info};
@@ -117,16 +117,16 @@ const STATE_FILE: &str = ".code-assistant.state.json";
 #[derive(Clone)]
 pub struct FileStatePersistence {
     state_file_path: PathBuf,
-    tool_mode: ToolMode,
+    tool_syntax: ToolSyntax,
 }
 
 impl FileStatePersistence {
-    pub fn new(working_dir: &Path, tool_mode: ToolMode) -> Self {
+    pub fn new(working_dir: &Path, tool_syntax: ToolSyntax) -> Self {
         let state_file_path = working_dir.join(STATE_FILE);
         info!("Using state file: {}", state_file_path.display());
         Self {
             state_file_path,
-            tool_mode,
+            tool_syntax,
         }
     }
 
@@ -189,7 +189,7 @@ impl AgentStatePersistence for FileStatePersistence {
             working_memory,
             init_path,
             initial_project,
-            tool_mode: self.tool_mode,
+            tool_syntax: self.tool_syntax,
             next_request_id,
         };
 

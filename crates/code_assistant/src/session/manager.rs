@@ -9,7 +9,7 @@ use crate::agent::ToolExecution;
 use crate::config::ProjectManager;
 use crate::persistence::{generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence};
 use crate::session::instance::SessionInstance;
-use crate::types::{ToolMode, WorkingMemory};
+use crate::types::{ToolSyntax, WorkingMemory};
 use crate::ui::UserInterface;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
@@ -34,7 +34,7 @@ pub struct SessionManager {
 /// Configuration needed to create new agents
 #[derive(Clone)]
 pub struct AgentConfig {
-    pub tool_mode: ToolMode,
+    pub tool_syntax: ToolSyntax,
     pub init_path: Option<PathBuf>,
     pub initial_project: Option<String>,
 }
@@ -65,7 +65,7 @@ impl SessionManager {
             working_memory: WorkingMemory::default(),
             init_path: self.agent_config.init_path.clone(),
             initial_project: self.agent_config.initial_project.clone(),
-            tool_mode: self.agent_config.tool_mode,
+            tool_syntax: self.agent_config.tool_syntax,
             next_request_id: 1,
         };
 
@@ -151,27 +151,79 @@ impl SessionManager {
         command_executor: Box<dyn CommandExecutor>,
         ui: Arc<Box<dyn UserInterface>>,
     ) -> Result<()> {
-        // Prepare session and get references for agent
-        let session_instance = self
-            .active_sessions
-            .get_mut(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+        // Prepare session - need to scope the mutable borrow carefully
+        let (tool_syntax, init_path, proxy_ui, session_state, activity_state_ref) = {
+            let session_instance = self
+                .active_sessions
+                .get_mut(session_id)
+                .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
 
-        // Make sure the session instance is not stale
-        session_instance.reload_from_persistence(&self.persistence)?;
+            // Make sure the session instance is not stale
+            session_instance.reload_from_persistence(&self.persistence)?;
 
-        // Add user message to session
-        let user_msg = Message {
-            role: llm::MessageRole::User,
-            content: llm::MessageContent::Text(user_message.clone()),
-            request_id: None,
-            usage: None,
+            // Add user message to session
+            let user_msg = Message {
+                role: llm::MessageRole::User,
+                content: llm::MessageContent::Text(user_message.clone()),
+                request_id: None,
+                usage: None,
+            };
+            session_instance.add_message(user_msg.clone());
+
+            // Clone all needed data to avoid borrowing conflicts
+            let tool_syntax = session_instance.session.tool_syntax;
+            let init_path = session_instance.session.init_path.clone();
+            let proxy_ui = session_instance.create_proxy_ui(ui.clone());
+            let activity_state_ref = session_instance.activity_state.clone();
+
+            let session_state = crate::session::SessionState {
+                session_id: session_id.to_string(),
+                messages: session_instance.messages().to_vec(),
+                tool_executions: session_instance
+                    .session
+                    .tool_executions
+                    .iter()
+                    .map(|se| se.deserialize())
+                    .collect::<Result<Vec<_>>>()?,
+                working_memory: session_instance.session.working_memory.clone(),
+                init_path: session_instance.session.init_path.clone(),
+                initial_project: session_instance.session.initial_project.clone(),
+                next_request_id: Some(session_instance.session.next_request_id),
+            };
+
+            // Set activity state
+            session_instance
+                .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
+
+            (
+                tool_syntax,
+                init_path,
+                proxy_ui,
+                session_state,
+                activity_state_ref,
+            )
         };
-        session_instance.add_message(user_msg.clone());
 
-        // Create a session-specific state storage wrapper
-        // This allows the agent to save to the correct session without requiring
-        // the SessionManager to track a single "current" session
+        // Now save the session state with the user message (outside the borrow scope)
+        self.save_session_state(
+            session_id,
+            session_state.messages.clone(),
+            session_state.tool_executions.clone(),
+            session_state.working_memory.clone(),
+            session_state.init_path.clone(),
+            session_state.initial_project.clone(),
+            session_state.next_request_id.unwrap_or(1),
+        )?;
+
+        // Broadcast the initial state change
+        let _ = ui
+            .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
+                session_id: session_id.to_string(),
+                activity_state: crate::session::instance::SessionActivityState::AgentRunning,
+            })
+            .await;
+
+        // Create agent components
         let session_manager_ref = Arc::new(Mutex::new(SessionManager::new(
             self.persistence.clone(),
             self.agent_config.clone(),
@@ -184,46 +236,45 @@ impl SessionManager {
 
         let mut agent = crate::agent::Agent::new(
             llm_provider,
-            session_instance.session.tool_mode,
+            tool_syntax,
             project_manager,
             command_executor,
-            session_instance.create_proxy_ui(ui.clone()),
+            proxy_ui,
             state_storage,
-            session_instance.session.init_path.clone(),
+            init_path,
         );
 
         // Load the session state into the agent
-        let session_state = crate::session::SessionState {
-            session_id: session_id.to_string(),
-            messages: session_instance.messages().to_vec(),
-            tool_executions: session_instance
-                .session
-                .tool_executions
-                .iter()
-                .map(|se| se.deserialize())
-                .collect::<Result<Vec<_>>>()?,
-            working_memory: session_instance.session.working_memory.clone(),
-            init_path: session_instance.session.init_path.clone(),
-            initial_project: session_instance.session.initial_project.clone(),
-            next_request_id: Some(session_instance.session.next_request_id),
-        };
-
         agent.load_from_session_state(session_state).await?;
 
-        // Spawn the agent task - same as UI message handling
+        // Spawn the agent task
         let session_id_clone = session_id.to_string();
+        let ui_clone = ui.clone();
 
         let task_handle = tokio::spawn(async move {
             debug!("Starting agent for session {}", session_id_clone);
-            // Run the agent once for this message (same as UI messages)
             let result = agent.run_single_iteration().await;
+
+            // Set session state back to Idle when agent completes and broadcast
+            if let Ok(mut state) = activity_state_ref.lock() {
+                *state = crate::session::instance::SessionActivityState::Idle;
+            }
+
+            let _ = ui_clone
+                .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
+                    session_id: session_id_clone.clone(),
+                    activity_state: crate::session::instance::SessionActivityState::Idle,
+                })
+                .await;
 
             debug!("Agent completed for session {}", session_id_clone);
             result
         });
 
-        // Store the task handle (but not the agent, as it's moved into the task)
-        session_instance.task_handle = Some(task_handle);
+        // Store the task handle
+        if let Some(session_instance) = self.active_sessions.get_mut(session_id) {
+            session_instance.task_handle = Some(task_handle);
+        }
 
         Ok(())
     }

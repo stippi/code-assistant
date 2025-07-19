@@ -1,6 +1,7 @@
 use super::file_icons;
 use super::UiEventSender;
 use crate::persistence::ChatMetadata;
+use crate::session::instance::SessionActivityState;
 use crate::ui::ui_events::UiEvent;
 use gpui::{
     div, prelude::*, px, AppContext, Context, Entity, FocusHandle, Focusable, MouseButton,
@@ -15,6 +16,7 @@ pub struct ChatListItem {
     metadata: ChatMetadata,
     is_selected: bool,
     is_hovered: bool,
+    activity_state: SessionActivityState,
     focus_handle: FocusHandle,
 }
 
@@ -24,6 +26,7 @@ impl ChatListItem {
             metadata,
             is_selected,
             is_hovered: false,
+            activity_state: SessionActivityState::Idle,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -39,6 +42,17 @@ impl ChatListItem {
         // Check if metadata has actually changed to avoid unnecessary updates
         if self.metadata != metadata {
             self.metadata = metadata;
+            cx.notify();
+        }
+    }
+
+    pub fn update_activity_state(
+        &mut self,
+        activity_state: SessionActivityState,
+        cx: &mut Context<Self>,
+    ) {
+        if self.activity_state != activity_state {
+            self.activity_state = activity_state;
             cx.notify();
         }
     }
@@ -143,19 +157,23 @@ impl Render for ChatListItem {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .when(self.is_selected, |s| {
-                                s.child(div().size(px(6.)).rounded_full().bg(cx.theme().primary))
-                            }) /*
-                            .when(self.is_hovered, |s| {
-                                s.child(ItemMenu::new("popup-menu").popup_menu(
-                                    move |this, _window, _cx| {
-                                        this.menu("Rename", Box::new(Rename))
-                                            .separator()
-                                            .menu("Delete", Box::new(Delete))
-                                    },
-                                ))
-                            }),
-                            */
+                            // Show blue indicator for sessions with active agents
+                            .when(
+                                !matches!(self.activity_state, SessionActivityState::Idle),
+                                |s| {
+                                    let color = match &self.activity_state {
+                                        SessionActivityState::AgentRunning => cx.theme().info,
+                                        SessionActivityState::WaitingForResponse => {
+                                            cx.theme().primary
+                                        }
+                                        SessionActivityState::RateLimited { .. } => {
+                                            cx.theme().warning
+                                        }
+                                        SessionActivityState::Idle => cx.theme().muted, // Won't be reached due to when condition
+                                    };
+                                    s.child(div().size(px(8.)).rounded_full().bg(color))
+                                },
+                            )
                             .when(self.is_selected && self.is_hovered, |s| {
                                 s.child(
                                     div()
@@ -222,6 +240,7 @@ impl Render for ChatListItem {
                                         .child(SharedString::from(format!(
                                             "{}",
                                             self.metadata.last_usage.input_tokens
+                                                + self.metadata.last_usage.cache_read_input_tokens
                                         ))),
                                 );
                             }
@@ -259,6 +278,7 @@ pub struct ChatSidebar {
     selected_session_id: Option<String>,
     focus_handle: FocusHandle,
     is_collapsed: bool,
+    activity_states: std::collections::HashMap<String, SessionActivityState>,
 }
 
 impl ChatSidebar {
@@ -268,6 +288,7 @@ impl ChatSidebar {
             selected_session_id: None,
             focus_handle: cx.focus_handle(),
             is_collapsed: false,
+            activity_states: std::collections::HashMap::new(),
         }
     }
 
@@ -287,14 +308,25 @@ impl ChatSidebar {
             .into_iter()
             .map(|session| {
                 if let Some(existing_item) = existing_items.remove(&session.id) {
-                    // Reuse existing item but update its metadata
+                    // Reuse existing item but update its metadata and activity state
                     cx.update_entity(&existing_item, |item, cx| {
-                        item.update_metadata(session, cx);
+                        item.update_metadata(session.clone(), cx);
+                        // Update activity state if we have it
+                        if let Some(activity_state) = self.activity_states.get(&session.id) {
+                            item.update_activity_state(activity_state.clone(), cx);
+                        }
                     });
                     existing_item
                 } else {
                     // Create new item
-                    cx.new(|cx| ChatListItem::new(session, false, cx))
+                    let new_item = cx.new(|cx| ChatListItem::new(session.clone(), false, cx));
+                    // Set activity state if we have it
+                    if let Some(activity_state) = self.activity_states.get(&session.id) {
+                        cx.update_entity(&new_item, |item, cx| {
+                            item.update_activity_state(activity_state.clone(), cx);
+                        });
+                    }
+                    new_item
                 }
             })
             .collect();
@@ -320,6 +352,28 @@ impl ChatSidebar {
 
     pub fn toggle_collapsed(&mut self, cx: &mut Context<Self>) {
         self.is_collapsed = !self.is_collapsed;
+        cx.notify();
+    }
+
+    pub fn update_single_session_activity_state(
+        &mut self,
+        session_id: String,
+        activity_state: SessionActivityState,
+        cx: &mut Context<Self>,
+    ) {
+        // Update our local state
+        self.activity_states
+            .insert(session_id.clone(), activity_state.clone());
+
+        // Find and update the specific item
+        for item_entity in &self.items {
+            cx.update_entity(item_entity, |item, cx| {
+                if item.metadata.id == session_id {
+                    item.update_activity_state(activity_state.clone(), cx);
+                }
+            });
+        }
+
         cx.notify();
     }
 

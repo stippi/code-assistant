@@ -14,7 +14,7 @@ mod tests;
 
 use crate::agent::{Agent, FileStatePersistence};
 use crate::mcp::MCPServer;
-use crate::types::ToolMode;
+use crate::types::ToolSyntax;
 use crate::ui::terminal::TerminalUI;
 use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
@@ -90,9 +90,9 @@ struct Args {
     #[arg(long, default_value = "8192")]
     num_ctx: Option<usize>,
 
-    /// Type of tool declaration ('native' = tools via API, 'xml' = custom system message)
+    /// Tool invocation syntax ('native' = tools via API, 'xml' = custom system message)
     #[arg(long, default_value = "xml")]
-    tools_type: Option<ToolMode>,
+    tool_syntax: Option<ToolSyntax>,
 
     /// Record API responses to a file (only supported for Anthropic provider currently)
     #[arg(long)]
@@ -328,7 +328,7 @@ async fn run_agent_terminal(
     base_url: Option<String>,
     aicore_config: Option<PathBuf>,
     num_ctx: usize,
-    tools_type: ToolMode,
+    tool_syntax: ToolSyntax,
     record: Option<PathBuf>,
     playback: Option<PathBuf>,
     fast_playback: bool,
@@ -336,7 +336,7 @@ async fn run_agent_terminal(
     let root_path = path.canonicalize()?;
 
     // Create file persistence for simple state management
-    let file_persistence = FileStatePersistence::new(&root_path, tools_type);
+    let file_persistence = FileStatePersistence::new(&root_path, tool_syntax);
 
     // Setup dynamic types
     let project_manager = Box::new(DefaultProjectManager::new());
@@ -361,7 +361,7 @@ async fn run_agent_terminal(
     let state_storage = Box::new(file_persistence.clone());
     let mut agent = Agent::new(
         llm_client,
-        tools_type,
+        tool_syntax,
         project_manager,
         command_executor,
         user_interface,
@@ -424,7 +424,7 @@ fn run_agent_gpui(
     base_url: Option<String>,
     aicore_config: Option<PathBuf>,
     num_ctx: usize,
-    tools_type: ToolMode,
+    tool_syntax: ToolSyntax,
     record: Option<PathBuf>,
     playback: Option<PathBuf>,
     fast_playback: bool,
@@ -442,7 +442,7 @@ fn run_agent_gpui(
     let persistence = crate::persistence::FileSessionPersistence::new();
 
     let agent_config = AgentConfig {
-        tool_mode: tools_type,
+        tool_syntax: tool_syntax,
         init_path: Some(root_path.clone()),
         initial_project: None,
     };
@@ -591,7 +591,7 @@ async fn run_agent(args: Args) -> Result<()> {
     let base_url = args.base_url.clone();
     let aicore_config = args.aicore_config.clone();
     let num_ctx = args.num_ctx.unwrap_or(8192);
-    let tools_type = args.tools_type.unwrap_or(ToolMode::Xml);
+    let tool_syntax = args.tool_syntax.unwrap_or(ToolSyntax::Xml);
     let use_gui = args.ui;
 
     // Setup logging based on verbose flag
@@ -612,7 +612,7 @@ async fn run_agent(args: Args) -> Result<()> {
             base_url,
             aicore_config,
             num_ctx,
-            tools_type,
+            tool_syntax,
             args.record.clone(),
             args.playback.clone(),
             args.fast_playback,
@@ -628,7 +628,7 @@ async fn run_agent(args: Args) -> Result<()> {
             base_url,
             aicore_config,
             num_ctx,
-            tools_type,
+            tool_syntax,
             args.record.clone(),
             args.playback.clone(),
             args.fast_playback,
