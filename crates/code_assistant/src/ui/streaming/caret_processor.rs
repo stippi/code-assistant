@@ -25,6 +25,7 @@ enum ParserState {
         param_name: String,
         content: String,
         tool_id: String,
+        streamed: bool, // Track if we've already streamed chunks
     },
     CollectingArray {
         param_name: String,
@@ -440,11 +441,11 @@ impl CaretStreamProcessor {
     /// We can stream content but need to watch for potential end markers
     fn get_content_to_emit_multiline(&self) -> Result<Option<String>, UIError> {
         if let ParserState::CollectingMultiline { param_name, .. } = &self.state {
-            // Look for potential end markers: "--- param_name"
+            // Look for complete lines that we can process
             if let Some(newline_pos) = self.buffer.find('\n') {
                 let line_content = &self.buffer[..newline_pos];
 
-                // Check if this line could be the end marker
+                // Check if this line is the end marker
                 if let Some(caps) = self.multiline_end_regex.captures(line_content) {
                     if caps.get(1).map_or(false, |m| m.as_str() == param_name) {
                         // This is the end marker, emit the complete line for processing
@@ -453,18 +454,17 @@ impl CaretStreamProcessor {
                 }
 
                 // Not an end marker, we can emit this line as part of the content
-                // But we'll let the normal processing handle it to build up the content properly
                 return Ok(Some(self.buffer[..=newline_pos].to_string()));
             }
 
-            // No complete line yet, check if we have partial content that could be an end marker
-            if self.buffer.trim().starts_with("---") {
+            // No complete line yet, check if we should buffer
+            // Only buffer if we might have a partial end marker
+            if self.buffer.trim_end().starts_with("---") {
                 // Might be start of end marker, keep buffering
                 return Ok(None);
             }
 
-            // Partial content that definitely isn't an end marker could be emitted,
-            // but for now let's be conservative and wait for complete lines
+            // Nothing unsafe, no need to emit partial content
             Ok(None)
         } else {
             Ok(None)
@@ -521,27 +521,40 @@ impl CaretStreamProcessor {
                 param_name,
                 mut content,
                 tool_id,
+                streamed: _,
             } => {
                 if let Some(caps) = self.multiline_end_regex.captures(line) {
                     if caps.get(1).map_or(false, |m| m.as_str() == param_name) {
-                        self.send_tool_parameter(&param_name, content.trim_end(), &tool_id)?;
+                        // End marker found, just transition back to InsideTool state
+                        // No need to send final parameter since we've been streaming chunks
                         self.state = ParserState::InsideTool;
                     } else {
+                        // Not the right end marker, treat as regular content
+                        let is_first_line = content.is_empty();
                         content.push_str(line);
                         content.push('\n');
+                        // Stream this line immediately as part of the parameter value
+                        self.stream_multiline_content(line, &param_name, &tool_id, is_first_line)?;
                         self.state = ParserState::CollectingMultiline {
                             param_name,
                             content,
                             tool_id,
+                            streamed: true,
                         };
                     }
                 } else {
+                    // Regular content line, add to buffer
+                    let is_first_line = content.is_empty();
                     content.push_str(line);
                     content.push('\n');
+                    // Only stream for live processing, not for complete message processing
+                    // The complete message processing will create a single final fragment in extract_fragments_from_text
+                    self.stream_multiline_content(line, &param_name, &tool_id, is_first_line)?;
                     self.state = ParserState::CollectingMultiline {
                         param_name,
                         content,
                         tool_id,
+                        streamed: true,
                     };
                 }
                 Ok(())
@@ -599,6 +612,7 @@ impl CaretStreamProcessor {
                 param_name,
                 content: String::new(),
                 tool_id: self.current_tool_id.clone(),
+                streamed: false,
             };
         } else if let Some((key, value)) = line.split_once(':') {
             let key = key.trim().to_string();
@@ -681,6 +695,29 @@ impl CaretStreamProcessor {
     fn send_tool_end(&self, id: &str) -> Result<(), UIError> {
         self.ui
             .display_fragment(&DisplayFragment::ToolEnd { id: id.to_string() })?;
+        Ok(())
+    }
+
+    /// Stream multiline content immediately as part of a parameter value
+    fn stream_multiline_content(
+        &self,
+        content: &str,
+        param_name: &str,
+        tool_id: &str,
+        is_first_line: bool,
+    ) -> Result<(), UIError> {
+        // Add newline prefix for non-first lines to maintain line separation when fragments are merged
+        let content_to_stream = if is_first_line {
+            content.to_string()
+        } else {
+            format!("\n{}", content)
+        };
+
+        self.ui.display_fragment(&DisplayFragment::ToolParameter {
+            name: param_name.to_string(),
+            value: content_to_stream,
+            tool_id: tool_id.to_string(),
+        })?;
         Ok(())
     }
 }
