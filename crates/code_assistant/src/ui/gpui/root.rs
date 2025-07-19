@@ -173,6 +173,13 @@ impl RootView {
 
                 // Clear the input field
                 text_input.set_value("", window, cx);
+
+                // Clear draft when message is sent
+                if let (Some(session_id), Some(gpui)) =
+                    (&self.current_session_id, cx.try_global::<Gpui>())
+                {
+                    gpui.clear_draft_for_session(session_id);
+                }
             }
         });
         cx.notify();

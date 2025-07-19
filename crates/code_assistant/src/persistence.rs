@@ -253,10 +253,10 @@ fn calculate_session_usage(session: &ChatSession) -> (llm::Usage, llm::Usage, Op
     (total_usage, last_usage, tokens_limit)
 }
 
-/// Draft content types for extensibility
+/// Draft attachment types for extensibility
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum DraftContent {
+pub enum DraftAttachment {
     #[serde(rename = "text")]
     Text { content: String },
     #[serde(rename = "image")]
@@ -275,7 +275,10 @@ pub struct SessionDraft {
     pub session_id: String,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
-    pub contents: Vec<DraftContent>,
+    /// The main message text that the user types
+    pub message: String,
+    /// Additional attachments (images, files, etc.)
+    pub attachments: Vec<DraftAttachment>,
 }
 
 impl SessionDraft {
@@ -285,29 +288,18 @@ impl SessionDraft {
             session_id,
             created_at: now,
             updated_at: now,
-            contents: Vec::new(),
+            message: String::new(),
+            attachments: Vec::new(),
         }
     }
 
-    pub fn set_text(&mut self, text: String) {
+    pub fn set_message(&mut self, message: String) {
         self.updated_at = SystemTime::now();
-        // Replace or add text content
-        if let Some(existing) = self
-            .contents
-            .iter_mut()
-            .find(|c| matches!(c, DraftContent::Text { .. }))
-        {
-            *existing = DraftContent::Text { content: text };
-        } else {
-            self.contents.push(DraftContent::Text { content: text });
-        }
+        self.message = message;
     }
 
-    pub fn get_text(&self) -> Option<String> {
-        self.contents.iter().find_map(|c| match c {
-            DraftContent::Text { content } => Some(content.clone()),
-            _ => None,
-        })
+    pub fn get_message(&self) -> String {
+        self.message.clone()
     }
 }
 
@@ -352,8 +344,8 @@ impl DraftStorage {
                 .load_draft_struct(session_id)?
                 .unwrap_or_else(|| SessionDraft::new(session_id.to_string()));
 
-            // Update text content
-            draft.set_text(text_content.to_string());
+            // Update message content
+            draft.set_message(text_content.to_string());
 
             // Save as JSON
             let json = serde_json::to_string_pretty(&draft)?;
@@ -368,10 +360,10 @@ impl DraftStorage {
         Ok(())
     }
 
-    /// Load a draft text for a session (backward compatibility)
+    /// Load a draft message for a session (backward compatibility)
     pub fn load_draft(&self, session_id: &str) -> Result<Option<String>> {
         let draft = self.load_draft_struct(session_id)?;
-        Ok(draft.and_then(|d| d.get_text()))
+        Ok(draft.map(|d| d.get_message()))
     }
 
     /// Load the complete draft structure for a session
@@ -385,13 +377,12 @@ impl DraftStorage {
         let json_content = std::fs::read_to_string(&file_path)?;
         let draft: SessionDraft = serde_json::from_str(&json_content)?;
 
-        if let Some(text) = draft.get_text() {
-            debug!(
-                "Loaded draft for session {}: {} characters",
-                session_id,
-                text.len()
-            );
-        }
+        let message = draft.get_message();
+        debug!(
+            "Loaded draft for session {}: {} characters",
+            session_id,
+            message.len()
+        );
         Ok(Some(draft))
     }
 

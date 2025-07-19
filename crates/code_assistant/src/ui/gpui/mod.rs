@@ -915,7 +915,6 @@ impl Gpui {
         }
     }
 
-    #[allow(dead_code)]
     pub fn clear_draft_for_session(&self, session_id: &str) {
         // Remove from in-memory cache
         {
