@@ -162,6 +162,9 @@ Available options:
 This section is not really a roadmap, as the items are in no particular order.
 Below are some topics that are likely the next focus.
 
+- **Block Replacing in Changed Files**: When streaming a tool use block, we already know the LLM attempts to use `replace_in_file` and we know in which file quite early.
+  If we also know this file has changed since the LLM last read it, we can block the attempt with an appropriate error message.
+- **Compact Tool Use Failures**: When the LLM produces an invalid tool call, or a mismatching search block, we should be able to strip the failed attempt from the message history, saving tokens.
 - **Improve UI**: There are various ways in which the UI can be improved.
 - **Add Memory Tools**: Add tools that facilitate building up a knowledge base useful work working in a given project.
 - **Security**: Ideally, the execution for all tools would run in some sort of sandbox that restricts access to the files in the project tracked by git.
