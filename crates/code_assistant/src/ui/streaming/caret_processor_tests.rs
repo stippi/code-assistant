@@ -374,20 +374,34 @@ fn test_caret_chunked_across_tool_opening() {
         assert!(fragments.len() >= 4, "Expected at least 4 fragments");
 
         // Check the essential fragments are present
-        assert!(matches!(fragments[0], DisplayFragment::PlainText(ref text) if text == "Let me help you.\n"));
-        assert!(matches!(fragments[1], DisplayFragment::ToolName { ref name, .. } if name == "read_files"));
-        assert!(matches!(fragments[2], DisplayFragment::ToolParameter { ref name, ref value, .. }
-                        if name == "project" && value == "test"));
+        assert!(
+            matches!(fragments[0], DisplayFragment::PlainText(ref text) if text == "Let me help you.\n")
+        );
+        assert!(
+            matches!(fragments[1], DisplayFragment::ToolName { ref name, .. } if name == "read_files")
+        );
+        assert!(
+            matches!(fragments[2], DisplayFragment::ToolParameter { ref name, ref value, .. }
+                        if name == "project" && value == "test")
+        );
         assert!(matches!(fragments[3], DisplayFragment::ToolEnd { .. }));
 
         // The trailing newline behavior depends on chunking - this is correct streaming behavior!
         // Small chunks: trailing newline arrives separately, processed as PlainText
         // Large chunks: trailing newline gets buffered and trimmed naturally
         if chunk_size <= 3 {
-            assert_eq!(fragments.len(), 5, "Small chunks should produce trailing newline");
+            assert_eq!(
+                fragments.len(),
+                5,
+                "Small chunks should produce trailing newline"
+            );
             assert!(matches!(fragments[4], DisplayFragment::PlainText(ref text) if text == "\n"));
         } else {
-            assert_eq!(fragments.len(), 4, "Large chunks should not produce trailing newline (trimmed)");
+            assert_eq!(
+                fragments.len(),
+                4,
+                "Large chunks should not produce trailing newline (trimmed)"
+            );
         }
     }
 }
@@ -637,18 +651,26 @@ fn test_streaming_vs_buffering_behavior() {
 
     // Send regular text that cannot be tool syntax
     // This should be emitted immediately, not buffered until complete line
-    processor.process(&StreamingChunk::Text("Hello ".to_string())).unwrap();
+    processor
+        .process(&StreamingChunk::Text("Hello ".to_string()))
+        .unwrap();
 
     let fragments_after_hello = test_ui.get_raw_fragments();
     println!("After 'Hello ': {:?}", fragments_after_hello);
 
     // Key assertion: text that cannot be tool syntax should be emitted immediately
-    assert!(!fragments_after_hello.is_empty(),
-            "Regular text should be emitted immediately, not buffered until complete line");
-    assert!(matches!(fragments_after_hello[0], DisplayFragment::PlainText(ref text) if text == "Hello "));
+    assert!(
+        !fragments_after_hello.is_empty(),
+        "Regular text should be emitted immediately, not buffered until complete line"
+    );
+    assert!(
+        matches!(fragments_after_hello[0], DisplayFragment::PlainText(ref text) if text == "Hello ")
+    );
 
     // Send more text
-    processor.process(&StreamingChunk::Text("world\n".to_string())).unwrap();
+    processor
+        .process(&StreamingChunk::Text("world\n".to_string()))
+        .unwrap();
 
     let fragments_after_world = test_ui.get_raw_fragments();
     println!("After 'world\\n': {:?}", fragments_after_world);
@@ -657,7 +679,9 @@ fn test_streaming_vs_buffering_behavior() {
     assert!(fragments_after_world.len() >= 2);
 
     // Now test buffering behavior with potential tool syntax
-    processor.process(&StreamingChunk::Text("^".to_string())).unwrap();
+    processor
+        .process(&StreamingChunk::Text("^".to_string()))
+        .unwrap();
 
     let fragments_after_caret = test_ui.get_raw_fragments();
     println!("After '^': {:?}", fragments_after_caret);
@@ -665,31 +689,47 @@ fn test_streaming_vs_buffering_behavior() {
     // The single caret should be buffered (not emitted) since it could be start of tool syntax
     // We should have the same number of fragments as before the caret
     let fragments_count_before_caret = fragments_after_world.len();
-    assert_eq!(fragments_after_caret.len(), fragments_count_before_caret,
-               "Single caret should be buffered, not emitted immediately");
+    assert_eq!(
+        fragments_after_caret.len(),
+        fragments_count_before_caret,
+        "Single caret should be buffered, not emitted immediately"
+    );
 
     // Send more carets to complete potential tool syntax
-    processor.process(&StreamingChunk::Text("^^list".to_string())).unwrap();
+    processor
+        .process(&StreamingChunk::Text("^^list".to_string()))
+        .unwrap();
 
     let fragments_after_tool_start = test_ui.get_raw_fragments();
     println!("After '^^list': {:?}", fragments_after_tool_start);
 
     // Still building tool name, should still be buffered
-    assert_eq!(fragments_after_tool_start.len(), fragments_count_before_caret,
-               "Incomplete tool name should still be buffered");
+    assert_eq!(
+        fragments_after_tool_start.len(),
+        fragments_count_before_caret,
+        "Incomplete tool name should still be buffered"
+    );
 
     // Complete the tool line
-    processor.process(&StreamingChunk::Text("_projects\n".to_string())).unwrap();
+    processor
+        .process(&StreamingChunk::Text("_projects\n".to_string()))
+        .unwrap();
 
     let fragments_after_complete_tool = test_ui.get_raw_fragments();
-    println!("After complete tool line: {:?}", fragments_after_complete_tool);
+    println!(
+        "After complete tool line: {:?}",
+        fragments_after_complete_tool
+    );
 
     // Now should have emitted the tool name
-    assert!(fragments_after_complete_tool.len() > fragments_count_before_caret,
-            "Complete tool syntax should be processed and emitted");
+    assert!(
+        fragments_after_complete_tool.len() > fragments_count_before_caret,
+        "Complete tool syntax should be processed and emitted"
+    );
 
     // Should have a ToolName fragment
-    let has_tool_name = fragments_after_complete_tool.iter()
+    let has_tool_name = fragments_after_complete_tool
+        .iter()
         .any(|f| matches!(f, DisplayFragment::ToolName { name, .. } if name == "list_projects"));
     assert!(has_tool_name, "Should have emitted ToolName fragment");
 
@@ -711,9 +751,13 @@ fn test_newline_boundary_trimming() {
     println!("Large chunk trimming: {:?}", fragments_large);
 
     // Should not have a separate newline fragment between text and tool
-    let has_standalone_newline = fragments_large.iter()
+    let has_standalone_newline = fragments_large
+        .iter()
         .any(|f| matches!(f, DisplayFragment::PlainText(text) if text == "\n"));
-    assert!(!has_standalone_newline, "Large chunks should trim newlines at boundaries");
+    assert!(
+        !has_standalone_newline,
+        "Large chunks should trim newlines at boundaries"
+    );
 
     // Test case 2: Small chunks should show the newline because it arrives separately
     let test_ui_small = process_chunked_text(input1, 1);
@@ -732,7 +776,10 @@ fn test_newline_boundary_trimming() {
     // Should not have trailing newline fragment
     let ends_with_newline = matches!(fragments_trailing.last(),
                                    Some(DisplayFragment::PlainText(text)) if text == "\n");
-    assert!(!ends_with_newline, "Trailing newlines should be buffered and trimmed");
+    assert!(
+        !ends_with_newline,
+        "Trailing newlines should be buffered and trimmed"
+    );
 
     println!("✅ Newline boundary trimming test passed!");
 }

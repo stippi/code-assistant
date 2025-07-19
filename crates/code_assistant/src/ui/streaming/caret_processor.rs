@@ -312,19 +312,28 @@ impl CaretStreamProcessor {
             ParserState::InsideTool => self.process_line_inside_tool(line),
 
             // New granular states for enhanced streaming
-            ParserState::CollectingName { partial_name: _, tool_id: _ } => {
+            ParserState::CollectingName {
+                partial_name: _,
+                tool_id: _,
+            } => {
                 // For now, treat this the same as InsideTool - this could be enhanced later
                 self.state = ParserState::InsideTool;
                 self.process_line_inside_tool(line)
             }
 
-            ParserState::CollectingType { param_name: _, tool_id: _ } => {
+            ParserState::CollectingType {
+                param_name: _,
+                tool_id: _,
+            } => {
                 // For now, treat this the same as InsideTool - this could be enhanced later
                 self.state = ParserState::InsideTool;
                 self.process_line_inside_tool(line)
             }
 
-            ParserState::CollectingValue { param_name: _, tool_id: _ } => {
+            ParserState::CollectingValue {
+                param_name: _,
+                tool_id: _,
+            } => {
                 // For now, treat this the same as InsideTool - this could be enhanced later
                 self.state = ParserState::InsideTool;
                 self.process_line_inside_tool(line)
@@ -427,8 +436,6 @@ impl CaretStreamProcessor {
         }
         Ok(())
     }
-
-
 
     fn parse_tool_parameters(&self, content: &str) -> Result<Vec<(String, String)>, UIError> {
         let mut params = Vec::new();
