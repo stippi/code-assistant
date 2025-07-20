@@ -152,7 +152,14 @@ impl SessionManager {
         ui: Arc<Box<dyn UserInterface>>,
     ) -> Result<()> {
         // Prepare session - need to scope the mutable borrow carefully
-        let (tool_syntax, init_path, proxy_ui, session_state, activity_state_ref, pending_message_ref) = {
+        let (
+            tool_syntax,
+            init_path,
+            proxy_ui,
+            session_state,
+            activity_state_ref,
+            pending_message_ref,
+        ) = {
             let session_instance = self
                 .active_sessions
                 .get_mut(session_id)

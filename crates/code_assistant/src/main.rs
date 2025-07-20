@@ -898,7 +898,10 @@ async fn handle_backend_events(
                         }
                     }
                     Err(e) => {
-                        error!("Failed to get pending message for session {}: {}", session_id, e);
+                        error!(
+                            "Failed to get pending message for session {}: {}",
+                            session_id, e
+                        );
                         ui::gpui::BackendResponse::Error {
                             message: format!("Failed to get pending message: {}", e),
                         }

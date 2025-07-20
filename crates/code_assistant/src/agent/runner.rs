@@ -245,9 +245,11 @@ impl Agent {
                 self.append_message(user_msg)?;
 
                 // Notify UI about the user message
-                self.ui.send_event(UiEvent::DisplayUserInput {
-                    content: pending_message,
-                }).await?;
+                self.ui
+                    .send_event(UiEvent::DisplayUserInput {
+                        content: pending_message,
+                    })
+                    .await?;
             }
 
             let messages = self.render_tool_results_in_messages();

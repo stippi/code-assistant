@@ -444,6 +444,16 @@ impl Gpui {
                 } else {
                     warn!("Failed to create message entity");
                 }
+
+                // Reset pending message when a user message is displayed
+                // This happens when the agent adds a pending message to the history
+                if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
+                    cx.update_entity(messages_view_entity, |messages_view, cx| {
+                        messages_view.update_pending_message(None);
+                        cx.notify();
+                    })
+                    .expect("Failed to update messages view");
+                }
             }
             UiEvent::AppendToTextBlock { content } => {
                 let queue = self.message_queue.lock().unwrap();
@@ -792,14 +802,26 @@ impl Gpui {
                     }
                 }
             }
-            UiEvent::QueueUserMessage { message, session_id } => {
-                debug!("UI: QueueUserMessage event for session {}: {}", session_id, message);
+            UiEvent::QueueUserMessage {
+                message,
+                session_id,
+            } => {
+                debug!(
+                    "UI: QueueUserMessage event for session {}: {}",
+                    session_id, message
+                );
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(BackendEvent::QueueUserMessage { session_id, message });
+                    let _ = sender.try_send(BackendEvent::QueueUserMessage {
+                        session_id,
+                        message,
+                    });
                 }
             }
             UiEvent::RequestPendingMessageEdit { session_id } => {
-                debug!("UI: RequestPendingMessageEdit event for session {}", session_id);
+                debug!(
+                    "UI: RequestPendingMessageEdit event for session {}",
+                    session_id
+                );
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::RequestPendingMessageEdit { session_id });
                 }
@@ -973,8 +995,6 @@ impl Gpui {
         });
     }
 
-
-
     // Handle backend responses
     fn handle_backend_response(&self, response: BackendResponse, _cx: &mut AsyncApp) {
         match response {
@@ -1003,14 +1023,26 @@ impl Gpui {
             BackendResponse::Error { message } => {
                 warn!("Backend error: {}", message);
             }
-            BackendResponse::PendingMessageForEdit { session_id, message: _ } => {
-                debug!("Received BackendResponse::PendingMessageForEdit for session {}", session_id);
+            BackendResponse::PendingMessageForEdit {
+                session_id,
+                message: _,
+            } => {
+                debug!(
+                    "Received BackendResponse::PendingMessageForEdit for session {}",
+                    session_id
+                );
                 // TODO: Move pending message to text input field for editing
                 // For now, clear the pending message display
                 self.push_event(UiEvent::UpdatePendingMessage { message: None });
             }
-            BackendResponse::PendingMessageUpdated { session_id, message } => {
-                debug!("Received BackendResponse::PendingMessageUpdated for session {}", session_id);
+            BackendResponse::PendingMessageUpdated {
+                session_id,
+                message,
+            } => {
+                debug!(
+                    "Received BackendResponse::PendingMessageUpdated for session {}",
+                    session_id
+                );
                 // Only update pending message display if this is for the current session
                 if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
                     if current_session_id == &session_id {
