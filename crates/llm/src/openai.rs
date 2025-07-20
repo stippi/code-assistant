@@ -8,6 +8,57 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::debug;
 
+/// Trait for providing authentication headers
+#[async_trait]
+pub trait AuthProvider: Send + Sync {
+    async fn get_auth_headers(&self) -> Result<Vec<(String, String)>>;
+}
+
+/// Trait for customizing requests before sending
+pub trait RequestCustomizer: Send + Sync {
+    fn customize_request(&self, request: &mut serde_json::Value) -> Result<()>;
+    fn get_additional_headers(&self) -> Vec<(String, String)>;
+    fn customize_url(&self, base_url: &str, streaming: bool) -> String;
+}
+
+/// Default API key authentication provider
+pub struct ApiKeyAuth {
+    api_key: String,
+}
+
+impl ApiKeyAuth {
+    pub fn new(api_key: String) -> Self {
+        Self { api_key }
+    }
+}
+
+#[async_trait]
+impl AuthProvider for ApiKeyAuth {
+    async fn get_auth_headers(&self) -> Result<Vec<(String, String)>> {
+        Ok(vec![(
+            "Authorization".to_string(),
+            format!("Bearer {}", self.api_key),
+        )])
+    }
+}
+
+/// Default request customizer for OpenAI API
+pub struct DefaultRequestCustomizer;
+
+impl RequestCustomizer for DefaultRequestCustomizer {
+    fn customize_request(&self, _request: &mut serde_json::Value) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_additional_headers(&self) -> Vec<(String, String)> {
+        vec![("Content-Type".to_string(), "application/json".to_string())]
+    }
+
+    fn customize_url(&self, base_url: &str, _streaming: bool) -> String {
+        format!("{}/chat/completions", base_url)
+    }
+}
+
 #[derive(Debug, Serialize, Clone)]
 struct OpenAIRequest {
     model: String,
@@ -233,9 +284,12 @@ impl RateLimitHandler for OpenAIRateLimitInfo {
 
 pub struct OpenAIClient {
     client: Client,
-    api_key: String,
     base_url: String,
     model: String,
+
+    // Customization points
+    auth_provider: Box<dyn AuthProvider>,
+    request_customizer: Box<dyn RequestCustomizer>,
 }
 
 impl OpenAIClient {
@@ -246,14 +300,32 @@ impl OpenAIClient {
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
             client: Client::new(),
-            api_key,
             base_url,
             model,
+            auth_provider: Box::new(ApiKeyAuth::new(api_key)),
+            request_customizer: Box::new(DefaultRequestCustomizer),
         }
     }
 
-    fn get_url(&self) -> String {
-        format!("{}/chat/completions", self.base_url)
+    /// New constructor for customization
+    pub fn with_customization(
+        model: String,
+        base_url: String,
+        auth_provider: Box<dyn AuthProvider>,
+        request_customizer: Box<dyn RequestCustomizer>,
+    ) -> Self {
+        Self {
+            client: Client::new(),
+            base_url,
+            model,
+            auth_provider,
+            request_customizer,
+        }
+    }
+
+    fn get_url(&self, streaming: bool) -> String {
+        self.request_customizer
+            .customize_url(&self.base_url, streaming)
     }
 
     /// Convert a single message to OpenAI format without special handling for tool results
@@ -420,13 +492,30 @@ impl OpenAIClient {
         &self,
         request: &OpenAIRequest,
     ) -> Result<(LLMResponse, OpenAIRateLimitInfo)> {
-        let request = request.clone().into_non_streaming();
-        let response = self
-            .client
-            .post(self.get_url())
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
+        let mut request_json = serde_json::to_value(request.clone().into_non_streaming())?;
+
+        // Allow request customizer to modify the request
+        self.request_customizer
+            .customize_request(&mut request_json)?;
+
+        // Get auth headers
+        let auth_headers = self.auth_provider.get_auth_headers().await?;
+
+        // Build request
+        let mut request_builder = self.client.post(self.get_url(false));
+
+        // Add auth headers
+        for (key, value) in auth_headers {
+            request_builder = request_builder.header(key, value);
+        }
+
+        // Add additional headers
+        for (key, value) in self.request_customizer.get_additional_headers() {
+            request_builder = request_builder.header(key, value);
+        }
+
+        let response = request_builder
+            .json(&request_json)
             .send()
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
@@ -495,13 +584,30 @@ impl OpenAIClient {
         streaming_callback: &StreamingCallback,
     ) -> Result<(LLMResponse, OpenAIRateLimitInfo)> {
         debug!("Sending streaming request");
-        let request = request.clone().into_streaming();
-        let response = self
-            .client
-            .post(self.get_url())
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
+        let mut request_json = serde_json::to_value(request.clone().into_streaming())?;
+
+        // Allow request customizer to modify the request
+        self.request_customizer
+            .customize_request(&mut request_json)?;
+
+        // Get auth headers
+        let auth_headers = self.auth_provider.get_auth_headers().await?;
+
+        // Build request
+        let mut request_builder = self.client.post(self.get_url(true));
+
+        // Add auth headers
+        for (key, value) in auth_headers {
+            request_builder = request_builder.header(key, value);
+        }
+
+        // Add additional headers
+        for (key, value) in self.request_customizer.get_additional_headers() {
+            request_builder = request_builder.header(key, value);
+        }
+
+        let response = request_builder
+            .json(&request_json)
             .send()
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
