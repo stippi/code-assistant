@@ -52,6 +52,8 @@ pub struct Agent {
     next_request_id: u64,
     // Session ID for this agent instance
     session_id: Option<String>,
+    // Shared pending message with SessionInstance
+    pending_message_ref: Option<Arc<Mutex<Option<String>>>>,
 }
 
 impl Agent {
@@ -96,6 +98,32 @@ impl Agent {
             cached_system_message: OnceLock::new(),
             next_request_id: 1, // Start from 1
             session_id: None,
+            pending_message_ref: None,
+        }
+    }
+
+    /// Set the shared pending message reference from SessionInstance
+    pub fn set_pending_message_ref(&mut self, pending_ref: Arc<Mutex<Option<String>>>) {
+        self.pending_message_ref = Some(pending_ref);
+    }
+
+    /// Get and clear the pending message from shared state
+    fn get_and_clear_pending_message(&self) -> Option<String> {
+        if let Some(ref pending_ref) = self.pending_message_ref {
+            let mut pending = pending_ref.lock().unwrap();
+            pending.take()
+        } else {
+            None
+        }
+    }
+
+    /// Check if there is a pending message (without clearing it)
+    fn has_pending_message(&self) -> bool {
+        if let Some(ref pending_ref) = self.pending_message_ref {
+            let pending = pending_ref.lock().unwrap();
+            pending.is_some()
+        } else {
+            false
         }
     }
 
@@ -205,6 +233,25 @@ impl Agent {
     /// Returns whether user input is needed before the next iteration
     async fn run_single_iteration_internal(&mut self) -> Result<bool> {
         loop {
+            // Check for pending user message and add it to history at start of each iteration
+            if let Some(pending_message) = self.get_and_clear_pending_message() {
+                debug!("Processing pending user message: {}", pending_message);
+                let user_msg = Message {
+                    role: MessageRole::User,
+                    content: MessageContent::Text(pending_message.clone()),
+                    request_id: None,
+                    usage: None,
+                };
+                self.append_message(user_msg)?;
+
+                // Notify UI about the user message
+                self.ui
+                    .send_event(UiEvent::DisplayUserInput {
+                        content: pending_message,
+                    })
+                    .await?;
+            }
+
             let messages = self.render_tool_results_in_messages();
 
             // 1. Get LLM response (without adding to history yet)
@@ -391,7 +438,7 @@ impl Agent {
         let parser = ParserRegistry::get(self.tool_syntax);
         match parser.extract_requests(llm_response, request_counter, 0) {
             Ok((requests, truncated_response)) => {
-                if requests.is_empty() {
+                if requests.is_empty() && !self.has_pending_message() {
                     Ok((requests, LoopFlow::GetUserInput, truncated_response))
                 } else {
                     Ok((requests, LoopFlow::Continue, truncated_response))

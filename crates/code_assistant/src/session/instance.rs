@@ -51,6 +51,9 @@ pub struct SessionInstance {
 
     /// Current activity state of this session
     pub activity_state: Arc<Mutex<SessionActivityState>>,
+
+    /// Pending user message that will be processed by the next agent iteration
+    pub pending_message: Arc<Mutex<Option<String>>>,
 }
 
 impl SessionInstance {
@@ -62,6 +65,7 @@ impl SessionInstance {
             fragment_buffer: Arc::new(Mutex::new(VecDeque::new())),
             is_ui_connected: Arc::new(Mutex::new(false)),
             activity_state: Arc::new(Mutex::new(SessionActivityState::Idle)),
+            pending_message: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -210,11 +214,16 @@ impl SessionInstance {
             memory: self.session.working_memory.clone(),
         });
 
-        // Add current activity state for this session
         events.push(UiEvent::UpdateSessionActivityState {
             session_id: self.session.id.clone(),
             activity_state: self.get_activity_state(),
         });
+
+        if let Ok(pending) = self.pending_message.lock() {
+            events.push(UiEvent::UpdatePendingMessage {
+                message: pending.clone(),
+            });
+        }
 
         Ok(events)
     }

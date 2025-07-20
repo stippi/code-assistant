@@ -61,6 +61,8 @@ pub enum BackendEvent {
 
     // Agent operations
     SendUserMessage { session_id: String, message: String },
+    QueueUserMessage { session_id: String, message: String },
+    RequestPendingMessageEdit { session_id: String },
 }
 
 // Response from backend to UI
@@ -78,6 +80,14 @@ pub enum BackendResponse {
     },
     Error {
         message: String,
+    },
+    PendingMessageForEdit {
+        session_id: String,
+        message: String,
+    },
+    PendingMessageUpdated {
+        session_id: String,
+        message: Option<String>,
     },
 }
 
@@ -108,6 +118,7 @@ pub struct Gpui {
 
     // UI components
     chat_sidebar: Arc<Mutex<Option<Entity<chat_sidebar::ChatSidebar>>>>,
+    messages_view: Arc<Mutex<Option<Entity<MessagesView>>>>,
 
     // Draft storage system
     draft_storage: Arc<DraftStorage>,
@@ -225,6 +236,7 @@ impl Gpui {
             current_session_activity_state: Arc::new(Mutex::new(None)),
 
             chat_sidebar: Arc::new(Mutex::new(None)),
+            messages_view: Arc::new(Mutex::new(None)),
 
             // Draft storage system
             draft_storage,
@@ -374,6 +386,9 @@ impl Gpui {
                             )
                         });
 
+                        // Store MessagesView reference in Gpui
+                        *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());
+
                         // Create ChatSidebar and store it in Gpui
                         let chat_sidebar = cx.new(|cx| chat_sidebar::ChatSidebar::new(cx));
                         *gpui_clone.chat_sidebar.lock().unwrap() = Some(chat_sidebar.clone());
@@ -428,6 +443,16 @@ impl Gpui {
                     queue.push(new_message);
                 } else {
                     warn!("Failed to create message entity");
+                }
+
+                // Reset pending message when a user message is displayed
+                // This happens when the agent adds a pending message to the history
+                if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
+                    cx.update_entity(messages_view_entity, |messages_view, cx| {
+                        messages_view.update_pending_message(None);
+                        cx.notify();
+                    })
+                    .expect("Failed to update messages view");
                 }
             }
             UiEvent::AppendToTextBlock { content } => {
@@ -777,6 +802,43 @@ impl Gpui {
                     }
                 }
             }
+            UiEvent::QueueUserMessage {
+                message,
+                session_id,
+            } => {
+                debug!(
+                    "UI: QueueUserMessage event for session {}: {}",
+                    session_id, message
+                );
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::QueueUserMessage {
+                        session_id,
+                        message,
+                    });
+                }
+            }
+            UiEvent::RequestPendingMessageEdit { session_id } => {
+                debug!(
+                    "UI: RequestPendingMessageEdit event for session {}",
+                    session_id
+                );
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::RequestPendingMessageEdit { session_id });
+                }
+            }
+            UiEvent::UpdatePendingMessage { message } => {
+                debug!("UI: UpdatePendingMessage event with message: {:?}", message);
+                // Update MessagesView's pending message
+                if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
+                    cx.update_entity(messages_view_entity, |messages_view, cx| {
+                        messages_view.update_pending_message(message.clone());
+                        cx.notify();
+                    })
+                    .expect("Failed to update messages view");
+                }
+                // Refresh UI to trigger re-render
+                cx.refresh().expect("Failed to refresh windows");
+            }
         }
     }
 
@@ -960,6 +1022,33 @@ impl Gpui {
             }
             BackendResponse::Error { message } => {
                 warn!("Backend error: {}", message);
+            }
+            BackendResponse::PendingMessageForEdit {
+                session_id,
+                message: _,
+            } => {
+                debug!(
+                    "Received BackendResponse::PendingMessageForEdit for session {}",
+                    session_id
+                );
+                // TODO: Move pending message to text input field for editing
+                // For now, clear the pending message display
+                self.push_event(UiEvent::UpdatePendingMessage { message: None });
+            }
+            BackendResponse::PendingMessageUpdated {
+                session_id,
+                message,
+            } => {
+                debug!(
+                    "Received BackendResponse::PendingMessageUpdated for session {}",
+                    session_id
+                );
+                // Only update pending message display if this is for the current session
+                if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
+                    if current_session_id == &session_id {
+                        self.push_event(UiEvent::UpdatePendingMessage { message });
+                    }
+                }
             }
         }
     }

@@ -840,6 +840,74 @@ async fn handle_backend_events(
                     }
                 }
             }
+
+            ui::gpui::BackendEvent::QueueUserMessage {
+                session_id,
+                message,
+            } => {
+                debug!("Queue user message for session {}: {}", session_id, message);
+
+                let result = {
+                    let mut manager = multi_session_manager.lock().unwrap();
+                    manager.queue_user_message(&session_id, message)
+                };
+
+                match result {
+                    Ok(_) => {
+                        debug!("Message queued for session {}", session_id);
+                        // Get the updated pending message and send it back to UI
+                        let pending_message = {
+                            let manager = multi_session_manager.lock().unwrap();
+                            manager.get_pending_message(&session_id).unwrap_or(None)
+                        };
+                        ui::gpui::BackendResponse::PendingMessageUpdated {
+                            session_id,
+                            message: pending_message,
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to queue message for session {}: {}", session_id, e);
+                        ui::gpui::BackendResponse::Error {
+                            message: format!("Failed to queue message: {}", e),
+                        }
+                    }
+                }
+            }
+
+            ui::gpui::BackendEvent::RequestPendingMessageEdit { session_id } => {
+                debug!("Request pending message edit for session {}", session_id);
+
+                let result = {
+                    let mut manager = multi_session_manager.lock().unwrap();
+                    manager.request_pending_message_for_edit(&session_id)
+                };
+
+                match result {
+                    Ok(Some(message)) => {
+                        debug!("Retrieved pending message for editing: {}", message);
+                        ui::gpui::BackendResponse::PendingMessageForEdit {
+                            session_id,
+                            message,
+                        }
+                    }
+                    Ok(None) => {
+                        debug!("No pending message found for session {}", session_id);
+                        ui::gpui::BackendResponse::PendingMessageUpdated {
+                            session_id,
+                            message: None,
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to get pending message for session {}: {}",
+                            session_id, e
+                        );
+                        ui::gpui::BackendResponse::Error {
+                            message: format!("Failed to get pending message: {}", e),
+                        }
+                    }
+                }
+            }
         };
 
         // Send response back to UI
