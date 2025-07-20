@@ -11,6 +11,7 @@ pub struct MessagesView {
     message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
     current_session_activity_state:
         Arc<Mutex<Option<crate::session::instance::SessionActivityState>>>,
+    current_pending_message: Arc<Mutex<Option<String>>>,
     focus_handle: FocusHandle,
 }
 
@@ -25,8 +26,14 @@ impl MessagesView {
         Self {
             message_queue,
             current_session_activity_state,
+            current_pending_message: Arc::new(Mutex::new(None)),
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Update the pending message for the current session
+    pub fn update_pending_message(&self, message: Option<String>) {
+        *self.current_pending_message.lock().unwrap() = message;
     }
 }
 
@@ -117,9 +124,8 @@ impl Render for MessagesView {
             .children(message_elements);
 
         // Add pending message display if there is one
-        if let Some(gpui) = cx.try_global::<super::Gpui>() {
-            if let Some(pending_message) = gpui.current_pending_message.lock().unwrap().clone() {
-                if !pending_message.is_empty() {
+        if let Some(pending_message) = self.current_pending_message.lock().unwrap().clone() {
+            if !pending_message.is_empty() {
                     // Create a pending message container styled like a user message but with different visual cues
                     messages_container = messages_container.child(
                         div()
@@ -162,7 +168,6 @@ impl Render for MessagesView {
                                     )),
                             ),
                     );
-                }
             }
         }
 

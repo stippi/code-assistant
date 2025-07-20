@@ -115,10 +115,10 @@ pub struct Gpui {
     chat_sessions: Arc<Mutex<Vec<ChatMetadata>>>,
     current_session_activity_state:
         Arc<Mutex<Option<crate::session::instance::SessionActivityState>>>,
-    current_pending_message: Arc<Mutex<Option<String>>>,
 
     // UI components
     chat_sidebar: Arc<Mutex<Option<Entity<chat_sidebar::ChatSidebar>>>>,
+    messages_view: Arc<Mutex<Option<Entity<MessagesView>>>>,
 
     // Draft storage system
     draft_storage: Arc<DraftStorage>,
@@ -234,9 +234,9 @@ impl Gpui {
             current_session_id: Arc::new(Mutex::new(None)),
             chat_sessions: Arc::new(Mutex::new(Vec::new())),
             current_session_activity_state: Arc::new(Mutex::new(None)),
-            current_pending_message: Arc::new(Mutex::new(None)),
 
             chat_sidebar: Arc::new(Mutex::new(None)),
+            messages_view: Arc::new(Mutex::new(None)),
 
             // Draft storage system
             draft_storage,
@@ -385,6 +385,9 @@ impl Gpui {
                                 cx,
                             )
                         });
+
+                        // Store MessagesView reference in Gpui
+                        *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());
 
                         // Create ChatSidebar and store it in Gpui
                         let chat_sidebar = cx.new(|cx| chat_sidebar::ChatSidebar::new(cx));
@@ -803,8 +806,15 @@ impl Gpui {
             }
             UiEvent::UpdatePendingMessage { message } => {
                 debug!("UI: UpdatePendingMessage event with message: {:?}", message);
-                // Update the current pending message
-                *self.current_pending_message.lock().unwrap() = message;
+                // Update MessagesView's pending message
+                if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
+                    cx.update_entity(messages_view_entity, |messages_view, cx| {
+                        messages_view.update_pending_message(message.clone());
+                        cx.notify();
+                    })
+                    .expect("Failed to update messages view");
+                }
+                // Refresh UI to trigger re-render
                 cx.refresh().expect("Failed to refresh windows");
             }
         }
@@ -963,6 +973,8 @@ impl Gpui {
         });
     }
 
+
+
     // Handle backend responses
     fn handle_backend_response(&self, response: BackendResponse, _cx: &mut AsyncApp) {
         match response {
@@ -991,15 +1003,20 @@ impl Gpui {
             BackendResponse::Error { message } => {
                 warn!("Backend error: {}", message);
             }
-            BackendResponse::PendingMessageForEdit { session_id, message } => {
+            BackendResponse::PendingMessageForEdit { session_id, message: _ } => {
                 debug!("Received BackendResponse::PendingMessageForEdit for session {}", session_id);
-                // TODO: Move pending message to text input field
-                // For now, just push an update event
-                self.push_event(UiEvent::UpdatePendingMessage { message: Some(message) });
+                // TODO: Move pending message to text input field for editing
+                // For now, clear the pending message display
+                self.push_event(UiEvent::UpdatePendingMessage { message: None });
             }
             BackendResponse::PendingMessageUpdated { session_id, message } => {
                 debug!("Received BackendResponse::PendingMessageUpdated for session {}", session_id);
-                self.push_event(UiEvent::UpdatePendingMessage { message });
+                // Only update pending message display if this is for the current session
+                if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
+                    if current_session_id == &session_id {
+                        self.push_event(UiEvent::UpdatePendingMessage { message });
+                    }
+                }
             }
         }
     }

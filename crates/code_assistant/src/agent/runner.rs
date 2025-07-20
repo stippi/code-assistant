@@ -117,6 +117,16 @@ impl Agent {
         }
     }
 
+    /// Check if there is a pending message (without clearing it)
+    fn has_pending_message(&self) -> bool {
+        if let Some(ref pending_ref) = self.pending_message_ref {
+            let pending = pending_ref.lock().unwrap();
+            pending.is_some()
+        } else {
+            false
+        }
+    }
+
     /// Build current session metadata
     fn build_current_metadata(&self) -> Option<ChatMetadata> {
         // Only build metadata if we have a session ID
@@ -223,7 +233,7 @@ impl Agent {
     /// Returns whether user input is needed before the next iteration
     async fn run_single_iteration_internal(&mut self) -> Result<bool> {
         loop {
-            // Check for pending user message and add it to history before processing
+            // Check for pending user message and add it to history at start of each iteration
             if let Some(pending_message) = self.get_and_clear_pending_message() {
                 debug!("Processing pending user message: {}", pending_message);
                 let user_msg = Message {
@@ -426,7 +436,7 @@ impl Agent {
         let parser = ParserRegistry::get(self.tool_syntax);
         match parser.extract_requests(llm_response, request_counter, 0) {
             Ok((requests, truncated_response)) => {
-                if requests.is_empty() {
+                if requests.is_empty() && !self.has_pending_message() {
                     Ok((requests, LoopFlow::GetUserInput, truncated_response))
                 } else {
                     Ok((requests, LoopFlow::Continue, truncated_response))

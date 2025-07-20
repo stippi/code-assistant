@@ -855,9 +855,14 @@ async fn handle_backend_events(
                 match result {
                     Ok(_) => {
                         debug!("Message queued for session {}", session_id);
+                        // Get the updated pending message and send it back to UI
+                        let pending_message = {
+                            let manager = multi_session_manager.lock().unwrap();
+                            manager.get_pending_message(&session_id).unwrap_or(None)
+                        };
                         ui::gpui::BackendResponse::PendingMessageUpdated {
                             session_id,
-                            message: None, // Don't echo back the full message, UI will handle display
+                            message: pending_message,
                         }
                     }
                     Err(e) => {

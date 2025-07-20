@@ -430,5 +430,14 @@ impl SessionManager {
         Ok(pending.take())
     }
 
+    /// Get current pending message without clearing it
+    pub fn get_pending_message(&self, session_id: &str) -> Result<Option<String>> {
+        let session_instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
 
+        let pending = session_instance.pending_message.lock().unwrap();
+        Ok(pending.clone())
+    }
 }
