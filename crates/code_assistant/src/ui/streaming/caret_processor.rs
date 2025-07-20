@@ -44,6 +44,7 @@ pub struct CaretStreamProcessor {
     multiline_start_regex: Regex,
     multiline_end_regex: Regex,
     current_tool_id: String,
+    complete_tool_emitted: bool,
 }
 
 impl StreamProcessorTrait for CaretStreamProcessor {
@@ -58,6 +59,7 @@ impl StreamProcessorTrait for CaretStreamProcessor {
             multiline_start_regex: Regex::new(r"^([a-zA-Z0-9_]+)\s+---$").unwrap(),
             multiline_end_regex: Regex::new(r"^---\s+([a-zA-Z0-9_]+)$").unwrap(),
             current_tool_id: String::new(),
+            complete_tool_emitted: false,
         }
     }
 
@@ -593,7 +595,8 @@ impl CaretStreamProcessor {
             let tool_name = caps.get(1).unwrap().as_str();
             self.tool_counter += 1; // Increment first, so first tool gets counter 1
             self.current_tool_id = format!("tool-{}-{}", self.request_id, self.tool_counter);
-            self.send_tool_start(tool_name, &self.current_tool_id)?;
+            let tool_id = self.current_tool_id.clone();
+            self.send_tool_start(tool_name, &tool_id)?;
             self.state = ParserState::InsideTool;
         } else {
             self.send_plain_text(&format!("{}\n", line))?;
@@ -603,7 +606,8 @@ impl CaretStreamProcessor {
 
     fn process_line_inside_tool(&mut self, line: &str) -> Result<(), UIError> {
         if line == "^^^" {
-            self.send_tool_end(&self.current_tool_id)?;
+            let tool_id = self.current_tool_id.clone();
+            self.send_tool_end(&tool_id)?;
             self.state = ParserState::OutsideTool;
             // Note: Any trailing newlines after this will be buffered and trimmed naturally
         } else if let Some(caps) = self.multiline_start_regex.captures(line) {
@@ -624,7 +628,8 @@ impl CaretStreamProcessor {
                     tool_id: self.current_tool_id.clone(),
                 };
             } else {
-                self.send_tool_parameter(&key, value, &self.current_tool_id)?;
+                let tool_id = self.current_tool_id.clone();
+                self.send_tool_parameter(&key, value, &tool_id)?;
             }
         }
         Ok(())
@@ -667,40 +672,68 @@ impl CaretStreamProcessor {
         Ok(params)
     }
 
-    fn send_plain_text(&self, text: &str) -> Result<(), UIError> {
+    /// Emit fragments through this central function that blocks output after complete tool blocks
+    fn emit_fragment(&mut self, fragment: DisplayFragment) -> Result<(), UIError> {
+        // Check if we already emitted a complete tool block
+        if self.complete_tool_emitted {
+            // Check if this is just whitespace content - if so, ignore silently
+            if let DisplayFragment::PlainText(text) = &fragment {
+                if text.trim().is_empty() {
+                    // Just whitespace after tool block - ignore silently
+                    return Ok(());
+                }
+            }
+
+            // Non-whitespace content after complete tool block - return the blocking error
+            return Err(UIError::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Tool limit reached - no additional text after complete tool block allowed",
+            )));
+        }
+
+        // Track when we emit a ToolEnd fragment to mark complete tool emission
+        if let DisplayFragment::ToolEnd { .. } = &fragment {
+            self.complete_tool_emitted = true;
+        }
+
+        // Emit the fragment
+        self.ui.display_fragment(&fragment)
+    }
+
+    fn send_plain_text(&mut self, text: &str) -> Result<(), UIError> {
         if !text.is_empty() {
-            self.ui
-                .display_fragment(&DisplayFragment::PlainText(text.to_string()))?;
+            self.emit_fragment(DisplayFragment::PlainText(text.to_string()))?;
         }
         Ok(())
     }
 
-    fn send_tool_start(&self, name: &str, id: &str) -> Result<(), UIError> {
-        self.ui.display_fragment(&DisplayFragment::ToolName {
+    fn send_tool_start(&mut self, name: &str, id: &str) -> Result<(), UIError> {
+        self.emit_fragment(DisplayFragment::ToolName {
             name: name.to_string(),
             id: id.to_string(),
-        })?;
-        Ok(())
+        })
     }
 
-    fn send_tool_parameter(&self, name: &str, value: &str, tool_id: &str) -> Result<(), UIError> {
-        self.ui.display_fragment(&DisplayFragment::ToolParameter {
+    fn send_tool_parameter(
+        &mut self,
+        name: &str,
+        value: &str,
+        tool_id: &str,
+    ) -> Result<(), UIError> {
+        self.emit_fragment(DisplayFragment::ToolParameter {
             name: name.to_string(),
             value: value.to_string(),
             tool_id: tool_id.to_string(),
-        })?;
-        Ok(())
+        })
     }
 
-    fn send_tool_end(&self, id: &str) -> Result<(), UIError> {
-        self.ui
-            .display_fragment(&DisplayFragment::ToolEnd { id: id.to_string() })?;
-        Ok(())
+    fn send_tool_end(&mut self, id: &str) -> Result<(), UIError> {
+        self.emit_fragment(DisplayFragment::ToolEnd { id: id.to_string() })
     }
 
     /// Stream multiline content immediately as part of a parameter value
     fn stream_multiline_content(
-        &self,
+        &mut self,
         content: &str,
         param_name: &str,
         tool_id: &str,
@@ -713,11 +746,10 @@ impl CaretStreamProcessor {
             format!("\n{}", content)
         };
 
-        self.ui.display_fragment(&DisplayFragment::ToolParameter {
+        self.emit_fragment(DisplayFragment::ToolParameter {
             name: param_name.to_string(),
             value: content_to_stream,
             tool_id: tool_id.to_string(),
-        })?;
-        Ok(())
+        })
     }
 }

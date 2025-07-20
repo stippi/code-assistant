@@ -386,23 +386,13 @@ fn test_caret_chunked_across_tool_opening() {
         );
         assert!(matches!(fragments[3], DisplayFragment::ToolEnd { .. }));
 
-        // The trailing newline behavior depends on chunking - this is correct streaming behavior!
-        // Small chunks: trailing newline arrives separately, processed as PlainText
-        // Large chunks: trailing newline gets buffered and trimmed naturally
-        if chunk_size <= 3 {
-            assert_eq!(
-                fragments.len(),
-                5,
-                "Small chunks should produce trailing newline"
-            );
-            assert!(matches!(fragments[4], DisplayFragment::PlainText(ref text) if text == "\n"));
-        } else {
-            assert_eq!(
-                fragments.len(),
-                4,
-                "Large chunks should not produce trailing newline (trimmed)"
-            );
-        }
+        // After implementing tool blocking: whitespace after complete tool blocks is silently ignored
+        // This behavior is consistent regardless of chunk size
+        assert_eq!(
+            fragments.len(),
+            4,
+            "All chunk sizes should produce same result - whitespace after tool blocks is ignored"
+        );
     }
 }
 
@@ -782,4 +772,76 @@ fn test_newline_boundary_trimming() {
     );
 
     println!("✅ Newline boundary trimming test passed!");
+}
+
+#[test]
+fn test_caret_tool_blocking_with_whitespace() {
+    let test_ui = TestUI::new();
+    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+
+    // Process a complete tool block followed by whitespace
+    let input = "^^^read_files\nproject: test\n^^^\n\n  \t\n";
+
+    let result = processor.process(&StreamingChunk::Text(input.to_string()));
+    assert!(
+        result.is_ok(),
+        "Processing should succeed - whitespace is ignored silently"
+    );
+
+    let fragments = test_ui.get_fragments();
+
+    // Should have exactly 3 fragments: ToolName, ToolParameter, ToolEnd
+    // The whitespace after the tool block should be silently ignored
+    assert_eq!(fragments.len(), 3);
+    assert!(matches!(fragments[0], DisplayFragment::ToolName { .. }));
+    assert!(matches!(
+        fragments[1],
+        DisplayFragment::ToolParameter { .. }
+    ));
+    assert!(matches!(fragments[2], DisplayFragment::ToolEnd { .. }));
+}
+
+#[test]
+fn test_caret_tool_blocking_with_non_whitespace() {
+    let test_ui = TestUI::new();
+    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+
+    // Process a complete tool block followed by non-whitespace text
+    let input = "^^^read_files\nproject: test\n^^^";
+    let result = processor.process(&StreamingChunk::Text(input.to_string()));
+    assert!(result.is_ok(), "Initial tool processing should succeed");
+
+    // Now try to process non-whitespace text after the complete tool block
+    let additional_text = "This should be blocked";
+    let result = processor.process(&StreamingChunk::Text(additional_text.to_string()));
+
+    // Should get the blocking error
+    assert!(
+        result.is_err(),
+        "Should get error when trying to emit non-whitespace after complete tool"
+    );
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("Tool limit reached"),
+        "Error should mention tool limit"
+    );
+    assert!(
+        error_msg.contains("no additional text after complete tool block allowed"),
+        "Error should explain the blocking behavior"
+    );
+
+    let fragments = test_ui.get_fragments();
+
+    // Should have exactly 3 fragments: ToolName, ToolParameter, ToolEnd
+    // The additional text should NOT have been processed
+    assert_eq!(fragments.len(), 3);
+    assert!(matches!(fragments[0], DisplayFragment::ToolName { .. }));
+    assert!(matches!(
+        fragments[1],
+        DisplayFragment::ToolParameter { .. }
+    ));
+    assert!(matches!(fragments[2], DisplayFragment::ToolEnd { .. }));
 }
