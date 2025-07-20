@@ -152,7 +152,7 @@ impl SessionManager {
         ui: Arc<Box<dyn UserInterface>>,
     ) -> Result<()> {
         // Prepare session - need to scope the mutable borrow carefully
-        let (tool_syntax, init_path, proxy_ui, session_state, activity_state_ref) = {
+        let (tool_syntax, init_path, proxy_ui, session_state, activity_state_ref, pending_message_ref) = {
             let session_instance = self
                 .active_sessions
                 .get_mut(session_id)
@@ -175,6 +175,7 @@ impl SessionManager {
             let init_path = session_instance.session.init_path.clone();
             let proxy_ui = session_instance.create_proxy_ui(ui.clone());
             let activity_state_ref = session_instance.activity_state.clone();
+            let pending_message_ref = session_instance.pending_message.clone();
 
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
@@ -201,6 +202,7 @@ impl SessionManager {
                 proxy_ui,
                 session_state,
                 activity_state_ref,
+                pending_message_ref,
             )
         };
 
@@ -243,6 +245,9 @@ impl SessionManager {
             state_storage,
             init_path,
         );
+
+        // Set the shared pending message reference
+        agent.set_pending_message_ref(pending_message_ref);
 
         // Load the session state into the agent
         agent.load_from_session_state(session_state).await?;
@@ -385,4 +390,45 @@ impl SessionManager {
             None
         }
     }
+
+    /// Queue a user message for a running agent session
+    pub fn queue_user_message(&mut self, session_id: &str, message: String) -> Result<()> {
+        // Get the active session instance and update shared pending message
+        let session_instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+
+        // Update the shared pending message
+        let mut pending = session_instance.pending_message.lock().unwrap();
+        match pending.as_mut() {
+            Some(existing) => {
+                // Append to existing message with newline separator
+                if !existing.is_empty() && !existing.ends_with('\n') {
+                    existing.push('\n');
+                }
+                existing.push_str(&message);
+            }
+            None => {
+                // Set as new pending message
+                *pending = Some(message);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get and clear pending message for editing
+    pub fn request_pending_message_for_edit(&mut self, session_id: &str) -> Result<Option<String>> {
+        // Get the active session instance and take the pending message
+        let session_instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+
+        let mut pending = session_instance.pending_message.lock().unwrap();
+        Ok(pending.take())
+    }
+
+
 }

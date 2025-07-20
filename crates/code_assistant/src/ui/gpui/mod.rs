@@ -61,6 +61,8 @@ pub enum BackendEvent {
 
     // Agent operations
     SendUserMessage { session_id: String, message: String },
+    QueueUserMessage { session_id: String, message: String },
+    RequestPendingMessageEdit { session_id: String },
 }
 
 // Response from backend to UI
@@ -78,6 +80,14 @@ pub enum BackendResponse {
     },
     Error {
         message: String,
+    },
+    PendingMessageForEdit {
+        session_id: String,
+        message: String,
+    },
+    PendingMessageUpdated {
+        session_id: String,
+        message: Option<String>,
     },
 }
 
@@ -105,6 +115,7 @@ pub struct Gpui {
     chat_sessions: Arc<Mutex<Vec<ChatMetadata>>>,
     current_session_activity_state:
         Arc<Mutex<Option<crate::session::instance::SessionActivityState>>>,
+    current_pending_message: Arc<Mutex<Option<String>>>,
 
     // UI components
     chat_sidebar: Arc<Mutex<Option<Entity<chat_sidebar::ChatSidebar>>>>,
@@ -223,6 +234,7 @@ impl Gpui {
             current_session_id: Arc::new(Mutex::new(None)),
             chat_sessions: Arc::new(Mutex::new(Vec::new())),
             current_session_activity_state: Arc::new(Mutex::new(None)),
+            current_pending_message: Arc::new(Mutex::new(None)),
 
             chat_sidebar: Arc::new(Mutex::new(None)),
 
@@ -777,6 +789,24 @@ impl Gpui {
                     }
                 }
             }
+            UiEvent::QueueUserMessage { message, session_id } => {
+                debug!("UI: QueueUserMessage event for session {}: {}", session_id, message);
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::QueueUserMessage { session_id, message });
+                }
+            }
+            UiEvent::RequestPendingMessageEdit { session_id } => {
+                debug!("UI: RequestPendingMessageEdit event for session {}", session_id);
+                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                    let _ = sender.try_send(BackendEvent::RequestPendingMessageEdit { session_id });
+                }
+            }
+            UiEvent::UpdatePendingMessage { message } => {
+                debug!("UI: UpdatePendingMessage event with message: {:?}", message);
+                // Update the current pending message
+                *self.current_pending_message.lock().unwrap() = message;
+                cx.refresh().expect("Failed to refresh windows");
+            }
         }
     }
 
@@ -960,6 +990,16 @@ impl Gpui {
             }
             BackendResponse::Error { message } => {
                 warn!("Backend error: {}", message);
+            }
+            BackendResponse::PendingMessageForEdit { session_id, message } => {
+                debug!("Received BackendResponse::PendingMessageForEdit for session {}", session_id);
+                // TODO: Move pending message to text input field
+                // For now, just push an update event
+                self.push_event(UiEvent::UpdatePendingMessage { message: Some(message) });
+            }
+            BackendResponse::PendingMessageUpdated { session_id, message } => {
+                debug!("Received BackendResponse::PendingMessageUpdated for session {}", session_id);
+                self.push_event(UiEvent::UpdatePendingMessage { message });
             }
         }
     }

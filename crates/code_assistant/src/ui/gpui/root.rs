@@ -159,15 +159,42 @@ impl RootView {
                 // V2 mode: Send user message event if we have an active session
                 if let Some(session_id) = &self.current_session_id {
                     if let Some(sender) = cx.try_global::<UiEventSender>() {
-                        tracing::info!(
-                            "RootView: Sending user message to session {}: {}",
-                            session_id,
-                            content
-                        );
-                        let _ = sender.0.try_send(UiEvent::SendUserMessage {
-                            message: content.clone(),
-                            session_id: session_id.clone(),
-                        });
+                        // Check if agent is running by looking at activity state
+                        let current_activity_state = if let Some(gpui) = cx.try_global::<Gpui>() {
+                            gpui.current_session_activity_state.lock().unwrap().clone()
+                        } else {
+                            None
+                        };
+
+                        let agent_is_running = if let Some(state) = current_activity_state {
+                            !matches!(state, crate::session::instance::SessionActivityState::Idle)
+                        } else {
+                            false
+                        };
+
+                        if agent_is_running {
+                            // Queue the message for the running agent
+                            tracing::info!(
+                                "RootView: Queuing user message for running agent in session {}: {}",
+                                session_id,
+                                content
+                            );
+                            let _ = sender.0.try_send(UiEvent::QueueUserMessage {
+                                message: content.clone(),
+                                session_id: session_id.clone(),
+                            });
+                        } else {
+                            // Send message normally (agent is idle)
+                            tracing::info!(
+                                "RootView: Sending user message to session {}: {}",
+                                session_id,
+                                content
+                            );
+                            let _ = sender.0.try_send(UiEvent::SendUserMessage {
+                                message: content.clone(),
+                                session_id: session_id.clone(),
+                            });
+                        }
                     }
                 }
 
@@ -479,88 +506,97 @@ impl Render for RootView {
                                             .track_focus(&text_input_handle)
                                             .child(TextInput::new(&self.text_input))
                                     })
-                                    .child({
-                                        // Create button based on streaming state
-                                        match current_streaming_state {
-                                            StreamingState::Idle => {
-                                                // Show send button, enabled if input requested OR if we have an active session (V2 mode)
-                                                let is_enabled = is_input_requested
-                                                    || current_session_id.is_some();
+                                    .children({
+                                        // Get current session activity state from global Gpui
+                                        let current_activity_state = if let Some(gpui) = cx.try_global::<Gpui>() {
+                                            gpui.current_session_activity_state.lock().unwrap().clone()
+                                        } else {
+                                            None
+                                        };
 
-                                                let mut button = div()
-                                                    .size(px(40.))
-                                                    .rounded_sm()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .cursor(if is_enabled {
-                                                        CursorStyle::PointingHand
-                                                    } else {
-                                                        CursorStyle::OperationNotAllowed
-                                                    })
-                                                    .child(file_icons::render_icon(
-                                                        &file_icons::get()
-                                                            .get_type_icon(file_icons::SEND),
-                                                        22.0,
-                                                        if is_enabled {
-                                                            cx.theme().primary
-                                                        } else {
-                                                            cx.theme().muted_foreground
-                                                        },
-                                                        ">",
-                                                    ));
+                                        // Determine if agent is running
+                                        let agent_is_running = if let Some(state) = current_activity_state {
+                                            !matches!(state, crate::session::instance::SessionActivityState::Idle)
+                                        } else {
+                                            false
+                                        };
 
-                                                if is_enabled {
-                                                    button = button
-                                                        .hover(|s| s.bg(cx.theme().muted))
-                                                        .on_mouse_up(
-                                                            MouseButton::Left,
-                                                            cx.listener(Self::on_submit_click),
-                                                        );
-                                                }
+                                        // Check if text input has content
+                                        let has_input_content = !self.text_input.read(cx).value().trim().is_empty();
 
-                                                button
-                                            }
-                                            StreamingState::Streaming => {
-                                                // Show stop button, enabled
-                                                div()
-                                                    .size(px(40.))
-                                                    .rounded_sm()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .cursor(CursorStyle::PointingHand)
-                                                    .hover(|s| s.bg(cx.theme().muted))
-                                                    .child(file_icons::render_icon(
-                                                        &file_icons::get()
-                                                            .get_type_icon(file_icons::STOP),
-                                                        22.0,
-                                                        cx.theme().danger,
-                                                        "⬜",
-                                                    ))
-                                                    .on_mouse_up(
-                                                        MouseButton::Left,
-                                                        cx.listener(Self::on_stop_click),
-                                                    )
-                                            }
-                                            StreamingState::StopRequested => {
-                                                // Show stop button, disabled/grayed out
-                                                div()
-                                                    .size(px(40.))
-                                                    .rounded_sm()
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .cursor(CursorStyle::OperationNotAllowed)
-                                                    .child(file_icons::render_icon(
-                                                        &file_icons::get()
-                                                            .get_type_icon(file_icons::STOP),
-                                                        22.0,
-                                                        cx.theme().muted_foreground,
-                                                        "⬜",
-                                                    ))
-                                            }
+                                        let mut buttons = Vec::new();
+
+                                        // Send button - enabled when input has content
+                                        let send_enabled = has_input_content && (is_input_requested || current_session_id.is_some());
+                                        let mut send_button = div()
+                                            .size(px(40.))
+                                            .rounded_sm()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .cursor(if send_enabled {
+                                                CursorStyle::PointingHand
+                                            } else {
+                                                CursorStyle::OperationNotAllowed
+                                            })
+                                            .child(file_icons::render_icon(
+                                                &file_icons::get().get_type_icon(file_icons::SEND),
+                                                22.0,
+                                                if send_enabled {
+                                                    cx.theme().primary
+                                                } else {
+                                                    cx.theme().muted_foreground
+                                                },
+                                                ">",
+                                            ));
+
+                                        if send_enabled {
+                                            send_button = send_button
+                                                .hover(|s| s.bg(cx.theme().muted))
+                                                .on_mouse_up(
+                                                    MouseButton::Left,
+                                                    cx.listener(Self::on_submit_click),
+                                                );
                                         }
+                                        buttons.push(send_button);
+
+                                        // Cancel button - enabled when agent is running or streaming
+                                        let cancel_enabled = agent_is_running || !matches!(current_streaming_state, StreamingState::Idle);
+                                        let cancel_disabled = matches!(current_streaming_state, StreamingState::StopRequested);
+
+                                        let mut cancel_button = div()
+                                            .size(px(40.))
+                                            .rounded_sm()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .cursor(if cancel_enabled && !cancel_disabled {
+                                                CursorStyle::PointingHand
+                                            } else {
+                                                CursorStyle::OperationNotAllowed
+                                            })
+                                            .child(file_icons::render_icon(
+                                                &file_icons::get().get_type_icon(file_icons::STOP),
+                                                22.0,
+                                                if cancel_enabled && !cancel_disabled {
+                                                    cx.theme().danger
+                                                } else {
+                                                    cx.theme().muted_foreground
+                                                },
+                                                "⬜",
+                                            ));
+
+                                        if cancel_enabled && !cancel_disabled {
+                                            cancel_button = cancel_button
+                                                .hover(|s| s.bg(cx.theme().muted))
+                                                .on_mouse_up(
+                                                    MouseButton::Left,
+                                                    cx.listener(Self::on_stop_click),
+                                                );
+                                        }
+                                        buttons.push(cancel_button);
+
+                                        buttons
                                     }),
                             ),
                     )

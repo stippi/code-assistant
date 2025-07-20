@@ -81,4 +81,10 @@ pub enum UiEvent {
         session_id: String,
         activity_state: SessionActivityState,
     },
+    /// Queue a user message while agent is running
+    QueueUserMessage { message: String, session_id: String },
+    /// Request to edit pending message (move back to input)
+    RequestPendingMessageEdit { session_id: String },
+    /// Update pending message display
+    UpdatePendingMessage { message: Option<String> },
 }
