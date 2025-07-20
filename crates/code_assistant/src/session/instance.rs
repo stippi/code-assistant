@@ -214,11 +214,16 @@ impl SessionInstance {
             memory: self.session.working_memory.clone(),
         });
 
-        // Add current activity state for this session
         events.push(UiEvent::UpdateSessionActivityState {
             session_id: self.session.id.clone(),
             activity_state: self.get_activity_state(),
         });
+
+        if let Ok(pending) = self.pending_message.lock() {
+            events.push(UiEvent::UpdatePendingMessage {
+                message: pending.clone(),
+            });
+        }
 
         Ok(events)
     }
