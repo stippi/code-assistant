@@ -1,7 +1,29 @@
-use super::openai::OpenAIClient;
+use super::openai::{ApiKeyAuth, OpenAIClient, RequestCustomizer};
 use crate::{types::*, LLMProvider, StreamingCallback};
 use anyhow::Result;
 use async_trait::async_trait;
+use serde_json::Value;
+
+/// MistralAI request customizer that strips unsupported fields
+pub struct MistralAiRequestCustomizer;
+
+impl RequestCustomizer for MistralAiRequestCustomizer {
+    fn customize_request(&self, request: &mut serde_json::Value) -> Result<()> {
+        if let Value::Object(ref mut map) = request {
+            // Remove stream_options field as MistralAI doesn't support it
+            map.remove("stream_options");
+        }
+        Ok(())
+    }
+
+    fn get_additional_headers(&self) -> Vec<(String, String)> {
+        vec![("Content-Type".to_string(), "application/json".to_string())]
+    }
+
+    fn customize_url(&self, base_url: &str, _streaming: bool) -> String {
+        format!("{}/chat/completions", base_url)
+    }
+}
 
 pub struct MistralAiClient {
     inner: OpenAIClient,
@@ -13,8 +35,16 @@ impl MistralAiClient {
     }
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
+        let auth_provider = Box::new(ApiKeyAuth::new(api_key));
+        let request_customizer = Box::new(MistralAiRequestCustomizer);
+
         Self {
-            inner: OpenAIClient::new(api_key, model, base_url),
+            inner: OpenAIClient::with_customization(
+                model,
+                base_url,
+                auth_provider,
+                request_customizer,
+            ),
         }
     }
 }
@@ -28,5 +58,66 @@ impl LLMProvider for MistralAiClient {
     ) -> Result<LLMResponse> {
         // Delegate to inner OpenAI client since the APIs are compatible
         self.inner.send_message(request, streaming_callback).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_mistral_request_customization() {
+        let customizer = MistralAiRequestCustomizer;
+
+        // Create a request with stream_options (like OpenAI would send)
+        let mut request = json!({
+            "model": "mistral-large-latest",
+            "messages": [
+                {"role": "user", "content": "Hello"}
+            ],
+            "stream": true,
+            "stream_options": {
+                "include_usage": true
+            },
+            "temperature": 1.0
+        });
+
+        // Verify stream_options is present initially
+        assert!(request.as_object().unwrap().contains_key("stream_options"));
+
+        // Apply MistralAI customization
+        customizer.customize_request(&mut request).unwrap();
+
+        // Verify stream_options is removed
+        assert!(!request.as_object().unwrap().contains_key("stream_options"));
+
+        // Verify other fields are still present
+        assert!(request.as_object().unwrap().contains_key("model"));
+        assert!(request.as_object().unwrap().contains_key("messages"));
+        assert!(request.as_object().unwrap().contains_key("stream"));
+        assert!(request.as_object().unwrap().contains_key("temperature"));
+    }
+
+    #[test]
+    fn test_mistral_headers() {
+        let customizer = MistralAiRequestCustomizer;
+        let headers = customizer.get_additional_headers();
+
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].0, "Content-Type");
+        assert_eq!(headers[0].1, "application/json");
+    }
+
+    #[test]
+    fn test_mistral_url_customization() {
+        let customizer = MistralAiRequestCustomizer;
+        let base_url = "https://api.mistral.ai/v1";
+
+        let url = customizer.customize_url(base_url, false);
+        assert_eq!(url, "https://api.mistral.ai/v1/chat/completions");
+
+        let url_streaming = customizer.customize_url(base_url, true);
+        assert_eq!(url_streaming, "https://api.mistral.ai/v1/chat/completions");
     }
 }
