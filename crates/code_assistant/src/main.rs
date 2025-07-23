@@ -161,7 +161,7 @@ async fn create_llm_client(
                         format!("Failed to load AI Core config from {:?}", config_path)
                     })?;
 
-                // Model name bestimmen und Deployment UUID holen
+                // Get matching deployment for given model ID
                 let model_name = model.unwrap_or_else(|| "claude-sonnet-4".to_string());
                 let deployment_uuid = aicore_config.get_deployment_for_model(&model_name)
                     .ok_or_else(|| anyhow::anyhow!("No deployment found for model '{}' in config file. Available models: {:?}",
