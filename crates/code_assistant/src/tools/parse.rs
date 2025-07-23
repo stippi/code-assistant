@@ -132,9 +132,7 @@ pub fn parse_caret_tool_invocations(
         let tool_index = tool_requests.len() + 1;
         if let Some(filter) = filter {
             if !filter.allow_tool_at_position(tool_name, tool_index) {
-                // Tool not allowed, truncate before this tool
-                let absolute_tool_start = text.len() - remaining_text.len() + tool_match.start();
-                truncation_pos = absolute_tool_start;
+                // Tool not allowed, keep existing truncation_pos
                 break;
             }
         }
@@ -195,17 +193,20 @@ pub fn parse_caret_tool_invocations(
 
         // Update remaining text for next iteration
         if let Some(end_pos) = tool_end_pos {
-            remaining_text = &remaining_text[end_pos..];
+            // Always update truncation position after each successfully processed tool
+            // This ensures we can truncate cleanly after the last allowed tool
+            let absolute_tool_end = text.len() - remaining_text.len() + end_pos;
+            truncation_pos = absolute_tool_end;
 
             // Check if we should allow content after this tool
             if let Some(filter) = filter {
                 if !filter.allow_content_after_tool(tool_name, tool_index) {
                     // No content allowed after this tool, truncate here
-                    let absolute_end_pos = text.len() - remaining_text.len();
-                    truncation_pos = absolute_end_pos;
                     break;
                 }
             }
+
+            remaining_text = &remaining_text[end_pos..];
         } else {
             // No tool end found, stop processing
             break;
@@ -733,8 +734,7 @@ pub fn parse_xml_tool_invocations(
                             let tool_index = tool_requests.len() + 1;
                             if let Some(filter) = filter {
                                 if !filter.allow_tool_at_position(tool_name, tool_index) {
-                                    // Tool not allowed at this position, truncate before this tool
-                                    truncation_pos = abs_tag_start;
+                                    // Tool not allowed at this position, keep existing truncation_pos
                                     break;
                                 }
                             }
@@ -812,11 +812,14 @@ pub fn parse_xml_tool_invocations(
 
                             tool_requests.push(tool_request);
 
+                            // Always update truncation position after each successfully processed tool
+                            // This ensures we can truncate cleanly after the last allowed tool
+                            truncation_pos = abs_tag_end + 1;
+
                             // Check if we should allow content after this tool
                             if let Some(filter) = filter {
                                 if !filter.allow_content_after_tool(&parsed_tool_name, tool_index) {
                                     // No content allowed after this tool, truncate here
-                                    truncation_pos = abs_tag_end + 1;
                                     state = ParseState::SearchingForTool;
                                     break;
                                 }
