@@ -83,6 +83,7 @@ pub enum BackendResponse {
     },
     PendingMessageForEdit {
         session_id: String,
+        #[allow(dead_code)]
         message: String,
     },
     PendingMessageUpdated {

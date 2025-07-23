@@ -900,7 +900,7 @@ async fn test_xml_parsing_fails_with_valid_first_block_and_invalid_second() {
 <param:project>qwen-"#;
 
     // Currently this fails completely, losing the valid first tool block
-    let result = parse_xml_tool_invocations(text, 123, 0);
+    let result = parse_xml_tool_invocations(text, 123, 0, None);
 
     // This assertion will currently fail because the function returns an error
     // instead of returning the valid first tool block
@@ -916,7 +916,7 @@ async fn test_xml_parsing_fails_with_valid_first_block_and_invalid_second() {
 
 #[tokio::test]
 async fn test_xml_parsing_with_multiple_valid_blocks_should_limit_to_first() {
-    use crate::tools::parse::parse_xml_tool_invocations_with_filter;
+    use crate::tools::parse::parse_xml_tool_invocations;
     use crate::tools::tool_use_filter::SingleToolFilter;
 
     // Test case where we have multiple valid blocks but want to limit to first
@@ -944,7 +944,8 @@ And finally modify the file:
 
     // With the new system, this should return only the first tool and truncate after it
     let filter = SingleToolFilter;
-    let result = parse_xml_tool_invocations_with_filter(text, 123, 0, Some(&filter)).unwrap();
+    let (result, _truncated_text) =
+        parse_xml_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
 
     // Should only get the first tool
     assert_eq!(result.len(), 1);
@@ -959,7 +960,7 @@ And finally modify the file:
 
 #[tokio::test]
 async fn test_xml_parsing_with_truncation_preserves_valid_tool() {
-    use crate::tools::parse::parse_xml_tool_invocations_with_truncation;
+    use crate::tools::parse::parse_xml_tool_invocations;
     use crate::tools::tool_use_filter::SingleToolFilter;
 
     // Test that truncation function can extract valid tool even with invalid following content
@@ -974,7 +975,7 @@ async fn test_xml_parsing_with_truncation_preserves_valid_tool() {
 <param:project>incomplete-"#;
 
     let filter = SingleToolFilter;
-    let result = parse_xml_tool_invocations_with_truncation(text, 123, 0, Some(&filter));
+    let result = parse_xml_tool_invocations(text, 123, 0, Some(&filter));
 
     // Should succeed and return the valid first tool
     assert!(

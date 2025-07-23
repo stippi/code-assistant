@@ -2,8 +2,7 @@
 
 use crate::agent::ToolSyntax;
 use crate::tools::{
-    parse_caret_tool_invocations_with_truncation, parse_xml_tool_invocations_with_truncation,
-    tool_use_filter::{SingleToolFilter, ToolUseFilter},
+    parse_caret_tool_invocations, parse_xml_tool_invocations, tool_use_filter::SingleToolFilter,
     ToolRequest,
 };
 use crate::ui::streaming::StreamProcessorTrait;
@@ -53,12 +52,7 @@ fn parse_and_truncate_caret_response(
         if let ContentBlock::Text { text } = block {
             // Parse Caret tool invocations and get truncation position
             let (block_tool_requests, truncated_text) =
-                parse_caret_tool_invocations_with_truncation(
-                    text,
-                    request_id,
-                    tool_requests.len(),
-                    Some(&filter),
-                )?;
+                parse_caret_tool_invocations(text, request_id, tool_requests.len(), Some(&filter))?;
 
             tool_requests.extend(block_tool_requests.clone());
 
@@ -102,12 +96,8 @@ fn parse_and_truncate_xml_response(
     for block in &response.content {
         if let ContentBlock::Text { text } = block {
             // Parse XML tool invocations and get truncation position
-            let (block_tool_requests, truncated_text) = parse_xml_tool_invocations_with_truncation(
-                text,
-                request_id,
-                tool_requests.len(),
-                Some(&filter),
-            )?;
+            let (block_tool_requests, truncated_text) =
+                parse_xml_tool_invocations(text, request_id, tool_requests.len(), Some(&filter))?;
 
             tool_requests.extend(block_tool_requests.clone());
 

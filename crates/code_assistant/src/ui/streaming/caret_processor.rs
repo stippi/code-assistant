@@ -9,14 +9,17 @@ use std::sync::Arc;
 enum ParserState {
     OutsideTool,
     InsideTool,
+    #[allow(dead_code)]
     CollectingName {
         partial_name: String,
         tool_id: String,
     },
+    #[allow(dead_code)]
     CollectingType {
         param_name: String,
         tool_id: String,
     },
+    #[allow(dead_code)]
     CollectingValue {
         param_name: String,
         tool_id: String,
