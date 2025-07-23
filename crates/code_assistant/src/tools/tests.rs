@@ -883,3 +883,121 @@ fn test_usage_example_generation() {
         println!("✓ Caret usage example generation verified");
     }
 }
+
+#[tokio::test]
+async fn test_xml_parsing_fails_with_valid_first_block_and_invalid_second() {
+    use crate::tools::parse::parse_xml_tool_invocations;
+
+    // This reproduces the exact error scenario described by the user
+    let text = r#"I will analyze the structure and code of the project to find out which tool-use syntax is used. Let me start with the most important files.
+
+<tool:read_files>
+<param:project>qwen-code</param:project>
+<param:path>package.json</param:path>
+</tool:read_files>
+
+<tool:read_files>
+<param:project>qwen-"#;
+
+    // Currently this fails completely, losing the valid first tool block
+    let result = parse_xml_tool_invocations(text, 123, 0);
+
+    // This assertion will currently fail because the function returns an error
+    // instead of returning the valid first tool block
+    assert!(
+        result.is_err(),
+        "Expected parsing to fail with current implementation"
+    );
+
+    // The error should be about the incomplete second tool block
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("unclosed") || error_msg.contains("Malformed"));
+}
+
+#[tokio::test]
+async fn test_xml_parsing_with_multiple_valid_blocks_should_limit_to_first() {
+    use crate::tools::parse::parse_xml_tool_invocations_with_filter;
+    use crate::tools::tool_use_filter::SingleToolFilter;
+
+    // Test case where we have multiple valid blocks but want to limit to first
+    let text = r#"Let me read these files:
+
+<tool:read_files>
+<param:project>test-project</param:project>
+<param:path>file1.txt</param:path>
+</tool:read_files>
+
+And then list the directory:
+
+<tool:list_files>
+<param:project>test-project</param:project>
+<param:paths>src</param:paths>
+</tool:list_files>
+
+And finally modify the file:
+
+<tool:replace_in_file>
+<param:project>test-project</param:project>
+<param:path>file1.txt</param:path>
+<param:diff>some diff</param:diff>
+</tool:replace_in_file>"#;
+
+    // With the new system, this should return only the first tool and truncate after it
+    let filter = SingleToolFilter;
+    let result = parse_xml_tool_invocations_with_filter(text, 123, 0, Some(&filter)).unwrap();
+
+    // Should only get the first tool
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].name, "read_files");
+    assert_eq!(result[0].input["project"], "test-project");
+
+    // The XML parser converts single path parameters to the paths array based on the schema
+    let paths = result[0].input["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0], "file1.txt");
+}
+
+#[tokio::test]
+async fn test_xml_parsing_with_truncation_preserves_valid_tool() {
+    use crate::tools::parse::parse_xml_tool_invocations_with_truncation;
+    use crate::tools::tool_use_filter::SingleToolFilter;
+
+    // Test that truncation function can extract valid tool even with invalid following content
+    let text = r#"I will analyze the structure and code of the project.
+
+<tool:read_files>
+<param:project>first-project</param:project>
+<param:path>package.json</param:path>
+</tool:read_files>
+
+<tool:read_files>
+<param:project>incomplete-"#;
+
+    let filter = SingleToolFilter;
+    let result = parse_xml_tool_invocations_with_truncation(text, 123, 0, Some(&filter));
+
+    // Should succeed and return the valid first tool
+    assert!(
+        result.is_ok(),
+        "Truncation should succeed and preserve valid tool"
+    );
+    let (tools, truncated_text) = result.unwrap();
+
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "read_files");
+    assert_eq!(tools[0].input["project"], "first-project");
+
+    // The XML parser converts single path parameters to the paths array based on the schema
+    let paths = tools[0].input["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0], "package.json");
+
+    // Truncated text should end after the first tool block and not contain the incomplete second tool
+    assert!(truncated_text.contains("</tool:read_files>"));
+
+    // The text should end with the closing tag of the first tool, no incomplete second tool
+    assert!(
+        truncated_text.trim_end().ends_with("</tool:read_files>"),
+        "Text should end cleanly after first tool block"
+    );
+}

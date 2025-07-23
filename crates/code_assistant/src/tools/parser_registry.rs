@@ -1,7 +1,11 @@
 //! Parser registry for different tool invocation syntaxes
 
 use crate::agent::ToolSyntax;
-use crate::tools::{parse_caret_tool_invocations, parse_xml_tool_invocations, ToolRequest};
+use crate::tools::{
+    parse_caret_tool_invocations_with_truncation, parse_xml_tool_invocations_with_truncation,
+    tool_use_filter::{SingleToolFilter, ToolUseFilter},
+    ToolRequest,
+};
 use crate::ui::streaming::StreamProcessorTrait;
 use crate::ui::UserInterface;
 use anyhow::Result;
@@ -43,6 +47,7 @@ fn parse_and_truncate_caret_response(
 ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
     let mut tool_requests = Vec::new();
     let mut truncated_content = Vec::new();
+    let filter = SingleToolFilter;
 
     for block in &response.content {
         if let ContentBlock::Text { text } = block {
@@ -52,6 +57,7 @@ fn parse_and_truncate_caret_response(
                     text,
                     request_id,
                     tool_requests.len(),
+                    Some(&filter),
                 )?;
 
             tool_requests.extend(block_tool_requests.clone());
@@ -91,12 +97,17 @@ fn parse_and_truncate_xml_response(
 ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
     let mut tool_requests = Vec::new();
     let mut truncated_content = Vec::new();
+    let filter = SingleToolFilter;
 
     for block in &response.content {
         if let ContentBlock::Text { text } = block {
             // Parse XML tool invocations and get truncation position
-            let (block_tool_requests, truncated_text) =
-                parse_xml_tool_invocations_with_truncation(text, request_id, tool_requests.len())?;
+            let (block_tool_requests, truncated_text) = parse_xml_tool_invocations_with_truncation(
+                text,
+                request_id,
+                tool_requests.len(),
+                Some(&filter),
+            )?;
 
             tool_requests.extend(block_tool_requests.clone());
 
@@ -147,114 +158,6 @@ fn parse_json_response(
     }
 
     Ok((tool_requests, response.clone()))
-}
-
-/// Parse Caret tool invocations and return both tool requests and truncated text
-fn parse_caret_tool_invocations_with_truncation(
-    text: &str,
-    request_id: u64,
-    start_tool_count: usize,
-) -> Result<(Vec<ToolRequest>, String)> {
-    // Parse tool requests using existing function
-    let all_tool_requests = parse_caret_tool_invocations(text, request_id, start_tool_count)?;
-
-    if all_tool_requests.is_empty() {
-        // No tools found, return original text
-        return Ok((all_tool_requests, text.to_string()));
-    }
-
-    // Only keep the first tool request to enforce single tool per message
-    let tool_requests = vec![all_tool_requests[0].clone()];
-
-    // Find the end position of the first tool to truncate text
-    let truncated_text = find_first_caret_tool_end_and_truncate(text)?;
-
-    Ok((tool_requests, truncated_text))
-}
-
-/// Parse XML tool invocations and return both tool requests and truncated text
-fn parse_xml_tool_invocations_with_truncation(
-    text: &str,
-    request_id: u64,
-    start_tool_count: usize,
-) -> Result<(Vec<ToolRequest>, String)> {
-    // Parse tool requests using existing function
-    let all_tool_requests = parse_xml_tool_invocations(text, request_id, start_tool_count)?;
-
-    if all_tool_requests.is_empty() {
-        // No tools found, return original text
-        return Ok((all_tool_requests, text.to_string()));
-    }
-
-    // Only keep the first tool request to enforce single tool per message
-    let tool_requests = vec![all_tool_requests[0].clone()];
-
-    // Find the end position of the first tool to truncate text
-    let truncated_text = find_first_tool_end_and_truncate(text)?;
-
-    Ok((tool_requests, truncated_text))
-}
-
-/// Find the end of the first caret tool and truncate there
-fn find_first_caret_tool_end_and_truncate(text: &str) -> Result<String> {
-    let tool_start_regex = regex::Regex::new(r"(?m)^\^\^\^([a-zA-Z0-9_]+)$").unwrap();
-    let tool_end_regex = regex::Regex::new(r"(?m)^\^\^\^$").unwrap();
-
-    // Find the first tool start
-    if let Some(start_match) = tool_start_regex.find(text) {
-        let after_start = &text[start_match.end()..];
-
-        // Find the corresponding tool end
-        if let Some(end_match) = tool_end_regex.find(after_start) {
-            let end_pos = start_match.end() + end_match.end();
-            return Ok(text[..end_pos].to_string());
-        }
-    }
-
-    // No complete tool found, return original text
-    Ok(text.to_string())
-}
-
-/// Find the end of the first tool in text and truncate there
-fn find_first_tool_end_and_truncate(text: &str) -> Result<String> {
-    let mut current_pos = 0;
-    let mut in_tool = false;
-    let mut tool_depth = 0;
-
-    while current_pos < text.len() {
-        if let Some(tag_start) = text[current_pos..].find('<') {
-            let absolute_pos = current_pos + tag_start;
-
-            // Look for tool tags
-            if let Some(tag_end) = text[absolute_pos..].find('>') {
-                let tag_content = &text[absolute_pos + 1..absolute_pos + tag_end];
-
-                if tag_content.starts_with("tool:") {
-                    // Tool start tag
-                    in_tool = true;
-                    tool_depth += 1;
-                } else if tag_content.starts_with("/tool:") {
-                    // Tool end tag
-                    if in_tool {
-                        tool_depth -= 1;
-                        if tool_depth == 0 {
-                            // Found the end of the first tool, truncate here
-                            let end_pos = absolute_pos + tag_end + 1;
-                            return Ok(text[..end_pos].to_string());
-                        }
-                    }
-                }
-                current_pos = absolute_pos + tag_end + 1;
-            } else {
-                current_pos = absolute_pos + 1;
-            }
-        } else {
-            break;
-        }
-    }
-
-    // No complete tool found, return original text
-    Ok(text.to_string())
 }
 
 /// XML-based tool invocation parser
