@@ -5,6 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
 use tracing::debug;
 
@@ -236,6 +237,7 @@ pub struct OpenAIClient {
     api_key: String,
     base_url: String,
     model: String,
+    model_temperatures: HashMap<String, f32>,
 }
 
 impl OpenAIClient {
@@ -244,16 +246,36 @@ impl OpenAIClient {
     }
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
+        let model_temperatures = Self::default_temperatures();
         Self {
             client: Client::new(),
             api_key,
             base_url,
             model,
+            model_temperatures,
         }
     }
 
     fn get_url(&self) -> String {
         format!("{}/chat/completions", self.base_url)
+    }
+
+    /// Returns default temperature mapping for known model IDs.
+    fn default_temperatures() -> HashMap<String, f32> {
+        let mut m = HashMap::new();
+        m.insert("o3".to_string(), 0.7);
+        m.insert("o4-mini".to_string(), 0.7);
+        m.insert("moonshotai/kimi-k2-instruct".to_string(), 0.6);
+        // Add other model defaults as needed
+        m
+    }
+
+    /// Returns the temperature for the current model, defaulting to 1.0 if not set.
+    fn get_temperature(&self) -> f32 {
+        self.model_temperatures
+            .get(&self.model)
+            .cloned()
+            .unwrap_or(1.0)
     }
 
     /// Convert a single message to OpenAI format without special handling for tool results
@@ -737,7 +759,7 @@ impl LLMProvider for OpenAIClient {
         let openai_request = OpenAIRequest {
             model: self.model.clone(),
             messages,
-            temperature: 1.0,
+            temperature: self.get_temperature(),
             stream: None,
             stream_options: None,
             tool_choice: None,
