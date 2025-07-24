@@ -487,9 +487,10 @@ impl Render for ChatSidebar {
                 )
                 .child(
                     // Chat list area - outer container with padding
-                    div().flex_1().p_2().min_h(px(0.)).child(
+                    div().flex_1().min_h(px(0.)).child(
                         div()
                             .id("chat-items")
+                            .p_2()
                             .h_full()
                             .scrollable(ScrollbarAxis::Vertical)
                             .flex()
