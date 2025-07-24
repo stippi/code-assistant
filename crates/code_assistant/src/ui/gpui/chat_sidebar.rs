@@ -7,6 +7,7 @@ use gpui::{
     div, prelude::*, px, AppContext, Context, Entity, FocusHandle, Focusable, MouseButton,
     MouseUpEvent, SharedString, Styled, Window,
 };
+use gpui_component::scroll::ScrollbarAxis;
 use gpui_component::{ActiveTheme, Icon, StyledExt};
 use std::time::SystemTime;
 use tracing::{debug, trace, warn};
@@ -443,7 +444,7 @@ impl Render for ChatSidebar {
                 .bg(cx.theme().sidebar)
                 .border_r_1()
                 .border_color(cx.theme().sidebar_border)
-                .overflow_hidden()
+                //.overflow_hidden()
                 .flex()
                 .flex_col()
                 .child(
@@ -485,26 +486,28 @@ impl Render for ChatSidebar {
                         ),
                 )
                 .child(
-                    // Chat list area
-                    div()
-                        .flex_1()
-                        .overflow_hidden()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .p_2()
-                        .children(self.items.clone())
-                        .when(self.items.is_empty(), |s| {
-                            s.child(
-                                div()
-                                    .px_3()
-                                    .py_4()
-                                    .text_center()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("No chats yet"),
-                            )
-                        }),
+                    // Chat list area - outer container with padding
+                    div().flex_1().p_2().min_h(px(0.)).child(
+                        div()
+                            .id("chat-items")
+                            .h_full()
+                            .scrollable(ScrollbarAxis::Vertical)
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .children(self.items.clone())
+                            .when(self.items.is_empty(), |s| {
+                                s.child(
+                                    div()
+                                        .px_1()
+                                        .py_4()
+                                        .text_center()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("No chats yet"),
+                                )
+                            }),
+                    ),
                 )
         }
     }
