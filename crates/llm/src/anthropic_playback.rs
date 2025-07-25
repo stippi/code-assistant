@@ -159,6 +159,9 @@ impl LLMProvider for RecordingProvider {
                 }
             }
 
+            // Send StreamingComplete to indicate streaming has finished
+            callback(&StreamingChunk::StreamingComplete)?;
+
             // Return the final response
             Ok(response)
         } else {

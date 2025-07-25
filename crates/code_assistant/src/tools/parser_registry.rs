@@ -2,7 +2,7 @@
 
 use crate::agent::ToolSyntax;
 use crate::tools::{
-    parse_caret_tool_invocations, parse_xml_tool_invocations, tool_use_filter::SingleToolFilter,
+    parse_caret_tool_invocations, parse_xml_tool_invocations, tool_use_filter::SmartToolFilter,
     ToolRequest,
 };
 use crate::ui::streaming::StreamProcessorTrait;
@@ -46,7 +46,7 @@ fn parse_and_truncate_caret_response(
 ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
     let mut tool_requests = Vec::new();
     let mut truncated_content = Vec::new();
-    let filter = SingleToolFilter;
+    let filter = SmartToolFilter::new();
 
     for block in &response.content {
         if let ContentBlock::Text { text } = block {
@@ -91,7 +91,7 @@ fn parse_and_truncate_xml_response(
 ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
     let mut tool_requests = Vec::new();
     let mut truncated_content = Vec::new();
-    let filter = SingleToolFilter;
+    let filter = SmartToolFilter::new();
 
     for block in &response.content {
         if let ContentBlock::Text { text } = block {

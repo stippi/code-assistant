@@ -654,6 +654,9 @@ impl VertexClient {
             )?;
         }
 
+        // Send StreamingComplete to indicate streaming has finished
+        streaming_callback(&StreamingChunk::StreamingComplete)?;
+
         // End recording if a recorder is available
         if let Some(recorder) = &self.recorder {
             recorder.end_recording()?;
