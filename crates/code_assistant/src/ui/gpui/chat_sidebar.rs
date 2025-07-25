@@ -444,7 +444,6 @@ impl Render for ChatSidebar {
                 .bg(cx.theme().sidebar)
                 .border_r_1()
                 .border_color(cx.theme().sidebar_border)
-                //.overflow_hidden()
                 .flex()
                 .flex_col()
                 .child(
