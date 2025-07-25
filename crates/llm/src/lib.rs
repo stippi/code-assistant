@@ -57,6 +57,8 @@ pub enum StreamingChunk {
     RateLimit { seconds_remaining: u64 },
     /// Clear rate limit notification
     RateLimitClear,
+    /// Indicates that streaming from the LLM has completed
+    StreamingComplete,
 }
 
 pub type StreamingCallback = Box<dyn Fn(&StreamingChunk) -> Result<()> + Send + Sync>;

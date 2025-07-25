@@ -265,6 +265,9 @@ impl OllamaClient {
             }
         }
 
+        // Send StreamingComplete to indicate streaming has finished
+        streaming_callback(&StreamingChunk::StreamingComplete)?;
+
         // Build final response
         let mut content = Vec::new();
 

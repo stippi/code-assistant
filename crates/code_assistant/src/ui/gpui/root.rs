@@ -9,8 +9,8 @@ use crate::persistence::ChatMetadata;
 use crate::ui::ui_events::UiEvent;
 use crate::ui::StreamingState;
 use gpui::{
-    div, prelude::*, px, rgba, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    MouseButton, MouseUpEvent,
+    div, prelude::*, px, App, Context, CursorStyle, Entity, FocusHandle, Focusable, MouseButton,
+    MouseUpEvent,
 };
 use gpui_component::input::TextInput;
 use gpui_component::input::{InputEvent, InputState};
@@ -234,7 +234,7 @@ impl RootView {
         match event {
             InputEvent::Change(text) => {
                 if let Some(session_id) = &self.current_session_id {
-                    debug!("Current session: {} - saving draft", session_id);
+                    trace!("Current session: {} - saving draft", session_id);
                     // Save draft immediately for now (no debouncing for simplicity)
                     if let Some(gpui) = cx.try_global::<Gpui>() {
                         gpui.save_draft_for_session(session_id, text);
@@ -494,17 +494,24 @@ impl Render for RootView {
 
                                         div()
                                             .flex_1()
-                                            .border_1()
-                                            .border_color(if is_focused {
-                                                cx.theme().primary // Blue border when focused
-                                            } else if cx.theme().is_dark() {
-                                                rgba(0x555555FF).into() // Brighter border for dark theme
+                                            .border(if is_focused {
+                                                px(2.)
                                             } else {
-                                                rgba(0x999999FF).into() // Darker border for light theme
+                                                px(1.)
+                                            })
+                                            .p(if is_focused {
+                                                px(0.)
+                                            } else {
+                                                px(1.)
+                                            })
+                                            .border_color(if is_focused {
+                                                cx.theme().primary
+                                            } else {
+                                                cx.theme().sidebar_border
                                             })
                                             .rounded_md()
                                             .track_focus(&text_input_handle)
-                                            .child(TextInput::new(&self.text_input))
+                                            .child(TextInput::new(&self.text_input).appearance(false))
                                     })
                                     .children({
                                         // Get current session activity state from global Gpui

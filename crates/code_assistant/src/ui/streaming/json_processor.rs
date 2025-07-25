@@ -184,6 +184,12 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                 self.process_json_stream(content)
             }
 
+            StreamingChunk::StreamingComplete => {
+                // JSON processor doesn't need buffering like XML/Caret processors
+                // Just acknowledge the completion
+                Ok(())
+            }
+
             StreamingChunk::Text(text) => self.process_text_with_thinking_tags(text),
         }
     }

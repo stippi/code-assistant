@@ -74,7 +74,6 @@ pub enum UiEvent {
     /// Send user message to active session (triggers agent)
     SendUserMessage { message: String, session_id: String },
     /// Update metadata for a single session without refreshing the entire list
-    #[allow(dead_code)]
     UpdateSessionMetadata { metadata: ChatMetadata },
     /// Update activity state for a single session
     UpdateSessionActivityState {
@@ -84,6 +83,7 @@ pub enum UiEvent {
     /// Queue a user message while agent is running
     QueueUserMessage { message: String, session_id: String },
     /// Request to edit pending message (move back to input)
+    #[allow(dead_code)]
     RequestPendingMessageEdit { session_id: String },
     /// Update pending message display
     UpdatePendingMessage { message: Option<String> },

@@ -689,6 +689,9 @@ impl OpenAIClient {
             )?;
         }
 
+        // Send StreamingComplete to indicate streaming has finished
+        streaming_callback(&StreamingChunk::StreamingComplete)?;
+
         let mut content = Vec::new();
         if let Some(text) = accumulated_content {
             content.push(ContentBlock::Text { text });

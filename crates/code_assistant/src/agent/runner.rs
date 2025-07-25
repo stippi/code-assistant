@@ -448,10 +448,20 @@ impl Agent {
                 let error_text = Self::format_error_for_user(&e);
 
                 let error_msg = match self.tool_syntax {
-                    ToolSyntax::Xml => {
-                        // For XML mode, create structured tool-result message like regular tool results
+                    ToolSyntax::Native => {
+                        // For native mode, keep text message since parsing errors occur before
+                        // we have any LLM-provided tool IDs to reference
+                        Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Text(error_text),
+                            request_id: None,
+                            usage: None,
+                        }
+                    }
+                    _ => {
+                        // For custom tool-syntax modes, create structured tool-result message like regular tool results
                         // Generate normal tool ID for consistency with UI expectations
-                        let tool_id = format!("tool-{}-0", request_counter);
+                        let tool_id = format!("tool-{}-1", request_counter);
 
                         // Create and store a ToolExecution for the parse error
                         let tool_execution =
@@ -465,25 +475,6 @@ impl Agent {
                                 content: error_text,
                                 is_error: Some(true),
                             }]),
-                            request_id: None,
-                            usage: None,
-                        }
-                    }
-                    ToolSyntax::Native => {
-                        // For native mode, keep text message since parsing errors occur before
-                        // we have any LLM-provided tool IDs to reference
-                        Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Text(error_text),
-                            request_id: None,
-                            usage: None,
-                        }
-                    }
-                    ToolSyntax::Caret => {
-                        // For caret mode, use text message like native mode
-                        Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Text(error_text),
                             request_id: None,
                             usage: None,
                         }
