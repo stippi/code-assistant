@@ -4,11 +4,11 @@ use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
 use crate::ui::ui_events::UiEvent;
 use gpui::{
-    div, prelude::*, px, AppContext, Context, Entity, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent, SharedString, Styled, Window,
+    div, prelude::*, px, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement,
+    MouseButton, MouseUpEvent, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::scroll::ScrollbarAxis;
-use gpui_component::{ActiveTheme, Icon, StyledExt};
+use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, StyledExt};
 use std::time::SystemTime;
 use tracing::{debug, trace, warn};
 
@@ -228,16 +228,35 @@ impl Render for ChatListItem {
                             // Tool syntax icon - show which syntax this session uses
                             let tool_icon_path = match self.metadata.tool_syntax {
                                 crate::types::ToolSyntax::Native => "icons/braces.svg",
-                                crate::types::ToolSyntax::Caret => "icons/chevron_down.svg",
+                                crate::types::ToolSyntax::Caret => "icons/chevron_up.svg",
                                 crate::types::ToolSyntax::Xml => "icons/code-xml.svg",
+                            };
+
+                            let tooltip_text = match self.metadata.tool_syntax {
+                                crate::types::ToolSyntax::Native => {
+                                    "Native tool use via provider API"
+                                }
+                                crate::types::ToolSyntax::Caret => {
+                                    "Custom tool use blocks with triple caret fence"
+                                }
+                                crate::types::ToolSyntax::Xml => {
+                                    "Custom tool use blocks with pseudo-XML tags"
+                                }
                             };
 
                             token_elements.push(
                                 div()
+                                    .id(SharedString::from(format!(
+                                        "tool-syntax-{}",
+                                        self.metadata.id
+                                    )))
                                     .flex()
                                     .items_center()
                                     .gap_1()
                                     .text_color(cx.theme().muted_foreground)
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(tooltip_text).build(window, cx)
+                                    })
                                     .child(
                                         Icon::default()
                                             .path(SharedString::from(tool_icon_path))
