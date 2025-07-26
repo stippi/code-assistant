@@ -225,6 +225,27 @@ impl Render for ChatListItem {
                         |d| {
                             let mut token_elements = Vec::new();
 
+                            // Tool syntax icon - show which syntax this session uses
+                            let tool_icon_path = match self.metadata.tool_syntax {
+                                crate::types::ToolSyntax::Native => "icons/braces.svg",
+                                crate::types::ToolSyntax::Caret => "icons/chevron_down.svg",
+                                crate::types::ToolSyntax::Xml => "icons/code-xml.svg",
+                            };
+
+                            token_elements.push(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from(tool_icon_path))
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .into_any(),
+                            );
+
                             // Input tokens from last request with arrow_up icon
                             if self.metadata.last_usage.input_tokens > 0 {
                                 token_elements.push(
@@ -242,7 +263,8 @@ impl Render for ChatListItem {
                                             "{}",
                                             self.metadata.last_usage.input_tokens
                                                 + self.metadata.last_usage.cache_read_input_tokens
-                                        ))),
+                                        )))
+                                        .into_any(),
                                 );
                             }
 
@@ -262,7 +284,8 @@ impl Render for ChatListItem {
                                         .child(SharedString::from(format!(
                                             "{}",
                                             self.metadata.last_usage.cache_read_input_tokens
-                                        ))),
+                                        )))
+                                        .into_any(),
                                 );
                             }
 

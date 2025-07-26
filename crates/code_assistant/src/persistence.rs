@@ -65,6 +65,13 @@ pub struct ChatMetadata {
     /// Token limit from rate limiting headers (if available)
     #[serde(default)]
     pub tokens_limit: Option<u32>,
+    /// Tool syntax used for this session
+    #[serde(default = "default_tool_syntax")]
+    pub tool_syntax: ToolSyntax,
+}
+
+fn default_tool_syntax() -> ToolSyntax {
+    ToolSyntax::Native
 }
 
 #[derive(Clone)]
@@ -127,6 +134,7 @@ impl FileSessionPersistence {
             total_usage,
             last_usage,
             tokens_limit,
+            tool_syntax: session.tool_syntax,
         };
 
         if let Some(existing) = metadata_list.iter_mut().find(|m| m.id == session.id) {

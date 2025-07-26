@@ -161,6 +161,7 @@ impl Agent {
                 total_usage,
                 last_usage,
                 tokens_limit,
+                tool_syntax: self.tool_syntax,
             }
         })
     }
