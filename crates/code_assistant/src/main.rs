@@ -91,8 +91,8 @@ struct Args {
     #[arg(long, default_value = "8192")]
     num_ctx: Option<usize>,
 
-    /// Tool invocation syntax ('native' = tools via API, 'xml' = custom system message)
-    #[arg(long, default_value = "xml")]
+    /// Tool invocation syntax ('native' = tools via API, 'xml' and 'caret' = custom system message)
+    #[arg(long, default_value = "native")]
     tool_syntax: Option<ToolSyntax>,
 
     /// Record API responses to a file (only supported for Anthropic provider currently)
@@ -601,7 +601,7 @@ async fn run_agent(args: Args) -> Result<()> {
     let base_url = args.base_url.clone();
     let aicore_config = args.aicore_config.clone();
     let num_ctx = args.num_ctx.unwrap_or(8192);
-    let tool_syntax = args.tool_syntax.unwrap_or(ToolSyntax::Xml);
+    let tool_syntax = args.tool_syntax.unwrap_or(ToolSyntax::Native);
     let use_gui = args.ui;
 
     // Setup logging based on verbose flag

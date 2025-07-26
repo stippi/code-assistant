@@ -808,8 +808,9 @@ fn test_caret_tool_blocking_with_non_whitespace() {
     let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
 
-    // Process a complete tool block followed by non-whitespace text
-    let input = "^^^read_files\nproject: test\n^^^";
+    // Process a complete write tool block followed by non-whitespace text
+    // Write tools should block further content according to SmartToolFilter
+    let input = "^^^write_file\nproject: test\npath: test.txt\ncontent: hello\n^^^";
     let result = processor.process(&StreamingChunk::Text(input.to_string()));
     assert!(result.is_ok(), "Initial tool processing should succeed");
 
@@ -835,8 +836,155 @@ fn test_caret_tool_blocking_with_non_whitespace() {
 
     let fragments = test_ui.get_fragments();
 
-    // Should have exactly 3 fragments: ToolName, ToolParameter, ToolEnd
+    // Should have fragments for the write_file tool: ToolName, 3 ToolParameters (project, path, content), ToolEnd
     // The additional text should NOT have been processed
+    assert_eq!(fragments.len(), 5);
+    assert!(matches!(fragments[0], DisplayFragment::ToolName { .. }));
+    assert!(matches!(
+        fragments[1],
+        DisplayFragment::ToolParameter { .. }
+    ));
+    assert!(matches!(
+        fragments[2],
+        DisplayFragment::ToolParameter { .. }
+    ));
+    assert!(matches!(
+        fragments[3],
+        DisplayFragment::ToolParameter { .. }
+    ));
+    assert!(matches!(fragments[4], DisplayFragment::ToolEnd { .. }));
+}
+
+#[test]
+fn test_smart_filter_allows_content_after_read_tools() {
+    let test_ui = TestUI::new();
+    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+
+    // Process a complete read tool block followed by text
+    // Read tools should allow content after them according to SmartToolFilter
+    let input = "^^^read_files\nproject: test\n^^^";
+    let result = processor.process(&StreamingChunk::Text(input.to_string()));
+    assert!(result.is_ok(), "Initial tool processing should succeed");
+
+    // Now try to process text after the complete read tool block
+    let additional_text = "This should be allowed after read tools";
+    let result = processor.process(&StreamingChunk::Text(additional_text.to_string()));
+
+    // Should succeed - content is allowed after read tools
+    assert!(
+        result.is_ok(),
+        "Should allow content after read tools with SmartToolFilter"
+    );
+
+    // Send StreamingComplete to flush any buffered content
+    let result = processor.process(&StreamingChunk::StreamingComplete);
+    assert!(result.is_ok(), "StreamingComplete should succeed");
+
+    let fragments = test_ui.get_fragments();
+
+    // Should have 4 fragments: ToolName, ToolParameter, ToolEnd, PlainText
+    assert_eq!(fragments.len(), 4);
+    assert!(matches!(fragments[0], DisplayFragment::ToolName { .. }));
+    assert!(matches!(
+        fragments[1],
+        DisplayFragment::ToolParameter { .. }
+    ));
+    assert!(matches!(fragments[2], DisplayFragment::ToolEnd { .. }));
+
+    // The additional text should be buffered and emitted as PlainText
+    if let DisplayFragment::PlainText(text) = &fragments[3] {
+        assert!(text.contains("This should be allowed after read tools"));
+    } else {
+        panic!("Expected PlainText fragment for additional content");
+    }
+}
+
+#[test]
+fn test_smart_filter_allows_chaining_read_tools() {
+    let test_ui = TestUI::new();
+    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+
+    // Process first read tool
+    let input1 = "^^^read_files\nproject: test\n^^^";
+    let result = processor.process(&StreamingChunk::Text(input1.to_string()));
+    assert!(result.is_ok(), "First read tool should succeed");
+
+    // Process text between tools
+    let between_text = "Now let me list the files:";
+    let result = processor.process(&StreamingChunk::Text(between_text.to_string()));
+    assert!(result.is_ok(), "Text between read tools should be allowed");
+
+    // Process second read tool
+    let input2 = "^^^list_files\nproject: test\n^^^";
+    let result = processor.process(&StreamingChunk::Text(input2.to_string()));
+    assert!(result.is_ok(), "Second read tool should be allowed");
+
+    // Send StreamingComplete to flush any buffered content
+    let result = processor.process(&StreamingChunk::StreamingComplete);
+    assert!(result.is_ok(), "StreamingComplete should succeed");
+
+    let fragments = test_ui.get_fragments();
+
+    // Should have fragments for both tools plus the text between
+    // First tool: ToolName, ToolParameter, ToolEnd
+    // Text: PlainText
+    // Second tool: ToolName, ToolParameter, ToolEnd
+    assert_eq!(fragments.len(), 7);
+
+    // Verify the sequence
+    assert!(matches!(fragments[0], DisplayFragment::ToolName { .. }));
+    assert!(matches!(
+        fragments[1],
+        DisplayFragment::ToolParameter { .. }
+    ));
+    assert!(matches!(fragments[2], DisplayFragment::ToolEnd { .. }));
+    assert!(matches!(fragments[3], DisplayFragment::PlainText(_)));
+    assert!(matches!(fragments[4], DisplayFragment::ToolName { .. }));
+    assert!(matches!(
+        fragments[5],
+        DisplayFragment::ToolParameter { .. }
+    ));
+    assert!(matches!(fragments[6], DisplayFragment::ToolEnd { .. }));
+}
+
+#[test]
+fn test_smart_filter_blocks_write_tool_after_read_tool() {
+    let test_ui = TestUI::new();
+    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let mut processor = CaretStreamProcessor::new(ui_arc, 42);
+
+    // Process first read tool
+    let input1 = "^^^read_files\nproject: test\n^^^";
+    let result = processor.process(&StreamingChunk::Text(input1.to_string()));
+    assert!(result.is_ok(), "First read tool should succeed");
+
+    // Process text between tools
+    let between_text = "Now let me write to a file:";
+    let result = processor.process(&StreamingChunk::Text(between_text.to_string()));
+    assert!(result.is_ok(), "Text between tools should be buffered");
+
+    // Try to process a write tool - this should be blocked
+    let write_tool = "^^^write_file\nproject: test\npath: output.txt\ncontent: test\n^^^";
+    let result = processor.process(&StreamingChunk::Text(write_tool.to_string()));
+
+    // Should get the blocking error
+    assert!(
+        result.is_err(),
+        "Write tool after read tool should be blocked by SmartToolFilter"
+    );
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("Tool limit reached"),
+        "Error should mention tool limit"
+    );
+
+    let fragments = test_ui.get_fragments();
+
+    // Should only have fragments for the first read tool
+    // The buffered text and write tool should have been discarded
     assert_eq!(fragments.len(), 3);
     assert!(matches!(fragments[0], DisplayFragment::ToolName { .. }));
     assert!(matches!(
