@@ -171,7 +171,10 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                             if !self.state.tool_name.is_empty() {
                                 // Check if tool is hidden and update state
                                 self.state.current_tool_hidden = ToolRegistry::global()
-                                    .is_tool_hidden(&self.state.tool_name, crate::tools::core::ToolScope::Agent);
+                                    .is_tool_hidden(
+                                        &self.state.tool_name,
+                                        crate::tools::core::ToolScope::Agent,
+                                    );
 
                                 // Emit fragment (will be filtered if tool is hidden)
                                 self.emit_fragment(DisplayFragment::ToolName {
@@ -241,8 +244,8 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                         }
                         ContentBlock::ToolUse { id, name, input } => {
                             // Check if tool is hidden
-                            let tool_hidden = ToolRegistry::global()
-                                .is_tool_hidden(name, ToolScope::Agent);
+                            let tool_hidden =
+                                ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
 
                             // Only add fragments if tool is not hidden
                             if !tool_hidden {

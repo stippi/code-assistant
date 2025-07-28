@@ -109,8 +109,8 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                 if let (Some(name), Some(id)) = (tool_name, tool_id) {
                     if !name.is_empty() && !id.is_empty() {
                         // Check if tool is hidden and update state
-                        self.state.current_tool_hidden = ToolRegistry::global()
-                            .is_tool_hidden(name, ToolScope::Agent);
+                        self.state.current_tool_hidden =
+                            ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
 
                         self.emit_fragment(DisplayFragment::ToolName {
                             name: name.clone(),
@@ -190,8 +190,8 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                             }
                             ContentBlock::ToolUse { id, name, input } => {
                                 // Check if tool is hidden
-                                let tool_hidden = ToolRegistry::global()
-                                    .is_tool_hidden(name, ToolScope::Agent);
+                                let tool_hidden =
+                                    ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
 
                                 // Only add fragments if tool is not hidden
                                 if !tool_hidden {
@@ -214,9 +214,9 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                                                 name: key.clone(),
                                                 value: value_str,
                                                 tool_id: id.clone(),
-                                        });
+                                            });
+                                        }
                                     }
-                                }
 
                                     fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
                                 }

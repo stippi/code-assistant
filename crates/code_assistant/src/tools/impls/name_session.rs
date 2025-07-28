@@ -92,8 +92,8 @@ impl Tool for NameSessionTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::mocks::{MockCommandExecutor, MockProjectManager};
     use crate::tools::core::ToolContext;
-    use crate::tests::mocks::{MockProjectManager, MockCommandExecutor};
 
     #[tokio::test]
     async fn test_name_session_basic() {
@@ -146,9 +146,7 @@ mod tests {
         };
 
         let long_title = "A".repeat(150);
-        let input = NameSessionInput {
-            title: long_title,
-        };
+        let input = NameSessionInput { title: long_title };
 
         let result = tool.execute(&mut context, input).await.unwrap();
         assert!(result.title.len() <= 100);

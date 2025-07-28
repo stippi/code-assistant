@@ -71,8 +71,8 @@ impl ToolRegistry {
     fn register_default_tools(&mut self) {
         // Import all tools
         use crate::tools::impls::{
-            DeleteFilesTool, ExecuteCommandTool, ListFilesTool, ListProjectsTool,
-            NameSessionTool, PerplexityAskTool, ReadFilesTool, ReplaceInFileTool, SearchFilesTool, WebFetchTool,
+            DeleteFilesTool, ExecuteCommandTool, ListFilesTool, ListProjectsTool, NameSessionTool,
+            PerplexityAskTool, ReadFilesTool, ReplaceInFileTool, SearchFilesTool, WebFetchTool,
             WebSearchTool, WriteFileTool,
         };
 

@@ -160,8 +160,8 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                             }
                             llm::ContentBlock::ToolUse { id, name, input } => {
                                 // Check if tool is hidden
-                                let tool_hidden = ToolRegistry::global()
-                                    .is_tool_hidden(name, ToolScope::Agent);
+                                let tool_hidden =
+                                    ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
 
                                 // Only add fragments if tool is not hidden
                                 if !tool_hidden {
@@ -184,9 +184,9 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                                                 name: key.clone(),
                                                 value: value_str,
                                                 tool_id: id.clone(),
-                                        });
+                                            });
+                                        }
                                     }
-                                }
 
                                     fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
                                 }
@@ -639,8 +639,8 @@ impl CaretStreamProcessor {
             self.current_tool_name = tool_name.to_string();
 
             // Check if tool is hidden and update state
-            self.current_tool_hidden = ToolRegistry::global()
-                .is_tool_hidden(tool_name, ToolScope::Agent);
+            self.current_tool_hidden =
+                ToolRegistry::global().is_tool_hidden(tool_name, ToolScope::Agent);
 
             let tool_id = self.current_tool_id.clone();
             self.send_tool_start(tool_name, &tool_id)?;
