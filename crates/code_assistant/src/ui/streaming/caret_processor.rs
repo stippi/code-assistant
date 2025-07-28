@@ -1,4 +1,5 @@
 //! Caret-style tool invocation processor for streaming responses
+use crate::tools::core::{ToolRegistry, ToolScope};
 use crate::tools::tool_use_filter::{SmartToolFilter, ToolUseFilter};
 use crate::ui::streaming::{DisplayFragment, StreamProcessorTrait};
 use crate::ui::{UIError, UserInterface};
@@ -63,6 +64,7 @@ pub struct CaretStreamProcessor {
     multiline_end_regex: Regex,
     current_tool_id: String,
     current_tool_name: String,
+    current_tool_hidden: bool,
     filter: Box<dyn ToolUseFilter>,
     streaming_state: StreamingState,
 }
@@ -80,6 +82,7 @@ impl StreamProcessorTrait for CaretStreamProcessor {
             multiline_end_regex: Regex::new(r"^---\s+([a-zA-Z0-9_]+)$").unwrap(),
             current_tool_id: String::new(),
             current_tool_name: String::new(),
+            current_tool_hidden: false,
             filter: Box::new(SmartToolFilter::new()),
             streaming_state: StreamingState::PreFirstTool,
         }
@@ -156,30 +159,37 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                                 );
                             }
                             llm::ContentBlock::ToolUse { id, name, input } => {
-                                // Convert JSON ToolUse to caret-style fragments
-                                fragments.push(DisplayFragment::ToolName {
-                                    name: name.clone(),
-                                    id: id.clone(),
-                                });
+                                // Check if tool is hidden
+                                let tool_hidden = ToolRegistry::global()
+                                    .is_tool_hidden(name, ToolScope::Agent);
 
-                                // Parse JSON input into caret-style tool parameters
-                                if let Some(obj) = input.as_object() {
-                                    for (key, value) in obj {
-                                        let value_str = if value.is_string() {
-                                            value.as_str().unwrap_or("").to_string()
-                                        } else {
-                                            value.to_string()
-                                        };
+                                // Only add fragments if tool is not hidden
+                                if !tool_hidden {
+                                    // Convert JSON ToolUse to caret-style fragments
+                                    fragments.push(DisplayFragment::ToolName {
+                                        name: name.clone(),
+                                        id: id.clone(),
+                                    });
 
-                                        fragments.push(DisplayFragment::ToolParameter {
-                                            name: key.clone(),
-                                            value: value_str,
-                                            tool_id: id.clone(),
+                                    // Parse JSON input into caret-style tool parameters
+                                    if let Some(obj) = input.as_object() {
+                                        for (key, value) in obj {
+                                            let value_str = if value.is_string() {
+                                                value.as_str().unwrap_or("").to_string()
+                                            } else {
+                                                value.to_string()
+                                            };
+
+                                            fragments.push(DisplayFragment::ToolParameter {
+                                                name: key.clone(),
+                                                value: value_str,
+                                                tool_id: id.clone(),
                                         });
                                     }
                                 }
 
-                                fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
+                                    fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
+                                }
                             }
                             llm::ContentBlock::ToolResult { .. } => {
                                 // Tool results are typically not part of assistant messages
@@ -627,6 +637,11 @@ impl CaretStreamProcessor {
             self.tool_counter += 1; // Increment first, so first tool gets counter 1
             self.current_tool_id = format!("tool-{}-{}", self.request_id, self.tool_counter);
             self.current_tool_name = tool_name.to_string();
+
+            // Check if tool is hidden and update state
+            self.current_tool_hidden = ToolRegistry::global()
+                .is_tool_hidden(tool_name, ToolScope::Agent);
+
             let tool_id = self.current_tool_id.clone();
             self.send_tool_start(tool_name, &tool_id)?;
             self.state = ParserState::InsideTool;
@@ -708,6 +723,11 @@ impl CaretStreamProcessor {
 
     /// Emit fragments through this central function that handles filtering and buffering
     fn emit_fragment(&mut self, fragment: DisplayFragment) -> Result<(), UIError> {
+        // Filter out fragments for hidden tools
+        if self.current_tool_hidden {
+            return Ok(());
+        }
+
         match &self.streaming_state {
             StreamingState::Blocked => {
                 // Already blocked, check if this is just whitespace and ignore silently

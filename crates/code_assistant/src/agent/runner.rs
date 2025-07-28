@@ -731,8 +731,14 @@ impl Agent {
     fn inject_naming_reminder_if_needed(&self, mut messages: Vec<Message>) -> Vec<Message> {
         // Only inject if enabled, session is not named yet, and we have messages
         if !self.enable_naming_reminders || self.session_named || messages.is_empty() {
+            if self.session_named {
+                warn!("🎯 Session already named, skipping reminder injection");
+            }
             return messages;
         }
+
+        warn!("🎯 Injecting naming reminder (session_named = {}, enable_naming_reminders = {})",
+              self.session_named, self.enable_naming_reminders);
 
         // Find the last user message and add system reminder
         if let Some(last_msg) = messages.last_mut() {
@@ -781,18 +787,28 @@ impl Agent {
         };
 
         // Create the LLM request with appropriate tools
+        let tools = match self.tool_syntax {
+            ToolSyntax::Native => {
+                let tool_definitions = ToolRegistry::global().get_tool_definitions_for_scope(ToolScope::Agent);
+                let tool_names: Vec<&str> = tool_definitions.iter().map(|t| t.name.as_str()).collect();
+                warn!("🎯 Available tools for LLM: {:?}", tool_names);
+
+                if tool_names.contains(&"name_session") {
+                    warn!("🎯 name_session tool IS available to LLM");
+                } else {
+                    warn!("🎯 name_session tool is NOT available to LLM");
+                }
+
+                Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(tool_definitions))
+            }
+            ToolSyntax::Xml => None,
+            ToolSyntax::Caret => None,
+        };
+
         let request = LLMRequest {
             messages: converted_messages,
             system_prompt: self.get_system_prompt(),
-            tools: match self.tool_syntax {
-                ToolSyntax::Native => {
-                    Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
-                        ToolRegistry::global().get_tool_definitions_for_scope(ToolScope::Agent),
-                    ))
-                }
-                ToolSyntax::Xml => None,
-                ToolSyntax::Caret => None,
-            },
+            tools,
             stop_sequences: None,
         };
 
@@ -993,11 +1009,17 @@ impl Agent {
 
         // Handle name_session tool specially at agent level
         if tool_request.name == "name_session" {
+            warn!("🎯 name_session tool execution started");
+            warn!("🎯 Tool request ID: {}", tool_request.id);
+            warn!("🎯 Tool input: {:?}", tool_request.input);
+
             // Extract title from input
             if let Some(title) = tool_request.input["title"].as_str() {
                 let title = title.trim();
+                warn!("🎯 Extracted title: '{}'", title);
+
                 if !title.is_empty() {
-                    debug!("Session named: {}", title);
+                    warn!("🎯 Setting session_named = true");
                     self.session_named = true;
 
                     // Create a successful tool execution record
@@ -1008,12 +1030,19 @@ impl Agent {
                         }),
                     };
                     self.tool_executions.push(tool_execution);
+                    warn!("🎯 name_session tool execution completed successfully");
 
                     return Ok(true); // Success, but don't show in UI
+                } else {
+                    warn!("🎯 ERROR: Title is empty after trimming");
                 }
+            } else {
+                warn!("🎯 ERROR: No 'title' field found in input or it's not a string");
+                warn!("🎯 Available input keys: {:?}", tool_request.input.as_object().map(|o| o.keys().collect::<Vec<_>>()));
             }
 
             // If we get here, the input was invalid
+            warn!("🎯 name_session tool execution FAILED - invalid input");
             return Err(anyhow::anyhow!("Invalid session title provided"));
         }
 

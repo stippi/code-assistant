@@ -39,6 +39,15 @@ impl ToolRegistry {
         self.tools.get(name)
     }
 
+    /// Check if a tool is hidden by consulting the tool definitions
+    pub fn is_tool_hidden(&self, tool_name: &str, scope: ToolScope) -> bool {
+        self.get_tool_definitions_for_scope(scope)
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .map(|tool| tool.hidden)
+            .unwrap_or(false)
+    }
+
     /// Get tool definitions for a specific mode
     pub fn get_tool_definitions_for_scope(&self, mode: ToolScope) -> Vec<AnnotatedToolDefinition> {
         self.tools

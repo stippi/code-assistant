@@ -156,23 +156,6 @@ impl UserInterface for TerminalUI {
     }
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
-        // Filter out hidden tools
-        match fragment {
-            DisplayFragment::ToolName { name, .. } if name == "name_session" => {
-                // Skip displaying hidden tools
-                return Ok(());
-            }
-            DisplayFragment::ToolParameter { tool_id, .. } if tool_id.contains("name_session") => {
-                // Skip displaying parameters for hidden tools
-                return Ok(());
-            }
-            DisplayFragment::ToolEnd { id } if id.contains("name_session") => {
-                // Skip displaying end markers for hidden tools
-                return Ok(());
-            }
-            _ => {}
-        }
-
         // Get the appropriate writer (stdout or test writer)
         let mut stdout = io::stdout().lock();
         let writer: &mut dyn Write = if let Some(w) = &self.writer {
