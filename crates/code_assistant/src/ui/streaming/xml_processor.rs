@@ -1,4 +1,5 @@
 use super::{DisplayFragment, StreamProcessorTrait};
+use crate::tools::core::{ToolRegistry, ToolScope};
 use crate::tools::tool_use_filter::{SmartToolFilter, ToolUseFilter};
 use crate::ui::{UIError, UserInterface};
 use anyhow::Result;
@@ -28,6 +29,8 @@ struct ProcessorState {
     at_block_start: bool,
     // Counter for tools processed in this request
     tool_counter: u64,
+    // Track if the current tool is hidden
+    current_tool_hidden: bool,
 }
 
 /// Streaming state for managing tool filtering and buffering
@@ -105,6 +108,10 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                 // If this is the first part with tool info, send a ToolName fragment
                 if let (Some(name), Some(id)) = (tool_name, tool_id) {
                     if !name.is_empty() && !id.is_empty() {
+                        // Check if tool is hidden and update state
+                        self.state.current_tool_hidden =
+                            ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
+
                         self.emit_fragment(DisplayFragment::ToolName {
                             name: name.clone(),
                             id: id.clone(),
@@ -182,30 +189,37 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                                 );
                             }
                             ContentBlock::ToolUse { id, name, input } => {
-                                // Convert JSON ToolUse to XML-style fragments
-                                fragments.push(DisplayFragment::ToolName {
-                                    name: name.clone(),
-                                    id: id.clone(),
-                                });
+                                // Check if tool is hidden
+                                let tool_hidden =
+                                    ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
 
-                                // Parse JSON input into XML-style tool parameters
-                                if let Some(obj) = input.as_object() {
-                                    for (key, value) in obj {
-                                        let value_str = if value.is_string() {
-                                            value.as_str().unwrap_or("").to_string()
-                                        } else {
-                                            value.to_string()
-                                        };
+                                // Only add fragments if tool is not hidden
+                                if !tool_hidden {
+                                    // Convert JSON ToolUse to XML-style fragments
+                                    fragments.push(DisplayFragment::ToolName {
+                                        name: name.clone(),
+                                        id: id.clone(),
+                                    });
 
-                                        fragments.push(DisplayFragment::ToolParameter {
-                                            name: key.clone(),
-                                            value: value_str,
-                                            tool_id: id.clone(),
-                                        });
+                                    // Parse JSON input into XML-style tool parameters
+                                    if let Some(obj) = input.as_object() {
+                                        for (key, value) in obj {
+                                            let value_str = if value.is_string() {
+                                                value.as_str().unwrap_or("").to_string()
+                                            } else {
+                                                value.to_string()
+                                            };
+
+                                            fragments.push(DisplayFragment::ToolParameter {
+                                                name: key.clone(),
+                                                value: value_str,
+                                                tool_id: id.clone(),
+                                            });
+                                        }
                                     }
-                                }
 
-                                fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
+                                    fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
+                                }
                             }
                             ContentBlock::ToolResult { .. } => {
                                 // Tool results are typically not part of assistant messages
@@ -361,6 +375,10 @@ impl XmlStreamProcessor {
                             self.state.tool_counter += 1;
                             self.state.tool_id =
                                 format!("tool-{}-{}", self.request_id, self.state.tool_counter);
+
+                            // Check if tool is hidden and update state
+                            self.state.current_tool_hidden = ToolRegistry::global()
+                                .is_tool_hidden(&self.state.tool_name, ToolScope::Agent);
 
                             // Send fragment with tool name
                             self.emit_fragment(DisplayFragment::ToolName {
@@ -536,6 +554,21 @@ impl XmlStreamProcessor {
 
     /// Emit fragments through this central function that handles filtering and buffering
     fn emit_fragment(&mut self, fragment: DisplayFragment) -> Result<(), UIError> {
+        // Filter out tool-related fragments for hidden tools
+        if self.state.current_tool_hidden {
+            match &fragment {
+                DisplayFragment::ToolName { .. }
+                | DisplayFragment::ToolParameter { .. }
+                | DisplayFragment::ToolEnd { .. } => {
+                    // Skip tool-related fragments for hidden tools
+                    return Ok(());
+                }
+                _ => {
+                    // Allow non-tool fragments even when current tool is hidden
+                }
+            }
+        }
+
         match &self.streaming_state {
             StreamingState::Blocked => {
                 // Already blocked, check if this is just whitespace and ignore silently

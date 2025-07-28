@@ -52,6 +52,10 @@ pub struct Agent {
     next_request_id: u64,
     // Session ID for this agent instance
     session_id: Option<String>,
+    // The actual session name (empty if not named yet)
+    session_name: String,
+    // Whether to inject naming reminders (disabled for tests)
+    enable_naming_reminders: bool,
     // Shared pending message with SessionInstance
     pending_message_ref: Option<Arc<Mutex<Option<String>>>>,
 }
@@ -98,6 +102,8 @@ impl Agent {
             cached_system_message: OnceLock::new(),
             next_request_id: 1, // Start from 1
             session_id: None,
+            session_name: String::new(),
+            enable_naming_reminders: true, // Enabled by default
             pending_message_ref: None,
         }
     }
@@ -105,6 +111,12 @@ impl Agent {
     /// Set the shared pending message reference from SessionInstance
     pub fn set_pending_message_ref(&mut self, pending_ref: Arc<Mutex<Option<String>>>) {
         self.pending_message_ref = Some(pending_ref);
+    }
+
+    /// Disable naming reminders (used for tests)
+    #[cfg(test)]
+    pub fn disable_naming_reminders(&mut self) {
+        self.enable_naming_reminders = false;
     }
 
     /// Get and clear the pending message from shared state
@@ -154,8 +166,8 @@ impl Agent {
 
             ChatMetadata {
                 id: session_id.clone(),
-                name: format!("Session {}", &session_id[..8]), // Default name, will be overridden by persistence
-                created_at: SystemTime::now(),                 // Will be overridden by persistence
+                name: self.session_name.clone(), // Empty string if not named yet
+                created_at: SystemTime::now(),   // Will be overridden by persistence
                 updated_at: SystemTime::now(),
                 message_count: self.message_history.len(),
                 total_usage,
@@ -354,6 +366,7 @@ impl Agent {
         self.working_memory = session_state.working_memory;
         self.init_path = session_state.init_path;
         self.initial_project = session_state.initial_project;
+        self.session_name = session_state.name;
 
         // Restore next_request_id from session, or calculate from existing messages for backward compatibility
         self.next_request_id = session_state.next_request_id.unwrap_or_else(|| {
@@ -710,6 +723,36 @@ impl Agent {
             .collect()
     }
 
+    /// Inject system reminder for session naming if needed
+    fn inject_naming_reminder_if_needed(&self, mut messages: Vec<Message>) -> Vec<Message> {
+        // Only inject if enabled, session is not named yet, and we have messages
+        if !self.enable_naming_reminders || !self.session_name.is_empty() || messages.is_empty() {
+            return messages;
+        }
+
+        // Find the last user message and add system reminder
+        if let Some(last_msg) = messages.last_mut() {
+            if matches!(last_msg.role, MessageRole::User) {
+                let reminder_text = "\n\n<system-reminder>\nThis is an automatic reminder from the system. Please use the `name_session` tool first, provided the user has already given you a clear task or question. You can chain additional tools after using the `name_session` tool.\n</system-reminder>";
+
+                trace!("Injecting session naming reminder");
+
+                match &mut last_msg.content {
+                    MessageContent::Text(text) => {
+                        text.push_str(reminder_text);
+                    }
+                    MessageContent::Structured(blocks) => {
+                        blocks.push(ContentBlock::Text {
+                            text: reminder_text.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        messages
+    }
+
     /// Gets the next assistant message from the LLM provider.
     async fn get_next_assistant_message(
         &mut self,
@@ -725,14 +768,16 @@ impl Agent {
             .await?;
         debug!("Starting LLM request with ID: {}", request_id);
 
+        // Inject naming reminder if session is not named yet
+        let messages_with_reminder = self.inject_naming_reminder_if_needed(messages);
+
         // Convert messages based on tool syntax
         // Native mode keeps ToolUse blocks, all other syntaxes convert to text
         let converted_messages = match self.tool_syntax {
-            ToolSyntax::Native => messages, // No conversion needed
-            _ => self.convert_tool_results_to_text(messages), // Convert ToolResults to Text
+            ToolSyntax::Native => messages_with_reminder, // No conversion needed
+            _ => self.convert_tool_results_to_text(messages_with_reminder), // Convert ToolResults to Text
         };
 
-        // Create the LLM request with appropriate tools
         let request = LLMRequest {
             messages: converted_messages,
             system_prompt: self.get_system_prompt(),
@@ -942,6 +987,35 @@ impl Agent {
             "Executing tool request: {} (id: {})",
             tool_request.name, tool_request.id
         );
+
+        // Handle name_session tool specially at agent level
+        if tool_request.name == "name_session" {
+            // Extract title from input
+            if let Some(title) = tool_request.input["title"].as_str() {
+                let title = title.trim();
+                if !title.is_empty() {
+                    trace!("Obtained session title from LLM: {}", title);
+                    self.session_name = title.to_string();
+
+                    // Create a successful tool execution record
+                    let tool_execution = ToolExecution {
+                        tool_request: tool_request.clone(),
+                        result: Box::new(crate::tools::impls::name_session::NameSessionOutput {
+                            title: title.to_string(),
+                        }),
+                    };
+                    self.tool_executions.push(tool_execution);
+                    return Ok(true); // Success, but don't show in UI
+                } else {
+                    warn!("Title for name_session is empty after trimming");
+                }
+            } else {
+                warn!("No 'title' field found in name_session input or it's not a string");
+            }
+
+            // If we get here, the input was invalid
+            return Err(anyhow::anyhow!("Invalid session title provided"));
+        }
 
         // Update status to Running before execution
         self.ui

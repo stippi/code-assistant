@@ -154,6 +154,7 @@ impl Tool for ListFilesTool {
                 "readOnlyHint": true
             })),
             supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            hidden: false,
         }
     }
 

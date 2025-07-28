@@ -20,4 +20,6 @@ pub struct ToolSpec {
     pub annotations: Option<serde_json::Value>,
     /// Which execution modes this tool supports
     pub supported_scopes: &'static [ToolScope],
+    /// Whether this tool should be hidden from UI display
+    pub hidden: bool,
 }

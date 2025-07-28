@@ -91,6 +91,7 @@ impl Tool for WebFetchTool {
                 "openWorldHint": true
             })),
             supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            hidden: false,
         }
     }
 

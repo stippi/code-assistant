@@ -95,7 +95,11 @@ impl Focusable for ChatListItem {
 impl Render for ChatListItem {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let session_id = self.metadata.id.clone();
-        let name = self.metadata.name.clone();
+        let name = if self.metadata.name.is_empty() {
+            "Unnamed chat".to_string()
+        } else {
+            self.metadata.name.clone()
+        };
         let formatted_date = Self::format_date(self.metadata.created_at);
 
         div()

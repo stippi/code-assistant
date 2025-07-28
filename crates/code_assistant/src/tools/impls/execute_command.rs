@@ -97,6 +97,7 @@ impl Tool for ExecuteCommandTool {
                 "idempotentHint": false
             })),
             supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            hidden: false,
         }
     }
 
