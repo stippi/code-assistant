@@ -154,67 +154,49 @@ async fn create_llm_client(
             let config_path =
                 aicore_config.unwrap_or_else(|| AiCoreConfig::get_default_config_path());
 
-            if config_path.exists() {
-                // Use new JSON config file
-                let aicore_config =
-                    AiCoreConfig::load_from_file(&config_path).with_context(|| {
-                        format!("Failed to load AI Core config from {:?}", config_path)
-                    })?;
+            let aicore_config = AiCoreConfig::load_from_file(&config_path)
+                .with_context(|| format!("Failed to load AI Core config from {:?}", config_path))?;
 
-                // Get matching deployment for given model ID
-                let model_name = model.unwrap_or_else(|| "claude-sonnet-4".to_string());
-                let deployment_uuid = aicore_config.get_deployment_for_model(&model_name)
-                    .ok_or_else(|| anyhow::anyhow!("No deployment found for model '{}' in config file. Available models: {:?}",
-                                                    model_name, aicore_config.models.keys().collect::<Vec<_>>()))?;
+            // Get matching deployment for given model ID
+            let model_name = model.unwrap_or_else(|| "claude-sonnet-4".to_string());
+            let deployment_uuid = aicore_config
+                .get_deployment_for_model(&model_name)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No deployment found for model '{}' in config file. Available models: {:?}",
+                        model_name,
+                        aicore_config.models.keys().collect::<Vec<_>>()
+                    )
+                })?;
 
-                // Convert AiCoreAuthConfig to DeploymentConfig for TokenManager
-                let deployment_config = DeploymentConfig {
-                    client_id: aicore_config.auth.client_id.clone(),
-                    client_secret: aicore_config.auth.client_secret.clone(),
-                    token_url: aicore_config.auth.token_url.clone(),
-                    api_base_url: aicore_config.auth.api_base_url.clone(),
-                };
+            // Convert AiCoreAuthConfig to DeploymentConfig for TokenManager
+            let deployment_config = DeploymentConfig {
+                client_id: aicore_config.auth.client_id.clone(),
+                client_secret: aicore_config.auth.client_secret.clone(),
+                token_url: aicore_config.auth.token_url.clone(),
+                api_base_url: aicore_config.auth.api_base_url.clone(),
+            };
 
-                let token_manager = TokenManager::new(&deployment_config)
-                    .await
-                    .context("Failed to initialize token manager")?;
+            let token_manager = TokenManager::new(&deployment_config)
+                .await
+                .context("Failed to initialize token manager")?;
 
-                // Extend API URL with deployment ID
-                let base_api_url = base_url.unwrap_or(aicore_config.auth.api_base_url.clone());
-                let api_url = format!(
-                    "{}/deployments/{}",
-                    base_api_url.trim_end_matches('/'),
-                    deployment_uuid
-                );
+            // Extend API URL with deployment ID
+            let base_api_url = base_url.unwrap_or(aicore_config.auth.api_base_url.clone());
+            let api_url = format!(
+                "{}/deployments/{}",
+                base_api_url.trim_end_matches('/'),
+                deployment_uuid
+            );
 
-                if let Some(path) = record_path {
-                    Ok(Box::new(AiCoreClient::new_with_recorder(
-                        token_manager,
-                        api_url,
-                        path,
-                    )))
-                } else {
-                    Ok(Box::new(AiCoreClient::new(token_manager, api_url)))
-                }
+            if let Some(path) = record_path {
+                Ok(Box::new(AiCoreClient::new_with_recorder(
+                    token_manager,
+                    api_url,
+                    path,
+                )))
             } else {
-                // Fallback to old keyring system
-                let config = DeploymentConfig::load()
-                    .context("Failed to load AiCore deployment configuration from keyring. Consider creating an AI Core config file at ~/.config/code-assistant/ai-core.json")?;
-                let token_manager = TokenManager::new(&config)
-                    .await
-                    .context("Failed to initialize token manager")?;
-
-                let base_url = base_url.unwrap_or_else(|| config.api_base_url.clone());
-
-                if let Some(path) = record_path {
-                    Ok(Box::new(AiCoreClient::new_with_recorder(
-                        token_manager,
-                        base_url,
-                        path,
-                    )))
-                } else {
-                    Ok(Box::new(AiCoreClient::new(token_manager, base_url)))
-                }
+                Ok(Box::new(AiCoreClient::new(token_manager, api_url)))
             }
         }
 
@@ -562,7 +544,39 @@ fn run_agent_gpui(
                         }
                     }
                 } else {
-                    info!("No existing sessions found - UI will start empty");
+                    info!("No existing sessions found - creating a new session automatically");
+
+                    // Create a new session automatically
+                    let new_session_id = {
+                        let mut manager = multi_session_manager.lock().unwrap();
+                        manager.create_session(None).unwrap_or_else(|e| {
+                            error!("Failed to create new session: {}", e);
+                            // Return a fallback session ID if creation fails
+                            "fallback".to_string()
+                        })
+                    };
+
+                    if new_session_id != "fallback" {
+                        debug!("Created new session: {}", new_session_id);
+
+                        // Connect to the newly created session
+                        let ui_events = {
+                            let mut manager = multi_session_manager.lock().unwrap();
+                            manager
+                                .set_active_session(new_session_id.clone())
+                                .await
+                                .unwrap_or_else(|e| {
+                                    error!("Failed to set active session: {}", e);
+                                    Vec::new()
+                                })
+                        };
+
+                        for event in ui_events {
+                            if let Err(e) = gui_for_thread.send_event(event).await {
+                                error!("Failed to send UI event: {}", e);
+                            }
+                        }
+                    }
                 }
             }
 
