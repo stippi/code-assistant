@@ -374,6 +374,7 @@ impl Gpui {
                         window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
                         titlebar: Some(gpui::TitlebarOptions {
                             title: Some(gpui::SharedString::from("Code Assistant")),
+                            #[cfg(target_os = "macos")]
                             appears_transparent: true,
                             traffic_light_position: Some(Point {
                                 x: px(16.),
@@ -952,14 +953,41 @@ impl Gpui {
             }
         }
 
-        // Save to disk (non-blocking)
+        // Save to disk (non-blocking) - but check in-memory cache first to avoid race conditions
         let draft_storage = self.draft_storage.clone();
-        let session_id = session_id.to_string();
-        let content = content.to_string();
+        let session_id_owned = session_id.to_string();
+        let content_owned = content.to_string();
+        let session_drafts = self.session_drafts.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = draft_storage.save_draft(&session_id, &content) {
-                warn!("Failed to save draft for session {}: {}", session_id, e);
+            // For empty content, always try to delete (idempotent)
+            if content_owned.is_empty() {
+                if let Err(e) = draft_storage.save_draft(&session_id_owned, &content_owned) {
+                    warn!(
+                        "Failed to delete draft for session {}: {}",
+                        session_id_owned, e
+                    );
+                }
+                return;
+            }
+
+            // For non-empty content, check cache right before disk write to prevent race conditions
+            let should_save = {
+                let drafts = session_drafts.lock().unwrap();
+                let exists_in_cache = drafts.contains_key(&session_id_owned);
+                let current_content = drafts.get(&session_id_owned);
+
+                // Only save if draft still exists in cache AND content matches exactly
+                exists_in_cache && current_content == Some(&content_owned)
+            };
+
+            if should_save {
+                if let Err(e) = draft_storage.save_draft(&session_id_owned, &content_owned) {
+                    warn!(
+                        "Failed to save draft for session {}: {}",
+                        session_id_owned, e
+                    );
+                }
             }
         });
     }
@@ -992,21 +1020,16 @@ impl Gpui {
     }
 
     pub fn clear_draft_for_session(&self, session_id: &str) {
-        // Remove from in-memory cache
+        // Remove from in-memory cache FIRST
         {
             let mut drafts = self.session_drafts.lock().unwrap();
             drafts.remove(session_id);
         }
 
-        // Clear from disk (non-blocking)
-        let draft_storage = self.draft_storage.clone();
-        let session_id = session_id.to_string();
-
-        tokio::spawn(async move {
-            if let Err(e) = draft_storage.clear_draft(&session_id) {
-                warn!("Failed to clear draft for session {}: {}", session_id, e);
-            }
-        });
+        // Clear from disk synchronously to ensure it happens before any racing save operations
+        if let Err(e) = self.draft_storage.clear_draft(session_id) {
+            warn!("Failed to clear draft for session {}: {}", session_id, e);
+        }
     }
 
     // Handle backend responses

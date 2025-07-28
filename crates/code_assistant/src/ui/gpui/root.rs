@@ -199,15 +199,15 @@ impl RootView {
             }
         }
 
+        // Clear draft when message is sent (before clearing input to avoid race condition)
+        if let Some(gpui) = cx.try_global::<Gpui>() {
+            gpui.clear_draft_for_session(session_id);
+        }
+
         // Clear the input field
         text_input.update(cx, |text_input, cx| {
             text_input.set_value("", window, cx);
         });
-
-        // Clear draft when message is sent
-        if let Some(gpui) = cx.try_global::<Gpui>() {
-            gpui.clear_draft_for_session(session_id);
-        }
     }
 
     fn on_submit_click(
@@ -216,8 +216,8 @@ impl RootView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        let content = self.text_input.read(cx).value().to_string();
         if let Some(session_id) = &self.current_session_id {
+            let content = self.text_input.read(cx).value().to_string();
             self.send_message(session_id, content, &self.text_input, window, cx);
         }
         cx.notify();
@@ -256,7 +256,6 @@ impl RootView {
         match event {
             InputEvent::Change(text) => {
                 if let Some(session_id) = &self.current_session_id {
-                    trace!("Current session: {} - saving draft", session_id);
                     // Save draft immediately for now (no debouncing for simplicity)
                     if let Some(gpui) = cx.try_global::<Gpui>() {
                         gpui.save_draft_for_session(session_id, text);
@@ -266,13 +265,20 @@ impl RootView {
             InputEvent::Focus => {}
             InputEvent::Blur => {}
             InputEvent::PressEnter { secondary } => {
-                debug!("ENTER pressed (secondary: {})", secondary);
-
                 // Only send message on plain ENTER (not with modifiers)
                 if !secondary {
                     if let Some(session_id) = &self.current_session_id {
+                        // IMMEDIATELY clear any existing draft to prevent the newline from being saved
+                        if let Some(gpui) = cx.try_global::<Gpui>() {
+                            gpui.clear_draft_for_session(session_id);
+                        }
+
+                        // Get current text (this might include the newline that was just added)
                         let current_text = self.text_input.read(cx).value().to_string();
-                        self.send_message(session_id, current_text, &self.text_input, window, cx);
+                        // Remove trailing newline if present (from ENTER key press)
+                        let cleaned_text = current_text.trim_end_matches('\n').to_string();
+
+                        self.send_message(session_id, cleaned_text, &self.text_input, window, cx);
                     }
                 }
                 // If secondary is true, do nothing - modifiers will be handled by InsertLineBreak action
