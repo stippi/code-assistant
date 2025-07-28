@@ -83,9 +83,19 @@ pub struct JsonStreamProcessor {
 impl JsonStreamProcessor {
     /// Emit a fragment through this central function that handles hidden tool filtering
     fn emit_fragment(&self, fragment: DisplayFragment) -> Result<(), UIError> {
-        // Filter out fragments for hidden tools
+        // Filter out tool-related fragments for hidden tools
         if self.state.current_tool_hidden {
-            return Ok(());
+            match &fragment {
+                DisplayFragment::ToolName { .. }
+                | DisplayFragment::ToolParameter { .. }
+                | DisplayFragment::ToolEnd { .. } => {
+                    // Skip tool-related fragments for hidden tools
+                    return Ok(());
+                }
+                _ => {
+                    // Allow non-tool fragments even when current tool is hidden
+                }
+            }
         }
 
         self.ui.display_fragment(&fragment)
@@ -802,9 +812,7 @@ impl JsonStreamProcessor {
 
                     if !processed_pre_text.is_empty() {
                         if self.state.in_thinking {
-                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                                processed_pre_text,
-                            ))?;
+                            self.emit_fragment(DisplayFragment::ThinkingText(processed_pre_text))?;
                         } else {
                             let mut final_pre_text = processed_pre_text;
 
@@ -818,9 +826,7 @@ impl JsonStreamProcessor {
                             }
 
                             if !final_pre_text.is_empty() {
-                                self.ui.display_fragment(&DisplayFragment::PlainText(
-                                    final_pre_text,
-                                ))?;
+                                self.emit_fragment(DisplayFragment::PlainText(final_pre_text))?;
                             }
                         }
                     }
@@ -856,11 +862,11 @@ impl JsonStreamProcessor {
 
                         if !single_char_slice_str.is_empty() {
                             if self.state.in_thinking {
-                                self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                self.emit_fragment(DisplayFragment::ThinkingText(
                                     single_char_slice_str.to_string(),
                                 ))?;
                             } else {
-                                self.ui.display_fragment(&DisplayFragment::PlainText(
+                                self.emit_fragment(DisplayFragment::PlainText(
                                     single_char_slice_str.to_string(),
                                 ))?;
                             }
@@ -889,11 +895,11 @@ impl JsonStreamProcessor {
 
                     if !processed_remaining_text.is_empty() {
                         if self.state.in_thinking {
-                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                            self.emit_fragment(DisplayFragment::ThinkingText(
                                 processed_remaining_text,
                             ))?;
                         } else {
-                            self.ui.display_fragment(&DisplayFragment::PlainText(
+                            self.emit_fragment(DisplayFragment::PlainText(
                                 processed_remaining_text,
                             ))?;
                         }

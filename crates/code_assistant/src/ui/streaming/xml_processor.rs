@@ -554,9 +554,19 @@ impl XmlStreamProcessor {
 
     /// Emit fragments through this central function that handles filtering and buffering
     fn emit_fragment(&mut self, fragment: DisplayFragment) -> Result<(), UIError> {
-        // Filter out fragments for hidden tools
+        // Filter out tool-related fragments for hidden tools
         if self.state.current_tool_hidden {
-            return Ok(());
+            match &fragment {
+                DisplayFragment::ToolName { .. }
+                | DisplayFragment::ToolParameter { .. }
+                | DisplayFragment::ToolEnd { .. } => {
+                    // Skip tool-related fragments for hidden tools
+                    return Ok(());
+                }
+                _ => {
+                    // Allow non-tool fragments even when current tool is hidden
+                }
+            }
         }
 
         match &self.streaming_state {
