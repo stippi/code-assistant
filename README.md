@@ -117,7 +117,38 @@ Environment variables:
 - `GOOGLE_API_KEY`: Required when using the Vertex provider
 - `OPENROUTER_API_KEY`: Required when using the OpenRouter provider
 - `PERPLEXITY_API_KEY`: Required to use the Perplexity search API tools
-- Note: AI Core authentication is configured on the command line (the tool will prompt for the parameters and store them in your default keychain)
+
+### AI Core Configuration
+
+When using the AI Core provider (`--provider ai-core`), you need to create a configuration file containing your service key credentials and model deployments.
+
+**Default config file location**: `~/.config/code-assistant/ai-core.json`
+
+**Sample configuration**:
+```json
+{
+  "auth": {
+    "client_id": "<your service key client id>",
+    "client_secret": "<your service key client secret>",
+    "token_url": "https://<your service key url>/oauth/token",
+    "api_base_url": "https://<your service key api URL>/v2/inference"
+  },
+  "models": {
+    "claude-sonnet-4": "<your deployment id for the model>"
+  }
+}
+```
+
+You can specify a custom config file path using the `--aicore-config` option:
+```bash
+code-assistant --provider ai-core --aicore-config /path/to/your/ai-core-config.json --task "Your task"
+```
+
+**Configuration steps**:
+1. Create the directory: `mkdir -p ~/.config/code-assistant/`
+2. Create the config file: `~/.config/code-assistant/ai-core.json`
+3. Fill in your service key details and deployment IDs
+4. The tool will automatically use this configuration when `--provider ai-core` is specified
 
 Examples:
 ```bash
@@ -125,7 +156,7 @@ Examples:
 code-assistant --task "Explain the purpose of this codebase"
 
 # Use a different provider and model
-code-assistant --task "Review this code for security issues" --provider openai --model gpt-4o
+code-assistant --task "Review this code for security issues" --provider open-ai --model gpt-4o
 
 # Analyze a specific directory with verbose logging
 code-assistant --path /path/to/project --task "Add error handling" --verbose

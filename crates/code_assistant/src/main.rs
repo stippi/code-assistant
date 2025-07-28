@@ -154,8 +154,38 @@ async fn create_llm_client(
             let config_path =
                 aicore_config.unwrap_or_else(|| AiCoreConfig::get_default_config_path());
 
-            let aicore_config = AiCoreConfig::load_from_file(&config_path)
-                .with_context(|| format!("Failed to load AI Core config from {:?}", config_path))?;
+            let aicore_config = match AiCoreConfig::load_from_file(&config_path) {
+                Ok(config) => config,
+                Err(e) => {
+                    // Output sample config file when loading fails
+                    eprintln!(
+                        "Failed to load AI Core config from {:?}: {}",
+                        config_path, e
+                    );
+                    eprintln!("\nPlease create the config file with the following structure:");
+                    eprintln!("```json");
+                    eprintln!("{{");
+                    eprintln!("  \"auth\": {{");
+                    eprintln!("    \"client_id\": \"<your service key client id>\",");
+                    eprintln!("    \"client_secret\": \"<your service key client secret>\",");
+                    eprintln!("    \"token_url\": \"https://<your service key url>/oauth/token\",");
+                    eprintln!(
+                        "    \"api_base_url\": \"https://<your service key api URL>/v2/inference\""
+                    );
+                    eprintln!("  }},");
+                    eprintln!("  \"models\": {{");
+                    eprintln!("    \"claude-sonnet-4\": \"<your deployment id for the model>\"");
+                    eprintln!("  }}");
+                    eprintln!("}}");
+                    eprintln!("```");
+                    eprintln!("\nDefault config file location: {:?}", config_path);
+
+                    return Err(e.context(format!(
+                        "Failed to load AI Core config from {:?}",
+                        config_path
+                    )));
+                }
+            };
 
             // Get matching deployment for given model ID
             let model_name = model.unwrap_or_else(|| "claude-sonnet-4".to_string());
