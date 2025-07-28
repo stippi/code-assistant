@@ -53,7 +53,7 @@ impl SessionManager {
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
         let session_id = generate_session_id();
-        let session_name = name.unwrap_or_else(|| format!("Chat {}", &session_id[5..13]));
+        let session_name = name.unwrap_or_default(); // Empty string if no name provided
 
         let session = ChatSession {
             id: session_id.clone(),
@@ -178,6 +178,7 @@ impl SessionManager {
             session_instance.add_message(user_msg.clone());
 
             // Clone all needed data to avoid borrowing conflicts
+            let name = session_instance.session.name.clone();
             let tool_syntax = session_instance.session.tool_syntax;
             let init_path = session_instance.session.init_path.clone();
             let proxy_ui = session_instance.create_proxy_ui(ui.clone());
@@ -186,6 +187,7 @@ impl SessionManager {
 
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
+                name: name,
                 messages: session_instance.messages().to_vec(),
                 tool_executions: session_instance
                     .session

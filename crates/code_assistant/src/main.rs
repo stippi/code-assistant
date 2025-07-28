@@ -403,6 +403,7 @@ async fn run_agent_terminal(
             // Convert ChatSession to SessionState for the agent
             let session_state = crate::session::SessionState {
                 session_id: saved_session.id.clone(),
+                name: String::new(),
                 messages: saved_session.messages,
                 tool_executions: saved_session
                     .tool_executions

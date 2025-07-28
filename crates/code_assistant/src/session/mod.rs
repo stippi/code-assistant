@@ -14,6 +14,7 @@ pub use manager::{AgentConfig, SessionManager};
 #[derive(Debug)]
 pub struct SessionState {
     pub session_id: String,
+    pub name: String,
     pub messages: Vec<Message>,
     pub tool_executions: Vec<ToolExecution>,
     pub working_memory: crate::types::WorkingMemory,

@@ -52,8 +52,8 @@ pub struct Agent {
     next_request_id: u64,
     // Session ID for this agent instance
     session_id: Option<String>,
-    // Whether this session has been named
-    session_named: bool,
+    // The actual session name (empty if not named yet)
+    session_name: String,
     // Whether to inject naming reminders (disabled for tests)
     enable_naming_reminders: bool,
     // Shared pending message with SessionInstance
@@ -102,7 +102,7 @@ impl Agent {
             cached_system_message: OnceLock::new(),
             next_request_id: 1, // Start from 1
             session_id: None,
-            session_named: false,
+            session_name: String::new(),
             enable_naming_reminders: true, // Enabled by default
             pending_message_ref: None,
         }
@@ -166,8 +166,8 @@ impl Agent {
 
             ChatMetadata {
                 id: session_id.clone(),
-                name: format!("Session {}", &session_id[..8]), // Default name, will be overridden by persistence
-                created_at: SystemTime::now(),                 // Will be overridden by persistence
+                name: self.session_name.clone(), // Empty string if not named yet
+                created_at: SystemTime::now(),   // Will be overridden by persistence
                 updated_at: SystemTime::now(),
                 message_count: self.message_history.len(),
                 total_usage,
@@ -366,11 +366,7 @@ impl Agent {
         self.working_memory = session_state.working_memory;
         self.init_path = session_state.init_path;
         self.initial_project = session_state.initial_project;
-
-        // Check if session has been named by looking for name_session tool executions
-        self.session_named = self.tool_executions.iter().any(|exec| {
-            exec.tool_request.name == "name_session" && exec.result.is_success()
-        });
+        self.session_name = session_state.name;
 
         // Restore next_request_id from session, or calculate from existing messages for backward compatibility
         self.next_request_id = session_state.next_request_id.unwrap_or_else(|| {
@@ -730,20 +726,16 @@ impl Agent {
     /// Inject system reminder for session naming if needed
     fn inject_naming_reminder_if_needed(&self, mut messages: Vec<Message>) -> Vec<Message> {
         // Only inject if enabled, session is not named yet, and we have messages
-        if !self.enable_naming_reminders || self.session_named || messages.is_empty() {
-            if self.session_named {
-                warn!("🎯 Session already named, skipping reminder injection");
-            }
+        if !self.enable_naming_reminders || !self.session_name.is_empty() || messages.is_empty() {
             return messages;
         }
-
-        warn!("🎯 Injecting naming reminder (session_named = {}, enable_naming_reminders = {})",
-              self.session_named, self.enable_naming_reminders);
 
         // Find the last user message and add system reminder
         if let Some(last_msg) = messages.last_mut() {
             if matches!(last_msg.role, MessageRole::User) {
                 let reminder_text = "\n\n<system-reminder>\nThis is an automatic reminder from the system. Please use the `name_session` tool first, provided the user has already given you a clear task or question. You can chain additional tools after using the `name_session` tool.\n</system-reminder>";
+
+                trace!("Injecting session naming reminder");
 
                 match &mut last_msg.content {
                     MessageContent::Text(text) => {
@@ -751,7 +743,7 @@ impl Agent {
                     }
                     MessageContent::Structured(blocks) => {
                         blocks.push(ContentBlock::Text {
-                            text: reminder_text.to_string()
+                            text: reminder_text.to_string(),
                         });
                     }
                 }
@@ -789,17 +781,11 @@ impl Agent {
         // Create the LLM request with appropriate tools
         let tools = match self.tool_syntax {
             ToolSyntax::Native => {
-                let tool_definitions = ToolRegistry::global().get_tool_definitions_for_scope(ToolScope::Agent);
-                let tool_names: Vec<&str> = tool_definitions.iter().map(|t| t.name.as_str()).collect();
-                warn!("🎯 Available tools for LLM: {:?}", tool_names);
-
-                if tool_names.contains(&"name_session") {
-                    warn!("🎯 name_session tool IS available to LLM");
-                } else {
-                    warn!("🎯 name_session tool is NOT available to LLM");
-                }
-
-                Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(tool_definitions))
+                let tool_definitions =
+                    ToolRegistry::global().get_tool_definitions_for_scope(ToolScope::Agent);
+                Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
+                    tool_definitions,
+                ))
             }
             ToolSyntax::Xml => None,
             ToolSyntax::Caret => None,
@@ -1009,18 +995,12 @@ impl Agent {
 
         // Handle name_session tool specially at agent level
         if tool_request.name == "name_session" {
-            warn!("🎯 name_session tool execution started");
-            warn!("🎯 Tool request ID: {}", tool_request.id);
-            warn!("🎯 Tool input: {:?}", tool_request.input);
-
             // Extract title from input
             if let Some(title) = tool_request.input["title"].as_str() {
                 let title = title.trim();
-                warn!("🎯 Extracted title: '{}'", title);
-
                 if !title.is_empty() {
-                    warn!("🎯 Setting session_named = true");
-                    self.session_named = true;
+                    trace!("Obtained session title from LLM: {}", title);
+                    self.session_name = title.to_string();
 
                     // Create a successful tool execution record
                     let tool_execution = ToolExecution {
@@ -1030,19 +1010,15 @@ impl Agent {
                         }),
                     };
                     self.tool_executions.push(tool_execution);
-                    warn!("🎯 name_session tool execution completed successfully");
-
                     return Ok(true); // Success, but don't show in UI
                 } else {
-                    warn!("🎯 ERROR: Title is empty after trimming");
+                    warn!("Title for name_session is empty after trimming");
                 }
             } else {
-                warn!("🎯 ERROR: No 'title' field found in input or it's not a string");
-                warn!("🎯 Available input keys: {:?}", tool_request.input.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                warn!("No 'title' field found in name_session input or it's not a string");
             }
 
             // If we get here, the input was invalid
-            warn!("🎯 name_session tool execution FAILED - invalid input");
             return Err(anyhow::anyhow!("Invalid session title provided"));
         }
 
