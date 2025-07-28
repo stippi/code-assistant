@@ -42,7 +42,10 @@ use tracing::{debug, error, trace, warn};
 
 use elements::MessageContainer;
 
-actions!(code_assistant, [Quit, CloseWindow]);
+actions!(
+    code_assistant,
+    [Quit, CloseWindow, InsertLineBreak, CancelAgent]
+);
 
 // Global UI event sender for chat components
 #[derive(Clone)]
@@ -127,7 +130,17 @@ pub struct Gpui {
 }
 
 fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+    cx.bind_keys([
+        KeyBinding::new("cmd-q", Quit, None),
+        // Line break keybindings - ENTER with any modifier inserts a line break
+        KeyBinding::new("shift-enter", InsertLineBreak, None),
+        KeyBinding::new("ctrl-enter", InsertLineBreak, None),
+        KeyBinding::new("alt-enter", InsertLineBreak, None),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-enter", InsertLineBreak, None),
+        // Cancel agent with Esc key
+        KeyBinding::new("escape", CancelAgent, None),
+    ]);
 
     cx.on_action(|_: &Quit, cx: &mut App| {
         cx.quit();

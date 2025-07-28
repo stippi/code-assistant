@@ -140,75 +140,86 @@ impl RootView {
         cx.notify();
     }
 
+    fn send_message(
+        &self,
+        session_id: &str,
+        content: String,
+        text_input: &Entity<InputState>,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if content.trim().is_empty() {
+            return;
+        }
+
+        // V1 mode: Store input in the shared value if input is requested
+        let is_input_requested = *self.input_requested.lock().unwrap();
+        if is_input_requested {
+            let mut input_value = self.input_value.lock().unwrap();
+            *input_value = Some(content.clone());
+        }
+
+        // V2 mode: Send user message event if we have an active session
+        if let Some(sender) = cx.try_global::<UiEventSender>() {
+            // Check if agent is running by looking at activity state
+            let current_activity_state = if let Some(gpui) = cx.try_global::<Gpui>() {
+                gpui.current_session_activity_state.lock().unwrap().clone()
+            } else {
+                None
+            };
+
+            let agent_is_running = if let Some(state) = current_activity_state {
+                !matches!(state, crate::session::instance::SessionActivityState::Idle)
+            } else {
+                false
+            };
+
+            if agent_is_running {
+                // Queue the message for the running agent
+                tracing::info!(
+                    "RootView: Queuing user message for running agent in session {}: {}",
+                    session_id,
+                    content
+                );
+                let _ = sender.0.try_send(UiEvent::QueueUserMessage {
+                    message: content.clone(),
+                    session_id: session_id.to_string(),
+                });
+            } else {
+                // Send message normally (agent is idle)
+                tracing::info!(
+                    "RootView: Sending user message to session {}: {}",
+                    session_id,
+                    content
+                );
+                let _ = sender.0.try_send(UiEvent::SendUserMessage {
+                    message: content.clone(),
+                    session_id: session_id.to_string(),
+                });
+            }
+        }
+
+        // Clear the input field
+        text_input.update(cx, |text_input, cx| {
+            text_input.set_value("", window, cx);
+        });
+
+        // Clear draft when message is sent
+        if let Some(gpui) = cx.try_global::<Gpui>() {
+            gpui.clear_draft_for_session(session_id);
+        }
+    }
+
     fn on_submit_click(
         &mut self,
         _: &MouseUpEvent,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        self.text_input.update(cx, |text_input, cx| {
-            let content = text_input.value().to_string();
-            if !content.is_empty() {
-                // V1 mode: Store input in the shared value if input is requested
-                let is_input_requested = *self.input_requested.lock().unwrap();
-                if is_input_requested {
-                    let mut input_value = self.input_value.lock().unwrap();
-                    *input_value = Some(content.clone());
-                }
-
-                // V2 mode: Send user message event if we have an active session
-                if let Some(session_id) = &self.current_session_id {
-                    if let Some(sender) = cx.try_global::<UiEventSender>() {
-                        // Check if agent is running by looking at activity state
-                        let current_activity_state = if let Some(gpui) = cx.try_global::<Gpui>() {
-                            gpui.current_session_activity_state.lock().unwrap().clone()
-                        } else {
-                            None
-                        };
-
-                        let agent_is_running = if let Some(state) = current_activity_state {
-                            !matches!(state, crate::session::instance::SessionActivityState::Idle)
-                        } else {
-                            false
-                        };
-
-                        if agent_is_running {
-                            // Queue the message for the running agent
-                            tracing::info!(
-                                "RootView: Queuing user message for running agent in session {}: {}",
-                                session_id,
-                                content
-                            );
-                            let _ = sender.0.try_send(UiEvent::QueueUserMessage {
-                                message: content.clone(),
-                                session_id: session_id.clone(),
-                            });
-                        } else {
-                            // Send message normally (agent is idle)
-                            tracing::info!(
-                                "RootView: Sending user message to session {}: {}",
-                                session_id,
-                                content
-                            );
-                            let _ = sender.0.try_send(UiEvent::SendUserMessage {
-                                message: content.clone(),
-                                session_id: session_id.clone(),
-                            });
-                        }
-                    }
-                }
-
-                // Clear the input field
-                text_input.set_value("", window, cx);
-
-                // Clear draft when message is sent
-                if let (Some(session_id), Some(gpui)) =
-                    (&self.current_session_id, cx.try_global::<Gpui>())
-                {
-                    gpui.clear_draft_for_session(session_id);
-                }
-            }
-        });
+        let content = self.text_input.read(cx).value().to_string();
+        if let Some(session_id) = &self.current_session_id {
+            self.send_message(session_id, content, &self.text_input, window, cx);
+        }
         cx.notify();
     }
 
@@ -223,12 +234,23 @@ impl RootView {
         cx.notify();
     }
 
+    fn on_cancel_agent(
+        &mut self,
+        _: &crate::ui::gpui::CancelAgent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Set streaming state to StopRequested (same as cancel button)
+        *self.streaming_state.lock().unwrap() = StreamingState::StopRequested;
+        cx.notify();
+    }
+
     // Handle text input events for draft functionality
     fn on_input_event(
         &mut self,
         _input: &Entity<InputState>,
         event: &InputEvent,
-        _window: &mut gpui::Window,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
         match event {
@@ -245,15 +267,15 @@ impl RootView {
             InputEvent::Blur => {}
             InputEvent::PressEnter { secondary } => {
                 debug!("ENTER pressed (secondary: {})", secondary);
-                // Potentially send message:
-                // Shift-ENTER should only add a new linebreak
-                // ENTER should send the message, but it should reuse the existing method that also the Send button uses.
-                if let (Some(_session_id), Some(_gpui)) =
-                    (&self.current_session_id, cx.try_global::<Gpui>())
-                {
-                    // TODO: Don't clear draft here, but in the method that sends the message
-                    // gpui.clear_draft_for_session(session_id);
+
+                // Only send message on plain ENTER (not with modifiers)
+                if !secondary {
+                    if let Some(session_id) = &self.current_session_id {
+                        let current_text = self.text_input.read(cx).value().to_string();
+                        self.send_message(session_id, current_text, &self.text_input, window, cx);
+                    }
                 }
+                // If secondary is true, do nothing - modifiers will be handled by InsertLineBreak action
             }
         }
     }
@@ -339,6 +361,16 @@ impl Render for RootView {
             .on_action(|_: &CloseWindow, window, _| {
                 window.remove_window();
             })
+            .on_action({
+                let text_input_handle = self.text_input.clone();
+                move |_: &crate::ui::gpui::InsertLineBreak, window, cx| {
+                    // Insert a line break at the current cursor position
+                    text_input_handle.update(cx, |input_state, cx| {
+                        input_state.insert("\n", window, cx);
+                    });
+                }
+            })
+            .on_action(cx.listener(Self::on_cancel_agent))
             .bg(cx.theme().background)
             .track_focus(&self.focus_handle(cx))
             .flex()
