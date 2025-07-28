@@ -44,11 +44,15 @@ impl ToolRegistry {
         self.tools
             .values()
             .filter(|tool| tool.spec().supported_scopes.contains(&mode))
-            .map(|tool| AnnotatedToolDefinition {
-                name: tool.spec().name.to_string(),
-                description: tool.spec().description.to_string(),
-                parameters: tool.spec().parameters_schema.clone(),
-                annotations: tool.spec().annotations.clone(),
+            .map(|tool| {
+                let spec = tool.spec();
+                AnnotatedToolDefinition {
+                    name: spec.name.to_string(),
+                    description: spec.description.to_string(),
+                    parameters: spec.parameters_schema.clone(),
+                    annotations: spec.annotations.clone(),
+                    hidden: spec.name == "name_session", // Hide name_session tool from UI
+                }
             })
             .collect()
     }
@@ -59,7 +63,7 @@ impl ToolRegistry {
         // Import all tools
         use crate::tools::impls::{
             DeleteFilesTool, ExecuteCommandTool, ListFilesTool, ListProjectsTool,
-            PerplexityAskTool, ReadFilesTool, ReplaceInFileTool, SearchFilesTool, WebFetchTool,
+            NameSessionTool, PerplexityAskTool, ReadFilesTool, ReplaceInFileTool, SearchFilesTool, WebFetchTool,
             WebSearchTool, WriteFileTool,
         };
 
@@ -68,6 +72,7 @@ impl ToolRegistry {
         self.register(Box::new(ExecuteCommandTool));
         self.register(Box::new(ListFilesTool));
         self.register(Box::new(ListProjectsTool));
+        self.register(Box::new(NameSessionTool));
         self.register(Box::new(PerplexityAskTool));
         self.register(Box::new(ReadFilesTool));
         self.register(Box::new(ReplaceInFileTool));
