@@ -778,23 +778,18 @@ impl Agent {
             _ => self.convert_tool_results_to_text(messages_with_reminder), // Convert ToolResults to Text
         };
 
-        // Create the LLM request with appropriate tools
-        let tools = match self.tool_syntax {
-            ToolSyntax::Native => {
-                let tool_definitions =
-                    ToolRegistry::global().get_tool_definitions_for_scope(ToolScope::Agent);
-                Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
-                    tool_definitions,
-                ))
-            }
-            ToolSyntax::Xml => None,
-            ToolSyntax::Caret => None,
-        };
-
         let request = LLMRequest {
             messages: converted_messages,
             system_prompt: self.get_system_prompt(),
-            tools,
+            tools: match self.tool_syntax {
+                ToolSyntax::Native => {
+                    Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
+                        ToolRegistry::global().get_tool_definitions_for_scope(ToolScope::Agent),
+                    ))
+                }
+                ToolSyntax::Xml => None,
+                ToolSyntax::Caret => None,
+            },
             stop_sequences: None,
         };
 
