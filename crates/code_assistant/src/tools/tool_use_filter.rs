@@ -57,6 +57,7 @@ impl SmartToolFilter {
         matches!(
             tool_name,
             "read_files"
+                | "name_session"
                 | "list_files"
                 | "list_projects"
                 | "search_files"
