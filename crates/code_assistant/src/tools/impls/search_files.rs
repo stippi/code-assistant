@@ -104,6 +104,7 @@ impl Tool for SearchFilesTool {
                 "readOnlyHint": true
             })),
             supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            hidden: false,
         }
     }
 

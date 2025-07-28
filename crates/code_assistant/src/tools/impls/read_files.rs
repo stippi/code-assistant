@@ -136,6 +136,7 @@ impl Tool for ReadFilesTool {
                 "idempotentHint": true
             })),
             supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            hidden: false,
         }
     }
 

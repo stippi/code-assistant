@@ -111,6 +111,7 @@ impl Tool for PerplexityAskTool {
                 "openWorldHint": true
             })),
             supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            hidden: false,
         }
     }
 

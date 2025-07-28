@@ -103,6 +103,7 @@ impl Tool for WebSearchTool {
                 "openWorldHint": true
             })),
             supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            hidden: false,
         }
     }
 

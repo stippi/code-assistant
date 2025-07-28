@@ -102,6 +102,7 @@ impl Tool for DeleteFilesTool {
                 "idempotentHint": true
             })),
             supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            hidden: false,
         }
     }
 

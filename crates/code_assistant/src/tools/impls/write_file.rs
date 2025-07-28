@@ -108,6 +108,7 @@ impl Tool for WriteFileTool {
                 "idempotentHint": false
             })),
             supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            hidden: false,
         }
     }
 

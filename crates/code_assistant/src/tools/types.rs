@@ -11,9 +11,6 @@ pub struct AnnotatedToolDefinition {
     pub parameters: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<serde_json::Value>,
-    /// Flag to indicate if this tool should be hidden from UI display
-    #[serde(default)]
-    pub hidden: bool,
 }
 
 impl AnnotatedToolDefinition {

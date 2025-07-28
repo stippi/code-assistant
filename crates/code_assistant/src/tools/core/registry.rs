@@ -41,10 +41,11 @@ impl ToolRegistry {
 
     /// Check if a tool is hidden by consulting the tool definitions
     pub fn is_tool_hidden(&self, tool_name: &str, scope: ToolScope) -> bool {
-        self.get_tool_definitions_for_scope(scope)
-            .iter()
-            .find(|tool| tool.name == tool_name)
-            .map(|tool| tool.hidden)
+        self.tools
+            .values()
+            .filter(|tool| tool.spec().supported_scopes.contains(&scope))
+            .find(|tool| tool.spec().name == tool_name)
+            .map(|tool| tool.spec().hidden)
             .unwrap_or(false)
     }
 
@@ -60,7 +61,6 @@ impl ToolRegistry {
                     description: spec.description.to_string(),
                     parameters: spec.parameters_schema.clone(),
                     annotations: spec.annotations.clone(),
-                    hidden: spec.name == "name_session", // Hide name_session tool from UI
                 }
             })
             .collect()
