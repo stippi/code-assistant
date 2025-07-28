@@ -68,11 +68,11 @@ impl Render for MessagesView {
                 if msg.read(cx).is_user_message() {
                     message_container = message_container
                         .m_3()
-                        .bg(cx.theme().muted.opacity(0.3)) // Use theme muted color with opacity
+                        .bg(cx.theme().muted) // Use opaque muted color (darker than card background)
                         .border_1()
                         .border_color(cx.theme().border)
                         .rounded_md()
-                        .shadow_sm();
+                        .shadow_xs();
                 }
 
                 // Create message container with user badge if needed
@@ -130,11 +130,11 @@ impl Render for MessagesView {
                 messages_container = messages_container.child(
                     div()
                         .m_3()
-                        .bg(cx.theme().muted.opacity(0.2)) // Lighter than regular user messages
+                        .bg(cx.theme().muted) // Same opaque background as regular user messages
                         .border_1()
                         .border_color(cx.theme().warning) // Use warning color to indicate pending
                         .rounded_md()
-                        .shadow_sm()
+                        .shadow_xs()
                         .p_3()
                         .child(
                             div()
