@@ -106,6 +106,10 @@ struct Args {
     /// Fast playback mode - ignore chunk timing when playing recordings
     #[arg(long)]
     fast_playback: bool,
+
+    /// Use the legacy diff format for file editing (enables replace_in_file tool)
+    #[arg(long)]
+    use_diff_format: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -115,6 +119,9 @@ enum Mode {
         /// Enable verbose logging
         #[arg(short, long)]
         verbose: bool,
+        /// Use the legacy diff format for file editing (enables replace_in_file tool)
+        #[arg(long)]
+        use_diff_format: bool,
     },
 }
 
@@ -332,7 +339,12 @@ fn setup_logging(verbose: bool, use_stdout: bool) {
     subscriber.init();
 }
 
-async fn run_mcp_server(verbose: bool) -> Result<()> {
+async fn run_mcp_server(verbose: bool, use_diff_format: bool) -> Result<()> {
+    // Set environment variable for diff format preference before tools are initialized
+    if use_diff_format {
+        std::env::set_var("CODE_ASSISTANT_USE_DIFF_FORMAT", "true");
+    }
+
     // Setup logging based on verbose flag
     setup_logging(verbose, false);
 
@@ -636,6 +648,11 @@ fn run_agent_gpui(
 }
 
 async fn run_agent(args: Args) -> Result<()> {
+    // Set environment variable for diff format preference before tools are initialized
+    if args.use_diff_format {
+        std::env::set_var("CODE_ASSISTANT_USE_DIFF_FORMAT", "true");
+    }
+
     // Get all the agent options from args
     let path = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
     let task = args.task.clone();
@@ -972,7 +989,7 @@ async fn main() -> Result<()> {
 
     match args.mode {
         // Server mode
-        Some(Mode::Server { verbose }) => run_mcp_server(verbose).await,
+        Some(Mode::Server { verbose, use_diff_format }) => run_mcp_server(verbose, use_diff_format).await,
 
         // Agent mode (default)
         None => run_agent(args).await,

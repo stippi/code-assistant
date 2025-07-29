@@ -53,27 +53,16 @@ fn test_replacement_xml_parsing() -> Result<()> {
     let text = concat!(
         "I will fix the code formatting.\n",
         "\n",
-        "<tool:replace_in_file>\n",
+        "<tool:edit>\n",
         "<param:project>test</param:project>\n",
         "<param:path>src/main.rs</param:path>\n",
-        "<param:diff>\n",
-        "<<<<<<< SEARCH\n",
-        "function test(){\n",
+        "<param:old_text>function test(){\n",
         "  console.log(\"messy\");\n",
-        "}\n",
-        "=======\n",
-        "function test() {\n",
+        "}</param:old_text>\n",
+        "<param:new_text>function test() {\n",
         "    console.log(\"clean\");\n",
-        "}\n",
-        ">>>>>>> REPLACE\n",
-        "\n",
-        "<<<<<<< SEARCH\n",
-        "const x=42\n",
-        "=======\n",
-        "const x = 42;\n",
-        ">>>>>>> REPLACE\n",
-        "</param:diff>\n",
-        "</tool:replace_in_file>\n",
+        "}</param:new_text>\n",
+        "</tool:edit>\n",
     )
     .to_string();
     let response = LLMResponse {
@@ -89,7 +78,7 @@ fn test_replacement_xml_parsing() -> Result<()> {
     assert_eq!(tool_requests.len(), 1);
 
     let request = &tool_requests[0];
-    assert_eq!(request.name, "replace_in_file");
+    assert_eq!(request.name, "edit");
     assert_eq!(
         request.input.get("project").unwrap().as_str().unwrap(),
         "test"
@@ -99,14 +88,13 @@ fn test_replacement_xml_parsing() -> Result<()> {
         "src/main.rs"
     );
 
-    let diff = request.input.get("diff").unwrap().as_str().unwrap();
-    assert!(diff.contains("<<<<<<< SEARCH"));
-    assert!(diff.contains("function test(){"));
-    assert!(diff.contains("console.log(\"messy\")"));
-    assert!(diff.contains("function test() {"));
-    assert!(diff.contains("console.log(\"clean\")"));
-    assert!(diff.contains("const x=42"));
-    assert!(diff.contains("const x = 42;"));
+    let old_text = request.input.get("old_text").unwrap().as_str().unwrap();
+    assert!(old_text.contains("function test(){"));
+    assert!(old_text.contains("console.log(\"messy\")"));
+
+    let new_text = request.input.get("new_text").unwrap().as_str().unwrap();
+    assert!(new_text.contains("function test() {"));
+    assert!(new_text.contains("console.log(\"clean\")"));
 
     Ok(())
 }
