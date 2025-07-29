@@ -60,6 +60,8 @@ pub struct MessageContainer {
     /// each new request (see `UiEvent::StreamingStarted` in gpui/mod). When the user cancels
     /// streaming, all blocks that were created for that last, canceled request are removed.
     current_request_id: Arc<Mutex<u64>>,
+    /// Current project for parameter filtering
+    current_project: Arc<Mutex<String>>,
 }
 
 impl MessageContainer {
@@ -68,12 +70,18 @@ impl MessageContainer {
             elements: Arc::new(Mutex::new(Vec::new())),
             role,
             current_request_id: Arc::new(Mutex::new(0)),
+            current_project: Arc::new(Mutex::new(String::new())),
         }
     }
 
     // Set the current request ID for this message container
     pub fn set_current_request_id(&self, request_id: u64) {
         *self.current_request_id.lock().unwrap() = request_id;
+    }
+
+    /// Set the current project for parameter filtering
+    pub fn set_current_project(&self, project: String) {
+        *self.current_project.lock().unwrap() = project;
     }
 
     // Remove all blocks with the given request ID
@@ -119,7 +127,7 @@ impl MessageContainer {
         let block = BlockData::TextBlock(TextBlock {
             content: content.into(),
         });
-        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();
     }
@@ -132,7 +140,7 @@ impl MessageContainer {
         let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.into()));
-        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();
     }
@@ -157,7 +165,7 @@ impl MessageContainer {
             output: None,
             is_collapsed: false, // Default to expanded
         });
-        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();
     }
@@ -228,7 +236,7 @@ impl MessageContainer {
         let block = BlockData::TextBlock(TextBlock {
             content: content.to_string(),
         });
-        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();
     }
@@ -261,7 +269,7 @@ impl MessageContainer {
         // If we reach here, we need to add a new thinking block
         let request_id = *self.current_request_id.lock().unwrap();
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.to_string()));
-        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();
     }
@@ -352,7 +360,7 @@ impl MessageContainer {
             });
 
             let block = BlockData::ToolUse(tool);
-            let view = cx.new(|cx| BlockView::new(block, request_id, cx));
+            let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
             elements.push(view);
             cx.notify();
         }
@@ -422,16 +430,19 @@ pub struct BlockView {
     animation_state: AnimationState,
     content_height: Rc<Cell<Pixels>>,
     animation_task: Option<Task<()>>,
+    // Current project for parameter filtering
+    current_project: Arc<Mutex<String>>,
 }
 
 impl BlockView {
-    pub fn new(block: BlockData, request_id: u64, _cx: &mut Context<Self>) -> Self {
+    pub fn new(block: BlockData, request_id: u64, current_project: Arc<Mutex<String>>, _cx: &mut Context<Self>) -> Self {
         Self {
             block,
             request_id,
             animation_state: AnimationState::Idle,
             content_height: Rc::new(Cell::new(px(0.0))),
             animation_task: None,
+            current_project,
         }
     }
 
@@ -816,13 +827,24 @@ impl Render for BlockView {
                     }
                 };
 
-                // Separate parameters into regular and full-width
+                // Filter out hidden parameters, then separate into regular and full-width
+                let current_project = self.current_project.lock().unwrap().clone();
+                let should_hide_param = |param: &ParameterBlock| {
+                    // Simple, focused logic for hiding project parameter when it matches current project
+                    param.name == "project" && !current_project.is_empty() && param.value == current_project
+                };
+
+                let visible_params: Vec<&ParameterBlock> = block.parameters
+                    .iter()
+                    .filter(|param| !should_hide_param(param))
+                    .collect();
+
                 let registry = ParameterRendererRegistry::global();
 
                 let (regular_params, fullwidth_params): (
                     Vec<&ParameterBlock>,
                     Vec<&ParameterBlock>,
-                ) = block.parameters.iter().partition(|param| {
+                ) = visible_params.into_iter().partition(|param| {
                     !registry.as_ref().map_or(false, |reg| {
                         reg.get_renderer(&block.name, &param.name)
                             .is_full_width(&block.name, &param.name)

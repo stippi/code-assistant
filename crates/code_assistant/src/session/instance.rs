@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 
 // Agent instances are created on-demand, no need to import
-use crate::persistence::ChatSession;
+use crate::persistence::{ChatMetadata, ChatSession};
 use crate::ui::gpui::elements::MessageRole;
 use crate::ui::streaming::create_stream_processor;
 use crate::ui::ui_events::{MessageData, UiEvent};
@@ -150,6 +150,18 @@ impl SessionInstance {
         total
     }
 
+    /// Get usage from the most recent assistant message
+    fn get_last_usage(&self) -> llm::Usage {
+        for message in self.session.messages.iter().rev() {
+            if matches!(message.role, llm::MessageRole::Assistant) {
+                if let Some(usage) = &message.usage {
+                    return usage.clone();
+                }
+            }
+        }
+        llm::Usage::zero()
+    }
+
     /// Reload session data from persistence
     /// This ensures SessionInstance has the latest state even if agents have made changes
     pub fn reload_from_persistence(
@@ -218,6 +230,22 @@ impl SessionInstance {
             session_id: self.session.id.clone(),
             activity_state: self.get_activity_state(),
         });
+
+        // Add session metadata to ensure UI has the session info including initial_project
+        let metadata = ChatMetadata {
+            id: self.session.id.clone(),
+            name: self.session.name.clone(),
+            created_at: self.session.created_at,
+            updated_at: self.session.updated_at,
+            message_count: self.session.messages.len(),
+            total_usage: self.calculate_total_usage(),
+            last_usage: self.get_last_usage(),
+            tokens_limit: None, // Will be updated by persistence layer if available
+            tool_syntax: self.session.tool_syntax,
+            initial_project: self.session.initial_project.clone(),
+        };
+
+        events.push(UiEvent::UpdateSessionMetadata { metadata });
 
         if let Ok(pending) = self.pending_message.lock() {
             events.push(UiEvent::UpdatePendingMessage {

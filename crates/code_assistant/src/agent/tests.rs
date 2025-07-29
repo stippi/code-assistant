@@ -783,7 +783,7 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
         tool_executions: Vec::new(),
         working_memory: crate::types::WorkingMemory::default(),
         init_path: None,
-        initial_project: None,
+        initial_project: String::new(),
         tool_syntax: ToolSyntax::Xml,
         use_diff_blocks: false,
         next_request_id: 1,

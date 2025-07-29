@@ -12,6 +12,7 @@ pub struct MessagesView {
     current_session_activity_state:
         Arc<Mutex<Option<crate::session::instance::SessionActivityState>>>,
     current_pending_message: Arc<Mutex<Option<String>>>,
+    current_project: Arc<Mutex<String>>,
     focus_handle: FocusHandle,
 }
 
@@ -27,6 +28,7 @@ impl MessagesView {
             message_queue,
             current_session_activity_state,
             current_pending_message: Arc::new(Mutex::new(None)),
+            current_project: Arc::new(Mutex::new(String::new())),
             focus_handle: cx.focus_handle(),
         }
     }
@@ -34,6 +36,15 @@ impl MessagesView {
     /// Update the pending message for the current session
     pub fn update_pending_message(&self, message: Option<String>) {
         *self.current_pending_message.lock().unwrap() = message;
+    }
+
+    /// Update the current project for parameter filtering
+    pub fn set_current_project(&self, project: String) {
+        *self.current_project.lock().unwrap() = project;
+    }
+
+    fn get_current_project(&self) -> String {
+        self.current_project.lock().unwrap().clone()
     }
 }
 
@@ -58,10 +69,15 @@ impl Render for MessagesView {
             rgb(0x0A8A55) // Light mode user accent
         };
 
+        // Get current project for parameter filtering
+        let current_project = self.get_current_project();
+
         // Collect all message elements first
         let message_elements: Vec<_> = messages
             .into_iter()
             .map(|msg| {
+                // Update the message container with current project
+                msg.read(cx).set_current_project(current_project.clone());
                 // Create message container with appropriate styling based on role
                 let mut message_container = div().p_3();
 

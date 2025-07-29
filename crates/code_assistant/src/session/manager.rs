@@ -36,7 +36,7 @@ pub struct SessionManager {
 pub struct AgentConfig {
     pub tool_syntax: ToolSyntax,
     pub init_path: Option<PathBuf>,
-    pub initial_project: Option<String>,
+    pub initial_project: String,
     pub use_diff_blocks: bool,
 }
 
@@ -368,7 +368,7 @@ impl SessionManager {
         tool_executions: Vec<ToolExecution>,
         working_memory: WorkingMemory,
         init_path: Option<PathBuf>,
-        initial_project: Option<String>,
+        initial_project: String,
         next_request_id: u64,
     ) -> Result<()> {
         let mut session = self

@@ -22,7 +22,7 @@ pub trait AgentStatePersistence: Send + Sync {
         tool_executions: Vec<ToolExecution>,
         working_memory: WorkingMemory,
         init_path: Option<PathBuf>,
-        initial_project: Option<String>,
+        initial_project: String,
         next_request_id: u64,
     ) -> Result<()>;
 }
@@ -93,7 +93,7 @@ impl AgentStatePersistence for SessionStatePersistence {
         tool_executions: Vec<ToolExecution>,
         working_memory: WorkingMemory,
         init_path: Option<PathBuf>,
-        initial_project: Option<String>,
+        initial_project: String,
         next_request_id: u64,
     ) -> Result<()> {
         let mut session_manager = self
@@ -174,7 +174,7 @@ impl AgentStatePersistence for FileStatePersistence {
         tool_executions: Vec<ToolExecution>,
         working_memory: WorkingMemory,
         init_path: Option<PathBuf>,
-        initial_project: Option<String>,
+        initial_project: String,
         next_request_id: u64,
     ) -> Result<()> {
         debug!("Saving agent state to {}", self.state_file_path.display());

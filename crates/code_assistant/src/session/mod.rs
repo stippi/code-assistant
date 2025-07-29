@@ -19,6 +19,6 @@ pub struct SessionState {
     pub tool_executions: Vec<ToolExecution>,
     pub working_memory: crate::types::WorkingMemory,
     pub init_path: Option<PathBuf>,
-    pub initial_project: Option<String>,
+    pub initial_project: String,
     pub next_request_id: Option<u64>,
 }

@@ -556,10 +556,29 @@ impl Gpui {
                 tool_results,
             } => {
                 // Update current session ID if provided
-                if let Some(session_id) = session_id {
-                    *self.current_session_id.lock().unwrap() = Some(session_id);
+                if let Some(ref session_id) = session_id {
+                    *self.current_session_id.lock().unwrap() = Some(session_id.clone());
                     // Reset activity state when switching sessions - it will be updated by subsequent events
                     *self.current_session_activity_state.lock().unwrap() = None;
+
+                    // Find the current project for this session and update MessagesView
+                    let current_project = {
+                        let sessions = self.chat_sessions.lock().unwrap();
+                        sessions.iter()
+                            .find(|s| s.id == *session_id)
+                            .map(|s| s.initial_project.clone())
+                            .unwrap_or_else(|| String::new())
+                    };
+
+                    warn!("Using initial project: '{}'", current_project);
+
+                    // Update MessagesView with current project
+                    if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
+                        cx.update_entity(messages_view_entity, |messages_view, _cx| {
+                            messages_view.set_current_project(current_project.clone());
+                        })
+                        .expect("Failed to update messages view with current project");
+                    }
                 }
 
                 // Clear existing messages
@@ -567,6 +586,17 @@ impl Gpui {
                     let mut queue = self.message_queue.lock().unwrap();
                     queue.clear();
                 }
+
+                // Get current project for new containers
+                let current_project = if let Some(ref session_id) = session_id {
+                    let sessions = self.chat_sessions.lock().unwrap();
+                    sessions.iter()
+                        .find(|s| s.id == *session_id)
+                        .map(|s| s.initial_project.clone())
+                        .unwrap_or_else(|| String::new())
+                } else {
+                    String::new()
+                };
 
                 // Process message data with on-demand container creation
                 for message_data in messages {
@@ -594,11 +624,23 @@ impl Gpui {
                             let container = cx
                                 .new(|cx| MessageContainer::with_role(message_data.role, cx))
                                 .expect("Failed to create message container");
+
+                            // Set current project on the new container
+                            cx.update_entity(&container, |container, _cx| {
+                                container.set_current_project(current_project.clone());
+                            })
+                            .expect("Failed to set current project on container");
+
                             queue.push(container.clone());
                             container
                         } else {
-                            // Use existing container
-                            queue.last().unwrap().clone()
+                            // Use existing container - also set current project in case it changed
+                            let container = queue.last().unwrap().clone();
+                            cx.update_entity(&container, |container, _cx| {
+                                container.set_current_project(current_project.clone());
+                            })
+                            .expect("Failed to set current project on container");
+                            container
                         }
                     }; // Lock is released here
 
@@ -772,6 +814,28 @@ impl Gpui {
                         // Session not found in cache, add it (shouldn't normally happen)
                         sessions.push(metadata.clone());
                         debug!("Added new session metadata for {}", metadata.id);
+                    }
+                }
+
+                // If this is the current session, update the current project for parameter filtering
+                if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
+                    if *current_session_id == metadata.id {
+                        // Update MessagesView with current project
+                        if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
+                            cx.update_entity(messages_view_entity, |messages_view, _cx| {
+                                messages_view.set_current_project(metadata.initial_project.clone());
+                            })
+                            .expect("Failed to update messages view with current project");
+                        }
+
+                        // Update all MessageContainers with current project
+                        let message_queue = self.message_queue.lock().unwrap();
+                        for container_entity in message_queue.iter() {
+                            cx.update_entity(container_entity, |container, _cx| {
+                                container.set_current_project(metadata.initial_project.clone());
+                            })
+                            .expect("Failed to update message container with current project");
+                        }
                     }
                 }
 

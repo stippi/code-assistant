@@ -478,7 +478,7 @@ fn run_agent_gpui(
     let agent_config = AgentConfig {
         tool_syntax: tool_syntax,
         init_path: Some(root_path.clone()),
-        initial_project: None,
+        initial_project: String::new(),
         use_diff_blocks: use_diff_format,
     };
 

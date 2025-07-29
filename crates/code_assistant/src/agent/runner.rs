@@ -43,8 +43,8 @@ pub struct Agent {
     message_history: Vec<Message>,
     // Path provided during agent initialization
     init_path: Option<PathBuf>,
-    // Name of the initial project (if any)
-    initial_project: Option<String>,
+    // Name of the initial project
+    initial_project: String,
     // Store the history of tool executions
     tool_executions: Vec<crate::agent::types::ToolExecution>,
     // Cached system message
@@ -99,7 +99,7 @@ impl Agent {
             state_persistence,
             message_history: Vec::new(),
             init_path,
-            initial_project: None,
+            initial_project: String::new(),
             tool_executions: Vec::new(),
             cached_system_message: OnceLock::new(),
             next_request_id: 1, // Start from 1
@@ -189,6 +189,7 @@ impl Agent {
                 last_usage,
                 tokens_limit,
                 tool_syntax: self.tool_syntax,
+                initial_project: if self.initial_project.is_empty() { "unknown".to_string() } else { self.initial_project.clone() },
             }
         })
     }
@@ -412,7 +413,7 @@ impl Agent {
         self.working_memory.available_projects = Vec::new();
 
         // Reset the initial project
-        self.initial_project = None;
+        self.initial_project = String::new();
 
         self.init_working_memory_projects()
     }
@@ -424,7 +425,7 @@ impl Agent {
             let project_name = self.project_manager.add_temporary_project(path.clone())?;
 
             // Store the name of the initial project
-            self.initial_project = Some(project_name.clone());
+            self.initial_project = project_name.clone();
 
             // Create initial file tree for this project
             let mut explorer = self
@@ -627,12 +628,12 @@ impl Agent {
         let mut project_info = String::new();
 
         // Add information about the initial project if available
-        if let Some(project) = &self.initial_project {
+        if !self.initial_project.is_empty() {
             project_info.push_str("\n\n# Project Information\n\n");
-            project_info.push_str(&format!("## Initial Project: {}\n\n", project));
+            project_info.push_str(&format!("## Initial Project: {}\n\n", self.initial_project));
 
             // Add file tree for the initial project if available
-            if let Some(tree) = self.working_memory.file_trees.get(project) {
+            if let Some(tree) = self.working_memory.file_trees.get(&self.initial_project) {
                 project_info.push_str("### File Structure:\n");
                 project_info.push_str(&format!("```\n{}\n```\n\n", tree.to_string()));
             }

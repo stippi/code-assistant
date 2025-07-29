@@ -28,7 +28,7 @@ pub struct ChatSession {
     /// Initial project path (if any)
     pub init_path: Option<PathBuf>,
     /// Initial project name
-    pub initial_project: Option<String>,
+    pub initial_project: String,
     /// Tool syntax used for this session (XML or Native)
     #[serde(alias = "tool_mode")]
     pub tool_syntax: ToolSyntax,
@@ -70,6 +70,8 @@ pub struct ChatMetadata {
     pub tokens_limit: Option<u32>,
     /// Tool syntax used for this session
     pub tool_syntax: ToolSyntax,
+    /// Initial project name
+    pub initial_project: String,
 }
 
 #[derive(Clone)]
@@ -133,6 +135,7 @@ impl FileSessionPersistence {
             last_usage,
             tokens_limit,
             tool_syntax: session.tool_syntax,
+            initial_project: session.initial_project.clone(),
         };
 
         if let Some(existing) = metadata_list.iter_mut().find(|m| m.id == session.id) {
@@ -166,8 +169,11 @@ impl FileSessionPersistence {
         }
 
         let content = std::fs::read_to_string(metadata_path)?;
-        let mut metadata_list: Vec<ChatMetadata> = match serde_json::from_str(&content) {
-            Ok(list) => list,
+        let mut metadata_list: Vec<ChatMetadata> = match serde_json::from_str::<Vec<ChatMetadata>>(&content) {
+            Ok(list) => {
+                debug!("Successfully parsed metadata file with {} entries", list.len());
+                list
+            },
             Err(e) => {
                 warn!(
                     "Failed to deserialize chat metadata, will rebuild from sessions: {}",
@@ -247,6 +253,9 @@ impl FileSessionPersistence {
                     // Calculate usage information
                     let (total_usage, last_usage, tokens_limit) = calculate_session_usage(&session);
 
+                    debug!("Rebuilding metadata for session {}: initial_project='{}'",
+                           session.id, session.initial_project);
+
                     let metadata = ChatMetadata {
                         id: session.id.clone(),
                         name: session.name.clone(),
@@ -257,6 +266,7 @@ impl FileSessionPersistence {
                         last_usage,
                         tokens_limit,
                         tool_syntax: session.tool_syntax,
+                        initial_project: session.initial_project.clone(),
                     };
 
                     metadata_list.push(metadata);
