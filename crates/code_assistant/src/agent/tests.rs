@@ -1136,14 +1136,12 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     );
 
     // Test case 1: User message with text content should get reminder
-    let messages = vec![
-        Message {
-            role: MessageRole::User,
-            content: MessageContent::Text("Hello, help me with a task".to_string()),
-            request_id: None,
-            usage: None,
-        },
-    ];
+    let messages = vec![Message {
+        role: MessageRole::User,
+        content: MessageContent::Text("Hello, help me with a task".to_string()),
+        request_id: None,
+        usage: None,
+    }];
 
     let result_messages = agent.inject_naming_reminder_if_needed(messages.clone());
     assert_eq!(result_messages.len(), 1);
@@ -1198,7 +1196,8 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         },
     ];
 
-    let result_messages = agent.inject_naming_reminder_if_needed(messages_with_tool_results.clone());
+    let result_messages =
+        agent.inject_naming_reminder_if_needed(messages_with_tool_results.clone());
     assert_eq!(result_messages.len(), 3);
 
     // The reminder should be added to the first user message (with text content), not the tool result message
@@ -1239,23 +1238,21 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     }
 
     // Test case 3: User message with mixed content (text + tool results) should get reminder
-    let mixed_message = vec![
-        Message {
-            role: MessageRole::User,
-            content: MessageContent::Structured(vec![
-                ContentBlock::Text {
-                    text: "Please analyze this file".to_string(),
-                },
-                ContentBlock::ToolResult {
-                    tool_use_id: "tool-1-1".to_string(),
-                    content: "Previous tool result".to_string(),
-                    is_error: None,
-                },
-            ]),
-            request_id: None,
-            usage: None,
-        },
-    ];
+    let mixed_message = vec![Message {
+        role: MessageRole::User,
+        content: MessageContent::Structured(vec![
+            ContentBlock::Text {
+                text: "Please analyze this file".to_string(),
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "tool-1-1".to_string(),
+                content: "Previous tool result".to_string(),
+                is_error: None,
+            },
+        ]),
+        request_id: None,
+        usage: None,
+    }];
 
     let result_messages = agent.inject_naming_reminder_if_needed(mixed_message.clone());
     assert_eq!(result_messages.len(), 1);
