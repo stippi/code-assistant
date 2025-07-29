@@ -280,19 +280,27 @@ impl SessionManager {
             debug!("Starting agent for session {}", session_id_clone);
             let result = agent.run_single_iteration().await;
 
-            // Set session state back to Idle when agent completes and broadcast
+            // Always set session state back to Idle when agent task ends (regardless of success/failure/cancellation)
+            debug!("Agent task ending for session {}, setting state to Idle", session_id_clone);
             if let Ok(mut state) = activity_state_ref.lock() {
                 *state = crate::session::instance::SessionActivityState::Idle;
             }
 
-            let _ = ui_clone
+            // Always broadcast the state change to UI
+            let send_result = ui_clone
                 .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
                     session_id: session_id_clone.clone(),
                     activity_state: crate::session::instance::SessionActivityState::Idle,
                 })
                 .await;
 
-            debug!("Agent completed for session {}", session_id_clone);
+            if let Err(e) = send_result {
+                debug!("Failed to send UpdateSessionActivityState event for session {}: {}", session_id_clone, e);
+            } else {
+                debug!("Successfully sent UpdateSessionActivityState(Idle) event for session {}", session_id_clone);
+            }
+
+            debug!("Agent completed for session {} with result: {:?}", session_id_clone, result.is_ok());
             result
         });
 

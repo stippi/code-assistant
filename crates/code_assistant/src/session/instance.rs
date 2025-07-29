@@ -429,19 +429,22 @@ impl UserInterface for ProxyUI {
                 // Update activity state to waiting for response
                 self.update_activity_state(SessionActivityState::WaitingForResponse);
             }
-            UiEvent::StreamingStopped { .. } => {
+            UiEvent::StreamingStopped { cancelled, .. } => {
                 // Clear fragment buffer when LLM request ends - fragments are now part of message history
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
                 }
-                // Update activity state back to agent running (it will be set to idle when agent completes)
-                let current_state = self.session_activity_state.lock().unwrap().clone();
-                if matches!(
-                    current_state,
-                    SessionActivityState::WaitingForResponse
-                        | SessionActivityState::RateLimited { .. }
-                ) {
-                    self.update_activity_state(SessionActivityState::AgentRunning);
+                // Only update activity state back to agent running if streaming was not cancelled
+                // If cancelled, the agent task will end soon and set state to Idle
+                if !cancelled {
+                    let current_state = self.session_activity_state.lock().unwrap().clone();
+                    if matches!(
+                        current_state,
+                        SessionActivityState::WaitingForResponse
+                            | SessionActivityState::RateLimited { .. }
+                    ) {
+                        self.update_activity_state(SessionActivityState::AgentRunning);
+                    }
                 }
             }
             _ => {}
