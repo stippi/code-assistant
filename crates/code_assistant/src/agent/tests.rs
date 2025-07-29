@@ -53,27 +53,16 @@ fn test_replacement_xml_parsing() -> Result<()> {
     let text = concat!(
         "I will fix the code formatting.\n",
         "\n",
-        "<tool:replace_in_file>\n",
+        "<tool:edit>\n",
         "<param:project>test</param:project>\n",
         "<param:path>src/main.rs</param:path>\n",
-        "<param:diff>\n",
-        "<<<<<<< SEARCH\n",
-        "function test(){\n",
+        "<param:old_text>function test(){\n",
         "  console.log(\"messy\");\n",
-        "}\n",
-        "=======\n",
-        "function test() {\n",
+        "}</param:old_text>\n",
+        "<param:new_text>function test() {\n",
         "    console.log(\"clean\");\n",
-        "}\n",
-        ">>>>>>> REPLACE\n",
-        "\n",
-        "<<<<<<< SEARCH\n",
-        "const x=42\n",
-        "=======\n",
-        "const x = 42;\n",
-        ">>>>>>> REPLACE\n",
-        "</param:diff>\n",
-        "</tool:replace_in_file>\n",
+        "}</param:new_text>\n",
+        "</tool:edit>\n",
     )
     .to_string();
     let response = LLMResponse {
@@ -89,7 +78,7 @@ fn test_replacement_xml_parsing() -> Result<()> {
     assert_eq!(tool_requests.len(), 1);
 
     let request = &tool_requests[0];
-    assert_eq!(request.name, "replace_in_file");
+    assert_eq!(request.name, "edit");
     assert_eq!(
         request.input.get("project").unwrap().as_str().unwrap(),
         "test"
@@ -99,14 +88,13 @@ fn test_replacement_xml_parsing() -> Result<()> {
         "src/main.rs"
     );
 
-    let diff = request.input.get("diff").unwrap().as_str().unwrap();
-    assert!(diff.contains("<<<<<<< SEARCH"));
-    assert!(diff.contains("function test(){"));
-    assert!(diff.contains("console.log(\"messy\")"));
-    assert!(diff.contains("function test() {"));
-    assert!(diff.contains("console.log(\"clean\")"));
-    assert!(diff.contains("const x=42"));
-    assert!(diff.contains("const x = 42;"));
+    let old_text = request.input.get("old_text").unwrap().as_str().unwrap();
+    assert!(old_text.contains("function test(){"));
+    assert!(old_text.contains("console.log(\"messy\")"));
+
+    let new_text = request.input.get("new_text").unwrap().as_str().unwrap();
+    assert!(new_text.contains("function test() {"));
+    assert!(new_text.contains("console.log(\"clean\")"));
 
     Ok(())
 }
@@ -797,6 +785,7 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
         init_path: None,
         initial_project: None,
         tool_syntax: ToolSyntax::Xml,
+        use_diff_blocks: false,
         next_request_id: 1,
     };
 
@@ -1118,6 +1107,191 @@ fn test_original_caret_issue_reproduction() -> Result<()> {
         Err(e) => {
             panic!("Parser should not fail anymore, but got error: {}", e);
         }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
+    // This test verifies that:
+    // 1. Naming reminders are only added to actual user messages, not tool result messages
+    // 2. Text messages are converted to Structured with separate ContentBlocks for original text and reminder
+    // 3. Structured messages get the reminder added as an additional ContentBlock
+    // Create a mock agent for testing
+    let llm_provider = Box::new(MockLLMProvider::new(vec![]));
+    let project_manager = Box::new(MockProjectManager::default());
+    let command_executor = Box::new(create_command_executor_mock());
+    let ui = Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>);
+    let state_persistence = Box::new(MockStatePersistence::new());
+
+    let mut agent = Agent::new(
+        llm_provider,
+        ToolSyntax::Xml,
+        project_manager,
+        command_executor,
+        ui,
+        state_persistence,
+        None,
+    );
+
+    // Test case 1: User message with text content should get reminder
+    let messages = vec![Message {
+        role: MessageRole::User,
+        content: MessageContent::Text("Hello, help me with a task".to_string()),
+        request_id: None,
+        usage: None,
+    }];
+
+    let result_messages = agent.inject_naming_reminder_if_needed(messages.clone());
+    assert_eq!(result_messages.len(), 1);
+
+    // The message should now be structured with two ContentBlocks
+    if let MessageContent::Structured(blocks) = &result_messages[0].content {
+        assert_eq!(blocks.len(), 2);
+
+        // First block should contain the original user text
+        if let ContentBlock::Text { text } = &blocks[0] {
+            assert_eq!(text, "Hello, help me with a task");
+        } else {
+            panic!("Expected first block to be text with original user message");
+        }
+
+        // Second block should contain the reminder
+        if let ContentBlock::Text { text } = &blocks[1] {
+            assert!(text.contains("<system-reminder>"));
+            assert!(text.contains("name_session"));
+        } else {
+            panic!("Expected second block to be text with reminder");
+        }
+    } else {
+        panic!("Expected structured content after reminder injection");
+    }
+
+    // Test case 2: User message with only tool results should be skipped
+    let messages_with_tool_results = vec![
+        Message {
+            role: MessageRole::User,
+            content: MessageContent::Text("Hello, help me with a task".to_string()),
+            request_id: None,
+            usage: None,
+        },
+        Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Structured(vec![ContentBlock::Text {
+                text: "I'll help you with that task.".to_string(),
+            }]),
+            request_id: Some(1),
+            usage: Some(Usage::zero()),
+        },
+        Message {
+            role: MessageRole::User,
+            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                tool_use_id: "tool-1-1".to_string(),
+                content: "Tool execution result".to_string(),
+                is_error: None,
+            }]),
+            request_id: None,
+            usage: None,
+        },
+    ];
+
+    let result_messages =
+        agent.inject_naming_reminder_if_needed(messages_with_tool_results.clone());
+    assert_eq!(result_messages.len(), 3);
+
+    // The reminder should be added to the first user message (with text content), not the tool result message
+    // The first message should now be structured with two ContentBlocks
+    if let MessageContent::Structured(blocks) = &result_messages[0].content {
+        assert_eq!(blocks.len(), 2);
+
+        // First block should contain the original user text
+        if let ContentBlock::Text { text } = &blocks[0] {
+            assert_eq!(text, "Hello, help me with a task");
+        } else {
+            panic!("Expected first block to be text with original user message");
+        }
+
+        // Second block should contain the reminder
+        if let ContentBlock::Text { text } = &blocks[1] {
+            assert!(text.contains("<system-reminder>"));
+            assert!(text.contains("name_session"));
+        } else {
+            panic!("Expected second block to be text with reminder");
+        }
+    } else {
+        panic!("Expected structured content in first message after reminder injection");
+    }
+
+    // The tool result message should remain unchanged
+    if let MessageContent::Structured(blocks) = &result_messages[2].content {
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(blocks[0], ContentBlock::ToolResult { .. }));
+        // No reminder should be added to this message
+        for block in blocks {
+            if let ContentBlock::Text { text } = block {
+                assert!(!text.contains("<system-reminder>"));
+            }
+        }
+    } else {
+        panic!("Expected structured content in tool result message");
+    }
+
+    // Test case 3: User message with mixed content (text + tool results) should get reminder
+    let mixed_message = vec![Message {
+        role: MessageRole::User,
+        content: MessageContent::Structured(vec![
+            ContentBlock::Text {
+                text: "Please analyze this file".to_string(),
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "tool-1-1".to_string(),
+                content: "Previous tool result".to_string(),
+                is_error: None,
+            },
+        ]),
+        request_id: None,
+        usage: None,
+    }];
+
+    let result_messages = agent.inject_naming_reminder_if_needed(mixed_message.clone());
+    assert_eq!(result_messages.len(), 1);
+
+    if let MessageContent::Structured(blocks) = &result_messages[0].content {
+        assert_eq!(blocks.len(), 3); // Original text + tool result + reminder text
+
+        // First block should be the original text
+        if let ContentBlock::Text { text } = &blocks[0] {
+            assert_eq!(text, "Please analyze this file");
+        } else {
+            panic!("Expected first block to be original text");
+        }
+
+        // Second block should be the tool result (unchanged)
+        assert!(matches!(blocks[1], ContentBlock::ToolResult { .. }));
+
+        // Third block should be the reminder
+        if let ContentBlock::Text { text } = &blocks[2] {
+            assert!(text.contains("<system-reminder>"));
+            assert!(text.contains("name_session"));
+        } else {
+            panic!("Expected third block to be reminder text");
+        }
+    } else {
+        panic!("Expected structured content");
+    }
+
+    // Test case 4: No reminder should be added if session is already named
+    agent.set_session_name("Test Session".to_string());
+    let result_messages = agent.inject_naming_reminder_if_needed(messages);
+    assert_eq!(result_messages.len(), 1);
+
+    // When session is already named, the message should remain unchanged (Text content)
+    if let MessageContent::Text(text) = &result_messages[0].content {
+        assert_eq!(text, "Hello, help me with a task");
+        assert!(!text.contains("<system-reminder>"));
+    } else {
+        panic!("Expected text content to remain unchanged when session is already named");
     }
 
     Ok(())

@@ -5,6 +5,8 @@ pub enum ToolScope {
     McpServer,
     /// Tool can be used in the message history agent
     Agent,
+    /// Tool can be used in the agent when configured for diff blocks format
+    AgentWithDiffBlocks,
 }
 
 /// Specification for a tool, including metadata

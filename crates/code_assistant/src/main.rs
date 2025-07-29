@@ -106,6 +106,10 @@ struct Args {
     /// Fast playback mode - ignore chunk timing when playing recordings
     #[arg(long)]
     fast_playback: bool,
+
+    /// Use the legacy diff format for file editing (enables replace_in_file tool instead of edit)
+    #[arg(long)]
+    use_diff_format: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -351,6 +355,7 @@ async fn run_agent_terminal(
     aicore_config: Option<PathBuf>,
     num_ctx: usize,
     tool_syntax: ToolSyntax,
+    use_diff_format: bool,
     record: Option<PathBuf>,
     playback: Option<PathBuf>,
     fast_playback: bool,
@@ -358,7 +363,7 @@ async fn run_agent_terminal(
     let root_path = path.canonicalize()?;
 
     // Create file persistence for simple state management
-    let file_persistence = FileStatePersistence::new(&root_path, tool_syntax);
+    let file_persistence = FileStatePersistence::new(&root_path, tool_syntax, use_diff_format);
 
     // Setup dynamic types
     let project_manager = Box::new(DefaultProjectManager::new());
@@ -390,6 +395,11 @@ async fn run_agent_terminal(
         state_storage,
         Some(root_path.clone()),
     );
+
+    // Configure diff blocks format if requested
+    if use_diff_format {
+        agent.enable_diff_blocks();
+    }
 
     // Check if we should continue from previous state or start new
     if continue_task && file_persistence.has_saved_state() {
@@ -448,6 +458,7 @@ fn run_agent_gpui(
     aicore_config: Option<PathBuf>,
     num_ctx: usize,
     tool_syntax: ToolSyntax,
+    use_diff_format: bool,
     record: Option<PathBuf>,
     playback: Option<PathBuf>,
     fast_playback: bool,
@@ -468,6 +479,7 @@ fn run_agent_gpui(
         tool_syntax: tool_syntax,
         init_path: Some(root_path.clone()),
         initial_project: None,
+        use_diff_blocks: use_diff_format,
     };
 
     // Create the new SessionManager
@@ -647,7 +659,6 @@ async fn run_agent(args: Args) -> Result<()> {
     let aicore_config = args.aicore_config.clone();
     let num_ctx = args.num_ctx.unwrap_or(8192);
     let tool_syntax = args.tool_syntax.unwrap_or(ToolSyntax::Native);
-    let use_gui = args.ui;
 
     // Setup logging based on verbose flag
     setup_logging(verbose, true);
@@ -658,7 +669,7 @@ async fn run_agent(args: Args) -> Result<()> {
     }
 
     // Run in either GUI or terminal mode
-    if use_gui {
+    if args.ui {
         run_agent_gpui(
             path.clone(),
             task, // Can be None - will connect to latest session instead
@@ -668,6 +679,7 @@ async fn run_agent(args: Args) -> Result<()> {
             aicore_config,
             num_ctx,
             tool_syntax,
+            args.use_diff_format,
             args.record.clone(),
             args.playback.clone(),
             args.fast_playback,
@@ -684,6 +696,7 @@ async fn run_agent(args: Args) -> Result<()> {
             aicore_config,
             num_ctx,
             tool_syntax,
+            args.use_diff_format,
             args.record.clone(),
             args.playback.clone(),
             args.fast_playback,

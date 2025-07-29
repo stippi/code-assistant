@@ -2,38 +2,74 @@ use crate::ui::gpui::parameter_renderers::ParameterRenderer;
 use gpui::{div, px, rgb, rgba, Element, FontWeight, IntoElement, ParentElement, Styled};
 use similar::{ChangeTag, TextDiff};
 
-/// Renderer for the "diff" parameter of the replace_in_file tool
+/// Renderer for diff-style parameters (replace_in_file "diff" and edit tool "old_text"/"new_text")
 pub struct DiffParameterRenderer;
 
 impl ParameterRenderer for DiffParameterRenderer {
     fn supported_parameters(&self) -> Vec<(String, String)> {
-        vec![("replace_in_file".to_string(), "diff".to_string())]
+        vec![
+            ("replace_in_file".to_string(), "diff".to_string()),
+            ("edit".to_string(), "old_text".to_string()),
+            ("edit".to_string(), "new_text".to_string()),
+        ]
     }
 
     fn render(
         &self,
-        _tool_name: &str,
-        _param_name: &str,
+        tool_name: &str,
+        param_name: &str,
         param_value: &str,
         theme: &gpui_component::theme::Theme,
     ) -> gpui::AnyElement {
-        // Container for the diff content - no parameter name shown
-        div()
-            .rounded_md()
-            .bg(if theme.is_dark() {
-                rgba(0x0A0A0AFF) // Dunklerer Hintergrund im Dark Mode
-            } else {
-                rgba(0xEAEAEAFF) // Hellerer Hintergrund im Light Mode
-            })
-            .p_2()
-            .text_size(px(15.))
-            .font_weight(FontWeight(500.0))
-            .child(parse_and_render_diff(param_value, theme))
-            .into_any()
+        // Handle different parameter types
+        match (tool_name, param_name) {
+            ("replace_in_file", "diff") => {
+                // Traditional diff format - parse and render as before
+                div()
+                    .rounded_md()
+                    .bg(if theme.is_dark() {
+                        rgba(0x0A0A0AFF) // Dunklerer Hintergrund im Dark Mode
+                    } else {
+                        rgba(0xEAEAEAFF) // Hellerer Hintergrund im Light Mode
+                    })
+                    .p_2()
+                    .text_size(px(15.))
+                    .font_weight(FontWeight(500.0))
+                    .child(parse_and_render_diff(param_value, theme))
+                    .into_any()
+            }
+            ("edit", "old_text") => {
+                // Show old_text with deletion styling
+                render_edit_text_block(param_value, true, theme)
+            }
+            ("edit", "new_text") => {
+                // Show new_text with addition styling
+                render_edit_text_block(param_value, false, theme)
+            }
+            _ => {
+                // Fallback for unknown parameters
+                div()
+                    .rounded_md()
+                    .bg(if theme.is_dark() {
+                        rgba(0x0A0A0AFF)
+                    } else {
+                        rgba(0xEAEAEAFF)
+                    })
+                    .p_2()
+                    .text_size(px(15.))
+                    .font_weight(FontWeight(500.0))
+                    .child(param_value.to_string())
+                    .into_any()
+            }
+        }
     }
 
-    fn is_full_width(&self, _tool_name: &str, _param_name: &str) -> bool {
-        true // Diff parameter is always full-width
+    fn is_full_width(&self, tool_name: &str, param_name: &str) -> bool {
+        // All diff-style parameters are full-width
+        matches!(
+            (tool_name, param_name),
+            ("replace_in_file", "diff") | ("edit", "old_text") | ("edit", "new_text")
+        )
     }
 }
 
@@ -355,5 +391,45 @@ fn render_streaming_diff_section(
                 .child(section.replace_content.clone())
                 .into_any(),
         ])
+        .into_any()
+}
+
+/// Render a text block for the edit tool (old_text or new_text)
+fn render_edit_text_block(
+    text: &str,
+    is_deletion: bool,
+    theme: &gpui_component::theme::Theme,
+) -> gpui::AnyElement {
+    // Choose colors based on whether this is old_text (deletion) or new_text (addition)
+    let (border_color, text_color) = if is_deletion {
+        // Red for deletions (old_text)
+        if theme.is_dark() {
+            (rgb(0xCC5555), rgb(0xFFBBBB))
+        } else {
+            (rgb(0xCC3333), rgb(0xAA0000))
+        }
+    } else {
+        // Green for additions (new_text)
+        if theme.is_dark() {
+            (rgb(0x55CC55), rgb(0xBBFFBB))
+        } else {
+            (rgb(0x33AA33), rgb(0x007700))
+        }
+    };
+
+    div()
+        .rounded_md()
+        .bg(if theme.is_dark() {
+            rgba(0x0A0A0AFF) // Dunklerer Hintergrund im Dark Mode
+        } else {
+            rgba(0xEAEAEAFF) // Hellerer Hintergrund im Light Mode
+        })
+        .p_2()
+        .border_l_2()
+        .border_color(border_color)
+        .text_color(text_color)
+        .text_size(px(15.))
+        .font_weight(FontWeight(500.0))
+        .child(text.to_string())
         .into_any()
 }

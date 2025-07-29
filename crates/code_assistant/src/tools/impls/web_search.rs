@@ -102,7 +102,11 @@ impl Tool for WebSearchTool {
                 "idempotentHint": true,
                 "openWorldHint": true
             })),
-            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            supported_scopes: &[
+                ToolScope::McpServer,
+                ToolScope::Agent,
+                ToolScope::AgentWithDiffBlocks,
+            ],
             hidden: false,
         }
     }

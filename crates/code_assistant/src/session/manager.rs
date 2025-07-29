@@ -37,6 +37,7 @@ pub struct AgentConfig {
     pub tool_syntax: ToolSyntax,
     pub init_path: Option<PathBuf>,
     pub initial_project: Option<String>,
+    pub use_diff_blocks: bool,
 }
 
 impl SessionManager {
@@ -66,6 +67,7 @@ impl SessionManager {
             init_path: self.agent_config.init_path.clone(),
             initial_project: self.agent_config.initial_project.clone(),
             tool_syntax: self.agent_config.tool_syntax,
+            use_diff_blocks: self.agent_config.use_diff_blocks,
             next_request_id: 1,
         };
 
@@ -154,6 +156,7 @@ impl SessionManager {
         // Prepare session - need to scope the mutable borrow carefully
         let (
             tool_syntax,
+            use_diff_blocks,
             init_path,
             proxy_ui,
             session_state,
@@ -180,6 +183,7 @@ impl SessionManager {
             // Clone all needed data to avoid borrowing conflicts
             let name = session_instance.session.name.clone();
             let tool_syntax = session_instance.session.tool_syntax;
+            let use_diff_blocks = session_instance.session.use_diff_blocks;
             let init_path = session_instance.session.init_path.clone();
             let proxy_ui = session_instance.create_proxy_ui(ui.clone());
             let activity_state_ref = session_instance.activity_state.clone();
@@ -207,6 +211,7 @@ impl SessionManager {
 
             (
                 tool_syntax,
+                use_diff_blocks,
                 init_path,
                 proxy_ui,
                 session_state,
@@ -218,6 +223,7 @@ impl SessionManager {
         // Now save the session state with the user message (outside the borrow scope)
         self.save_session_state(
             session_id,
+            session_state.name.clone(),
             session_state.messages.clone(),
             session_state.tool_executions.clone(),
             session_state.working_memory.clone(),
@@ -254,6 +260,11 @@ impl SessionManager {
             state_storage,
             init_path,
         );
+
+        // Configure diff blocks format based on session setting
+        if use_diff_blocks {
+            agent.enable_diff_blocks();
+        }
 
         // Set the shared pending message reference
         agent.set_pending_message_ref(pending_message_ref);
@@ -331,6 +342,7 @@ impl SessionManager {
     pub fn save_session_state(
         &mut self,
         session_id: &str,
+        name: String,
         messages: Vec<Message>,
         tool_executions: Vec<ToolExecution>,
         working_memory: WorkingMemory,
@@ -344,6 +356,7 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
 
         // Update session with current state
+        session.name = name;
         session.messages = messages;
         session.tool_executions = tool_executions
             .into_iter()

@@ -1479,24 +1479,25 @@ mod tests {
     #[tokio::test]
     async fn test_parse_caret_tool_invocations_multiple_multiline() {
         let text = concat!(
-            "^^^replace_in_file\n",
+            "^^^edit\n",
             "project: test\n",
             "path: test.rs\n",
-            "diff ---\n",
+            "old_text ---\n",
             "old code here\n",
-            "--- diff\n",
-            "comment ---\n",
-            "This change fixes a bug\n",
-            "--- comment\n",
+            "--- old_text\n",
+            "new_text ---\n",
+            "new code here\n",
+            "--- new_text\n",
             "^^^"
         );
 
         let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].name, "replace_in_file");
+        assert_eq!(result[0].name, "edit");
         assert_eq!(result[0].input["project"], "test");
         assert_eq!(result[0].input["path"], "test.rs");
-        assert_eq!(result[0].input["diff"], "old code here");
+        assert_eq!(result[0].input["old_text"], "old code here");
+        assert_eq!(result[0].input["new_text"], "new code here");
     }
 
     #[tokio::test]

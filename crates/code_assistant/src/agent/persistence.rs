@@ -17,6 +17,7 @@ pub trait AgentStatePersistence: Send + Sync {
     /// Save the current agent state
     fn save_agent_state(
         &mut self,
+        name: String,
         messages: Vec<Message>,
         tool_executions: Vec<ToolExecution>,
         working_memory: WorkingMemory,
@@ -51,6 +52,7 @@ impl MockStatePersistence {
 impl AgentStatePersistence for MockStatePersistence {
     fn save_agent_state(
         &mut self,
+        _name: String,
         messages: Vec<Message>,
         tool_executions: Vec<ToolExecution>,
         working_memory: WorkingMemory,
@@ -86,6 +88,7 @@ impl SessionStatePersistence {
 impl AgentStatePersistence for SessionStatePersistence {
     fn save_agent_state(
         &mut self,
+        name: String,
         messages: Vec<Message>,
         tool_executions: Vec<ToolExecution>,
         working_memory: WorkingMemory,
@@ -100,6 +103,7 @@ impl AgentStatePersistence for SessionStatePersistence {
 
         session_manager.save_session_state(
             &self.session_id,
+            name,
             messages,
             tool_executions,
             working_memory,
@@ -118,15 +122,17 @@ const STATE_FILE: &str = ".code-assistant.state.json";
 pub struct FileStatePersistence {
     state_file_path: PathBuf,
     tool_syntax: ToolSyntax,
+    use_diff_blocks: bool,
 }
 
 impl FileStatePersistence {
-    pub fn new(working_dir: &Path, tool_syntax: ToolSyntax) -> Self {
+    pub fn new(working_dir: &Path, tool_syntax: ToolSyntax, use_diff_blocks: bool) -> Self {
         let state_file_path = working_dir.join(STATE_FILE);
         info!("Using state file: {}", state_file_path.display());
         Self {
             state_file_path,
             tool_syntax,
+            use_diff_blocks,
         }
     }
 
@@ -163,6 +169,7 @@ impl FileStatePersistence {
 impl AgentStatePersistence for FileStatePersistence {
     fn save_agent_state(
         &mut self,
+        name: String,
         messages: Vec<Message>,
         tool_executions: Vec<ToolExecution>,
         working_memory: WorkingMemory,
@@ -181,7 +188,7 @@ impl AgentStatePersistence for FileStatePersistence {
         // Create a ChatSession with the current state
         let session = ChatSession {
             id: "terminal-session".to_string(),
-            name: "Terminal Session".to_string(),
+            name: name,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
             messages,
@@ -190,6 +197,7 @@ impl AgentStatePersistence for FileStatePersistence {
             init_path,
             initial_project,
             tool_syntax: self.tool_syntax,
+            use_diff_blocks: self.use_diff_blocks,
             next_request_id,
         };
 

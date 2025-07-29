@@ -90,7 +90,11 @@ impl Tool for WebFetchTool {
                 "idempotentHint": true,
                 "openWorldHint": true
             })),
-            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            supported_scopes: &[
+                ToolScope::McpServer,
+                ToolScope::Agent,
+                ToolScope::AgentWithDiffBlocks,
+            ],
             hidden: false,
         }
     }

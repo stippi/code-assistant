@@ -34,6 +34,7 @@ pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
     tool_syntax: ToolSyntax,
+    tool_scope: ToolScope,
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
@@ -91,6 +92,7 @@ impl Agent {
             working_memory: WorkingMemory::default(),
             llm_provider,
             tool_syntax,
+            tool_scope: ToolScope::Agent, // Default to Agent scope
             project_manager,
             ui,
             command_executor,
@@ -108,6 +110,13 @@ impl Agent {
         }
     }
 
+    /// Enable diff blocks format for file editing (uses replace_in_file tool instead of edit)
+    pub fn enable_diff_blocks(&mut self) {
+        self.tool_scope = ToolScope::AgentWithDiffBlocks;
+        // Clear cached system message so it gets regenerated with the new scope
+        self.cached_system_message = OnceLock::new();
+    }
+
     /// Set the shared pending message reference from SessionInstance
     pub fn set_pending_message_ref(&mut self, pending_ref: Arc<Mutex<Option<String>>>) {
         self.pending_message_ref = Some(pending_ref);
@@ -117,6 +126,12 @@ impl Agent {
     #[cfg(test)]
     pub fn disable_naming_reminders(&mut self) {
         self.enable_naming_reminders = false;
+    }
+
+    /// Set session name (used for tests)
+    #[cfg(test)]
+    pub(crate) fn set_session_name(&mut self, name: String) {
+        self.session_name = name;
     }
 
     /// Get and clear the pending message from shared state
@@ -185,6 +200,7 @@ impl Agent {
             self.message_history.len()
         );
         self.state_persistence.save_agent_state(
+            self.session_name.clone(),
             self.message_history.clone(),
             self.tool_executions.clone(),
             self.working_memory.clone(),
@@ -605,7 +621,7 @@ impl Agent {
         }
 
         // Generate the system message using the tools module
-        let mut system_message = generate_system_message(self.tool_syntax, ToolScope::Agent);
+        let mut system_message = generate_system_message(self.tool_syntax, self.tool_scope);
 
         // Add project information
         let mut project_info = String::new();
@@ -724,28 +740,55 @@ impl Agent {
     }
 
     /// Inject system reminder for session naming if needed
-    fn inject_naming_reminder_if_needed(&self, mut messages: Vec<Message>) -> Vec<Message> {
+    pub(crate) fn inject_naming_reminder_if_needed(
+        &self,
+        mut messages: Vec<Message>,
+    ) -> Vec<Message> {
         // Only inject if enabled, session is not named yet, and we have messages
         if !self.enable_naming_reminders || !self.session_name.is_empty() || messages.is_empty() {
             return messages;
         }
 
-        // Find the last user message and add system reminder
-        if let Some(last_msg) = messages.last_mut() {
-            if matches!(last_msg.role, MessageRole::User) {
-                let reminder_text = "\n\n<system-reminder>\nThis is an automatic reminder from the system. Please use the `name_session` tool first, provided the user has already given you a clear task or question. You can chain additional tools after using the `name_session` tool.\n</system-reminder>";
-
-                trace!("Injecting session naming reminder");
-
-                match &mut last_msg.content {
-                    MessageContent::Text(text) => {
-                        text.push_str(reminder_text);
-                    }
+        // Find the last actual user message (not tool results) and add system reminder
+        // Iterate backwards through messages to find the last user message with actual content
+        for msg in messages.iter_mut().rev() {
+            if matches!(msg.role, MessageRole::User) {
+                let is_actual_user_message = match &msg.content {
+                    MessageContent::Text(_) => true, // Text content is always actual user input
                     MessageContent::Structured(blocks) => {
-                        blocks.push(ContentBlock::Text {
-                            text: reminder_text.to_string(),
-                        });
+                        // Check if this message contains tool results
+                        // If it contains only ToolResult blocks, it's not an actual user message
+                        blocks
+                            .iter()
+                            .any(|block| !matches!(block, ContentBlock::ToolResult { .. }))
                     }
+                };
+
+                if is_actual_user_message {
+                    let reminder_text = "<system-reminder>\nThis is an automatic reminder from the system. Please use the `name_session` tool first, provided the user has already given you a clear task or question. You can chain additional tools after using the `name_session` tool.\n</system-reminder>";
+
+                    trace!("Injecting session naming reminder to actual user message");
+
+                    match &mut msg.content {
+                        MessageContent::Text(original_text) => {
+                            // Convert from Text to Structured with two ContentBlocks
+                            let original_block = ContentBlock::Text {
+                                text: original_text.clone(),
+                            };
+                            let reminder_block = ContentBlock::Text {
+                                text: reminder_text.to_string(),
+                            };
+                            msg.content =
+                                MessageContent::Structured(vec![original_block, reminder_block]);
+                        }
+                        MessageContent::Structured(blocks) => {
+                            // Add reminder as a new ContentBlock
+                            blocks.push(ContentBlock::Text {
+                                text: reminder_text.to_string(),
+                            });
+                        }
+                    }
+                    break; // Found and updated the last actual user message, we're done
                 }
             }
         }
@@ -784,7 +827,7 @@ impl Agent {
             tools: match self.tool_syntax {
                 ToolSyntax::Native => {
                     Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
-                        ToolRegistry::global().get_tool_definitions_for_scope(ToolScope::Agent),
+                        ToolRegistry::global().get_tool_definitions_for_scope(self.tool_scope),
                     ))
                 }
                 ToolSyntax::Xml => None,

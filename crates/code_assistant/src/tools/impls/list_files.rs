@@ -153,7 +153,11 @@ impl Tool for ListFilesTool {
             annotations: Some(json!({
                 "readOnlyHint": true
             })),
-            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            supported_scopes: &[
+                ToolScope::McpServer,
+                ToolScope::Agent,
+                ToolScope::AgentWithDiffBlocks,
+            ],
             hidden: false,
         }
     }

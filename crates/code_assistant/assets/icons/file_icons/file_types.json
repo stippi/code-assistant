@@ -398,6 +398,9 @@
     },
     "plus": {
       "icon": "icons/plus.svg"
+    },
+    "edit": {
+      "icon": "icons/square-pen.svg"
     }
   }
 }

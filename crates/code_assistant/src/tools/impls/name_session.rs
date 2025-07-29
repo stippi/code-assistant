@@ -62,7 +62,7 @@ impl Tool for NameSessionTool {
                 "required": ["title"]
             }),
             annotations: None,
-            supported_scopes: &[ToolScope::Agent],
+            supported_scopes: &[ToolScope::Agent, ToolScope::AgentWithDiffBlocks],
             hidden: true, // This tool should be hidden from UI
         }
     }

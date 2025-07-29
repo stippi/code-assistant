@@ -32,6 +32,9 @@ pub struct ChatSession {
     /// Tool syntax used for this session (XML or Native)
     #[serde(alias = "tool_mode")]
     pub tool_syntax: ToolSyntax,
+    /// Whether this session uses diff blocks format (replace_in_file vs edit tool)
+    #[serde(default)]
+    pub use_diff_blocks: bool,
     /// Counter for generating unique request IDs within this session
     #[serde(default)]
     pub next_request_id: u64,
