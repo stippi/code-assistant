@@ -31,28 +31,24 @@ pub struct EditOutput {
 impl Render for EditOutput {
     fn status(&self) -> String {
         if self.error.is_none() {
-            format!(
-                "Successfully edited content in file: {}",
-                self.path.display()
-            )
+            format!("Successfully edited file: {}", self.path.display())
         } else {
-            format!("Failed to edit content in file: {}", self.path.display())
+            format!("Failed to edit file: {}", self.path.display())
         }
     }
 
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
         if let Some(error) = &self.error {
             match error {
-                FileUpdaterError::SearchBlockNotFound(idx, _) => {
+                FileUpdaterError::SearchBlockNotFound(_, _) => {
                     format!(
-                        "Could not find the text to replace (search block {}). Please check that the old_text matches exactly what's in the file.",
-                        idx
+                        "Could not find old_text. Make sure it matches exactly what's in the file."
                     )
                 }
-                FileUpdaterError::MultipleMatches(count, idx, _) => {
+                FileUpdaterError::MultipleMatches(count, _, _) => {
                     format!(
-                        "Found {} occurrences of the text to replace (search block {})\nThe old_text must match exactly one location. Try making the old_text more specific.",
-                        count, idx
+                        "Found {} occurrences of old_text\nIt must match exactly one location. Try enlarging old_text to make it unique or use replace_all to replace all occurrences.",
+                        count
                     )
                 }
                 FileUpdaterError::Other(msg) => {
@@ -60,10 +56,7 @@ impl Render for EditOutput {
                 }
             }
         } else {
-            format!(
-                "Successfully edited content in file '{}'",
-                self.path.display()
-            )
+            format!("Successfully edited file '{}'", self.path.display())
         }
     }
 }
@@ -221,7 +214,7 @@ mod tests {
 
         let mut tracker = ResourcesTracker::new();
         let rendered = output.render(&mut tracker);
-        assert!(rendered.contains("Successfully edited content"));
+        assert!(rendered.contains("Successfully edited file"));
         assert!(rendered.contains("src/test.rs"));
 
         // Error case with text not found
@@ -235,8 +228,8 @@ mod tests {
         };
 
         let rendered_error = output_error.render(&mut tracker);
-        assert!(rendered_error.contains("Could not find the text to replace"));
-        assert!(rendered_error.contains("old_text matches exactly"));
+        assert!(rendered_error.contains("Could not find old_text"));
+        assert!(rendered_error.contains("matches exactly"));
 
         // Error case with multiple matches
         let output_multiple = EditOutput {
@@ -251,7 +244,8 @@ mod tests {
 
         let rendered_multiple = output_multiple.render(&mut tracker);
         assert!(rendered_multiple.contains("Found 3 occurrences"));
-        assert!(rendered_multiple.contains("more specific"));
+        assert!(rendered_multiple.contains("Try enlarging old_text"));
+        assert!(rendered_multiple.contains("make it unique"));
     }
 
     #[tokio::test]
