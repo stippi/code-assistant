@@ -128,6 +128,12 @@ impl Agent {
         self.enable_naming_reminders = false;
     }
 
+    /// Set session name (used for tests)
+    #[cfg(test)]
+    pub(crate) fn set_session_name(&mut self, name: String) {
+        self.session_name = name;
+    }
+
     /// Get and clear the pending message from shared state
     fn get_and_clear_pending_message(&self) -> Option<String> {
         if let Some(ref pending_ref) = self.pending_message_ref {
@@ -734,28 +740,55 @@ impl Agent {
     }
 
     /// Inject system reminder for session naming if needed
-    fn inject_naming_reminder_if_needed(&self, mut messages: Vec<Message>) -> Vec<Message> {
+    pub(crate) fn inject_naming_reminder_if_needed(
+        &self,
+        mut messages: Vec<Message>,
+    ) -> Vec<Message> {
         // Only inject if enabled, session is not named yet, and we have messages
         if !self.enable_naming_reminders || !self.session_name.is_empty() || messages.is_empty() {
             return messages;
         }
 
-        // Find the last user message and add system reminder
-        if let Some(last_msg) = messages.last_mut() {
-            if matches!(last_msg.role, MessageRole::User) {
-                let reminder_text = "\n\n<system-reminder>\nThis is an automatic reminder from the system. Please use the `name_session` tool first, provided the user has already given you a clear task or question. You can chain additional tools after using the `name_session` tool.\n</system-reminder>";
-
-                trace!("Injecting session naming reminder");
-
-                match &mut last_msg.content {
-                    MessageContent::Text(text) => {
-                        text.push_str(reminder_text);
-                    }
+        // Find the last actual user message (not tool results) and add system reminder
+        // Iterate backwards through messages to find the last user message with actual content
+        for msg in messages.iter_mut().rev() {
+            if matches!(msg.role, MessageRole::User) {
+                let is_actual_user_message = match &msg.content {
+                    MessageContent::Text(_) => true, // Text content is always actual user input
                     MessageContent::Structured(blocks) => {
-                        blocks.push(ContentBlock::Text {
-                            text: reminder_text.to_string(),
-                        });
+                        // Check if this message contains tool results
+                        // If it contains only ToolResult blocks, it's not an actual user message
+                        blocks
+                            .iter()
+                            .any(|block| !matches!(block, ContentBlock::ToolResult { .. }))
                     }
+                };
+
+                if is_actual_user_message {
+                    let reminder_text = "<system-reminder>\nThis is an automatic reminder from the system. Please use the `name_session` tool first, provided the user has already given you a clear task or question. You can chain additional tools after using the `name_session` tool.\n</system-reminder>";
+
+                    trace!("Injecting session naming reminder to actual user message");
+
+                    match &mut msg.content {
+                        MessageContent::Text(original_text) => {
+                            // Convert from Text to Structured with two ContentBlocks
+                            let original_block = ContentBlock::Text {
+                                text: original_text.clone(),
+                            };
+                            let reminder_block = ContentBlock::Text {
+                                text: reminder_text.to_string(),
+                            };
+                            msg.content =
+                                MessageContent::Structured(vec![original_block, reminder_block]);
+                        }
+                        MessageContent::Structured(blocks) => {
+                            // Add reminder as a new ContentBlock
+                            blocks.push(ContentBlock::Text {
+                                text: reminder_text.to_string(),
+                            });
+                        }
+                    }
+                    break; // Found and updated the last actual user message, we're done
                 }
             }
         }
