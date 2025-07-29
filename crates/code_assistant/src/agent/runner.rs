@@ -189,7 +189,11 @@ impl Agent {
                 last_usage,
                 tokens_limit,
                 tool_syntax: self.tool_syntax,
-                initial_project: if self.initial_project.is_empty() { "unknown".to_string() } else { self.initial_project.clone() },
+                initial_project: if self.initial_project.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    self.initial_project.clone()
+                },
             }
         })
     }

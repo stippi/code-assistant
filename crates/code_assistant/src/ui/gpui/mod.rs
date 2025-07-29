@@ -564,7 +564,8 @@ impl Gpui {
                     // Find the current project for this session and update MessagesView
                     let current_project = {
                         let sessions = self.chat_sessions.lock().unwrap();
-                        sessions.iter()
+                        sessions
+                            .iter()
                             .find(|s| s.id == *session_id)
                             .map(|s| s.initial_project.clone())
                             .unwrap_or_else(|| String::new())
@@ -573,7 +574,8 @@ impl Gpui {
                     warn!("Using initial project: '{}'", current_project);
 
                     // Update MessagesView with current project
-                    if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
+                    if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref()
+                    {
                         cx.update_entity(messages_view_entity, |messages_view, _cx| {
                             messages_view.set_current_project(current_project.clone());
                         })
@@ -590,7 +592,8 @@ impl Gpui {
                 // Get current project for new containers
                 let current_project = if let Some(ref session_id) = session_id {
                     let sessions = self.chat_sessions.lock().unwrap();
-                    sessions.iter()
+                    sessions
+                        .iter()
                         .find(|s| s.id == *session_id)
                         .map(|s| s.initial_project.clone())
                         .unwrap_or_else(|| String::new())
@@ -821,7 +824,9 @@ impl Gpui {
                 if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
                     if *current_session_id == metadata.id {
                         // Update MessagesView with current project
-                        if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
+                        if let Some(messages_view_entity) =
+                            self.messages_view.lock().unwrap().as_ref()
+                        {
                             cx.update_entity(messages_view_entity, |messages_view, _cx| {
                                 messages_view.set_current_project(metadata.initial_project.clone());
                             })

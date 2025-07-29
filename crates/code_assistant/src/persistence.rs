@@ -169,21 +169,25 @@ impl FileSessionPersistence {
         }
 
         let content = std::fs::read_to_string(metadata_path)?;
-        let mut metadata_list: Vec<ChatMetadata> = match serde_json::from_str::<Vec<ChatMetadata>>(&content) {
-            Ok(list) => {
-                debug!("Successfully parsed metadata file with {} entries", list.len());
-                list
-            },
-            Err(e) => {
-                warn!(
-                    "Failed to deserialize chat metadata, will rebuild from sessions: {}",
-                    e
-                );
-                debug!("Metadata content that failed to parse: {}", content);
-                // Try to rebuild metadata from existing session files
-                self.rebuild_metadata_from_sessions()?
-            }
-        };
+        let mut metadata_list: Vec<ChatMetadata> =
+            match serde_json::from_str::<Vec<ChatMetadata>>(&content) {
+                Ok(list) => {
+                    debug!(
+                        "Successfully parsed metadata file with {} entries",
+                        list.len()
+                    );
+                    list
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to deserialize chat metadata, will rebuild from sessions: {}",
+                        e
+                    );
+                    debug!("Metadata content that failed to parse: {}", content);
+                    // Try to rebuild metadata from existing session files
+                    self.rebuild_metadata_from_sessions()?
+                }
+            };
 
         // Sort by updated_at in descending order (newest first)
         metadata_list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -253,8 +257,10 @@ impl FileSessionPersistence {
                     // Calculate usage information
                     let (total_usage, last_usage, tokens_limit) = calculate_session_usage(&session);
 
-                    debug!("Rebuilding metadata for session {}: initial_project='{}'",
-                           session.id, session.initial_project);
+                    debug!(
+                        "Rebuilding metadata for session {}: initial_project='{}'",
+                        session.id, session.initial_project
+                    );
 
                     let metadata = ChatMetadata {
                         id: session.id.clone(),

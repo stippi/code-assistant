@@ -360,7 +360,8 @@ impl MessageContainer {
             });
 
             let block = BlockData::ToolUse(tool);
-            let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+            let view =
+                cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
             elements.push(view);
             cx.notify();
         }
@@ -435,7 +436,12 @@ pub struct BlockView {
 }
 
 impl BlockView {
-    pub fn new(block: BlockData, request_id: u64, current_project: Arc<Mutex<String>>, _cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        block: BlockData,
+        request_id: u64,
+        current_project: Arc<Mutex<String>>,
+        _cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             block,
             request_id,
@@ -831,10 +837,13 @@ impl Render for BlockView {
                 let current_project = self.current_project.lock().unwrap().clone();
                 let should_hide_param = |param: &ParameterBlock| {
                     // Simple, focused logic for hiding project parameter when it matches current project
-                    param.name == "project" && !current_project.is_empty() && param.value == current_project
+                    param.name == "project"
+                        && !current_project.is_empty()
+                        && param.value == current_project
                 };
 
-                let visible_params: Vec<&ParameterBlock> = block.parameters
+                let visible_params: Vec<&ParameterBlock> = block
+                    .parameters
                     .iter()
                     .filter(|param| !should_hide_param(param))
                     .collect();
