@@ -376,6 +376,8 @@ impl Gpui {
                             title: Some(gpui::SharedString::from("Code Assistant")),
                             #[cfg(target_os = "macos")]
                             appears_transparent: true,
+                            #[cfg(not(target_os = "macos"))]
+                            appears_transparent: false,
                             traffic_light_position: Some(Point {
                                 x: px(16.),
                                 y: px(16.),
