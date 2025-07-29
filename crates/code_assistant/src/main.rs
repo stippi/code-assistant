@@ -107,7 +107,7 @@ struct Args {
     #[arg(long)]
     fast_playback: bool,
 
-    /// Use the legacy diff format for file editing (enables replace_in_file tool)
+    /// Use the legacy diff format for file editing (enables replace_in_file tool instead of edit)
     #[arg(long)]
     use_diff_format: bool,
 }
@@ -119,9 +119,6 @@ enum Mode {
         /// Enable verbose logging
         #[arg(short, long)]
         verbose: bool,
-        /// Use the legacy diff format for file editing (enables replace_in_file tool)
-        #[arg(long)]
-        use_diff_format: bool,
     },
 }
 
@@ -339,12 +336,7 @@ fn setup_logging(verbose: bool, use_stdout: bool) {
     subscriber.init();
 }
 
-async fn run_mcp_server(verbose: bool, use_diff_format: bool) -> Result<()> {
-    // Set environment variable for diff format preference before tools are initialized
-    if use_diff_format {
-        std::env::set_var("CODE_ASSISTANT_USE_DIFF_FORMAT", "true");
-    }
-
+async fn run_mcp_server(verbose: bool) -> Result<()> {
     // Setup logging based on verbose flag
     setup_logging(verbose, false);
 
@@ -363,6 +355,7 @@ async fn run_agent_terminal(
     aicore_config: Option<PathBuf>,
     num_ctx: usize,
     tool_syntax: ToolSyntax,
+    use_diff_format: bool,
     record: Option<PathBuf>,
     playback: Option<PathBuf>,
     fast_playback: bool,
@@ -370,7 +363,7 @@ async fn run_agent_terminal(
     let root_path = path.canonicalize()?;
 
     // Create file persistence for simple state management
-    let file_persistence = FileStatePersistence::new(&root_path, tool_syntax);
+    let file_persistence = FileStatePersistence::new(&root_path, tool_syntax, use_diff_format);
 
     // Setup dynamic types
     let project_manager = Box::new(DefaultProjectManager::new());
@@ -402,6 +395,11 @@ async fn run_agent_terminal(
         state_storage,
         Some(root_path.clone()),
     );
+
+    // Configure diff blocks format if requested
+    if use_diff_format {
+        agent.enable_diff_blocks();
+    }
 
     // Check if we should continue from previous state or start new
     if continue_task && file_persistence.has_saved_state() {
@@ -460,6 +458,7 @@ fn run_agent_gpui(
     aicore_config: Option<PathBuf>,
     num_ctx: usize,
     tool_syntax: ToolSyntax,
+    use_diff_format: bool,
     record: Option<PathBuf>,
     playback: Option<PathBuf>,
     fast_playback: bool,
@@ -480,6 +479,7 @@ fn run_agent_gpui(
         tool_syntax: tool_syntax,
         init_path: Some(root_path.clone()),
         initial_project: None,
+        use_diff_blocks: use_diff_format,
     };
 
     // Create the new SessionManager
@@ -648,11 +648,6 @@ fn run_agent_gpui(
 }
 
 async fn run_agent(args: Args) -> Result<()> {
-    // Set environment variable for diff format preference before tools are initialized
-    if args.use_diff_format {
-        std::env::set_var("CODE_ASSISTANT_USE_DIFF_FORMAT", "true");
-    }
-
     // Get all the agent options from args
     let path = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
     let task = args.task.clone();
@@ -664,7 +659,6 @@ async fn run_agent(args: Args) -> Result<()> {
     let aicore_config = args.aicore_config.clone();
     let num_ctx = args.num_ctx.unwrap_or(8192);
     let tool_syntax = args.tool_syntax.unwrap_or(ToolSyntax::Native);
-    let use_gui = args.ui;
 
     // Setup logging based on verbose flag
     setup_logging(verbose, true);
@@ -675,7 +669,7 @@ async fn run_agent(args: Args) -> Result<()> {
     }
 
     // Run in either GUI or terminal mode
-    if use_gui {
+    if args.ui {
         run_agent_gpui(
             path.clone(),
             task, // Can be None - will connect to latest session instead
@@ -685,6 +679,7 @@ async fn run_agent(args: Args) -> Result<()> {
             aicore_config,
             num_ctx,
             tool_syntax,
+            args.use_diff_format,
             args.record.clone(),
             args.playback.clone(),
             args.fast_playback,
@@ -701,6 +696,7 @@ async fn run_agent(args: Args) -> Result<()> {
             aicore_config,
             num_ctx,
             tool_syntax,
+            args.use_diff_format,
             args.record.clone(),
             args.playback.clone(),
             args.fast_playback,
@@ -989,7 +985,7 @@ async fn main() -> Result<()> {
 
     match args.mode {
         // Server mode
-        Some(Mode::Server { verbose, use_diff_format }) => run_mcp_server(verbose, use_diff_format).await,
+        Some(Mode::Server { verbose }) => run_mcp_server(verbose).await,
 
         // Agent mode (default)
         None => run_agent(args).await,

@@ -34,6 +34,7 @@ pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
     tool_syntax: ToolSyntax,
+    tool_scope: ToolScope,
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
@@ -91,6 +92,7 @@ impl Agent {
             working_memory: WorkingMemory::default(),
             llm_provider,
             tool_syntax,
+            tool_scope: ToolScope::Agent, // Default to Agent scope
             project_manager,
             ui,
             command_executor,
@@ -106,6 +108,13 @@ impl Agent {
             enable_naming_reminders: true, // Enabled by default
             pending_message_ref: None,
         }
+    }
+
+    /// Enable diff blocks format for file editing (uses replace_in_file tool instead of edit)
+    pub fn enable_diff_blocks(&mut self) {
+        self.tool_scope = ToolScope::AgentWithDiffBlocks;
+        // Clear cached system message so it gets regenerated with the new scope
+        self.cached_system_message = OnceLock::new();
     }
 
     /// Set the shared pending message reference from SessionInstance
@@ -185,6 +194,7 @@ impl Agent {
             self.message_history.len()
         );
         self.state_persistence.save_agent_state(
+            self.session_name.clone(),
             self.message_history.clone(),
             self.tool_executions.clone(),
             self.working_memory.clone(),
@@ -605,7 +615,7 @@ impl Agent {
         }
 
         // Generate the system message using the tools module
-        let mut system_message = generate_system_message(self.tool_syntax, ToolScope::Agent);
+        let mut system_message = generate_system_message(self.tool_syntax, self.tool_scope);
 
         // Add project information
         let mut project_info = String::new();
@@ -784,7 +794,7 @@ impl Agent {
             tools: match self.tool_syntax {
                 ToolSyntax::Native => {
                     Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
-                        ToolRegistry::global().get_tool_definitions_for_scope(ToolScope::Agent),
+                        ToolRegistry::global().get_tool_definitions_for_scope(self.tool_scope),
                     ))
                 }
                 ToolSyntax::Xml => None,

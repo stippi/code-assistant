@@ -17,11 +17,7 @@ impl ToolRegistry {
         static INSTANCE: OnceLock<ToolRegistry> = OnceLock::new();
         INSTANCE.get_or_init(|| {
             let mut registry = ToolRegistry::new();
-            // Check environment variable for diff format preference
-            let use_diff_format = std::env::var("CODE_ASSISTANT_USE_DIFF_FORMAT")
-                .map(|v| v.to_lowercase() == "true")
-                .unwrap_or(false);
-            registry.register_default_tools_impl(use_diff_format);
+            registry.register_default_tools();
             registry
         })
     }
@@ -72,41 +68,28 @@ impl ToolRegistry {
 
     /// Register all default tools in the system
     /// This will be expanded as we implement more tools
-    #[cfg(test)]
-    pub fn register_default_tools(&mut self, use_diff_format: bool) {
-        self.register_default_tools_impl(use_diff_format);
-    }
-
-    /// Internal implementation of register_default_tools
-    fn register_default_tools_impl(&mut self, use_diff_format: bool) {
+    fn register_default_tools(&mut self) {
         // Import all tools
         use crate::tools::impls::{
-            DeleteFilesTool, EditTool, ExecuteCommandTool, ListFilesTool, ListProjectsTool, NameSessionTool,
-            PerplexityAskTool, ReadFilesTool, ReplaceInFileTool, SearchFilesTool, WebFetchTool,
-            WebSearchTool, WriteFileTool,
+            DeleteFilesTool, EditTool, ExecuteCommandTool, ListFilesTool, ListProjectsTool,
+            NameSessionTool, PerplexityAskTool, ReadFilesTool, ReplaceInFileTool, SearchFilesTool,
+            WebFetchTool, WebSearchTool, WriteFileTool,
         };
 
-        // Register core tools
+        // Register all tools - the ToolScope system will filter which ones are available
         self.register(Box::new(DeleteFilesTool));
+        self.register(Box::new(EditTool));
         self.register(Box::new(ExecuteCommandTool));
         self.register(Box::new(ListFilesTool));
         self.register(Box::new(ListProjectsTool));
         self.register(Box::new(NameSessionTool));
         self.register(Box::new(PerplexityAskTool));
         self.register(Box::new(ReadFilesTool));
+        self.register(Box::new(ReplaceInFileTool));
         self.register(Box::new(SearchFilesTool));
         self.register(Box::new(WebFetchTool));
         self.register(Box::new(WebSearchTool));
         self.register(Box::new(WriteFileTool));
-
-        // Register file editing tools based on configuration
-        if use_diff_format {
-            // Use legacy diff format (replace_in_file tool)
-            self.register(Box::new(ReplaceInFileTool));
-        } else {
-            // Use new edit tool (default)
-            self.register(Box::new(EditTool));
-        }
 
         // More tools will be added here as they are implemented
     }

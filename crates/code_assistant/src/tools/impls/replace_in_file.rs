@@ -116,7 +116,7 @@ impl Tool for ReplaceInFileTool {
                 "readOnlyHint": false,
                 "destructiveHint": true
             })),
-            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            supported_scopes: &[ToolScope::AgentWithDiffBlocks],
             hidden: false,
         }
     }
