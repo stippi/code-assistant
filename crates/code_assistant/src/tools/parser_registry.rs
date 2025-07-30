@@ -554,8 +554,12 @@ impl CaretParser {
         let is_array = prop.get("type").and_then(|t| t.as_str()) == Some("array");
 
         // Check if this is a multiline content parameter
-        let is_multiline =
-            name == "content" || name == "command_line" || name == "diff" || name == "message";
+        let is_multiline = name == "content"
+            || name == "command_line"
+            || name == "diff"
+            || name == "message"
+            || name == "old_text"
+            || name == "new_text";
 
         // Generate appropriate placeholder text
         let placeholder = if name == "project" {
