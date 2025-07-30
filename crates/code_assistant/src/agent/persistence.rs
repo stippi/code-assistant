@@ -57,7 +57,7 @@ impl AgentStatePersistence for MockStatePersistence {
         tool_executions: Vec<ToolExecution>,
         working_memory: WorkingMemory,
         _init_path: Option<PathBuf>,
-        _initial_project: Option<String>,
+        _initial_project: String,
         _next_request_id: u64,
     ) -> Result<()> {
         self.save_count += 1;
