@@ -368,7 +368,7 @@ impl XmlParser {
     fn generate_xml_syntax_documentation(&self) -> String {
         r#"# Tool Use Formatting
 
-Tool use is formatted using XML-style tags. The tool name is prefixed by 'tool:' and enclosed in opening and closing tags, and each parameter is similarly prefixed with 'param:' and enclosed within its own set of tags. Here's the structure:
+Tool use is formatted using XML-style tags. The tool name is prefixed by 'tool:' and enclosed in opening and closing tags, and each parameter is similarly prefixed with 'param:' and enclosed within its own set of tags. For array parameters, simply repeat the same parameter for each item. Here's the structure:
 
 <tool:tool_name>
 <param:parameter1_name>value1</param:parameter1_name>
@@ -376,6 +376,8 @@ Tool use is formatted using XML-style tags. The tool name is prefixed by 'tool:'
 value can stretch
 multiple lines
 </param:parameter2_name>
+<param:array_param>item1</param:array_param>
+<param:array_param>item2</param:array_param>
 ...
 </tool:tool_name>
 
@@ -384,6 +386,7 @@ For example:
 <tool:read_files>
 <param:project>frontend</param:project>
 <param:path>src/main.js</param:path>
+<param:path>src/utils.js</param:path>
 </tool:read_files>
 
 Always adhere to this format for the tool use to ensure proper parsing and execution."#.to_string()
