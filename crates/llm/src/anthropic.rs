@@ -109,6 +109,10 @@ impl DefaultMessageConverter {
                         std::mem::discriminant(block).hash(&mut hasher);
                         match block {
                             ContentBlock::Text { text } => text.hash(&mut hasher),
+                            ContentBlock::Image { media_type, data } => {
+                                media_type.hash(&mut hasher);
+                                data.hash(&mut hasher);
+                            }
                             ContentBlock::ToolUse { id, name, input } => {
                                 id.hash(&mut hasher);
                                 name.hash(&mut hasher);
@@ -221,6 +225,16 @@ impl DefaultMessageConverter {
                                 ContentBlock::Text { text } => {
                                     ("text".to_string(), AnthropicBlockContent::Text { text })
                                 }
+                                ContentBlock::Image { media_type, data } => (
+                                    "image".to_string(),
+                                    AnthropicBlockContent::Image {
+                                        source: AnthropicImageSource {
+                                            source_type: "base64".to_string(),
+                                            media_type,
+                                            data,
+                                        },
+                                    },
+                                ),
                                 ContentBlock::ToolUse { id, name, input } => (
                                     "tool_use".to_string(),
                                     AnthropicBlockContent::ToolUse { id, name, input },
@@ -451,6 +465,9 @@ enum AnthropicBlockContent {
     Text {
         text: String,
     },
+    Image {
+        source: AnthropicImageSource,
+    },
     Thinking {
         thinking: String,
         signature: String,
@@ -469,6 +486,15 @@ enum AnthropicBlockContent {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+}
+
+/// Anthropic image source structure
+#[derive(Debug, Serialize)]
+struct AnthropicImageSource {
+    #[serde(rename = "type")]
+    source_type: String,
+    media_type: String,
+    data: String,
 }
 
 /// Anthropic-specific message structure

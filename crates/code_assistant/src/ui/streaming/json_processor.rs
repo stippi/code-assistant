@@ -295,6 +295,13 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                         ContentBlock::RedactedThinking { .. } => {
                             // Redacted thinking blocks are not displayed
                         }
+                        ContentBlock::Image { media_type, data } => {
+                            // Images in assistant messages - preserve for display
+                            fragments.push(DisplayFragment::Image {
+                                media_type: media_type.clone(),
+                                data: data.clone(),
+                            });
+                        }
                     }
                 }
             }

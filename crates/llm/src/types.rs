@@ -83,6 +83,14 @@ pub enum ContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
 
+    #[serde(rename = "image")]
+    Image {
+        /// Image format (e.g., "image/jpeg", "image/png")
+        media_type: String,
+        /// Base64-encoded image data
+        data: String,
+    },
+
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -161,4 +169,23 @@ pub trait RateLimitHandler: Sized {
 
     /// Log the current rate limit status
     fn log_status(&self);
+}
+
+impl ContentBlock {
+    /// Create an image content block from raw image data
+    pub fn new_image(media_type: impl Into<String>, data: impl AsRef<[u8]>) -> Self {
+        use base64::Engine as _;
+        ContentBlock::Image {
+            media_type: media_type.into(),
+            data: base64::engine::general_purpose::STANDARD.encode(data.as_ref()),
+        }
+    }
+
+    /// Create an image content block from base64-encoded data
+    pub fn new_image_base64(media_type: impl Into<String>, base64_data: impl Into<String>) -> Self {
+        ContentBlock::Image {
+            media_type: media_type.into(),
+            data: base64_data.into(),
+        }
+    }
 }

@@ -844,3 +844,83 @@ async fn test_anthropic_rate_limit_retry() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_image_content_blocks() -> Result<()> {
+    // Test creating image content blocks
+    let raw_image_data = b"fake-png-data";
+    let image_block = ContentBlock::new_image("image/png", raw_image_data);
+
+    match image_block {
+        ContentBlock::Image { media_type, data } => {
+            assert_eq!(media_type, "image/png");
+            // Verify base64 encoding
+            use base64::Engine as _;
+            let decoded = base64::engine::general_purpose::STANDARD.decode(&data)?;
+            assert_eq!(decoded, raw_image_data);
+        }
+        _ => panic!("Expected Image content block"),
+    }
+
+    // Test creating image block from base64
+    let base64_data = "aGVsbG8gd29ybGQ="; // "hello world" in base64
+    let image_block = ContentBlock::new_image_base64("image/jpeg", base64_data);
+
+    match image_block {
+        ContentBlock::Image { media_type, data } => {
+            assert_eq!(media_type, "image/jpeg");
+            assert_eq!(data, base64_data);
+        }
+        _ => panic!("Expected Image content block"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_image_message_conversion() -> Result<()> {
+    // Create a message with mixed text and image content
+    let image_data = "aGVsbG8gd29ybGQ="; // "hello world" in base64
+    let message = Message {
+        role: MessageRole::User,
+        content: MessageContent::Structured(vec![
+            ContentBlock::Text {
+                text: "What do you see in this image?".to_string(),
+            },
+            ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: image_data.to_string(),
+            },
+        ]),
+        request_id: None,
+        usage: None,
+    };
+
+    // Test OpenAI conversion
+    let openai_message = OpenAIClient::convert_message(&message);
+    assert_eq!(openai_message.role, "user");
+
+    // Should use structured content format
+    if let Some(content) = openai_message.content {
+        if let Some(content_array) = content.as_array() {
+            assert_eq!(content_array.len(), 2);
+
+            // Check text part
+            let text_part = &content_array[0];
+            assert_eq!(text_part["type"], "text");
+            assert_eq!(text_part["text"], "What do you see in this image?");
+
+            // Check image part
+            let image_part = &content_array[1];
+            assert_eq!(image_part["type"], "image_url");
+            let expected_url = format!("data:image/png;base64,{}", image_data);
+            assert_eq!(image_part["image_url"]["url"], expected_url);
+        } else {
+            panic!("Expected array content for mixed message");
+        }
+    } else {
+        panic!("Expected content in OpenAI message");
+    }
+
+    Ok(())
+}

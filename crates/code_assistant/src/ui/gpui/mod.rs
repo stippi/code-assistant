@@ -926,6 +926,16 @@ impl Gpui {
                 // Refresh UI to trigger re-render
                 cx.refresh().expect("Failed to refresh windows");
             }
+            UiEvent::AddImage { media_type, data } => {
+                let queue = self.message_queue.lock().unwrap();
+                if let Some(last) = queue.last() {
+                    // Add image to the last message container
+                    cx.update_entity(&last, |message, cx| {
+                        message.add_image_block(media_type, data, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
         }
     }
 
@@ -969,6 +979,12 @@ impl Gpui {
                 DisplayFragment::ToolEnd { id } => {
                     cx.update_entity(container, |container, cx| {
                         container.end_tool_use(id, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::Image { media_type, data } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_image_block(media_type, data, cx);
                     })
                     .expect("Failed to update entity");
                 }
@@ -1268,6 +1284,12 @@ impl UserInterface for Gpui {
                 }
 
                 self.push_event(UiEvent::EndTool { id: id.clone() });
+            }
+            DisplayFragment::Image { media_type, data } => {
+                self.push_event(UiEvent::AddImage {
+                    media_type: media_type.clone(),
+                    data: data.clone(),
+                });
             }
         }
 

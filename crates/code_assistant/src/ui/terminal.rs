@@ -189,6 +189,10 @@ impl UserInterface for TerminalUI {
             DisplayFragment::ToolEnd { .. } => {
                 // No special formatting needed at tool end
             }
+            DisplayFragment::Image { media_type, .. } => {
+                // Display image placeholder in terminal (can't show actual images)
+                write!(writer, "[Image: {}]", media_type.clone().yellow())?;
+            }
         }
 
         writer.flush()?;

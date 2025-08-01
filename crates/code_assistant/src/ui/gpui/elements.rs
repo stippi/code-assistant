@@ -145,6 +145,26 @@ impl MessageContainer {
         cx.notify();
     }
 
+    // Add a new image block
+    pub fn add_image_block(
+        &self,
+        media_type: impl Into<String>,
+        data: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_any_thinking_blocks(cx);
+
+        let request_id = *self.current_request_id.lock().unwrap();
+        let mut elements = self.elements.lock().unwrap();
+        let block = BlockData::ImageBlock(ImageBlock {
+            media_type: media_type.into(),
+            data: data.into(),
+        });
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        elements.push(view);
+        cx.notify();
+    }
+
     // Add a new tool use block
     pub fn add_tool_use_block(
         &self,
@@ -398,6 +418,7 @@ pub enum BlockData {
     TextBlock(TextBlock),
     ThinkingBlock(ThinkingBlock),
     ToolUse(ToolUseBlock),
+    ImageBlock(ImageBlock),
 }
 
 impl BlockData {
@@ -1155,6 +1176,22 @@ impl Render for BlockView {
                     ])
                     .into_any_element()
             }
+            BlockData::ImageBlock(block) => {
+                // For now, just display a placeholder for images
+                // TODO: Implement actual image rendering when GPUI supports it
+                div()
+                    .p_2()
+                    .bg(cx.theme().info.opacity(0.1))
+                    .border_1()
+                    .border_color(cx.theme().info.opacity(0.3))
+                    .rounded_md()
+                    .child(
+                        div()
+                            .text_color(cx.theme().info_foreground.opacity(0.7))
+                            .child(format!("[Image: {}]", block.media_type)),
+                    )
+                    .into_any_element()
+            }
         }
     }
 }
@@ -1173,6 +1210,13 @@ pub struct ThinkingBlock {
     pub is_completed: bool,
     pub start_time: std::time::Instant,
     pub end_time: std::time::Instant,
+}
+
+/// Image block with media type and base64 data
+#[derive(Debug, Clone)]
+pub struct ImageBlock {
+    pub media_type: String,
+    pub data: String,
 }
 
 impl ThinkingBlock {

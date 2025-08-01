@@ -520,11 +520,44 @@ impl Render for RootView {
                                     .border_t_1()
                                     .border_color(cx.theme().border)
                                     .flex()
-                                    .flex_row()
-                                    .justify_between()
-                                    .items_center()
-                                    .p_2()
+                                    .flex_col() // Changed to column to accommodate attachments area
                                     .gap_2()
+                                    // TODO: Add attachments area above the input field
+                                    // This area should:
+                                    // 1. Show image previews when user pastes images from clipboard
+                                    // 2. Allow users to remove attached images
+                                    // 3. Handle clipboard paste events to capture images
+                                    //
+                                    // Example clipboard handling code:
+                                    // ```rust
+                                    // fn paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
+                                    //     if let Some(clipboard_item) = cx.read_from_clipboard() {
+                                    //         for entry in clipboard_item.into_entries() {
+                                    //             if let ClipboardEntry::Image(image) = entry {
+                                    //                 let content_block = ContentBlock::new_image(
+                                    //                     image.format.mime_type(),
+                                    //                     &image.bytes
+                                    //                 );
+                                    //                 // Add to attachments for this message
+                                    //             }
+                                    //         }
+                                    //     }
+                                    // }
+                                    // ```
+                                    //
+                                    // The attachments should be stored in RootView state and included
+                                    // when sending messages to create MessageContent::Structured with
+                                    // both text and image ContentBlocks.
+
+                                    // Main input row
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .justify_between()
+                                            .items_center()
+                                            .p_2()
+                                            .gap_2()
                                     .child({
                                         let text_input_handle =
                                             self.text_input.read(cx).focus_handle(cx);
@@ -643,6 +676,7 @@ impl Render for RootView {
 
                                         buttons
                                     }),
+                                    ), // Close main input row
                             ),
                     )
                     // Right sidebar with memory view - only show if not collapsed
