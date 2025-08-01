@@ -71,15 +71,16 @@ impl ToolRegistry {
     fn register_default_tools(&mut self) {
         // Import all tools
         use crate::tools::impls::{
-            DeleteFilesTool, EditTool, ExecuteCommandTool, ListFilesTool, ListProjectsTool,
-            NameSessionTool, PerplexityAskTool, ReadFilesTool, ReplaceInFileTool, SearchFilesTool,
-            WebFetchTool, WebSearchTool, WriteFileTool,
+            DeleteFilesTool, EditTool, ExecuteCommandTool, GlobFilesTool, ListFilesTool,
+            ListProjectsTool, NameSessionTool, PerplexityAskTool, ReadFilesTool, ReplaceInFileTool,
+            SearchFilesTool, WebFetchTool, WebSearchTool, WriteFileTool,
         };
 
         // Register all tools - the ToolScope system will filter which ones are available
         self.register(Box::new(DeleteFilesTool));
         self.register(Box::new(EditTool));
         self.register(Box::new(ExecuteCommandTool));
+        self.register(Box::new(GlobFilesTool));
         self.register(Box::new(ListFilesTool));
         self.register(Box::new(ListProjectsTool));
         self.register(Box::new(NameSessionTool));
