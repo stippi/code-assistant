@@ -201,6 +201,7 @@ impl Gpui {
                 ("replace_in_file".to_string(), "path".to_string()),
                 ("write_file".to_string(), "path".to_string()),
                 ("search_files".to_string(), "regex".to_string()),
+                ("glob_files".to_string(), "pattern".to_string()),
             ],
             false, // These are not full-width
         )));

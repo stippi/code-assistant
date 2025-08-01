@@ -61,6 +61,7 @@ impl SmartToolFilter {
                 | "list_files"
                 | "list_projects"
                 | "search_files"
+                | "glob_files"
                 | "web_fetch"
                 | "web_search"
         )

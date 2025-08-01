@@ -2,6 +2,7 @@
 pub mod delete_files;
 pub mod edit;
 pub mod execute_command;
+pub mod glob_files;
 pub mod list_files;
 pub mod list_projects;
 pub mod name_session;
@@ -17,6 +18,7 @@ pub mod write_file;
 pub use delete_files::DeleteFilesTool;
 pub use edit::EditTool;
 pub use execute_command::ExecuteCommandTool;
+pub use glob_files::GlobFilesTool;
 pub use list_files::ListFilesTool;
 pub use list_projects::ListProjectsTool;
 pub use name_session::NameSessionTool;
