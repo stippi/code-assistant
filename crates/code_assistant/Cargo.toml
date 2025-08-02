@@ -58,6 +58,12 @@ rand = "0.8.5"
 similar = { version = "2.5.0", features = ["inline"] }
 async-channel = "2.3.1"
 
+# Base64 encoding for images
+base64 = "0.22"
+
+# Image processing
+image = "0.25"
+
 [dev-dependencies]
 axum = "0.7"
 bytes = "1.10"

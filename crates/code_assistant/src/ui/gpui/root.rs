@@ -1,3 +1,4 @@
+use super::attachment::{AttachmentEvent, AttachmentView};
 use super::auto_scroll::AutoScrollContainer;
 use super::chat_sidebar::ChatSidebar;
 use super::file_icons;
@@ -5,15 +6,16 @@ use super::memory::MemoryView;
 use super::messages::MessagesView;
 use super::theme;
 use super::{CloseWindow, Gpui, UiEventSender};
-use crate::persistence::ChatMetadata;
+use crate::persistence::{ChatMetadata, DraftAttachment};
 use crate::ui::ui_events::UiEvent;
 use crate::ui::StreamingState;
+use base64::Engine;
 use gpui::{
-    div, prelude::*, px, App, Context, CursorStyle, Entity, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent,
+    div, prelude::*, px, App, ClipboardEntry, Context, CursorStyle, Entity, FocusHandle, Focusable,
+    MouseButton, MouseUpEvent,
 };
 use gpui_component::input::TextInput;
-use gpui_component::input::{InputEvent, InputState};
+use gpui_component::input::{InputEvent, InputState, Paste};
 use gpui_component::ActiveTheme;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
@@ -38,6 +40,10 @@ pub struct RootView {
     streaming_state: Arc<Mutex<StreamingState>>,
     // Subscription to text input events
     _input_subscription: gpui::Subscription,
+    // Attachments for the current message being composed
+    attachments: Vec<DraftAttachment>,
+    // Attachment view entities
+    attachment_views: Vec<Entity<AttachmentView>>,
 }
 
 impl RootView {
@@ -74,6 +80,8 @@ impl RootView {
             chat_sessions: Vec::new(),
             streaming_state,
             _input_subscription: input_subscription,
+            attachments: Vec::new(),
+            attachment_views: Vec::new(),
         };
 
         // Request initial chat session list
@@ -141,14 +149,14 @@ impl RootView {
     }
 
     fn send_message(
-        &self,
+        &mut self,
         session_id: &str,
         content: String,
         text_input: &Entity<InputState>,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        if content.trim().is_empty() {
+        if content.trim().is_empty() && self.attachments.is_empty() {
             return;
         }
 
@@ -177,24 +185,28 @@ impl RootView {
             if agent_is_running {
                 // Queue the message for the running agent
                 tracing::info!(
-                    "RootView: Queuing user message for running agent in session {}: {}",
+                    "RootView: Queuing user message for running agent in session {}: {} (with {} attachments)",
                     session_id,
-                    content
+                    content,
+                    self.attachments.len()
                 );
                 let _ = sender.0.try_send(UiEvent::QueueUserMessage {
                     message: content.clone(),
                     session_id: session_id.to_string(),
+                    attachments: self.attachments.clone(),
                 });
             } else {
                 // Send message normally (agent is idle)
                 tracing::info!(
-                    "RootView: Sending user message to session {}: {}",
+                    "RootView: Sending user message to session {}: {} (with {} attachments)",
                     session_id,
-                    content
+                    content,
+                    self.attachments.len()
                 );
                 let _ = sender.0.try_send(UiEvent::SendUserMessage {
                     message: content.clone(),
                     session_id: session_id.to_string(),
+                    attachments: self.attachments.clone(),
                 });
             }
         }
@@ -203,6 +215,9 @@ impl RootView {
         if let Some(gpui) = cx.try_global::<Gpui>() {
             gpui.clear_draft_for_session(session_id);
         }
+
+        // Clear attachments
+        self.attachments.clear();
 
         // Clear the input field
         text_input.update(cx, |text_input, cx| {
@@ -216,9 +231,10 @@ impl RootView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(session_id) = &self.current_session_id {
+        if let Some(session_id) = self.current_session_id.clone() {
             let content = self.text_input.read(cx).value().to_string();
-            self.send_message(session_id, content, &self.text_input, window, cx);
+            let text_input = self.text_input.clone();
+            self.send_message(&session_id, content, &text_input, window, cx);
         }
         cx.notify();
     }
@@ -245,6 +261,77 @@ impl RootView {
         cx.notify();
     }
 
+    fn on_paste(&mut self, _: &Paste, _window: &mut gpui::Window, cx: &mut Context<Self>) {
+        if let Some(clipboard_item) = cx.read_from_clipboard() {
+            for entry in clipboard_item.into_entries() {
+                if let ClipboardEntry::Image(image) = entry {
+                    // Create a DraftAttachment from the image
+                    let attachment = DraftAttachment::Image {
+                        content: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
+                        mime_type: image.format.mime_type().to_string(),
+                    };
+
+                    self.attachments.push(attachment);
+
+                    // Rebuild attachment views
+                    self.rebuild_attachment_views(cx);
+
+                    // Save attachments to draft if we have a current session
+                    if let Some(session_id) = &self.current_session_id {
+                        self.save_draft_with_attachments(session_id, cx);
+                    }
+
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    fn remove_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.attachments.len() {
+            self.attachments.remove(index);
+
+            // Rebuild attachment views with updated indices
+            self.rebuild_attachment_views(cx);
+
+            // Update draft
+            if let Some(session_id) = &self.current_session_id {
+                self.save_draft_with_attachments(session_id, cx);
+            }
+
+            cx.notify();
+        }
+    }
+
+    fn save_draft_with_attachments(&self, session_id: &str, cx: &mut Context<Self>) {
+        if let Some(gpui) = cx.try_global::<Gpui>() {
+            let text = self.text_input.read(cx).value().to_string();
+            gpui.save_draft_for_session(session_id, &text, &self.attachments);
+        }
+    }
+
+    /// Rebuild attachment views when attachments change
+    fn rebuild_attachment_views(&mut self, cx: &mut Context<Self>) {
+        self.attachment_views.clear();
+
+        for (index, attachment) in self.attachments.iter().enumerate() {
+            let attachment_view = cx.new(|cx| AttachmentView::new(attachment.clone(), index, cx));
+
+            // Subscribe to attachment events
+            cx.subscribe(
+                &attachment_view,
+                |view, _attachment_view, event: &AttachmentEvent, cx| match event {
+                    AttachmentEvent::Remove(index) => {
+                        view.remove_attachment(*index, cx);
+                    }
+                },
+            )
+            .detach();
+
+            self.attachment_views.push(attachment_view);
+        }
+    }
+
     // Handle text input events for draft functionality
     fn on_input_event(
         &mut self,
@@ -256,9 +343,9 @@ impl RootView {
         match event {
             InputEvent::Change(text) => {
                 if let Some(session_id) = &self.current_session_id {
-                    // Save draft immediately for now (no debouncing for simplicity)
+                    // Save draft with attachments immediately for now (no debouncing for simplicity)
                     if let Some(gpui) = cx.try_global::<Gpui>() {
-                        gpui.save_draft_for_session(session_id, text);
+                        gpui.save_draft_for_session(session_id, text, &self.attachments);
                     }
                 }
             }
@@ -267,10 +354,10 @@ impl RootView {
             InputEvent::PressEnter { secondary } => {
                 // Only send message on plain ENTER (not with modifiers)
                 if !secondary {
-                    if let Some(session_id) = &self.current_session_id {
+                    if let Some(session_id) = self.current_session_id.clone() {
                         // IMMEDIATELY clear any existing draft to prevent the newline from being saved
                         if let Some(gpui) = cx.try_global::<Gpui>() {
-                            gpui.clear_draft_for_session(session_id);
+                            gpui.clear_draft_for_session(&session_id);
                         }
 
                         // Get current text (this might include the newline that was just added)
@@ -278,7 +365,8 @@ impl RootView {
                         // Remove trailing newline if present (from ENTER key press)
                         let cleaned_text = current_text.trim_end_matches('\n').to_string();
 
-                        self.send_message(session_id, cleaned_text, &self.text_input, window, cx);
+                        let text_input = self.text_input.clone();
+                        self.send_message(&session_id, cleaned_text, &text_input, window, cx);
                     }
                 }
                 // If secondary is true, do nothing - modifiers will be handled by InsertLineBreak action
@@ -296,24 +384,30 @@ impl RootView {
     ) {
         let gpui = cx.try_global::<Gpui>();
 
-        // Determine what value to set in the input field
-        let input_value = if let (Some(new_id), Some(gpui)) = (new_session_id, &gpui) {
-            if let Some(draft) = gpui.load_draft_for_session(&new_id) {
+        // Determine what value to set in the input field and load attachments
+        let (input_value, attachments) = if let (Some(new_id), Some(gpui)) = (new_session_id, &gpui)
+        {
+            if let Some((draft_text, draft_attachments)) = gpui.load_draft_for_session(&new_id) {
                 debug!(
-                    "Loading draft for new session {}: {} characters",
+                    "Loading draft for new session {}: {} characters, {} attachments",
                     new_id,
-                    draft.len()
+                    draft_text.len(),
+                    draft_attachments.len()
                 );
-                draft
+                (draft_text, draft_attachments)
             } else {
                 debug!("No draft found for new session: {}", new_id);
-                "".to_string()
+                ("".to_string(), Vec::new())
             }
         } else {
-            // No new session, clear the text input
-            debug!("No new session, clearing text input");
-            "".to_string()
+            // No new session, clear the text input and attachments
+            debug!("No new session, clearing text input and attachments");
+            ("".to_string(), Vec::new())
         };
+
+        // Update attachments and rebuild views
+        self.attachments = attachments;
+        self.rebuild_attachment_views(cx);
 
         self.text_input.update(cx, |text_input, cx| {
             text_input.set_value(input_value, window, cx);
@@ -377,6 +471,7 @@ impl Render for RootView {
                 }
             })
             .on_action(cx.listener(Self::on_cancel_agent))
+            .on_action(cx.listener(Self::on_paste))
             .bg(cx.theme().background)
             .track_focus(&self.focus_handle(cx))
             .flex()
@@ -520,11 +615,34 @@ impl Render for RootView {
                                     .border_t_1()
                                     .border_color(cx.theme().border)
                                     .flex()
-                                    .flex_row()
-                                    .justify_between()
-                                    .items_center()
-                                    .p_2()
+                                    .flex_col() // Changed to column to accommodate attachments area
                                     .gap_2()
+                                    // Attachments area - show image previews when available
+                                    .when(!self.attachments.is_empty(), |parent| {
+                                        parent.child(
+                                            div()
+                                                .p_2()
+                                                .border_b_1()
+                                                .border_color(cx.theme().border)
+                                                .flex()
+                                                .flex_row()
+                                                .gap_2()
+                                                .flex_wrap()
+                                                .children(
+                                                    self.attachment_views.iter().cloned()
+                                                )
+                                        )
+                                    })
+
+                                    // Main input row
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .justify_between()
+                                            .items_center()
+                                            .p_2()
+                                            .gap_2()
                                     .child({
                                         let text_input_handle =
                                             self.text_input.read(cx).focus_handle(cx);
@@ -643,6 +761,7 @@ impl Render for RootView {
 
                                         buttons
                                     }),
+                                    ), // Close main input row
                             ),
                     )
                     // Right sidebar with memory view - only show if not collapsed

@@ -547,7 +547,7 @@ fn run_agent_gpui(
                     manager
                         .start_agent_for_message(
                             &session_id,
-                            initial_task,
+                            vec![llm::ContentBlock::new_text(initial_task)],
                             llm_client,
                             project_manager,
                             command_executor,
@@ -829,27 +829,68 @@ async fn handle_backend_events(
             ui::gpui::BackendEvent::SendUserMessage {
                 session_id,
                 message,
+                attachments,
             } => {
-                debug!("User message for session {}: {}", session_id, message);
+                debug!(
+                    "User message with for session {}: {} (with {} attachments)",
+                    session_id,
+                    message,
+                    attachments.len()
+                );
 
-                // First: Display the user message immediately in the UI
+                // Convert DraftAttachments to ContentBlocks
+                let mut content_blocks = Vec::new();
+
+                // Add text content if not empty
+                if !message.is_empty() {
+                    content_blocks.push(llm::ContentBlock::Text {
+                        text: message.clone(),
+                    });
+                }
+
+                // Add image attachments
+                for attachment in &attachments {
+                    match attachment {
+                        persistence::DraftAttachment::Image { content, mime_type } => {
+                            content_blocks.push(llm::ContentBlock::Image {
+                                media_type: mime_type.clone(),
+                                data: content.clone(),
+                            });
+                        }
+                        persistence::DraftAttachment::Text { content } => {
+                            content_blocks.push(llm::ContentBlock::Text {
+                                text: content.clone(),
+                            });
+                        }
+                        persistence::DraftAttachment::File {
+                            content,
+                            filename,
+                            mime_type: _,
+                        } => {
+                            // For now, treat files as text content with filename prefix
+                            let file_text = format!("File: {}\n{}", filename, content);
+                            content_blocks.push(llm::ContentBlock::Text { text: file_text });
+                        }
+                    }
+                }
+
+                // Display the user message with attachments in the UI
                 if let Err(e) = gui
                     .send_event(crate::ui::UiEvent::DisplayUserInput {
                         content: message.clone(),
+                        attachments: attachments.clone(),
                     })
                     .await
                 {
-                    error!("Failed to display user message: {}", e);
+                    error!("Failed to display user message with attachments: {}", e);
                 }
 
-                // Use MultiSessionManager.start_agent_for_message() instead of creating a separate agent
+                // Start the agent with structured content
                 let result = {
-                    // Create components for the agent
                     let project_manager = Box::new(DefaultProjectManager::new());
                     let command_executor = Box::new(DefaultCommandExecutor);
                     let user_interface = Arc::new(Box::new(gui.clone()) as Box<dyn UserInterface>);
 
-                    // Create LLM client
                     let llm_client = create_llm_client(
                         provider.clone(),
                         model.clone(),
@@ -864,12 +905,11 @@ async fn handle_backend_events(
 
                     match llm_client {
                         Ok(client) => {
-                            // Use the MultiSessionManager to start the agent properly
                             let mut manager = multi_session_manager.lock().unwrap();
                             manager
                                 .start_agent_for_message(
                                     &session_id,
-                                    message.clone(),
+                                    content_blocks,
                                     client,
                                     project_manager,
                                     command_executor,
@@ -887,7 +927,6 @@ async fn handle_backend_events(
                 match result {
                     Ok(_) => {
                         debug!("Agent started for session {}", session_id);
-                        // No response needed for SendUserMessage - agent communicates via UI
                         continue;
                     }
                     Err(e) => {
@@ -902,18 +941,56 @@ async fn handle_backend_events(
             ui::gpui::BackendEvent::QueueUserMessage {
                 session_id,
                 message,
+                attachments,
             } => {
-                debug!("Queue user message for session {}: {}", session_id, message);
+                debug!(
+                    "Queue user message with attachments for session {}: {} (with {} attachments)",
+                    session_id,
+                    message,
+                    attachments.len()
+                );
+
+                // Convert DraftAttachments to ContentBlocks
+                let mut content_blocks = Vec::new();
+
+                if !message.is_empty() {
+                    content_blocks.push(llm::ContentBlock::Text {
+                        text: message.clone(),
+                    });
+                }
+
+                for attachment in &attachments {
+                    match attachment {
+                        persistence::DraftAttachment::Image { content, mime_type } => {
+                            content_blocks.push(llm::ContentBlock::Image {
+                                media_type: mime_type.clone(),
+                                data: content.clone(),
+                            });
+                        }
+                        persistence::DraftAttachment::Text { content } => {
+                            content_blocks.push(llm::ContentBlock::Text {
+                                text: content.clone(),
+                            });
+                        }
+                        persistence::DraftAttachment::File {
+                            content,
+                            filename,
+                            mime_type: _,
+                        } => {
+                            let file_text = format!("File: {}\n{}", filename, content);
+                            content_blocks.push(llm::ContentBlock::Text { text: file_text });
+                        }
+                    }
+                }
 
                 let result = {
                     let mut manager = multi_session_manager.lock().unwrap();
-                    manager.queue_user_message(&session_id, message)
+                    manager.queue_structured_user_message(&session_id, content_blocks)
                 };
 
                 match result {
                     Ok(_) => {
-                        debug!("Message queued for session {}", session_id);
-                        // Get the updated pending message and send it back to UI
+                        debug!("Message with attachments queued for session {}", session_id);
                         let pending_message = {
                             let manager = multi_session_manager.lock().unwrap();
                             manager.get_pending_message(&session_id).unwrap_or(None)
@@ -924,7 +1001,10 @@ async fn handle_backend_events(
                         }
                     }
                     Err(e) => {
-                        error!("Failed to queue message for session {}: {}", session_id, e);
+                        error!(
+                            "Failed to queue message with attachments for session {}: {}",
+                            session_id, e
+                        );
                         ui::gpui::BackendResponse::Error {
                             message: format!("Failed to queue message: {}", e),
                         }

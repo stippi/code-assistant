@@ -227,6 +227,13 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                             ContentBlock::RedactedThinking { .. } => {
                                 // Redacted thinking blocks are not displayed
                             }
+                            ContentBlock::Image { media_type, data } => {
+                                // Images in assistant messages - preserve for display
+                                fragments.push(DisplayFragment::Image {
+                                    media_type: media_type.clone(),
+                                    data: data.clone(),
+                                });
+                            }
                         }
                     }
                 }
@@ -680,6 +687,15 @@ impl XmlStreamProcessor {
                     }
                     DisplayFragment::PlainText(_) | DisplayFragment::ThinkingText(_) => {
                         // Text or thinking - buffer it
+                        if let StreamingState::BufferingAfterTool {
+                            buffered_fragments, ..
+                        } = &mut self.streaming_state
+                        {
+                            buffered_fragments.push(fragment);
+                        }
+                    }
+                    DisplayFragment::Image { .. } => {
+                        // Image - buffer it
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..
                         } = &mut self.streaming_state

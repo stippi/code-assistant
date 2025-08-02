@@ -137,6 +137,10 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
     for (i, fragment) in fragments.iter().enumerate() {
         match fragment {
             DisplayFragment::PlainText(text) => println!("  [{i}] PlainText: {text}"),
+            DisplayFragment::Image {
+                media_type: _,
+                data: _,
+            } => println!("  [{i}] Image: ..."),
             DisplayFragment::ThinkingText(text) => println!("  [{i}] ThinkingText: {text}"),
             DisplayFragment::ToolName { name, id } => {
                 println!("  [{i}] ToolName: {name} (id: {id})")

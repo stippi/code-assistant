@@ -1,9 +1,11 @@
 use crate::ui::gpui::file_icons;
+use crate::ui::gpui::image;
 use crate::ui::gpui::parameter_renderers::ParameterRendererRegistry;
 use crate::ui::ToolStatus;
 use gpui::{
-    bounce, div, ease_in_out, percentage, px, svg, Animation, AnimationExt, Bounds, Context,
-    Entity, IntoElement, MouseButton, Pixels, SharedString, Styled, Task, Timer, Transformation,
+    bounce, div, ease_in_out, img, percentage, px, svg, Animation, AnimationExt, Bounds, Context,
+    Entity, ImageSource, IntoElement, MouseButton, ObjectFit, Pixels, SharedString, Styled, Task,
+    Timer, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
 use gpui_component::{label::Label, ActiveTheme};
@@ -12,6 +14,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::trace;
+
+/// Maximum height for rendered images in pixels
+const MAX_IMAGE_HEIGHT: f32 = 80.0;
 
 /// Role of a message in the conversation
 #[derive(Debug, Clone, PartialEq)]
@@ -140,6 +145,29 @@ impl MessageContainer {
         let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.into()));
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        elements.push(view);
+        cx.notify();
+    }
+
+    // Add a new image block
+    pub fn add_image_block(
+        &self,
+        media_type: impl Into<String>,
+        data: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_any_thinking_blocks(cx);
+
+        let media_type = media_type.into();
+        let data = data.into();
+
+        // Try to parse the base64 image data
+        let image = image::parse_base64_image(&media_type, &data);
+
+        let request_id = *self.current_request_id.lock().unwrap();
+        let mut elements = self.elements.lock().unwrap();
+        let block = BlockData::ImageBlock(ImageBlock { media_type, image });
         let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();
@@ -398,6 +426,7 @@ pub enum BlockData {
     TextBlock(TextBlock),
     ThinkingBlock(ThinkingBlock),
     ToolUse(ToolUseBlock),
+    ImageBlock(ImageBlock),
 }
 
 impl BlockData {
@@ -450,6 +479,11 @@ impl BlockView {
             animation_task: None,
             current_project,
         }
+    }
+
+    /// Check if this block is an image block
+    pub fn is_image_block(&self) -> bool {
+        matches!(self.block, BlockData::ImageBlock(_))
     }
 
     fn toggle_thinking_collapsed(&mut self, cx: &mut Context<Self>) {
@@ -1155,6 +1189,54 @@ impl Render for BlockView {
                     ])
                     .into_any_element()
             }
+            BlockData::ImageBlock(block) => {
+                if let Some(image) = &block.image {
+                    // Render the actual image - margins/spacing handled by parent container
+                    div()
+                        .flex_none() // Don't grow or shrink
+                        .child(
+                            div()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded_md()
+                                .overflow_hidden()
+                                .bg(cx.theme().card)
+                                .shadow_sm()
+                                .child(
+                                    img(ImageSource::Image(image.clone()))
+                                        .max_h(px(MAX_IMAGE_HEIGHT)) // Use constant for max height
+                                        .object_fit(ObjectFit::Contain), // Maintain aspect ratio
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    // Fallback to placeholder if image parsing failed
+                    div()
+                        .flex_none()
+                        .p_2()
+                        .bg(cx.theme().warning.opacity(0.1))
+                        .border_1()
+                        .border_color(cx.theme().warning.opacity(0.3))
+                        .rounded_md()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .max_w(px(200.0)) // Limit width of error message
+                        .child(
+                            div()
+                                .text_color(cx.theme().warning_foreground)
+                                .text_xs()
+                                .child("⚠️"),
+                        )
+                        .child(
+                            div()
+                                .text_color(cx.theme().warning_foreground.opacity(0.8))
+                                .text_xs()
+                                .child(format!("Failed: {}", block.media_type)),
+                        )
+                        .into_any_element()
+                }
+            }
         }
     }
 }
@@ -1173,6 +1255,14 @@ pub struct ThinkingBlock {
     pub is_completed: bool,
     pub start_time: std::time::Instant,
     pub end_time: std::time::Instant,
+}
+
+/// Image block with media type and base64 data
+#[derive(Debug, Clone)]
+pub struct ImageBlock {
+    pub media_type: String,
+    /// Parsed image ready for rendering, if parsing was successful
+    pub image: Option<Arc<gpui::Image>>,
 }
 
 impl ThinkingBlock {

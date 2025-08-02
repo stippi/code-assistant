@@ -197,6 +197,13 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                             llm::ContentBlock::RedactedThinking { .. } => {
                                 // Redacted thinking blocks are not displayed
                             }
+                            llm::ContentBlock::Image { media_type, data } => {
+                                // Images in assistant messages - preserve for display
+                                fragments.push(DisplayFragment::Image {
+                                    media_type: media_type.clone(),
+                                    data: data.clone(),
+                                });
+                            }
                         }
                     }
                 }
@@ -849,6 +856,15 @@ impl CaretStreamProcessor {
                     }
                     DisplayFragment::PlainText(_) | DisplayFragment::ThinkingText(_) => {
                         // Text or thinking - buffer it until we know if next tool is allowed
+                        if let StreamingState::BufferingAfterTool {
+                            buffered_fragments, ..
+                        } = &mut self.streaming_state
+                        {
+                            buffered_fragments.push(fragment);
+                        }
+                    }
+                    DisplayFragment::Image { .. } => {
+                        // Image - buffer it until we know if next tool is allowed
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..
                         } = &mut self.streaming_state

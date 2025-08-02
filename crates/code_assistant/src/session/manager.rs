@@ -147,7 +147,7 @@ impl SessionManager {
     pub async fn start_agent_for_message(
         &mut self,
         session_id: &str,
-        user_message: String,
+        content_blocks: Vec<llm::ContentBlock>,
         llm_provider: Box<dyn LLMProvider>,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
@@ -171,14 +171,14 @@ impl SessionManager {
             // Make sure the session instance is not stale
             session_instance.reload_from_persistence(&self.persistence)?;
 
-            // Add user message to session
+            // Add structured user message to session
             let user_msg = Message {
                 role: llm::MessageRole::User,
-                content: llm::MessageContent::Text(user_message.clone()),
+                content: llm::MessageContent::Structured(content_blocks),
                 request_id: None,
                 usage: None,
             };
-            session_instance.add_message(user_msg.clone());
+            session_instance.add_message(user_msg);
 
             // Clone all needed data to avoid borrowing conflicts
             let name = session_instance.session.name.clone();
@@ -280,7 +280,7 @@ impl SessionManager {
             debug!("Starting agent for session {}", session_id_clone);
             let result = agent.run_single_iteration().await;
 
-            // Always set session state back to Idle when agent task ends (regardless of success/failure/cancellation)
+            // Always set session state back to Idle when agent task ends
             debug!(
                 "Agent task ending for session {}, setting state to Idle",
                 session_id_clone
@@ -317,7 +317,7 @@ impl SessionManager {
             result
         });
 
-        // Store the task handle
+        // Update the task handle for this session
         if let Some(session_instance) = self.active_sessions.get_mut(session_id) {
             session_instance.task_handle = Some(task_handle);
         }
@@ -459,6 +459,29 @@ impl SessionManager {
         }
 
         Ok(())
+    }
+
+    /// Queue structured content (text + attachments) for a running agent session
+    pub fn queue_structured_user_message(
+        &mut self,
+        session_id: &str,
+        content_blocks: Vec<llm::ContentBlock>,
+    ) -> Result<()> {
+        // For now, convert structured content to text representation for pending messages
+        // In the future, we could extend pending messages to support structured content
+        let text_representation = content_blocks
+            .iter()
+            .filter_map(|block| match block {
+                llm::ContentBlock::Text { text } => Some(text.clone()),
+                llm::ContentBlock::Image { media_type, .. } => {
+                    Some(format!("[Image: {}]", media_type))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        self.queue_user_message(session_id, text_representation)
     }
 
     /// Get and clear pending message for editing

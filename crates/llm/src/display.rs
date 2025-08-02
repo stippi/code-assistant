@@ -7,6 +7,20 @@ impl fmt::Display for ContentBlock {
             ContentBlock::Text { text } => {
                 writeln!(f, "Text: {}", text.replace('\n', "\n    "))
             }
+            ContentBlock::Image { media_type, data } => {
+                let data_preview = if data.len() > 50 {
+                    format!("{}...", &data[..50])
+                } else {
+                    data.clone()
+                };
+                writeln!(
+                    f,
+                    "Image: media_type={}, data_length={}, data_preview={}",
+                    media_type,
+                    data.len(),
+                    data_preview
+                )
+            }
             ContentBlock::ToolUse { id, name, input } => {
                 writeln!(f, "ToolUse: id={}, name={}", id, name)?;
                 writeln!(

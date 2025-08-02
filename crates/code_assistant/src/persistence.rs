@@ -425,42 +425,49 @@ impl DraftStorage {
         self.drafts_dir.join(format!("{}.json", session_id))
     }
 
-    /// Save a draft for a session
-    pub fn save_draft(&self, session_id: &str, text_content: &str) -> Result<()> {
+    /// Save a draft with attachments for a session
+    pub fn save_draft(
+        &self,
+        session_id: &str,
+        text_content: &str,
+        attachments: &[DraftAttachment],
+    ) -> Result<()> {
         let file_path = self.draft_file_path(session_id);
 
-        if text_content.is_empty() {
-            // If content is empty, delete the draft file
+        if text_content.is_empty() && attachments.is_empty() {
+            // Remove the draft file if it exists
             if file_path.exists() {
                 std::fs::remove_file(&file_path)?;
-                debug!("Deleted empty draft for session: {}", session_id);
+                debug!("Cleared empty draft for session: {}", session_id);
             }
-        } else {
-            // Load existing draft or create new one
-            let mut draft = self
-                .load_draft_struct(session_id)?
-                .unwrap_or_else(|| SessionDraft::new(session_id.to_string()));
-
-            // Update message content
-            draft.set_message(text_content.to_string());
-
-            // Save as JSON
-            let json = serde_json::to_string_pretty(&draft)?;
-            std::fs::write(&file_path, json)?;
-            debug!(
-                "Saved draft for session {}: {} characters",
-                session_id,
-                text_content.len()
-            );
+            return Ok(());
         }
 
+        // Load existing draft or create new one
+        let mut draft = self
+            .load_draft_struct(session_id)?
+            .unwrap_or_else(|| SessionDraft::new(session_id.to_string()));
+
+        // Update message content and attachments
+        draft.set_message(text_content.to_string());
+        draft.attachments = attachments.to_vec();
+
+        // Serialize and save
+        let draft_json = serde_json::to_string_pretty(&draft)?;
+        std::fs::write(&file_path, draft_json)?;
+
+        debug!(
+            "Saved draft with {} attachments for session: {}",
+            attachments.len(),
+            session_id
+        );
         Ok(())
     }
 
-    /// Load a draft message for a session (backward compatibility)
-    pub fn load_draft(&self, session_id: &str) -> Result<Option<String>> {
+    /// Load a draft with attachments for a session
+    pub fn load_draft(&self, session_id: &str) -> Result<Option<(String, Vec<DraftAttachment>)>> {
         let draft = self.load_draft_struct(session_id)?;
-        Ok(draft.map(|d| d.get_message()))
+        Ok(draft.map(|d| (d.get_message(), d.attachments)))
     }
 
     /// Load the complete draft structure for a session
