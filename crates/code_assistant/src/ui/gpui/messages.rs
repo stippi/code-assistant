@@ -1,16 +1,11 @@
 use super::elements::MessageContainer;
-use gpui::{
-    bounce, div, ease_in_out, percentage, prelude::*, px, rgb, svg, Animation, AnimationExt, App,
-    Context, Entity, FocusHandle, Focusable, SharedString, Transformation, Window,
-};
+use gpui::{div, prelude::*, px, rgb, App, Context, Entity, FocusHandle, Focusable, Window};
 use gpui_component::{v_flex, ActiveTheme};
 use std::sync::{Arc, Mutex};
 
 /// MessagesView - Component responsible for displaying the message history
 pub struct MessagesView {
     message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
-    current_session_activity_state:
-        Arc<Mutex<Option<crate::session::instance::SessionActivityState>>>,
     current_pending_message: Arc<Mutex<Option<String>>>,
     current_project: Arc<Mutex<String>>,
     focus_handle: FocusHandle,
@@ -19,14 +14,10 @@ pub struct MessagesView {
 impl MessagesView {
     pub fn new(
         message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
-        current_session_activity_state: Arc<
-            Mutex<Option<crate::session::instance::SessionActivityState>>,
-        >,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             message_queue,
-            current_session_activity_state,
             current_pending_message: Arc::new(Mutex::new(None)),
             current_project: Arc::new(Mutex::new(String::new())),
             focus_handle: cx.focus_handle(),
@@ -234,60 +225,6 @@ impl Render for MessagesView {
                                     "pending-message",
                                     pending_message,
                                 )),
-                        ),
-                );
-            }
-        }
-
-        // Add waiting UI based on current session activity state (below all messages)
-        let current_activity_state = self.current_session_activity_state.lock().unwrap().clone();
-        if let Some(activity_state) = current_activity_state {
-            if matches!(
-                activity_state,
-                crate::session::instance::SessionActivityState::WaitingForResponse
-                    | crate::session::instance::SessionActivityState::RateLimited { .. }
-            ) {
-                let (message_text, icon_color) = match activity_state {
-                    crate::session::instance::SessionActivityState::RateLimited {
-                        seconds_remaining,
-                    } => (
-                        format!("Rate limited - retrying in {}s...", seconds_remaining),
-                        cx.theme().warning,
-                    ),
-                    crate::session::instance::SessionActivityState::WaitingForResponse => {
-                        ("Waiting for response...".to_string(), cx.theme().info)
-                    }
-                    _ => unreachable!(),
-                };
-
-                messages_container = messages_container.child(
-                    div()
-                        .p_3()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            svg()
-                                .size(px(16.))
-                                .path(SharedString::from("icons/arrow_circle.svg"))
-                                .text_color(icon_color)
-                                .with_animation(
-                                    "loading_indicator",
-                                    Animation::new(std::time::Duration::from_secs(2))
-                                        .repeat()
-                                        .with_easing(bounce(ease_in_out)),
-                                    |svg, delta| {
-                                        svg.with_transformation(Transformation::rotate(percentage(
-                                            delta,
-                                        )))
-                                    },
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_color(icon_color)
-                                .text_size(px(12.))
-                                .child(message_text),
                         ),
                 );
             }

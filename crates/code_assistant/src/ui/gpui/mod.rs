@@ -414,13 +414,8 @@ impl Gpui {
                         });
 
                         // Create MessagesView
-                        let messages_view = cx.new(|cx| {
-                            MessagesView::new(
-                                message_queue.clone(),
-                                gpui_clone.current_session_activity_state.clone(),
-                                cx,
-                            )
-                        });
+                        let messages_view =
+                            cx.new(|cx| MessagesView::new(message_queue.clone(), cx));
 
                         // Store MessagesView reference in Gpui
                         *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());

@@ -11,8 +11,9 @@ use crate::ui::ui_events::UiEvent;
 use crate::ui::StreamingState;
 use base64::Engine;
 use gpui::{
-    div, prelude::*, px, App, ClipboardEntry, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    MouseButton, MouseUpEvent,
+    bounce, div, ease_in_out, percentage, prelude::*, px, rgba, svg, Animation, AnimationExt, App,
+    ClipboardEntry, Context, CursorStyle, Entity, FocusHandle, Focusable, MouseButton,
+    MouseUpEvent, SharedString, Transformation,
 };
 use gpui_component::input::TextInput;
 use gpui_component::input::{InputEvent, InputState, Paste};
@@ -374,6 +375,115 @@ impl RootView {
         }
     }
 
+    /// Render the floating status popover if needed
+    fn render_status_popover(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        // Get current session activity state from global Gpui
+        let current_activity_state = if let Some(gpui) = cx.try_global::<Gpui>() {
+            gpui.current_session_activity_state.lock().unwrap().clone()
+        } else {
+            None
+        };
+
+        if let Some(activity_state) = current_activity_state {
+            if matches!(
+                activity_state,
+                crate::session::instance::SessionActivityState::WaitingForResponse
+                    | crate::session::instance::SessionActivityState::RateLimited { .. }
+            ) {
+                let (message_text, bg_color, border_color, text_color) = match activity_state {
+                    crate::session::instance::SessionActivityState::RateLimited {
+                        seconds_remaining,
+                    } => (
+                        format!("Rate limited - retrying in {}s...", seconds_remaining),
+                        if cx.theme().is_dark() {
+                            rgba(0x43140780) // Dark orange background with transparency
+                        } else {
+                            rgba(0xFFF7EDFF) // Light orange background
+                        },
+                        if cx.theme().is_dark() {
+                            rgba(0xF97316FF) // Orange border
+                        } else {
+                            rgba(0xFB923CFF) // Stronger orange border
+                        },
+                        if cx.theme().is_dark() {
+                            rgba(0xFB923CFF) // Orange text
+                        } else {
+                            rgba(0xEA580CFF) // Full orange text
+                        },
+                    ),
+                    crate::session::instance::SessionActivityState::WaitingForResponse => (
+                        "Waiting for response...".to_string(),
+                        if cx.theme().is_dark() {
+                            rgba(0x1E3A8A80) // Dark blue background with transparency
+                        } else {
+                            rgba(0xEFF6FFFF) // Light blue background
+                        },
+                        if cx.theme().is_dark() {
+                            rgba(0x3B82F6FF) // Blue border
+                        } else {
+                            rgba(0x60A5FAFF) // Stronger blue border
+                        },
+                        if cx.theme().is_dark() {
+                            rgba(0x60A5FAFF) // Blue text
+                        } else {
+                            rgba(0x2563EBFF) // Full blue text
+                        },
+                    ),
+                    _ => unreachable!(),
+                };
+
+                // Return the floating popover positioned at bottom
+                return vec![div()
+                    .absolute()
+                    .bottom(px(80.)) // Above input area (input is ~76px tall)
+                    .left(px(0.))
+                    .right(px(0.))
+                    .flex()
+                    .justify_center() // Center the content horizontally
+                    .child(
+                        div()
+                            .px_4()
+                            .py_2()
+                            .bg(bg_color)
+                            .border_1()
+                            .border_color(border_color)
+                            .rounded_lg()
+                            .shadow_lg()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                svg()
+                                    .size(px(14.))
+                                    .path(SharedString::from("icons/arrow_circle.svg"))
+                                    .text_color(text_color)
+                                    .with_animation(
+                                        "floating_loading_indicator",
+                                        Animation::new(std::time::Duration::from_secs(2))
+                                            .repeat()
+                                            .with_easing(bounce(ease_in_out)),
+                                        |svg, delta| {
+                                            svg.with_transformation(Transformation::rotate(
+                                                percentage(delta),
+                                            ))
+                                        },
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_color(text_color)
+                                    .text_size(px(11.))
+                                    .font_weight(gpui::FontWeight(500.0))
+                                    .child(message_text),
+                            ),
+                    )
+                    .into_any_element()];
+            }
+        }
+
+        vec![] // No popover to show
+    }
+
     // Handle session change: load new draft (no need to save current - already saved on every change)
     fn handle_session_change(
         &mut self,
@@ -594,8 +704,9 @@ impl Render for RootView {
                     // Left sidebar: Chat sessions
                     .child(self.chat_sidebar.clone())
                     .child(
-                        // Center: Messages and input (content area)
+                        // Center: Messages and input (content area) with floating popover
                         div()
+                            .relative() // For popover positioning
                             .bg(cx.theme().card)
                             .flex()
                             .flex_col()
@@ -606,6 +717,8 @@ impl Render for RootView {
                                 // Messages display area - use the AutoScrollContainer wrapping MessagesView
                                 self.auto_scroll_container.clone(),
                             )
+                            // Status popover - positioned at bottom center
+                            .children(self.render_status_popover(cx))
                             // Input area at the bottom
                             .child(
                                 div()
