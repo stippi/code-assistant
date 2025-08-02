@@ -1,10 +1,12 @@
 pub mod assets;
+pub mod attachment;
 pub mod auto_scroll;
 pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_renderer;
 pub mod elements;
 pub mod file_icons;
+pub mod image;
 mod memory;
 mod messages;
 pub mod parameter_renderers;

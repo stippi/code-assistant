@@ -1,3 +1,4 @@
+use super::attachment::{AttachmentEvent, AttachmentView};
 use super::auto_scroll::AutoScrollContainer;
 use super::chat_sidebar::ChatSidebar;
 use super::file_icons;
@@ -41,6 +42,8 @@ pub struct RootView {
     _input_subscription: gpui::Subscription,
     // Attachments for the current message being composed
     attachments: Vec<DraftAttachment>,
+    // Attachment view entities
+    attachment_views: Vec<Entity<AttachmentView>>,
 }
 
 impl RootView {
@@ -78,6 +81,7 @@ impl RootView {
             streaming_state,
             _input_subscription: input_subscription,
             attachments: Vec::new(),
+            attachment_views: Vec::new(),
         };
 
         // Request initial chat session list
@@ -269,6 +273,9 @@ impl RootView {
 
                     self.attachments.push(attachment);
 
+                    // Rebuild attachment views
+                    self.rebuild_attachment_views(cx);
+
                     // Save attachments to draft if we have a current session
                     if let Some(session_id) = &self.current_session_id {
                         self.save_draft_with_attachments(session_id, cx);
@@ -284,6 +291,9 @@ impl RootView {
         if index < self.attachments.len() {
             self.attachments.remove(index);
 
+            // Rebuild attachment views with updated indices
+            self.rebuild_attachment_views(cx);
+
             // Update draft
             if let Some(session_id) = &self.current_session_id {
                 self.save_draft_with_attachments(session_id, cx);
@@ -297,6 +307,28 @@ impl RootView {
         if let Some(gpui) = cx.try_global::<Gpui>() {
             let text = self.text_input.read(cx).value().to_string();
             gpui.save_draft_for_session(session_id, &text, &self.attachments);
+        }
+    }
+
+    /// Rebuild attachment views when attachments change
+    fn rebuild_attachment_views(&mut self, cx: &mut Context<Self>) {
+        self.attachment_views.clear();
+
+        for (index, attachment) in self.attachments.iter().enumerate() {
+            let attachment_view = cx.new(|cx| AttachmentView::new(attachment.clone(), index, cx));
+
+            // Subscribe to attachment events
+            cx.subscribe(
+                &attachment_view,
+                |view, _attachment_view, event: &AttachmentEvent, cx| match event {
+                    AttachmentEvent::Remove(index) => {
+                        view.remove_attachment(*index, cx);
+                    }
+                },
+            )
+            .detach();
+
+            self.attachment_views.push(attachment_view);
         }
     }
 
@@ -373,8 +405,9 @@ impl RootView {
             ("".to_string(), Vec::new())
         };
 
-        // Update attachments
+        // Update attachments and rebuild views
         self.attachments = attachments;
+        self.rebuild_attachment_views(cx);
 
         self.text_input.update(cx, |text_input, cx| {
             text_input.set_value(input_value, window, cx);
@@ -592,179 +625,11 @@ impl Render for RootView {
                                                 .border_b_1()
                                                 .border_color(cx.theme().border)
                                                 .flex()
-                                                .flex_col()
+                                                .flex_row()
                                                 .gap_2()
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(cx.theme().muted_foreground)
-                                                        .child(format!("{} attachment(s)", self.attachments.len()))
-                                                )
-                                                .child(
-                                                    div()
-                                                        .flex()
-                                                        .flex_row()
-                                                        .gap_2()
-                                                        .flex_wrap()
-                                                        .children(
-                                                            self.attachments.iter().enumerate().map(|(index, attachment)| {
-                                                                match attachment {
-                                                                    DraftAttachment::Image { mime_type, .. } => {
-                                                                        let display_text = mime_type.split('/').last().unwrap_or("image").to_string();
-                                                                        div()
-                                                                            .relative()
-                                                                            .w(px(80.))
-                                                                            .h(px(80.))
-                                                                            .rounded_md()
-                                                                            .bg(cx.theme().muted)
-                                                                            .border_1()
-                                                                            .border_color(cx.theme().border)
-                                                                            .flex()
-                                                                            .items_center()
-                                                                            .justify_center()
-                                                                            .child(
-                                                                                div()
-                                                                                    .text_xs()
-                                                                                    .text_color(cx.theme().muted_foreground)
-                                                                                    .child(display_text)
-                                                                            )
-                                                                            .child(
-                                                                                // Remove button
-                                                                                div()
-                                                                                    .absolute()
-                                                                                    .top(px(-6.))
-                                                                                    .right(px(-6.))
-                                                                                    .size(px(20.))
-                                                                                    .rounded_full()
-                                                                                    .bg(cx.theme().danger)
-                                                                                    .flex()
-                                                                                    .items_center()
-                                                                                    .justify_center()
-                                                                                    .cursor_pointer()
-                                                                                    .hover(|s| s.bg(cx.theme().danger.opacity(0.8)))
-                                                                                    .child(
-                                                                                        div()
-                                                                                            .text_xs()
-                                                                                            .text_color(cx.theme().background)
-                                                                                            .child("×")
-                                                                                    )
-                                                                                    .on_mouse_up(
-                                                                                        MouseButton::Left,
-                                                                                        cx.listener(move |view, _event, _window, cx| {
-                                                                                            view.remove_attachment(index, cx);
-                                                                                        }),
-                                                                                    )
-                                                                            )
-                                                                            .into_any_element()
-                                                                    }
-                                                                    DraftAttachment::Text { .. } => {
-                                                                        div()
-                                                                            .relative()
-                                                                            .w(px(80.))
-                                                                            .h(px(80.))
-                                                                            .rounded_md()
-                                                                            .bg(cx.theme().muted)
-                                                                            .border_1()
-                                                                            .border_color(cx.theme().border)
-                                                                            .flex()
-                                                                            .items_center()
-                                                                            .justify_center()
-                                                                            .child(
-                                                                                div()
-                                                                                    .text_xs()
-                                                                                    .text_color(cx.theme().muted_foreground)
-                                                                                    .child("text")
-                                                                            )
-                                                                            .child(
-                                                                                // Remove button
-                                                                                div()
-                                                                                    .absolute()
-                                                                                    .top(px(-6.))
-                                                                                    .right(px(-6.))
-                                                                                    .size(px(20.))
-                                                                                    .rounded_full()
-                                                                                    .bg(cx.theme().danger)
-                                                                                    .flex()
-                                                                                    .items_center()
-                                                                                    .justify_center()
-                                                                                    .cursor_pointer()
-                                                                                    .hover(|s| s.bg(cx.theme().danger.opacity(0.8)))
-                                                                                    .child(
-                                                                                        div()
-                                                                                            .text_xs()
-                                                                                            .text_color(cx.theme().background)
-                                                                                            .child("×")
-                                                                                    )
-                                                                                    .on_mouse_up(
-                                                                                        MouseButton::Left,
-                                                                                        cx.listener(move |view, _event, _window, cx| {
-                                                                                            view.remove_attachment(index, cx);
-                                                                                        }),
-                                                                                    )
-                                                                            )
-                                                                            .into_any_element()
-                                                                    }
-                                                                    DraftAttachment::File { filename, .. } => {
-                                                                        div()
-                                                                            .relative()
-                                                                            .w(px(80.))
-                                                                            .h(px(80.))
-                                                                            .rounded_md()
-                                                                            .bg(cx.theme().muted)
-                                                                            .border_1()
-                                                                            .border_color(cx.theme().border)
-                                                                            .flex()
-                                                                            .items_center()
-                                                                            .justify_center()
-                                                                            .flex_col()
-                                                                            .gap_1()
-                                                                            .child(
-                                                                                div()
-                                                                                    .text_xs()
-                                                                                    .text_color(cx.theme().muted_foreground)
-                                                                                    .child("📄")
-                                                                            )
-                                                                            .child(
-                                                                                div()
-                                                                                    .text_xs()
-                                                                                    .text_color(cx.theme().muted_foreground)
-                                                                                    .text_ellipsis()
-                                                                                    .w_full()
-                                                                                    .text_center()
-                                                                                    .child(filename.clone())
-                                                                            )
-                                                                            .child(
-                                                                                // Remove button
-                                                                                div()
-                                                                                    .absolute()
-                                                                                    .top(px(-6.))
-                                                                                    .right(px(-6.))
-                                                                                    .size(px(20.))
-                                                                                    .rounded_full()
-                                                                                    .bg(cx.theme().danger)
-                                                                                    .flex()
-                                                                                    .items_center()
-                                                                                    .justify_center()
-                                                                                    .cursor_pointer()
-                                                                                    .hover(|s| s.bg(cx.theme().danger.opacity(0.8)))
-                                                                                    .child(
-                                                                                        div()
-                                                                                            .text_xs()
-                                                                                            .text_color(cx.theme().background)
-                                                                                            .child("×")
-                                                                                    )
-                                                                                    .on_mouse_up(
-                                                                                        MouseButton::Left,
-                                                                                        cx.listener(move |view, _event, _window, cx| {
-                                                                                            view.remove_attachment(index, cx);
-                                                                                        }),
-                                                                                    )
-                                                                            )
-                                                                            .into_any_element()
-                                                                    }
-                                                                }
-                                                            })
-                                                        )
+                                                .flex_wrap()
+                                                .children(
+                                                    self.attachment_views.iter().cloned()
                                                 )
                                         )
                                     })

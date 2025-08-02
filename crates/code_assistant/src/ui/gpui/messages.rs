@@ -33,6 +33,51 @@ impl MessagesView {
         }
     }
 
+    /// Group consecutive image blocks into horizontal galleries for user messages
+    fn group_user_message_elements(
+        elements: Vec<Entity<super::elements::BlockView>>,
+        cx: &Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let mut result = Vec::new();
+        let mut current_images = Vec::new();
+
+        for element in elements {
+            if element.read(cx).is_image_block() {
+                // Collect consecutive image blocks
+                current_images.push(element);
+            } else {
+                // If we have accumulated images, create a gallery first
+                if !current_images.is_empty() {
+                    let image_gallery = div()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_2()
+                        .mt_2() // Add top margin to separate from text above
+                        .children(current_images.drain(..).map(|img| img.into_any_element()));
+                    result.push(image_gallery.into_any_element());
+                }
+
+                // Add the non-image element
+                result.push(element.into_any_element());
+            }
+        }
+
+        // Handle any remaining images at the end
+        if !current_images.is_empty() {
+            let image_gallery = div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap_2()
+                .mt_2() // Add top margin to separate from text above
+                .children(current_images.drain(..).map(|img| img.into_any_element()));
+            result.push(image_gallery.into_any_element());
+        }
+
+        result
+    }
+
     /// Update the pending message for the current session
     pub fn update_pending_message(&self, message: Option<String>) {
         *self.current_pending_message.lock().unwrap() = message;
@@ -119,14 +164,21 @@ impl Render for MessagesView {
                     message_container
                 };
 
-                // Render all block elements (but no longer render waiting content here)
+                // Render all block elements with special handling for user messages
                 let elements = msg.read(cx).elements();
-                let container_children: Vec<_> = elements
-                    .into_iter()
-                    .map(|element| element.into_any_element())
-                    .collect();
 
-                message_container.children(container_children)
+                if msg.read(cx).is_user_message() {
+                    // For user messages, group consecutive image blocks into horizontal galleries
+                    let container_children = Self::group_user_message_elements(elements, cx);
+                    message_container.children(container_children)
+                } else {
+                    // For assistant messages, render elements normally (vertically)
+                    let container_children: Vec<_> = elements
+                        .into_iter()
+                        .map(|element| element.into_any_element())
+                        .collect();
+                    message_container.children(container_children)
+                }
             })
             .collect();
 
