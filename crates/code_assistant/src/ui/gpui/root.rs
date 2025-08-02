@@ -5,15 +5,16 @@ use super::memory::MemoryView;
 use super::messages::MessagesView;
 use super::theme;
 use super::{CloseWindow, Gpui, UiEventSender};
-use crate::persistence::ChatMetadata;
+use crate::persistence::{ChatMetadata, DraftAttachment};
 use crate::ui::ui_events::UiEvent;
 use crate::ui::StreamingState;
+use base64::Engine;
 use gpui::{
-    div, prelude::*, px, App, Context, CursorStyle, Entity, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent,
+    div, prelude::*, px, App, ClipboardEntry, Context, CursorStyle, Entity, FocusHandle, Focusable,
+    MouseButton, MouseUpEvent,
 };
 use gpui_component::input::TextInput;
-use gpui_component::input::{InputEvent, InputState};
+use gpui_component::input::{InputEvent, InputState, Paste};
 use gpui_component::ActiveTheme;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
@@ -38,6 +39,8 @@ pub struct RootView {
     streaming_state: Arc<Mutex<StreamingState>>,
     // Subscription to text input events
     _input_subscription: gpui::Subscription,
+    // Attachments for the current message being composed
+    attachments: Vec<DraftAttachment>,
 }
 
 impl RootView {
@@ -74,6 +77,7 @@ impl RootView {
             chat_sessions: Vec::new(),
             streaming_state,
             _input_subscription: input_subscription,
+            attachments: Vec::new(),
         };
 
         // Request initial chat session list
@@ -141,14 +145,14 @@ impl RootView {
     }
 
     fn send_message(
-        &self,
+        &mut self,
         session_id: &str,
         content: String,
         text_input: &Entity<InputState>,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        if content.trim().is_empty() {
+        if content.trim().is_empty() && self.attachments.is_empty() {
             return;
         }
 
@@ -177,24 +181,28 @@ impl RootView {
             if agent_is_running {
                 // Queue the message for the running agent
                 tracing::info!(
-                    "RootView: Queuing user message for running agent in session {}: {}",
+                    "RootView: Queuing user message for running agent in session {}: {} (with {} attachments)",
                     session_id,
-                    content
+                    content,
+                    self.attachments.len()
                 );
                 let _ = sender.0.try_send(UiEvent::QueueUserMessage {
                     message: content.clone(),
                     session_id: session_id.to_string(),
+                    attachments: self.attachments.clone(),
                 });
             } else {
                 // Send message normally (agent is idle)
                 tracing::info!(
-                    "RootView: Sending user message to session {}: {}",
+                    "RootView: Sending user message to session {}: {} (with {} attachments)",
                     session_id,
-                    content
+                    content,
+                    self.attachments.len()
                 );
                 let _ = sender.0.try_send(UiEvent::SendUserMessage {
                     message: content.clone(),
                     session_id: session_id.to_string(),
+                    attachments: self.attachments.clone(),
                 });
             }
         }
@@ -203,6 +211,9 @@ impl RootView {
         if let Some(gpui) = cx.try_global::<Gpui>() {
             gpui.clear_draft_for_session(session_id);
         }
+
+        // Clear attachments
+        self.attachments.clear();
 
         // Clear the input field
         text_input.update(cx, |text_input, cx| {
@@ -216,9 +227,10 @@ impl RootView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(session_id) = &self.current_session_id {
+        if let Some(session_id) = self.current_session_id.clone() {
             let content = self.text_input.read(cx).value().to_string();
-            self.send_message(session_id, content, &self.text_input, window, cx);
+            let text_input = self.text_input.clone();
+            self.send_message(&session_id, content, &text_input, window, cx);
         }
         cx.notify();
     }
@@ -245,6 +257,49 @@ impl RootView {
         cx.notify();
     }
 
+    fn on_paste(&mut self, _: &Paste, _window: &mut gpui::Window, cx: &mut Context<Self>) {
+        if let Some(clipboard_item) = cx.read_from_clipboard() {
+            for entry in clipboard_item.into_entries() {
+                if let ClipboardEntry::Image(image) = entry {
+                    // Create a DraftAttachment from the image
+                    let attachment = DraftAttachment::Image {
+                        content: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
+                        mime_type: image.format.mime_type().to_string(),
+                    };
+
+                    self.attachments.push(attachment);
+
+                    // Save attachments to draft if we have a current session
+                    if let Some(session_id) = &self.current_session_id {
+                        self.save_draft_with_attachments(session_id, cx);
+                    }
+
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    fn remove_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.attachments.len() {
+            self.attachments.remove(index);
+
+            // Update draft
+            if let Some(session_id) = &self.current_session_id {
+                self.save_draft_with_attachments(session_id, cx);
+            }
+
+            cx.notify();
+        }
+    }
+
+    fn save_draft_with_attachments(&self, session_id: &str, cx: &mut Context<Self>) {
+        if let Some(gpui) = cx.try_global::<Gpui>() {
+            let text = self.text_input.read(cx).value().to_string();
+            gpui.save_draft_for_session(session_id, &text, &self.attachments);
+        }
+    }
+
     // Handle text input events for draft functionality
     fn on_input_event(
         &mut self,
@@ -256,9 +311,9 @@ impl RootView {
         match event {
             InputEvent::Change(text) => {
                 if let Some(session_id) = &self.current_session_id {
-                    // Save draft immediately for now (no debouncing for simplicity)
+                    // Save draft with attachments immediately for now (no debouncing for simplicity)
                     if let Some(gpui) = cx.try_global::<Gpui>() {
-                        gpui.save_draft_for_session(session_id, text);
+                        gpui.save_draft_for_session(session_id, text, &self.attachments);
                     }
                 }
             }
@@ -267,10 +322,10 @@ impl RootView {
             InputEvent::PressEnter { secondary } => {
                 // Only send message on plain ENTER (not with modifiers)
                 if !secondary {
-                    if let Some(session_id) = &self.current_session_id {
+                    if let Some(session_id) = self.current_session_id.clone() {
                         // IMMEDIATELY clear any existing draft to prevent the newline from being saved
                         if let Some(gpui) = cx.try_global::<Gpui>() {
-                            gpui.clear_draft_for_session(session_id);
+                            gpui.clear_draft_for_session(&session_id);
                         }
 
                         // Get current text (this might include the newline that was just added)
@@ -278,7 +333,8 @@ impl RootView {
                         // Remove trailing newline if present (from ENTER key press)
                         let cleaned_text = current_text.trim_end_matches('\n').to_string();
 
-                        self.send_message(session_id, cleaned_text, &self.text_input, window, cx);
+                        let text_input = self.text_input.clone();
+                        self.send_message(&session_id, cleaned_text, &text_input, window, cx);
                     }
                 }
                 // If secondary is true, do nothing - modifiers will be handled by InsertLineBreak action
@@ -296,24 +352,29 @@ impl RootView {
     ) {
         let gpui = cx.try_global::<Gpui>();
 
-        // Determine what value to set in the input field
-        let input_value = if let (Some(new_id), Some(gpui)) = (new_session_id, &gpui) {
-            if let Some(draft) = gpui.load_draft_for_session(&new_id) {
+        // Determine what value to set in the input field and load attachments
+        let (input_value, attachments) = if let (Some(new_id), Some(gpui)) = (new_session_id, &gpui)
+        {
+            if let Some((draft_text, draft_attachments)) = gpui.load_draft_for_session(&new_id) {
                 debug!(
-                    "Loading draft for new session {}: {} characters",
+                    "Loading draft for new session {}: {} characters, {} attachments",
                     new_id,
-                    draft.len()
+                    draft_text.len(),
+                    draft_attachments.len()
                 );
-                draft
+                (draft_text, draft_attachments)
             } else {
                 debug!("No draft found for new session: {}", new_id);
-                "".to_string()
+                ("".to_string(), Vec::new())
             }
         } else {
-            // No new session, clear the text input
-            debug!("No new session, clearing text input");
-            "".to_string()
+            // No new session, clear the text input and attachments
+            debug!("No new session, clearing text input and attachments");
+            ("".to_string(), Vec::new())
         };
+
+        // Update attachments
+        self.attachments = attachments;
 
         self.text_input.update(cx, |text_input, cx| {
             text_input.set_value(input_value, window, cx);
@@ -377,6 +438,7 @@ impl Render for RootView {
                 }
             })
             .on_action(cx.listener(Self::on_cancel_agent))
+            .on_action(cx.listener(Self::on_paste))
             .bg(cx.theme().background)
             .track_focus(&self.focus_handle(cx))
             .flex()
@@ -522,32 +584,190 @@ impl Render for RootView {
                                     .flex()
                                     .flex_col() // Changed to column to accommodate attachments area
                                     .gap_2()
-                                    // TODO: Add attachments area above the input field
-                                    // This area should:
-                                    // 1. Show image previews when user pastes images from clipboard
-                                    // 2. Allow users to remove attached images
-                                    // 3. Handle clipboard paste events to capture images
-                                    //
-                                    // Example clipboard handling code:
-                                    // ```rust
-                                    // fn paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
-                                    //     if let Some(clipboard_item) = cx.read_from_clipboard() {
-                                    //         for entry in clipboard_item.into_entries() {
-                                    //             if let ClipboardEntry::Image(image) = entry {
-                                    //                 let content_block = ContentBlock::new_image(
-                                    //                     image.format.mime_type(),
-                                    //                     &image.bytes
-                                    //                 );
-                                    //                 // Add to attachments for this message
-                                    //             }
-                                    //         }
-                                    //     }
-                                    // }
-                                    // ```
-                                    //
-                                    // The attachments should be stored in RootView state and included
-                                    // when sending messages to create MessageContent::Structured with
-                                    // both text and image ContentBlocks.
+                                    // Attachments area - show image previews when available
+                                    .when(!self.attachments.is_empty(), |parent| {
+                                        parent.child(
+                                            div()
+                                                .p_2()
+                                                .border_b_1()
+                                                .border_color(cx.theme().border)
+                                                .flex()
+                                                .flex_col()
+                                                .gap_2()
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(format!("{} attachment(s)", self.attachments.len()))
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .flex_row()
+                                                        .gap_2()
+                                                        .flex_wrap()
+                                                        .children(
+                                                            self.attachments.iter().enumerate().map(|(index, attachment)| {
+                                                                match attachment {
+                                                                    DraftAttachment::Image { mime_type, .. } => {
+                                                                        let display_text = mime_type.split('/').last().unwrap_or("image").to_string();
+                                                                        div()
+                                                                            .relative()
+                                                                            .w(px(80.))
+                                                                            .h(px(80.))
+                                                                            .rounded_md()
+                                                                            .bg(cx.theme().muted)
+                                                                            .border_1()
+                                                                            .border_color(cx.theme().border)
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .justify_center()
+                                                                            .child(
+                                                                                div()
+                                                                                    .text_xs()
+                                                                                    .text_color(cx.theme().muted_foreground)
+                                                                                    .child(display_text)
+                                                                            )
+                                                                            .child(
+                                                                                // Remove button
+                                                                                div()
+                                                                                    .absolute()
+                                                                                    .top(px(-6.))
+                                                                                    .right(px(-6.))
+                                                                                    .size(px(20.))
+                                                                                    .rounded_full()
+                                                                                    .bg(cx.theme().danger)
+                                                                                    .flex()
+                                                                                    .items_center()
+                                                                                    .justify_center()
+                                                                                    .cursor_pointer()
+                                                                                    .hover(|s| s.bg(cx.theme().danger.opacity(0.8)))
+                                                                                    .child(
+                                                                                        div()
+                                                                                            .text_xs()
+                                                                                            .text_color(cx.theme().background)
+                                                                                            .child("×")
+                                                                                    )
+                                                                                    .on_mouse_up(
+                                                                                        MouseButton::Left,
+                                                                                        cx.listener(move |view, _event, _window, cx| {
+                                                                                            view.remove_attachment(index, cx);
+                                                                                        }),
+                                                                                    )
+                                                                            )
+                                                                            .into_any_element()
+                                                                    }
+                                                                    DraftAttachment::Text { .. } => {
+                                                                        div()
+                                                                            .relative()
+                                                                            .w(px(80.))
+                                                                            .h(px(80.))
+                                                                            .rounded_md()
+                                                                            .bg(cx.theme().muted)
+                                                                            .border_1()
+                                                                            .border_color(cx.theme().border)
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .justify_center()
+                                                                            .child(
+                                                                                div()
+                                                                                    .text_xs()
+                                                                                    .text_color(cx.theme().muted_foreground)
+                                                                                    .child("text")
+                                                                            )
+                                                                            .child(
+                                                                                // Remove button
+                                                                                div()
+                                                                                    .absolute()
+                                                                                    .top(px(-6.))
+                                                                                    .right(px(-6.))
+                                                                                    .size(px(20.))
+                                                                                    .rounded_full()
+                                                                                    .bg(cx.theme().danger)
+                                                                                    .flex()
+                                                                                    .items_center()
+                                                                                    .justify_center()
+                                                                                    .cursor_pointer()
+                                                                                    .hover(|s| s.bg(cx.theme().danger.opacity(0.8)))
+                                                                                    .child(
+                                                                                        div()
+                                                                                            .text_xs()
+                                                                                            .text_color(cx.theme().background)
+                                                                                            .child("×")
+                                                                                    )
+                                                                                    .on_mouse_up(
+                                                                                        MouseButton::Left,
+                                                                                        cx.listener(move |view, _event, _window, cx| {
+                                                                                            view.remove_attachment(index, cx);
+                                                                                        }),
+                                                                                    )
+                                                                            )
+                                                                            .into_any_element()
+                                                                    }
+                                                                    DraftAttachment::File { filename, .. } => {
+                                                                        div()
+                                                                            .relative()
+                                                                            .w(px(80.))
+                                                                            .h(px(80.))
+                                                                            .rounded_md()
+                                                                            .bg(cx.theme().muted)
+                                                                            .border_1()
+                                                                            .border_color(cx.theme().border)
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .justify_center()
+                                                                            .flex_col()
+                                                                            .gap_1()
+                                                                            .child(
+                                                                                div()
+                                                                                    .text_xs()
+                                                                                    .text_color(cx.theme().muted_foreground)
+                                                                                    .child("📄")
+                                                                            )
+                                                                            .child(
+                                                                                div()
+                                                                                    .text_xs()
+                                                                                    .text_color(cx.theme().muted_foreground)
+                                                                                    .text_ellipsis()
+                                                                                    .w_full()
+                                                                                    .text_center()
+                                                                                    .child(filename.clone())
+                                                                            )
+                                                                            .child(
+                                                                                // Remove button
+                                                                                div()
+                                                                                    .absolute()
+                                                                                    .top(px(-6.))
+                                                                                    .right(px(-6.))
+                                                                                    .size(px(20.))
+                                                                                    .rounded_full()
+                                                                                    .bg(cx.theme().danger)
+                                                                                    .flex()
+                                                                                    .items_center()
+                                                                                    .justify_center()
+                                                                                    .cursor_pointer()
+                                                                                    .hover(|s| s.bg(cx.theme().danger.opacity(0.8)))
+                                                                                    .child(
+                                                                                        div()
+                                                                                            .text_xs()
+                                                                                            .text_color(cx.theme().background)
+                                                                                            .child("×")
+                                                                                    )
+                                                                                    .on_mouse_up(
+                                                                                        MouseButton::Left,
+                                                                                        cx.listener(move |view, _event, _window, cx| {
+                                                                                            view.remove_attachment(index, cx);
+                                                                                        }),
+                                                                                    )
+                                                                            )
+                                                                            .into_any_element()
+                                                                    }
+                                                                }
+                                                            })
+                                                        )
+                                                )
+                                        )
+                                    })
 
                                     // Main input row
                                     .child(

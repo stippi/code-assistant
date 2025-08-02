@@ -57,15 +57,31 @@ impl Global for UiEventSender {}
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
     // Session management
-    LoadSession { session_id: String },
-    CreateNewSession { name: Option<String> },
-    DeleteSession { session_id: String },
+    LoadSession {
+        session_id: String,
+    },
+    CreateNewSession {
+        name: Option<String>,
+    },
+    DeleteSession {
+        session_id: String,
+    },
     ListSessions,
 
     // Agent operations
-    SendUserMessage { session_id: String, message: String },
-    QueueUserMessage { session_id: String, message: String },
-    RequestPendingMessageEdit { session_id: String },
+    SendUserMessage {
+        session_id: String,
+        message: String,
+        attachments: Vec<crate::persistence::DraftAttachment>,
+    },
+    QueueUserMessage {
+        session_id: String,
+        message: String,
+        attachments: Vec<crate::persistence::DraftAttachment>,
+    },
+    RequestPendingMessageEdit {
+        session_id: String,
+    },
 }
 
 // Response from backend to UI
@@ -450,11 +466,37 @@ impl Gpui {
 
     fn process_ui_event_async(&self, event: UiEvent, cx: &mut gpui::AsyncApp) {
         match event {
-            UiEvent::DisplayUserInput { content } => {
+            UiEvent::DisplayUserInput {
+                content,
+                attachments,
+            } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 let result = cx.new(|cx| {
                     let new_message = MessageContainer::with_role(MessageRole::User, cx);
-                    new_message.add_text_block(&content, cx);
+
+                    // Add text content if not empty
+                    if !content.is_empty() {
+                        new_message.add_text_block(&content, cx);
+                    }
+
+                    // Add attachments
+                    for attachment in attachments {
+                        match attachment {
+                            crate::persistence::DraftAttachment::Image { content, mime_type } => {
+                                new_message.add_image_block(&mime_type, &content, cx);
+                            }
+                            crate::persistence::DraftAttachment::Text { content } => {
+                                new_message.add_text_block(&content, cx);
+                            }
+                            crate::persistence::DraftAttachment::File {
+                                content, filename, ..
+                            } => {
+                                let file_text = format!("File: {}\n{}", filename, content);
+                                new_message.add_text_block(&file_text, cx);
+                            }
+                        }
+                    }
+
                     new_message
                 });
                 if let Ok(new_message) = result {
@@ -464,7 +506,6 @@ impl Gpui {
                 }
 
                 // Reset pending message when a user message is displayed
-                // This happens when the agent adds a pending message to the history
                 if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
                     cx.update_entity(messages_view_entity, |messages_view, cx| {
                         messages_view.update_pending_message(None);
@@ -787,15 +828,19 @@ impl Gpui {
             UiEvent::SendUserMessage {
                 message,
                 session_id,
+                attachments,
             } => {
                 debug!(
-                    "UI: SendUserMessage event for session {}: {}",
-                    session_id, message
+                    "UI: SendUserMessage event for session {}: {} (with {} attachments)",
+                    session_id,
+                    message,
+                    attachments.len()
                 );
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::SendUserMessage {
                         session_id,
                         message,
+                        attachments,
                     });
                 } else {
                     warn!("UI: No backend event sender available");
@@ -892,15 +937,19 @@ impl Gpui {
             UiEvent::QueueUserMessage {
                 message,
                 session_id,
+                attachments,
             } => {
                 debug!(
-                    "UI: QueueUserMessage event for session {}: {}",
-                    session_id, message
+                    "UI: QueueUserMessage event for session {}: {} (with {} attachments)",
+                    session_id,
+                    message,
+                    attachments.len()
                 );
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::QueueUserMessage {
                         session_id,
                         message,
+                        attachments,
                     });
                 }
             }
@@ -1029,28 +1078,36 @@ impl Gpui {
         self.current_session_id.lock().unwrap().clone()
     }
 
-    // Draft management methods
-    pub fn save_draft_for_session(&self, session_id: &str, content: &str) {
+    // Extended draft management methods with attachments
+    pub fn save_draft_for_session(
+        &self,
+        session_id: &str,
+        content: &str,
+        attachments: &[crate::persistence::DraftAttachment],
+    ) {
         // Update in-memory cache
         {
             let mut drafts = self.session_drafts.lock().unwrap();
-            if content.is_empty() {
+            if content.is_empty() && attachments.is_empty() {
                 drafts.remove(session_id);
             } else {
                 drafts.insert(session_id.to_string(), content.to_string());
             }
         }
 
-        // Save to disk (non-blocking) - but check in-memory cache first to avoid race conditions
+        // Save to disk (non-blocking) with full draft structure
         let draft_storage = self.draft_storage.clone();
         let session_id_owned = session_id.to_string();
         let content_owned = content.to_string();
+        let attachments_owned = attachments.to_vec();
         let session_drafts = self.session_drafts.clone();
 
         tokio::spawn(async move {
-            // For empty content, always try to delete (idempotent)
-            if content_owned.is_empty() {
-                if let Err(e) = draft_storage.save_draft(&session_id_owned, &content_owned) {
+            // For empty content and no attachments, always try to delete (idempotent)
+            if content_owned.is_empty() && attachments_owned.is_empty() {
+                if let Err(e) =
+                    draft_storage.save_draft(&session_id_owned, &content_owned, &attachments_owned)
+                {
                     warn!(
                         "Failed to delete draft for session {}: {}",
                         session_id_owned, e
@@ -1059,7 +1116,7 @@ impl Gpui {
                 return;
             }
 
-            // For non-empty content, check cache right before disk write to prevent race conditions
+            // For non-empty content or attachments, check cache right before disk write
             let should_save = {
                 let drafts = session_drafts.lock().unwrap();
                 let exists_in_cache = drafts.contains_key(&session_id_owned);
@@ -1069,10 +1126,12 @@ impl Gpui {
                 exists_in_cache && current_content == Some(&content_owned)
             };
 
-            if should_save {
-                if let Err(e) = draft_storage.save_draft(&session_id_owned, &content_owned) {
+            if should_save || !attachments_owned.is_empty() {
+                if let Err(e) =
+                    draft_storage.save_draft(&session_id_owned, &content_owned, &attachments_owned)
+                {
                     warn!(
-                        "Failed to save draft for session {}: {}",
+                        "Failed to save draft with attachments for session {}: {}",
                         session_id_owned, e
                     );
                 }
@@ -1080,29 +1139,37 @@ impl Gpui {
         });
     }
 
-    pub fn load_draft_for_session(&self, session_id: &str) -> Option<String> {
-        // First check in-memory cache
-        {
+    pub fn load_draft_for_session(
+        &self,
+        session_id: &str,
+    ) -> Option<(String, Vec<crate::persistence::DraftAttachment>)> {
+        // First check in-memory cache for text
+        let cached_text = {
             let drafts = self.session_drafts.lock().unwrap();
-            if let Some(draft) = drafts.get(session_id) {
-                return Some(draft.clone());
-            }
-        }
+            drafts.get(session_id).cloned()
+        };
 
-        // Load from disk and cache it
+        // Load from disk for full draft structure
         match self.draft_storage.load_draft(session_id) {
-            Ok(Some(draft)) => {
-                // Cache the loaded draft
+            Ok(Some((draft_text, attachments))) => {
+                // Cache the loaded draft text
                 {
                     let mut drafts = self.session_drafts.lock().unwrap();
-                    drafts.insert(session_id.to_string(), draft.clone());
+                    drafts.insert(session_id.to_string(), draft_text.clone());
                 }
-                Some(draft)
+                Some((draft_text, attachments))
             }
-            Ok(None) => None,
+            Ok(None) => {
+                // Check if we have cached text without attachments
+                cached_text.map(|text| (text, Vec::new()))
+            }
             Err(e) => {
-                warn!("Failed to load draft for session {}: {}", session_id, e);
-                None
+                warn!(
+                    "Failed to load draft with attachments for session {}: {}",
+                    session_id, e
+                );
+                // Fallback to cached text if available
+                cached_text.map(|text| (text, Vec::new()))
             }
         }
     }

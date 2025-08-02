@@ -55,9 +55,15 @@ impl TerminalUI {
 impl UserInterface for TerminalUI {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
         match event {
-            UiEvent::DisplayUserInput { content } => {
-                // Display user input with a prompt-like format
-                let formatted = format!("{} {}", ">".with(Color::Green), content);
+            UiEvent::DisplayUserInput {
+                content,
+                attachments,
+            } => {
+                // Display user input with attachments
+                let mut formatted = format!("{} {}", ">".with(Color::Green), content);
+                if !attachments.is_empty() {
+                    formatted.push_str(&format!(" [with {} attachment(s)]", attachments.len()));
+                }
                 self.write_line(&formatted).await?
             }
             UiEvent::UpdateToolStatus {

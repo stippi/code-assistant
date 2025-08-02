@@ -282,6 +282,7 @@ impl Agent {
                 self.ui
                     .send_event(UiEvent::DisplayUserInput {
                         content: pending_message,
+                        attachments: Vec::new(),
                     })
                     .await?;
             }
@@ -530,6 +531,7 @@ impl Agent {
         self.ui
             .send_event(UiEvent::DisplayUserInput {
                 content: user_input.clone(),
+                attachments: Vec::new(),
             })
             .await?;
         let user_msg = Message {
@@ -595,6 +597,7 @@ impl Agent {
         self.ui
             .send_event(UiEvent::DisplayUserInput {
                 content: task.clone(),
+                attachments: Vec::new(),
             })
             .await?;
 

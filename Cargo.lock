@@ -1314,6 +1314,7 @@ dependencies = [
  "async-channel 2.5.0",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "clap",

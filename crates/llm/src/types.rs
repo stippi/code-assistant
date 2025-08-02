@@ -172,6 +172,11 @@ pub trait RateLimitHandler: Sized {
 }
 
 impl ContentBlock {
+    /// Create a text content block from a String
+    pub fn new_text(text: impl Into<String>) -> Self {
+        ContentBlock::Text { text: text.into() }
+    }
+
     /// Create an image content block from raw image data
     pub fn new_image(media_type: impl Into<String>, data: impl AsRef<[u8]>) -> Self {
         use base64::Engine as _;
