@@ -26,6 +26,8 @@ pub enum DisplayFragment {
     PlainText(String),
     /// Thinking text (shown differently)
     ThinkingText(String),
+    /// Image content
+    Image { media_type: String, data: String },
     /// Tool invocation start
     ToolName { name: String, id: String },
     /// Parameter for a tool

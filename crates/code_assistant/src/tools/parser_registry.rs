@@ -1,7 +1,10 @@
 //! Parser registry for different tool invocation syntaxes
 
 use crate::agent::ToolSyntax;
-use crate::tools::{parse_caret_tool_invocations, parse_xml_tool_invocations, ToolRequest};
+use crate::tools::{
+    parse_caret_tool_invocations, parse_xml_tool_invocations, tool_use_filter::SmartToolFilter,
+    ToolRequest,
+};
 use crate::ui::streaming::StreamProcessorTrait;
 use crate::ui::UserInterface;
 use anyhow::Result;
@@ -43,16 +46,13 @@ fn parse_and_truncate_caret_response(
 ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
     let mut tool_requests = Vec::new();
     let mut truncated_content = Vec::new();
+    let filter = SmartToolFilter::new();
 
     for block in &response.content {
         if let ContentBlock::Text { text } = block {
             // Parse Caret tool invocations and get truncation position
             let (block_tool_requests, truncated_text) =
-                parse_caret_tool_invocations_with_truncation(
-                    text,
-                    request_id,
-                    tool_requests.len(),
-                )?;
+                parse_caret_tool_invocations(text, request_id, tool_requests.len(), Some(&filter))?;
 
             tool_requests.extend(block_tool_requests.clone());
 
@@ -91,12 +91,13 @@ fn parse_and_truncate_xml_response(
 ) -> Result<(Vec<ToolRequest>, LLMResponse)> {
     let mut tool_requests = Vec::new();
     let mut truncated_content = Vec::new();
+    let filter = SmartToolFilter::new();
 
     for block in &response.content {
         if let ContentBlock::Text { text } = block {
             // Parse XML tool invocations and get truncation position
             let (block_tool_requests, truncated_text) =
-                parse_xml_tool_invocations_with_truncation(text, request_id, tool_requests.len())?;
+                parse_xml_tool_invocations(text, request_id, tool_requests.len(), Some(&filter))?;
 
             tool_requests.extend(block_tool_requests.clone());
 
@@ -147,114 +148,6 @@ fn parse_json_response(
     }
 
     Ok((tool_requests, response.clone()))
-}
-
-/// Parse Caret tool invocations and return both tool requests and truncated text
-fn parse_caret_tool_invocations_with_truncation(
-    text: &str,
-    request_id: u64,
-    start_tool_count: usize,
-) -> Result<(Vec<ToolRequest>, String)> {
-    // Parse tool requests using existing function
-    let all_tool_requests = parse_caret_tool_invocations(text, request_id, start_tool_count)?;
-
-    if all_tool_requests.is_empty() {
-        // No tools found, return original text
-        return Ok((all_tool_requests, text.to_string()));
-    }
-
-    // Only keep the first tool request to enforce single tool per message
-    let tool_requests = vec![all_tool_requests[0].clone()];
-
-    // Find the end position of the first tool to truncate text
-    let truncated_text = find_first_caret_tool_end_and_truncate(text)?;
-
-    Ok((tool_requests, truncated_text))
-}
-
-/// Parse XML tool invocations and return both tool requests and truncated text
-fn parse_xml_tool_invocations_with_truncation(
-    text: &str,
-    request_id: u64,
-    start_tool_count: usize,
-) -> Result<(Vec<ToolRequest>, String)> {
-    // Parse tool requests using existing function
-    let all_tool_requests = parse_xml_tool_invocations(text, request_id, start_tool_count)?;
-
-    if all_tool_requests.is_empty() {
-        // No tools found, return original text
-        return Ok((all_tool_requests, text.to_string()));
-    }
-
-    // Only keep the first tool request to enforce single tool per message
-    let tool_requests = vec![all_tool_requests[0].clone()];
-
-    // Find the end position of the first tool to truncate text
-    let truncated_text = find_first_tool_end_and_truncate(text)?;
-
-    Ok((tool_requests, truncated_text))
-}
-
-/// Find the end of the first caret tool and truncate there
-fn find_first_caret_tool_end_and_truncate(text: &str) -> Result<String> {
-    let tool_start_regex = regex::Regex::new(r"(?m)^\^\^\^([a-zA-Z0-9_]+)$").unwrap();
-    let tool_end_regex = regex::Regex::new(r"(?m)^\^\^\^$").unwrap();
-
-    // Find the first tool start
-    if let Some(start_match) = tool_start_regex.find(text) {
-        let after_start = &text[start_match.end()..];
-
-        // Find the corresponding tool end
-        if let Some(end_match) = tool_end_regex.find(after_start) {
-            let end_pos = start_match.end() + end_match.end();
-            return Ok(text[..end_pos].to_string());
-        }
-    }
-
-    // No complete tool found, return original text
-    Ok(text.to_string())
-}
-
-/// Find the end of the first tool in text and truncate there
-fn find_first_tool_end_and_truncate(text: &str) -> Result<String> {
-    let mut current_pos = 0;
-    let mut in_tool = false;
-    let mut tool_depth = 0;
-
-    while current_pos < text.len() {
-        if let Some(tag_start) = text[current_pos..].find('<') {
-            let absolute_pos = current_pos + tag_start;
-
-            // Look for tool tags
-            if let Some(tag_end) = text[absolute_pos..].find('>') {
-                let tag_content = &text[absolute_pos + 1..absolute_pos + tag_end];
-
-                if tag_content.starts_with("tool:") {
-                    // Tool start tag
-                    in_tool = true;
-                    tool_depth += 1;
-                } else if tag_content.starts_with("/tool:") {
-                    // Tool end tag
-                    if in_tool {
-                        tool_depth -= 1;
-                        if tool_depth == 0 {
-                            // Found the end of the first tool, truncate here
-                            let end_pos = absolute_pos + tag_end + 1;
-                            return Ok(text[..end_pos].to_string());
-                        }
-                    }
-                }
-                current_pos = absolute_pos + tag_end + 1;
-            } else {
-                current_pos = absolute_pos + 1;
-            }
-        } else {
-            break;
-        }
-    }
-
-    // No complete tool found, return original text
-    Ok(text.to_string())
 }
 
 /// XML-based tool invocation parser
@@ -475,7 +368,7 @@ impl XmlParser {
     fn generate_xml_syntax_documentation(&self) -> String {
         r#"# Tool Use Formatting
 
-Tool use is formatted using XML-style tags. The tool name is prefixed by 'tool:' and enclosed in opening and closing tags, and each parameter is similarly prefixed with 'param:' and enclosed within its own set of tags. Here's the structure:
+Tool use is formatted using XML-style tags. The tool name is prefixed by 'tool:' and enclosed in opening and closing tags, and each parameter is similarly prefixed with 'param:' and enclosed within its own set of tags. For array parameters, simply repeat the same parameter for each item. Here's the structure:
 
 <tool:tool_name>
 <param:parameter1_name>value1</param:parameter1_name>
@@ -483,6 +376,8 @@ Tool use is formatted using XML-style tags. The tool name is prefixed by 'tool:'
 value can stretch
 multiple lines
 </param:parameter2_name>
+<param:array_param>item1</param:array_param>
+<param:array_param>item2</param:array_param>
 ...
 </tool:tool_name>
 
@@ -491,6 +386,7 @@ For example:
 <tool:read_files>
 <param:project>frontend</param:project>
 <param:path>src/main.js</param:path>
+<param:path>src/utils.js</param:path>
 </tool:read_files>
 
 Always adhere to this format for the tool use to ensure proper parsing and execution."#.to_string()
@@ -661,8 +557,12 @@ impl CaretParser {
         let is_array = prop.get("type").and_then(|t| t.as_str()) == Some("array");
 
         // Check if this is a multiline content parameter
-        let is_multiline =
-            name == "content" || name == "command_line" || name == "diff" || name == "message";
+        let is_multiline = name == "content"
+            || name == "command_line"
+            || name == "diff"
+            || name == "message"
+            || name == "old_text"
+            || name == "new_text";
 
         // Generate appropriate placeholder text
         let placeholder = if name == "project" {

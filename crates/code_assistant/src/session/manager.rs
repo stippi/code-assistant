@@ -36,7 +36,8 @@ pub struct SessionManager {
 pub struct AgentConfig {
     pub tool_syntax: ToolSyntax,
     pub init_path: Option<PathBuf>,
-    pub initial_project: Option<String>,
+    pub initial_project: String,
+    pub use_diff_blocks: bool,
 }
 
 impl SessionManager {
@@ -53,7 +54,7 @@ impl SessionManager {
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
         let session_id = generate_session_id();
-        let session_name = name.unwrap_or_else(|| format!("Chat {}", &session_id[5..13]));
+        let session_name = name.unwrap_or_default(); // Empty string if no name provided
 
         let session = ChatSession {
             id: session_id.clone(),
@@ -66,6 +67,7 @@ impl SessionManager {
             init_path: self.agent_config.init_path.clone(),
             initial_project: self.agent_config.initial_project.clone(),
             tool_syntax: self.agent_config.tool_syntax,
+            use_diff_blocks: self.agent_config.use_diff_blocks,
             next_request_id: 1,
         };
 
@@ -145,7 +147,7 @@ impl SessionManager {
     pub async fn start_agent_for_message(
         &mut self,
         session_id: &str,
-        user_message: String,
+        content_blocks: Vec<llm::ContentBlock>,
         llm_provider: Box<dyn LLMProvider>,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
@@ -154,6 +156,7 @@ impl SessionManager {
         // Prepare session - need to scope the mutable borrow carefully
         let (
             tool_syntax,
+            use_diff_blocks,
             init_path,
             proxy_ui,
             session_state,
@@ -168,17 +171,19 @@ impl SessionManager {
             // Make sure the session instance is not stale
             session_instance.reload_from_persistence(&self.persistence)?;
 
-            // Add user message to session
+            // Add structured user message to session
             let user_msg = Message {
                 role: llm::MessageRole::User,
-                content: llm::MessageContent::Text(user_message.clone()),
+                content: llm::MessageContent::Structured(content_blocks),
                 request_id: None,
                 usage: None,
             };
-            session_instance.add_message(user_msg.clone());
+            session_instance.add_message(user_msg);
 
             // Clone all needed data to avoid borrowing conflicts
+            let name = session_instance.session.name.clone();
             let tool_syntax = session_instance.session.tool_syntax;
+            let use_diff_blocks = session_instance.session.use_diff_blocks;
             let init_path = session_instance.session.init_path.clone();
             let proxy_ui = session_instance.create_proxy_ui(ui.clone());
             let activity_state_ref = session_instance.activity_state.clone();
@@ -186,6 +191,7 @@ impl SessionManager {
 
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
+                name: name,
                 messages: session_instance.messages().to_vec(),
                 tool_executions: session_instance
                     .session
@@ -205,6 +211,7 @@ impl SessionManager {
 
             (
                 tool_syntax,
+                use_diff_blocks,
                 init_path,
                 proxy_ui,
                 session_state,
@@ -216,6 +223,7 @@ impl SessionManager {
         // Now save the session state with the user message (outside the borrow scope)
         self.save_session_state(
             session_id,
+            session_state.name.clone(),
             session_state.messages.clone(),
             session_state.tool_executions.clone(),
             session_state.working_memory.clone(),
@@ -253,6 +261,11 @@ impl SessionManager {
             init_path,
         );
 
+        // Configure diff blocks format based on session setting
+        if use_diff_blocks {
+            agent.enable_diff_blocks();
+        }
+
         // Set the shared pending message reference
         agent.set_pending_message_ref(pending_message_ref);
 
@@ -267,23 +280,44 @@ impl SessionManager {
             debug!("Starting agent for session {}", session_id_clone);
             let result = agent.run_single_iteration().await;
 
-            // Set session state back to Idle when agent completes and broadcast
+            // Always set session state back to Idle when agent task ends
+            debug!(
+                "Agent task ending for session {}, setting state to Idle",
+                session_id_clone
+            );
             if let Ok(mut state) = activity_state_ref.lock() {
                 *state = crate::session::instance::SessionActivityState::Idle;
             }
 
-            let _ = ui_clone
+            // Always broadcast the state change to UI
+            let send_result = ui_clone
                 .send_event(crate::ui::UiEvent::UpdateSessionActivityState {
                     session_id: session_id_clone.clone(),
                     activity_state: crate::session::instance::SessionActivityState::Idle,
                 })
                 .await;
 
-            debug!("Agent completed for session {}", session_id_clone);
+            if let Err(e) = send_result {
+                debug!(
+                    "Failed to send UpdateSessionActivityState event for session {}: {}",
+                    session_id_clone, e
+                );
+            } else {
+                debug!(
+                    "Successfully sent UpdateSessionActivityState(Idle) event for session {}",
+                    session_id_clone
+                );
+            }
+
+            debug!(
+                "Agent completed for session {} with result: {:?}",
+                session_id_clone,
+                result.is_ok()
+            );
             result
         });
 
-        // Store the task handle
+        // Update the task handle for this session
         if let Some(session_instance) = self.active_sessions.get_mut(session_id) {
             session_instance.task_handle = Some(task_handle);
         }
@@ -329,11 +363,12 @@ impl SessionManager {
     pub fn save_session_state(
         &mut self,
         session_id: &str,
+        name: String,
         messages: Vec<Message>,
         tool_executions: Vec<ToolExecution>,
         working_memory: WorkingMemory,
         init_path: Option<PathBuf>,
-        initial_project: Option<String>,
+        initial_project: String,
         next_request_id: u64,
     ) -> Result<()> {
         let mut session = self
@@ -342,6 +377,7 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
 
         // Update session with current state
+        session.name = name;
         session.messages = messages;
         session.tool_executions = tool_executions
             .into_iter()
@@ -423,6 +459,29 @@ impl SessionManager {
         }
 
         Ok(())
+    }
+
+    /// Queue structured content (text + attachments) for a running agent session
+    pub fn queue_structured_user_message(
+        &mut self,
+        session_id: &str,
+        content_blocks: Vec<llm::ContentBlock>,
+    ) -> Result<()> {
+        // For now, convert structured content to text representation for pending messages
+        // In the future, we could extend pending messages to support structured content
+        let text_representation = content_blocks
+            .iter()
+            .filter_map(|block| match block {
+                llm::ContentBlock::Text { text } => Some(text.clone()),
+                llm::ContentBlock::Image { media_type, .. } => {
+                    Some(format!("[Image: {}]", media_type))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        self.queue_user_message(session_id, text_representation)
     }
 
     /// Get and clear pending message for editing

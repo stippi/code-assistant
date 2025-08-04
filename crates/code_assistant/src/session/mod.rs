@@ -14,10 +14,11 @@ pub use manager::{AgentConfig, SessionManager};
 #[derive(Debug)]
 pub struct SessionState {
     pub session_id: String,
+    pub name: String,
     pub messages: Vec<Message>,
     pub tool_executions: Vec<ToolExecution>,
     pub working_memory: crate::types::WorkingMemory,
     pub init_path: Option<PathBuf>,
-    pub initial_project: Option<String>,
+    pub initial_project: String,
     pub next_request_id: Option<u64>,
 }

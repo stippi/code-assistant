@@ -63,7 +63,9 @@ pub const TOOL_LIST_FILES: &str = "reveal"; // reveal.svg
 pub const TOOL_EXECUTE_COMMAND: &str = "terminal"; // terminal.svg
 pub const TOOL_WRITE_FILE: &str = "pencil"; // pencil.svg
 pub const TOOL_REPLACE_IN_FILE: &str = "replace"; // replace.svg
+pub const TOOL_EDIT: &str = "edit"; // square-pen.svg
 pub const TOOL_SEARCH_FILES: &str = "magnifying_glass"; // magnifying_glass.svg
+pub const TOOL_GLOB_FILES: &str = "file_tree"; // file_tree.svg - for finding files by pattern
 pub const TOOL_WEB_SEARCH: &str = "magnifying_glass"; // magnifying_glass.svg
 pub const TOOL_WEB_FETCH: &str = "template"; // html.svg (use template/html as fallback)
 pub const TOOL_DELETE_FILES: &str = "trash"; // trash.svg
@@ -238,6 +240,7 @@ impl FileIcons {
             TOOL_WRITE_FILE => Some("icons/pencil.svg"),
             TOOL_REPLACE_IN_FILE => Some("icons/replace.svg"),
             TOOL_SEARCH_FILES => Some("icons/magnifying_glass.svg"),
+            TOOL_GLOB_FILES => Some("icons/file_tree.svg"),
             // TOOL_WEB_SEARCH uses the same icon as SEARCH_FILES but is handled in the match condition above
             TOOL_DELETE_FILES => Some("icons/trash.svg"),
             TOOL_USER_INPUT => Some("icons/person.svg"),
@@ -269,7 +272,9 @@ impl FileIcons {
             TOOL_EXECUTE_COMMAND => Some(SharedString::from("🖥️")),
             TOOL_WRITE_FILE => Some(SharedString::from("✏️")),
             TOOL_REPLACE_IN_FILE => Some(SharedString::from("🔄")),
+            TOOL_EDIT => Some(SharedString::from("✏️")), // Pen/edit icon
             TOOL_SEARCH_FILES => Some(SharedString::from("🔍")),
+            TOOL_GLOB_FILES => Some(SharedString::from("📁")),
             // TOOL_WEB_SEARCH uses same icon as SEARCH_FILES - handled above
             TOOL_WEB_FETCH => Some(SharedString::from("📥")),
             TOOL_DELETE_FILES => Some(SharedString::from("🗑️")),
@@ -290,7 +295,9 @@ impl FileIcons {
             "execute_command" => TOOL_EXECUTE_COMMAND,
             "write_file" => TOOL_WRITE_FILE,
             "replace_in_file" => TOOL_REPLACE_IN_FILE,
+            "edit" => TOOL_EDIT,
             "search_files" => TOOL_SEARCH_FILES,
+            "glob_files" => TOOL_GLOB_FILES,
             "web_search" => TOOL_WEB_SEARCH,
             "web_fetch" => TOOL_WEB_FETCH,
             "delete_files" => TOOL_DELETE_FILES,

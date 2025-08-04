@@ -135,7 +135,12 @@ impl Tool for ReadFilesTool {
                 "readOnlyHint": true,
                 "idempotentHint": true
             })),
-            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            supported_scopes: &[
+                ToolScope::McpServer,
+                ToolScope::Agent,
+                ToolScope::AgentWithDiffBlocks,
+            ],
+            hidden: false,
         }
     }
 
@@ -205,8 +210,15 @@ impl Tool for ReadFilesTool {
         if let Some(working_memory) = &mut context.working_memory {
             // Store successfully loaded files in working memory
             for (path, content) in &loaded_files {
+                // Get the base path without any line range information
+                let base_path =
+                    if let Ok(parsed) = PathWithLineRange::parse(path.to_str().unwrap_or("")) {
+                        parsed.path.clone()
+                    } else {
+                        path.clone()
+                    };
                 working_memory.loaded_resources.insert(
-                    (input.project.clone(), path.clone()),
+                    (input.project.clone(), base_path.clone()),
                     LoadedResource::File(content.clone()),
                 );
             }
@@ -266,7 +278,7 @@ mod tests {
         let mut files = HashMap::new();
         files.insert(
             PathBuf::from("./root/test.txt"),
-            "Test file content".to_string(),
+            "Line 1\nLine 2\nLine 3\nLine 4\nLine 5".to_string(),
         );
         files.insert(
             PathBuf::from("./root/test2.txt"),

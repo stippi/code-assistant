@@ -1,10 +1,12 @@
 pub mod assets;
+pub mod attachment;
 pub mod auto_scroll;
 pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_renderer;
 pub mod elements;
 pub mod file_icons;
+pub mod image;
 mod memory;
 mod messages;
 pub mod parameter_renderers;
@@ -42,7 +44,10 @@ use tracing::{debug, error, trace, warn};
 
 use elements::MessageContainer;
 
-actions!(code_assistant, [Quit, CloseWindow]);
+actions!(
+    code_assistant,
+    [Quit, CloseWindow, InsertLineBreak, CancelAgent]
+);
 
 // Global UI event sender for chat components
 #[derive(Clone)]
@@ -54,15 +59,31 @@ impl Global for UiEventSender {}
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
     // Session management
-    LoadSession { session_id: String },
-    CreateNewSession { name: Option<String> },
-    DeleteSession { session_id: String },
+    LoadSession {
+        session_id: String,
+    },
+    CreateNewSession {
+        name: Option<String>,
+    },
+    DeleteSession {
+        session_id: String,
+    },
     ListSessions,
 
     // Agent operations
-    SendUserMessage { session_id: String, message: String },
-    QueueUserMessage { session_id: String, message: String },
-    RequestPendingMessageEdit { session_id: String },
+    SendUserMessage {
+        session_id: String,
+        message: String,
+        attachments: Vec<crate::persistence::DraftAttachment>,
+    },
+    QueueUserMessage {
+        session_id: String,
+        message: String,
+        attachments: Vec<crate::persistence::DraftAttachment>,
+    },
+    RequestPendingMessageEdit {
+        session_id: String,
+    },
 }
 
 // Response from backend to UI
@@ -83,6 +104,7 @@ pub enum BackendResponse {
     },
     PendingMessageForEdit {
         session_id: String,
+        #[allow(dead_code)]
         message: String,
     },
     PendingMessageUpdated {
@@ -126,7 +148,17 @@ pub struct Gpui {
 }
 
 fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+    cx.bind_keys([
+        KeyBinding::new("cmd-q", Quit, None),
+        // Line break keybindings - ENTER with any modifier inserts a line break
+        KeyBinding::new("shift-enter", InsertLineBreak, None),
+        KeyBinding::new("ctrl-enter", InsertLineBreak, None),
+        KeyBinding::new("alt-enter", InsertLineBreak, None),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-enter", InsertLineBreak, None),
+        // Cancel agent with Esc key
+        KeyBinding::new("escape", CancelAgent, None),
+    ]);
 
     cx.on_action(|_: &Quit, cx: &mut App| {
         cx.quit();
@@ -187,6 +219,7 @@ impl Gpui {
                 ("replace_in_file".to_string(), "path".to_string()),
                 ("write_file".to_string(), "path".to_string()),
                 ("search_files".to_string(), "regex".to_string()),
+                ("glob_files".to_string(), "pattern".to_string()),
             ],
             false, // These are not full-width
         )));
@@ -360,7 +393,10 @@ impl Gpui {
                         window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
                         titlebar: Some(gpui::TitlebarOptions {
                             title: Some(gpui::SharedString::from("Code Assistant")),
+                            #[cfg(target_os = "macos")]
                             appears_transparent: true,
+                            #[cfg(not(target_os = "macos"))]
+                            appears_transparent: false,
                             traffic_light_position: Some(Point {
                                 x: px(16.),
                                 y: px(16.),
@@ -378,13 +414,8 @@ impl Gpui {
                         });
 
                         // Create MessagesView
-                        let messages_view = cx.new(|cx| {
-                            MessagesView::new(
-                                message_queue.clone(),
-                                gpui_clone.current_session_activity_state.clone(),
-                                cx,
-                            )
-                        });
+                        let messages_view =
+                            cx.new(|cx| MessagesView::new(message_queue.clone(), cx));
 
                         // Store MessagesView reference in Gpui
                         *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());
@@ -432,11 +463,37 @@ impl Gpui {
 
     fn process_ui_event_async(&self, event: UiEvent, cx: &mut gpui::AsyncApp) {
         match event {
-            UiEvent::DisplayUserInput { content } => {
+            UiEvent::DisplayUserInput {
+                content,
+                attachments,
+            } => {
                 let mut queue = self.message_queue.lock().unwrap();
                 let result = cx.new(|cx| {
                     let new_message = MessageContainer::with_role(MessageRole::User, cx);
-                    new_message.add_text_block(&content, cx);
+
+                    // Add text content if not empty
+                    if !content.is_empty() {
+                        new_message.add_text_block(&content, cx);
+                    }
+
+                    // Add attachments
+                    for attachment in attachments {
+                        match attachment {
+                            crate::persistence::DraftAttachment::Image { content, mime_type } => {
+                                new_message.add_image_block(&mime_type, &content, cx);
+                            }
+                            crate::persistence::DraftAttachment::Text { content } => {
+                                new_message.add_text_block(&content, cx);
+                            }
+                            crate::persistence::DraftAttachment::File {
+                                content, filename, ..
+                            } => {
+                                let file_text = format!("File: {}\n{}", filename, content);
+                                new_message.add_text_block(&file_text, cx);
+                            }
+                        }
+                    }
+
                     new_message
                 });
                 if let Ok(new_message) = result {
@@ -446,7 +503,6 @@ impl Gpui {
                 }
 
                 // Reset pending message when a user message is displayed
-                // This happens when the agent adds a pending message to the history
                 if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
                     cx.update_entity(messages_view_entity, |messages_view, cx| {
                         messages_view.update_pending_message(None);
@@ -539,10 +595,31 @@ impl Gpui {
                 tool_results,
             } => {
                 // Update current session ID if provided
-                if let Some(session_id) = session_id {
-                    *self.current_session_id.lock().unwrap() = Some(session_id);
+                if let Some(ref session_id) = session_id {
+                    *self.current_session_id.lock().unwrap() = Some(session_id.clone());
                     // Reset activity state when switching sessions - it will be updated by subsequent events
                     *self.current_session_activity_state.lock().unwrap() = None;
+
+                    // Find the current project for this session and update MessagesView
+                    let current_project = {
+                        let sessions = self.chat_sessions.lock().unwrap();
+                        sessions
+                            .iter()
+                            .find(|s| s.id == *session_id)
+                            .map(|s| s.initial_project.clone())
+                            .unwrap_or_else(|| String::new())
+                    };
+
+                    warn!("Using initial project: '{}'", current_project);
+
+                    // Update MessagesView with current project
+                    if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref()
+                    {
+                        cx.update_entity(messages_view_entity, |messages_view, _cx| {
+                            messages_view.set_current_project(current_project.clone());
+                        })
+                        .expect("Failed to update messages view with current project");
+                    }
                 }
 
                 // Clear existing messages
@@ -550,6 +627,18 @@ impl Gpui {
                     let mut queue = self.message_queue.lock().unwrap();
                     queue.clear();
                 }
+
+                // Get current project for new containers
+                let current_project = if let Some(ref session_id) = session_id {
+                    let sessions = self.chat_sessions.lock().unwrap();
+                    sessions
+                        .iter()
+                        .find(|s| s.id == *session_id)
+                        .map(|s| s.initial_project.clone())
+                        .unwrap_or_else(|| String::new())
+                } else {
+                    String::new()
+                };
 
                 // Process message data with on-demand container creation
                 for message_data in messages {
@@ -577,11 +666,23 @@ impl Gpui {
                             let container = cx
                                 .new(|cx| MessageContainer::with_role(message_data.role, cx))
                                 .expect("Failed to create message container");
+
+                            // Set current project on the new container
+                            cx.update_entity(&container, |container, _cx| {
+                                container.set_current_project(current_project.clone());
+                            })
+                            .expect("Failed to set current project on container");
+
                             queue.push(container.clone());
                             container
                         } else {
-                            // Use existing container
-                            queue.last().unwrap().clone()
+                            // Use existing container - also set current project in case it changed
+                            let container = queue.last().unwrap().clone();
+                            cx.update_entity(&container, |container, _cx| {
+                                container.set_current_project(current_project.clone());
+                            })
+                            .expect("Failed to set current project on container");
+                            container
                         }
                     }; // Lock is released here
 
@@ -724,15 +825,19 @@ impl Gpui {
             UiEvent::SendUserMessage {
                 message,
                 session_id,
+                attachments,
             } => {
                 debug!(
-                    "UI: SendUserMessage event for session {}: {}",
-                    session_id, message
+                    "UI: SendUserMessage event for session {}: {} (with {} attachments)",
+                    session_id,
+                    message,
+                    attachments.len()
                 );
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::SendUserMessage {
                         session_id,
                         message,
+                        attachments,
                     });
                 } else {
                     warn!("UI: No backend event sender available");
@@ -755,6 +860,30 @@ impl Gpui {
                         // Session not found in cache, add it (shouldn't normally happen)
                         sessions.push(metadata.clone());
                         debug!("Added new session metadata for {}", metadata.id);
+                    }
+                }
+
+                // If this is the current session, update the current project for parameter filtering
+                if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
+                    if *current_session_id == metadata.id {
+                        // Update MessagesView with current project
+                        if let Some(messages_view_entity) =
+                            self.messages_view.lock().unwrap().as_ref()
+                        {
+                            cx.update_entity(messages_view_entity, |messages_view, _cx| {
+                                messages_view.set_current_project(metadata.initial_project.clone());
+                            })
+                            .expect("Failed to update messages view with current project");
+                        }
+
+                        // Update all MessageContainers with current project
+                        let message_queue = self.message_queue.lock().unwrap();
+                        for container_entity in message_queue.iter() {
+                            cx.update_entity(container_entity, |container, _cx| {
+                                container.set_current_project(metadata.initial_project.clone());
+                            })
+                            .expect("Failed to update message container with current project");
+                        }
                     }
                 }
 
@@ -805,15 +934,19 @@ impl Gpui {
             UiEvent::QueueUserMessage {
                 message,
                 session_id,
+                attachments,
             } => {
                 debug!(
-                    "UI: QueueUserMessage event for session {}: {}",
-                    session_id, message
+                    "UI: QueueUserMessage event for session {}: {} (with {} attachments)",
+                    session_id,
+                    message,
+                    attachments.len()
                 );
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::QueueUserMessage {
                         session_id,
                         message,
+                        attachments,
                     });
                 }
             }
@@ -838,6 +971,16 @@ impl Gpui {
                 }
                 // Refresh UI to trigger re-render
                 cx.refresh().expect("Failed to refresh windows");
+            }
+            UiEvent::AddImage { media_type, data } => {
+                let queue = self.message_queue.lock().unwrap();
+                if let Some(last) = queue.last() {
+                    // Add image to the last message container
+                    cx.update_entity(&last, |message, cx| {
+                        message.add_image_block(media_type, data, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
             }
         }
     }
@@ -885,6 +1028,12 @@ impl Gpui {
                     })
                     .expect("Failed to update entity");
                 }
+                DisplayFragment::Image { media_type, data } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.add_image_block(media_type, data, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
             }
         }
     }
@@ -926,73 +1075,113 @@ impl Gpui {
         self.current_session_id.lock().unwrap().clone()
     }
 
-    // Draft management methods
-    pub fn save_draft_for_session(&self, session_id: &str, content: &str) {
+    // Extended draft management methods with attachments
+    pub fn save_draft_for_session(
+        &self,
+        session_id: &str,
+        content: &str,
+        attachments: &[crate::persistence::DraftAttachment],
+    ) {
         // Update in-memory cache
         {
             let mut drafts = self.session_drafts.lock().unwrap();
-            if content.is_empty() {
+            if content.is_empty() && attachments.is_empty() {
                 drafts.remove(session_id);
             } else {
                 drafts.insert(session_id.to_string(), content.to_string());
             }
         }
 
-        // Save to disk (non-blocking)
+        // Save to disk (non-blocking) with full draft structure
         let draft_storage = self.draft_storage.clone();
-        let session_id = session_id.to_string();
-        let content = content.to_string();
+        let session_id_owned = session_id.to_string();
+        let content_owned = content.to_string();
+        let attachments_owned = attachments.to_vec();
+        let session_drafts = self.session_drafts.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = draft_storage.save_draft(&session_id, &content) {
-                warn!("Failed to save draft for session {}: {}", session_id, e);
+            // For empty content and no attachments, always try to delete (idempotent)
+            if content_owned.is_empty() && attachments_owned.is_empty() {
+                if let Err(e) =
+                    draft_storage.save_draft(&session_id_owned, &content_owned, &attachments_owned)
+                {
+                    warn!(
+                        "Failed to delete draft for session {}: {}",
+                        session_id_owned, e
+                    );
+                }
+                return;
+            }
+
+            // For non-empty content or attachments, check cache right before disk write
+            let should_save = {
+                let drafts = session_drafts.lock().unwrap();
+                let exists_in_cache = drafts.contains_key(&session_id_owned);
+                let current_content = drafts.get(&session_id_owned);
+
+                // Only save if draft still exists in cache AND content matches exactly
+                exists_in_cache && current_content == Some(&content_owned)
+            };
+
+            if should_save || !attachments_owned.is_empty() {
+                if let Err(e) =
+                    draft_storage.save_draft(&session_id_owned, &content_owned, &attachments_owned)
+                {
+                    warn!(
+                        "Failed to save draft with attachments for session {}: {}",
+                        session_id_owned, e
+                    );
+                }
             }
         });
     }
 
-    pub fn load_draft_for_session(&self, session_id: &str) -> Option<String> {
-        // First check in-memory cache
-        {
+    pub fn load_draft_for_session(
+        &self,
+        session_id: &str,
+    ) -> Option<(String, Vec<crate::persistence::DraftAttachment>)> {
+        // First check in-memory cache for text
+        let cached_text = {
             let drafts = self.session_drafts.lock().unwrap();
-            if let Some(draft) = drafts.get(session_id) {
-                return Some(draft.clone());
-            }
-        }
+            drafts.get(session_id).cloned()
+        };
 
-        // Load from disk and cache it
+        // Load from disk for full draft structure
         match self.draft_storage.load_draft(session_id) {
-            Ok(Some(draft)) => {
-                // Cache the loaded draft
+            Ok(Some((draft_text, attachments))) => {
+                // Cache the loaded draft text
                 {
                     let mut drafts = self.session_drafts.lock().unwrap();
-                    drafts.insert(session_id.to_string(), draft.clone());
+                    drafts.insert(session_id.to_string(), draft_text.clone());
                 }
-                Some(draft)
+                Some((draft_text, attachments))
             }
-            Ok(None) => None,
+            Ok(None) => {
+                // Check if we have cached text without attachments
+                cached_text.map(|text| (text, Vec::new()))
+            }
             Err(e) => {
-                warn!("Failed to load draft for session {}: {}", session_id, e);
-                None
+                warn!(
+                    "Failed to load draft with attachments for session {}: {}",
+                    session_id, e
+                );
+                // Fallback to cached text if available
+                cached_text.map(|text| (text, Vec::new()))
             }
         }
     }
 
     pub fn clear_draft_for_session(&self, session_id: &str) {
-        // Remove from in-memory cache
+        // Remove from in-memory cache FIRST
         {
             let mut drafts = self.session_drafts.lock().unwrap();
             drafts.remove(session_id);
         }
 
-        // Clear from disk (non-blocking)
-        let draft_storage = self.draft_storage.clone();
-        let session_id = session_id.to_string();
-
-        tokio::spawn(async move {
-            if let Err(e) = draft_storage.clear_draft(&session_id) {
-                warn!("Failed to clear draft for session {}: {}", session_id, e);
-            }
-        });
+        // Clear from disk synchronously to ensure it happens before any racing save operations
+        if let Err(e) = self.draft_storage.clear_draft(session_id) {
+            warn!("Failed to clear draft for session {}: {}", session_id, e);
+        }
     }
 
     // Handle backend responses
@@ -1159,6 +1348,12 @@ impl UserInterface for Gpui {
                 }
 
                 self.push_event(UiEvent::EndTool { id: id.clone() });
+            }
+            DisplayFragment::Image { media_type, data } => {
+                self.push_event(UiEvent::AddImage {
+                    media_type: media_type.clone(),
+                    data: data.clone(),
+                });
             }
         }
 

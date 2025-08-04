@@ -1,3 +1,4 @@
+use super::attachment::{AttachmentEvent, AttachmentView};
 use super::auto_scroll::AutoScrollContainer;
 use super::chat_sidebar::ChatSidebar;
 use super::file_icons;
@@ -5,15 +6,17 @@ use super::memory::MemoryView;
 use super::messages::MessagesView;
 use super::theme;
 use super::{CloseWindow, Gpui, UiEventSender};
-use crate::persistence::ChatMetadata;
+use crate::persistence::{ChatMetadata, DraftAttachment};
 use crate::ui::ui_events::UiEvent;
 use crate::ui::StreamingState;
+use base64::Engine;
 use gpui::{
-    div, prelude::*, px, rgba, App, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    MouseButton, MouseUpEvent,
+    bounce, div, ease_in_out, percentage, prelude::*, px, rgba, svg, Animation, AnimationExt, App,
+    ClipboardEntry, Context, CursorStyle, Entity, FocusHandle, Focusable, MouseButton,
+    MouseUpEvent, SharedString, Transformation,
 };
 use gpui_component::input::TextInput;
-use gpui_component::input::{InputEvent, InputState};
+use gpui_component::input::{InputEvent, InputState, Paste};
 use gpui_component::ActiveTheme;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
@@ -38,6 +41,10 @@ pub struct RootView {
     streaming_state: Arc<Mutex<StreamingState>>,
     // Subscription to text input events
     _input_subscription: gpui::Subscription,
+    // Attachments for the current message being composed
+    attachments: Vec<DraftAttachment>,
+    // Attachment view entities
+    attachment_views: Vec<Entity<AttachmentView>>,
 }
 
 impl RootView {
@@ -74,6 +81,8 @@ impl RootView {
             chat_sessions: Vec::new(),
             streaming_state,
             _input_subscription: input_subscription,
+            attachments: Vec::new(),
+            attachment_views: Vec::new(),
         };
 
         // Request initial chat session list
@@ -140,75 +149,94 @@ impl RootView {
         cx.notify();
     }
 
+    fn send_message(
+        &mut self,
+        session_id: &str,
+        content: String,
+        text_input: &Entity<InputState>,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if content.trim().is_empty() && self.attachments.is_empty() {
+            return;
+        }
+
+        // V1 mode: Store input in the shared value if input is requested
+        let is_input_requested = *self.input_requested.lock().unwrap();
+        if is_input_requested {
+            let mut input_value = self.input_value.lock().unwrap();
+            *input_value = Some(content.clone());
+        }
+
+        // V2 mode: Send user message event if we have an active session
+        if let Some(sender) = cx.try_global::<UiEventSender>() {
+            // Check if agent is running by looking at activity state
+            let current_activity_state = if let Some(gpui) = cx.try_global::<Gpui>() {
+                gpui.current_session_activity_state.lock().unwrap().clone()
+            } else {
+                None
+            };
+
+            let agent_is_running = if let Some(state) = current_activity_state {
+                !matches!(state, crate::session::instance::SessionActivityState::Idle)
+            } else {
+                false
+            };
+
+            if agent_is_running {
+                // Queue the message for the running agent
+                tracing::info!(
+                    "RootView: Queuing user message for running agent in session {}: {} (with {} attachments)",
+                    session_id,
+                    content,
+                    self.attachments.len()
+                );
+                let _ = sender.0.try_send(UiEvent::QueueUserMessage {
+                    message: content.clone(),
+                    session_id: session_id.to_string(),
+                    attachments: self.attachments.clone(),
+                });
+            } else {
+                // Send message normally (agent is idle)
+                tracing::info!(
+                    "RootView: Sending user message to session {}: {} (with {} attachments)",
+                    session_id,
+                    content,
+                    self.attachments.len()
+                );
+                let _ = sender.0.try_send(UiEvent::SendUserMessage {
+                    message: content.clone(),
+                    session_id: session_id.to_string(),
+                    attachments: self.attachments.clone(),
+                });
+            }
+        }
+
+        // Clear draft when message is sent (before clearing input to avoid race condition)
+        if let Some(gpui) = cx.try_global::<Gpui>() {
+            gpui.clear_draft_for_session(session_id);
+        }
+
+        // Clear attachments
+        self.attachments.clear();
+
+        // Clear the input field
+        text_input.update(cx, |text_input, cx| {
+            text_input.set_value("", window, cx);
+        });
+    }
+
     fn on_submit_click(
         &mut self,
         _: &MouseUpEvent,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        self.text_input.update(cx, |text_input, cx| {
-            let content = text_input.value().to_string();
-            if !content.is_empty() {
-                // V1 mode: Store input in the shared value if input is requested
-                let is_input_requested = *self.input_requested.lock().unwrap();
-                if is_input_requested {
-                    let mut input_value = self.input_value.lock().unwrap();
-                    *input_value = Some(content.clone());
-                }
-
-                // V2 mode: Send user message event if we have an active session
-                if let Some(session_id) = &self.current_session_id {
-                    if let Some(sender) = cx.try_global::<UiEventSender>() {
-                        // Check if agent is running by looking at activity state
-                        let current_activity_state = if let Some(gpui) = cx.try_global::<Gpui>() {
-                            gpui.current_session_activity_state.lock().unwrap().clone()
-                        } else {
-                            None
-                        };
-
-                        let agent_is_running = if let Some(state) = current_activity_state {
-                            !matches!(state, crate::session::instance::SessionActivityState::Idle)
-                        } else {
-                            false
-                        };
-
-                        if agent_is_running {
-                            // Queue the message for the running agent
-                            tracing::info!(
-                                "RootView: Queuing user message for running agent in session {}: {}",
-                                session_id,
-                                content
-                            );
-                            let _ = sender.0.try_send(UiEvent::QueueUserMessage {
-                                message: content.clone(),
-                                session_id: session_id.clone(),
-                            });
-                        } else {
-                            // Send message normally (agent is idle)
-                            tracing::info!(
-                                "RootView: Sending user message to session {}: {}",
-                                session_id,
-                                content
-                            );
-                            let _ = sender.0.try_send(UiEvent::SendUserMessage {
-                                message: content.clone(),
-                                session_id: session_id.clone(),
-                            });
-                        }
-                    }
-                }
-
-                // Clear the input field
-                text_input.set_value("", window, cx);
-
-                // Clear draft when message is sent
-                if let (Some(session_id), Some(gpui)) =
-                    (&self.current_session_id, cx.try_global::<Gpui>())
-                {
-                    gpui.clear_draft_for_session(session_id);
-                }
-            }
-        });
+        if let Some(session_id) = self.current_session_id.clone() {
+            let content = self.text_input.read(cx).value().to_string();
+            let text_input = self.text_input.clone();
+            self.send_message(&session_id, content, &text_input, window, cx);
+        }
         cx.notify();
     }
 
@@ -223,39 +251,237 @@ impl RootView {
         cx.notify();
     }
 
+    fn on_cancel_agent(
+        &mut self,
+        _: &crate::ui::gpui::CancelAgent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Set streaming state to StopRequested (same as cancel button)
+        *self.streaming_state.lock().unwrap() = StreamingState::StopRequested;
+        cx.notify();
+    }
+
+    fn on_paste(&mut self, _: &Paste, _window: &mut gpui::Window, cx: &mut Context<Self>) {
+        if let Some(clipboard_item) = cx.read_from_clipboard() {
+            for entry in clipboard_item.into_entries() {
+                if let ClipboardEntry::Image(image) = entry {
+                    // Create a DraftAttachment from the image
+                    let attachment = DraftAttachment::Image {
+                        content: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
+                        mime_type: image.format.mime_type().to_string(),
+                    };
+
+                    self.attachments.push(attachment);
+
+                    // Rebuild attachment views
+                    self.rebuild_attachment_views(cx);
+
+                    // Save attachments to draft if we have a current session
+                    if let Some(session_id) = &self.current_session_id {
+                        self.save_draft_with_attachments(session_id, cx);
+                    }
+
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    fn remove_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.attachments.len() {
+            self.attachments.remove(index);
+
+            // Rebuild attachment views with updated indices
+            self.rebuild_attachment_views(cx);
+
+            // Update draft
+            if let Some(session_id) = &self.current_session_id {
+                self.save_draft_with_attachments(session_id, cx);
+            }
+
+            cx.notify();
+        }
+    }
+
+    fn save_draft_with_attachments(&self, session_id: &str, cx: &mut Context<Self>) {
+        if let Some(gpui) = cx.try_global::<Gpui>() {
+            let text = self.text_input.read(cx).value().to_string();
+            gpui.save_draft_for_session(session_id, &text, &self.attachments);
+        }
+    }
+
+    /// Rebuild attachment views when attachments change
+    fn rebuild_attachment_views(&mut self, cx: &mut Context<Self>) {
+        self.attachment_views.clear();
+
+        for (index, attachment) in self.attachments.iter().enumerate() {
+            let attachment_view = cx.new(|cx| AttachmentView::new(attachment.clone(), index, cx));
+
+            // Subscribe to attachment events
+            cx.subscribe(
+                &attachment_view,
+                |view, _attachment_view, event: &AttachmentEvent, cx| match event {
+                    AttachmentEvent::Remove(index) => {
+                        view.remove_attachment(*index, cx);
+                    }
+                },
+            )
+            .detach();
+
+            self.attachment_views.push(attachment_view);
+        }
+    }
+
     // Handle text input events for draft functionality
     fn on_input_event(
         &mut self,
         _input: &Entity<InputState>,
         event: &InputEvent,
-        _window: &mut gpui::Window,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             InputEvent::Change(text) => {
                 if let Some(session_id) = &self.current_session_id {
-                    debug!("Current session: {} - saving draft", session_id);
-                    // Save draft immediately for now (no debouncing for simplicity)
+                    // Save draft with attachments immediately for now (no debouncing for simplicity)
                     if let Some(gpui) = cx.try_global::<Gpui>() {
-                        gpui.save_draft_for_session(session_id, text);
+                        gpui.save_draft_for_session(session_id, text, &self.attachments);
                     }
                 }
             }
             InputEvent::Focus => {}
             InputEvent::Blur => {}
             InputEvent::PressEnter { secondary } => {
-                debug!("ENTER pressed (secondary: {})", secondary);
-                // Potentially send message:
-                // Shift-ENTER should only add a new linebreak
-                // ENTER should send the message, but it should reuse the existing method that also the Send button uses.
-                if let (Some(_session_id), Some(_gpui)) =
-                    (&self.current_session_id, cx.try_global::<Gpui>())
-                {
-                    // TODO: Don't clear draft here, but in the method that sends the message
-                    // gpui.clear_draft_for_session(session_id);
+                // Only send message on plain ENTER (not with modifiers)
+                if !secondary {
+                    if let Some(session_id) = self.current_session_id.clone() {
+                        // IMMEDIATELY clear any existing draft to prevent the newline from being saved
+                        if let Some(gpui) = cx.try_global::<Gpui>() {
+                            gpui.clear_draft_for_session(&session_id);
+                        }
+
+                        // Get current text (this might include the newline that was just added)
+                        let current_text = self.text_input.read(cx).value().to_string();
+                        // Remove trailing newline if present (from ENTER key press)
+                        let cleaned_text = current_text.trim_end_matches('\n').to_string();
+
+                        let text_input = self.text_input.clone();
+                        self.send_message(&session_id, cleaned_text, &text_input, window, cx);
+                    }
                 }
+                // If secondary is true, do nothing - modifiers will be handled by InsertLineBreak action
             }
         }
+    }
+
+    /// Render the floating status popover if needed
+    fn render_status_popover(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        // Get current session activity state from global Gpui
+        let current_activity_state = if let Some(gpui) = cx.try_global::<Gpui>() {
+            gpui.current_session_activity_state.lock().unwrap().clone()
+        } else {
+            None
+        };
+
+        if let Some(activity_state) = current_activity_state {
+            if matches!(
+                activity_state,
+                crate::session::instance::SessionActivityState::WaitingForResponse
+                    | crate::session::instance::SessionActivityState::RateLimited { .. }
+            ) {
+                let (message_text, bg_color, border_color, text_color) = match activity_state {
+                    crate::session::instance::SessionActivityState::RateLimited {
+                        seconds_remaining,
+                    } => (
+                        format!("Rate limited - retrying in {}s...", seconds_remaining),
+                        if cx.theme().is_dark() {
+                            rgba(0x43140780) // Dark orange background with transparency
+                        } else {
+                            rgba(0xFFF7EDFF) // Light orange background
+                        },
+                        if cx.theme().is_dark() {
+                            rgba(0xF97316FF) // Orange border
+                        } else {
+                            rgba(0xFB923CFF) // Stronger orange border
+                        },
+                        if cx.theme().is_dark() {
+                            rgba(0xFB923CFF) // Orange text
+                        } else {
+                            rgba(0xEA580CFF) // Full orange text
+                        },
+                    ),
+                    crate::session::instance::SessionActivityState::WaitingForResponse => (
+                        "Waiting for response...".to_string(),
+                        if cx.theme().is_dark() {
+                            rgba(0x1E3A8A80) // Dark blue background with transparency
+                        } else {
+                            rgba(0xEFF6FFFF) // Light blue background
+                        },
+                        if cx.theme().is_dark() {
+                            rgba(0x3B82F6FF) // Blue border
+                        } else {
+                            rgba(0x60A5FAFF) // Stronger blue border
+                        },
+                        if cx.theme().is_dark() {
+                            rgba(0x60A5FAFF) // Blue text
+                        } else {
+                            rgba(0x2563EBFF) // Full blue text
+                        },
+                    ),
+                    _ => unreachable!(),
+                };
+
+                // Return the floating popover positioned at bottom
+                return vec![div()
+                    .absolute()
+                    .bottom(px(80.)) // Above input area (input is ~76px tall)
+                    .left(px(0.))
+                    .right(px(0.))
+                    .flex()
+                    .justify_center() // Center the content horizontally
+                    .child(
+                        div()
+                            .px_4()
+                            .py_2()
+                            .bg(bg_color)
+                            .border_1()
+                            .border_color(border_color)
+                            .rounded_lg()
+                            .shadow_lg()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                svg()
+                                    .size(px(14.))
+                                    .path(SharedString::from("icons/arrow_circle.svg"))
+                                    .text_color(text_color)
+                                    .with_animation(
+                                        "floating_loading_indicator",
+                                        Animation::new(std::time::Duration::from_secs(2))
+                                            .repeat()
+                                            .with_easing(bounce(ease_in_out)),
+                                        |svg, delta| {
+                                            svg.with_transformation(Transformation::rotate(
+                                                percentage(delta),
+                                            ))
+                                        },
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_color(text_color)
+                                    .text_size(px(11.))
+                                    .font_weight(gpui::FontWeight(500.0))
+                                    .child(message_text),
+                            ),
+                    )
+                    .into_any_element()];
+            }
+        }
+
+        vec![] // No popover to show
     }
 
     // Handle session change: load new draft (no need to save current - already saved on every change)
@@ -268,24 +494,30 @@ impl RootView {
     ) {
         let gpui = cx.try_global::<Gpui>();
 
-        // Determine what value to set in the input field
-        let input_value = if let (Some(new_id), Some(gpui)) = (new_session_id, &gpui) {
-            if let Some(draft) = gpui.load_draft_for_session(&new_id) {
+        // Determine what value to set in the input field and load attachments
+        let (input_value, attachments) = if let (Some(new_id), Some(gpui)) = (new_session_id, &gpui)
+        {
+            if let Some((draft_text, draft_attachments)) = gpui.load_draft_for_session(&new_id) {
                 debug!(
-                    "Loading draft for new session {}: {} characters",
+                    "Loading draft for new session {}: {} characters, {} attachments",
                     new_id,
-                    draft.len()
+                    draft_text.len(),
+                    draft_attachments.len()
                 );
-                draft
+                (draft_text, draft_attachments)
             } else {
                 debug!("No draft found for new session: {}", new_id);
-                "".to_string()
+                ("".to_string(), Vec::new())
             }
         } else {
-            // No new session, clear the text input
-            debug!("No new session, clearing text input");
-            "".to_string()
+            // No new session, clear the text input and attachments
+            debug!("No new session, clearing text input and attachments");
+            ("".to_string(), Vec::new())
         };
+
+        // Update attachments and rebuild views
+        self.attachments = attachments;
+        self.rebuild_attachment_views(cx);
 
         self.text_input.update(cx, |text_input, cx| {
             text_input.set_value(input_value, window, cx);
@@ -339,6 +571,17 @@ impl Render for RootView {
             .on_action(|_: &CloseWindow, window, _| {
                 window.remove_window();
             })
+            .on_action({
+                let text_input_handle = self.text_input.clone();
+                move |_: &crate::ui::gpui::InsertLineBreak, window, cx| {
+                    // Insert a line break at the current cursor position
+                    text_input_handle.update(cx, |input_state, cx| {
+                        input_state.insert("\n", window, cx);
+                    });
+                }
+            })
+            .on_action(cx.listener(Self::on_cancel_agent))
+            .on_action(cx.listener(Self::on_paste))
             .bg(cx.theme().background)
             .track_focus(&self.focus_handle(cx))
             .flex()
@@ -461,8 +704,9 @@ impl Render for RootView {
                     // Left sidebar: Chat sessions
                     .child(self.chat_sidebar.clone())
                     .child(
-                        // Center: Messages and input (content area)
+                        // Center: Messages and input (content area) with floating popover
                         div()
+                            .relative() // For popover positioning
                             .bg(cx.theme().card)
                             .flex()
                             .flex_col()
@@ -473,6 +717,8 @@ impl Render for RootView {
                                 // Messages display area - use the AutoScrollContainer wrapping MessagesView
                                 self.auto_scroll_container.clone(),
                             )
+                            // Status popover - positioned at bottom center
+                            .children(self.render_status_popover(cx))
                             // Input area at the bottom
                             .child(
                                 div()
@@ -482,11 +728,34 @@ impl Render for RootView {
                                     .border_t_1()
                                     .border_color(cx.theme().border)
                                     .flex()
-                                    .flex_row()
-                                    .justify_between()
-                                    .items_center()
-                                    .p_2()
+                                    .flex_col() // Changed to column to accommodate attachments area
                                     .gap_2()
+                                    // Attachments area - show image previews when available
+                                    .when(!self.attachments.is_empty(), |parent| {
+                                        parent.child(
+                                            div()
+                                                .p_2()
+                                                .border_b_1()
+                                                .border_color(cx.theme().border)
+                                                .flex()
+                                                .flex_row()
+                                                .gap_2()
+                                                .flex_wrap()
+                                                .children(
+                                                    self.attachment_views.iter().cloned()
+                                                )
+                                        )
+                                    })
+
+                                    // Main input row
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .justify_between()
+                                            .items_center()
+                                            .p_2()
+                                            .gap_2()
                                     .child({
                                         let text_input_handle =
                                             self.text_input.read(cx).focus_handle(cx);
@@ -494,17 +763,24 @@ impl Render for RootView {
 
                                         div()
                                             .flex_1()
-                                            .border_1()
-                                            .border_color(if is_focused {
-                                                cx.theme().primary // Blue border when focused
-                                            } else if cx.theme().is_dark() {
-                                                rgba(0x555555FF).into() // Brighter border for dark theme
+                                            .border(if is_focused {
+                                                px(2.)
                                             } else {
-                                                rgba(0x999999FF).into() // Darker border for light theme
+                                                px(1.)
+                                            })
+                                            .p(if is_focused {
+                                                px(0.)
+                                            } else {
+                                                px(1.)
+                                            })
+                                            .border_color(if is_focused {
+                                                cx.theme().primary
+                                            } else {
+                                                cx.theme().sidebar_border
                                             })
                                             .rounded_md()
                                             .track_focus(&text_input_handle)
-                                            .child(TextInput::new(&self.text_input))
+                                            .child(TextInput::new(&self.text_input).appearance(false))
                                     })
                                     .children({
                                         // Get current session activity state from global Gpui
@@ -598,6 +874,7 @@ impl Render for RootView {
 
                                         buttons
                                     }),
+                                    ), // Close main input row
                             ),
                     )
                     // Right sidebar with memory view - only show if not collapsed

@@ -110,7 +110,12 @@ impl Tool for PerplexityAskTool {
                 "idempotentHint": false,
                 "openWorldHint": true
             })),
-            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            supported_scopes: &[
+                ToolScope::McpServer,
+                ToolScope::Agent,
+                ToolScope::AgentWithDiffBlocks,
+            ],
+            hidden: false,
         }
     }
 

@@ -883,3 +883,586 @@ fn test_usage_example_generation() {
         println!("✓ Caret usage example generation verified");
     }
 }
+
+#[tokio::test]
+async fn test_xml_parsing_fails_with_valid_first_block_and_invalid_second() {
+    use crate::tools::parse::parse_xml_tool_invocations;
+
+    // This reproduces the exact error scenario described by the user
+    let text = r#"I will analyze the structure and code of the project to find out which tool-use syntax is used. Let me start with the most important files.
+
+<tool:read_files>
+<param:project>qwen-code</param:project>
+<param:path>package.json</param:path>
+</tool:read_files>
+
+<tool:read_files>
+<param:project>qwen-"#;
+
+    // Currently this fails completely, losing the valid first tool block
+    let result = parse_xml_tool_invocations(text, 123, 0, None);
+
+    // This assertion will currently fail because the function returns an error
+    // instead of returning the valid first tool block
+    assert!(
+        result.is_err(),
+        "Expected parsing to fail with current implementation"
+    );
+
+    // The error should be about the incomplete second tool block
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("unclosed") || error_msg.contains("Malformed"));
+}
+
+#[tokio::test]
+async fn test_xml_parsing_with_multiple_valid_blocks_should_limit_to_first() {
+    use crate::tools::parse::parse_xml_tool_invocations;
+    use crate::tools::tool_use_filter::SingleToolFilter;
+
+    // Test case where we have multiple valid blocks but want to limit to first
+    let text = r#"Let me read these files:
+
+<tool:read_files>
+<param:project>test-project</param:project>
+<param:path>file1.txt</param:path>
+</tool:read_files>
+
+And then list the directory:
+
+<tool:list_files>
+<param:project>test-project</param:project>
+<param:paths>src</param:paths>
+</tool:list_files>
+
+And finally modify the file:
+
+<tool:replace_in_file>
+<param:project>test-project</param:project>
+<param:path>file1.txt</param:path>
+<param:diff>some diff</param:diff>
+</tool:replace_in_file>"#;
+
+    // With the new system, this should return only the first tool and truncate after it
+    let filter = SingleToolFilter;
+    let (result, _truncated_text) =
+        parse_xml_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+
+    // Should only get the first tool
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].name, "read_files");
+    assert_eq!(result[0].input["project"], "test-project");
+
+    // The XML parser converts single path parameters to the paths array based on the schema
+    let paths = result[0].input["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0], "file1.txt");
+}
+
+#[tokio::test]
+async fn test_xml_parsing_with_truncation_preserves_valid_tool() {
+    use crate::tools::parse::parse_xml_tool_invocations;
+    use crate::tools::tool_use_filter::SingleToolFilter;
+
+    // Test that truncation function can extract valid tool even with invalid following content
+    let text = r#"I will analyze the structure and code of the project.
+
+<tool:read_files>
+<param:project>first-project</param:project>
+<param:path>package.json</param:path>
+</tool:read_files>
+
+<tool:read_files>
+<param:project>incomplete-"#;
+
+    let filter = SingleToolFilter;
+    let result = parse_xml_tool_invocations(text, 123, 0, Some(&filter));
+
+    // Should succeed and return the valid first tool
+    assert!(
+        result.is_ok(),
+        "Truncation should succeed and preserve valid tool"
+    );
+    let (tools, truncated_text) = result.unwrap();
+
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "read_files");
+    assert_eq!(tools[0].input["project"], "first-project");
+
+    // The XML parser converts single path parameters to the paths array based on the schema
+    let paths = tools[0].input["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0], "package.json");
+
+    // Truncated text should end after the first tool block and not contain the incomplete second tool
+    assert!(truncated_text.contains("</tool:read_files>"));
+
+    // The text should end with the closing tag of the first tool, no incomplete second tool
+    assert!(
+        truncated_text.trim_end().ends_with("</tool:read_files>"),
+        "Text should end cleanly after first tool block"
+    );
+}
+
+#[tokio::test]
+async fn test_xml_parsing_with_smart_filter_allows_multiple_read_tools() {
+    use crate::tools::parse::parse_xml_tool_invocations;
+    use crate::tools::tool_use_filter::SmartToolFilter;
+
+    let text = r#"Let me analyze the project structure:
+
+<tool:read_files>
+<param:project>test-project</param:project>
+<param:path>package.json</param:path>
+</tool:read_files>
+
+Now let me list the directories:
+
+<tool:list_files>
+<param:project>test-project</param:project>
+<param:paths>src</param:paths>
+</tool:list_files>
+
+Let me search for specific patterns:
+
+<tool:search_files>
+<param:project>test-project</param:project>
+<param:regex>function.*\(</param:regex>
+</tool:search_files>
+
+But I shouldn't be able to write files yet:
+
+<tool:write_file>
+<param:project>test-project</param:project>
+<param:path>test.txt</param:path>
+<param:content>test content</param:content>
+</tool:write_file>"#;
+
+    let filter = SmartToolFilter::new();
+    let (tools, truncated_text) = parse_xml_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+
+    // Should get the first three read tools but not the write tool
+    assert_eq!(tools.len(), 3);
+    assert_eq!(tools[0].name, "read_files");
+    assert_eq!(tools[1].name, "list_files");
+    assert_eq!(tools[2].name, "search_files");
+
+    // Text should be truncated after the search_files block
+    assert!(truncated_text.ends_with("</tool:search_files>"));
+    assert!(!truncated_text.contains("<tool:write_file>"));
+}
+
+#[tokio::test]
+async fn test_xml_parsing_with_smart_filter_blocks_write_after_read() {
+    use crate::tools::parse::parse_xml_tool_invocations;
+    use crate::tools::tool_use_filter::SmartToolFilter;
+
+    let text = r#"First I'll read a file:
+
+<tool:read_files>
+<param:project>test-project</param:project>
+<param:path>config.json</param:path>
+</tool:read_files>
+
+Now I want to modify it immediately:
+
+<tool:replace_in_file>
+<param:project>test-project</param:project>
+<param:path>config.json</param:path>
+<param:diff>some diff content</param:diff>
+</tool:replace_in_file>"#;
+
+    let filter = SmartToolFilter::new();
+    let (tools, truncated_text) = parse_xml_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+
+    // Should only get the read tool, not the replace tool
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "read_files");
+
+    // Text should be truncated before the replace_in_file tool
+    assert!(truncated_text.contains("</tool:read_files>"));
+    assert!(!truncated_text.contains("<tool:replace_in_file>"));
+}
+
+#[tokio::test]
+async fn test_xml_parsing_with_unlimited_filter_allows_all_tools() {
+    use crate::tools::parse::parse_xml_tool_invocations;
+    use crate::tools::tool_use_filter::UnlimitedToolFilter;
+
+    let text = r#"I'll do multiple operations:
+
+<tool:read_files>
+<param:project>test-project</param:project>
+<param:path>file1.txt</param:path>
+</tool:read_files>
+
+<tool:write_file>
+<param:project>test-project</param:project>
+<param:path>file2.txt</param:path>
+<param:content>new content</param:content>
+</tool:write_file>
+
+<tool:execute_command>
+<param:project>test-project</param:project>
+<param:command_line>ls -la</param:command_line>
+</tool:execute_command>"#;
+
+    let filter = UnlimitedToolFilter;
+    let (tools, truncated_text) = parse_xml_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+
+    // Should get all three tools
+    assert_eq!(tools.len(), 3);
+    assert_eq!(tools[0].name, "read_files");
+    assert_eq!(tools[1].name, "write_file");
+    assert_eq!(tools[2].name, "execute_command");
+
+    // Text should contain all tool blocks
+    assert!(truncated_text.contains("</tool:read_files>"));
+    assert!(truncated_text.contains("</tool:write_file>"));
+    assert!(truncated_text.contains("</tool:execute_command>"));
+}
+
+#[tokio::test]
+async fn test_caret_parsing_with_single_tool_filter() {
+    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tools::tool_use_filter::SingleToolFilter;
+
+    let text = concat!(
+        "I'll read some files first:\n\n",
+        "^^^read_files\n",
+        "project: test-project\n",
+        "paths: [\n",
+        "file1.txt\n",
+        "file2.txt\n",
+        "]\n",
+        "^^^\n\n",
+        "Then I'll write a new file:\n\n",
+        "^^^write_file\n",
+        "project: test-project\n",
+        "path: new_file.txt\n",
+        "content: test content\n",
+        "^^^"
+    );
+
+    let filter = SingleToolFilter;
+    let (tools, truncated_text) =
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+
+    // Should only get the first tool due to SingleToolFilter
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "read_files");
+    assert_eq!(tools[0].input["project"], "test-project");
+
+    // Text should be truncated after the first tool block
+    assert!(truncated_text.contains("^^^read_files"));
+    assert!(truncated_text.contains("^^^"));
+    assert!(!truncated_text.contains("write_file"));
+}
+
+#[tokio::test]
+async fn test_caret_parsing_with_smart_filter_allows_multiple_read_tools() {
+    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tools::tool_use_filter::SmartToolFilter;
+
+    let text = concat!(
+        "Let me analyze the project:\n\n",
+        "^^^read_files\n",
+        "project: test-project\n",
+        "paths: [\n",
+        "package.json\n",
+        "]\n",
+        "^^^\n\n",
+        "Now list the files:\n\n",
+        "^^^list_files\n",
+        "project: test-project\n",
+        "paths: [\n",
+        "src\n",
+        "]\n",
+        "^^^\n\n",
+        "Search for patterns:\n\n",
+        "^^^search_files\n",
+        "project: test-project\n",
+        "regex: function.*\\(\n",
+        "^^^\n\n",
+        "But I shouldn't write yet:\n\n",
+        "^^^write_file\n",
+        "project: test-project\n",
+        "path: test.txt\n",
+        "content: test\n",
+        "^^^"
+    );
+
+    let filter = SmartToolFilter::new();
+    let (tools, truncated_text) =
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+
+    // Should get the first three read tools but not the write tool
+    assert_eq!(tools.len(), 3);
+    assert_eq!(tools[0].name, "read_files");
+    assert_eq!(tools[1].name, "list_files");
+    assert_eq!(tools[2].name, "search_files");
+
+    // Text should be truncated before the write_file tool
+    assert!(truncated_text.contains("^^^search_files"));
+    assert!(!truncated_text.contains("write_file"));
+}
+
+#[tokio::test]
+async fn test_caret_parsing_with_smart_filter_blocks_write_after_read() {
+    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tools::tool_use_filter::SmartToolFilter;
+
+    let text = concat!(
+        "First I'll read a file:\n\n",
+        "^^^read_files\n",
+        "project: test-project\n",
+        "paths: [\n",
+        "config.json\n",
+        "]\n",
+        "^^^\n\n",
+        "Now I want to modify it:\n\n",
+        "^^^replace_in_file\n",
+        "project: test-project\n",
+        "path: config.json\n",
+        "diff ---\n",
+        "some diff content\n",
+        "--- diff\n",
+        "^^^"
+    );
+
+    let filter = SmartToolFilter::new();
+    let (tools, truncated_text) =
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+
+    // Should only get the read tool, not the replace tool
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "read_files");
+
+    // Text should be truncated before the replace_in_file tool
+    assert!(truncated_text.contains("^^^read_files"));
+    assert!(!truncated_text.contains("replace_in_file"));
+}
+
+#[tokio::test]
+async fn test_caret_parsing_with_unlimited_filter_allows_all_tools() {
+    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tools::tool_use_filter::UnlimitedToolFilter;
+
+    let text = concat!(
+        "I'll do multiple operations:\n\n",
+        "^^^read_files\n",
+        "project: test-project\n",
+        "paths: [\n",
+        "file1.txt\n",
+        "]\n",
+        "^^^\n\n",
+        "^^^write_file\n",
+        "project: test-project\n",
+        "path: file2.txt\n",
+        "content: new content\n",
+        "^^^\n\n",
+        "^^^execute_command\n",
+        "project: test-project\n",
+        "command_line: ls -la\n",
+        "^^^"
+    );
+
+    let filter = UnlimitedToolFilter;
+    let (tools, truncated_text) =
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+
+    // Should get all three tools
+    assert_eq!(tools.len(), 3);
+    assert_eq!(tools[0].name, "read_files");
+    assert_eq!(tools[1].name, "write_file");
+    assert_eq!(tools[2].name, "execute_command");
+
+    // Text should contain all tool blocks
+    assert!(truncated_text.contains("^^^read_files"));
+    assert!(truncated_text.contains("^^^write_file"));
+    assert!(truncated_text.contains("^^^execute_command"));
+}
+
+#[tokio::test]
+async fn test_caret_parsing_with_truncation_preserves_valid_tool() {
+    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tools::tool_use_filter::SingleToolFilter;
+
+    let text = concat!(
+        "I will analyze the project structure:\n\n",
+        "^^^read_files\n",
+        "project: first-project\n",
+        "paths: [\n",
+        "package.json\n",
+        "]\n",
+        "^^^\n\n",
+        "^^^read_files\n",
+        "project: incomplete-"
+    );
+
+    let filter = SingleToolFilter;
+    let (tools, truncated_text) =
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+
+    // Should succeed and return the valid first tool
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "read_files");
+    assert_eq!(tools[0].input["project"], "first-project");
+
+    let paths = tools[0].input["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0], "package.json");
+
+    // Truncated text should end after the first tool block and not contain the incomplete second tool
+    assert!(truncated_text.contains("^^^read_files"));
+    assert!(truncated_text.contains("^^^"));
+
+    // The text should end cleanly after first tool block
+    assert!(
+        truncated_text.trim_end().ends_with("^^^"),
+        "Text should end cleanly after first tool block"
+    );
+}
+
+#[tokio::test]
+async fn test_caret_parsing_multiline_parameters_with_filter() {
+    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tools::tool_use_filter::SingleToolFilter;
+
+    let text = concat!(
+        "I'll write a file with multiline content:\n\n",
+        "^^^write_file\n",
+        "project: test-project\n",
+        "path: test.txt\n",
+        "content ---\n",
+        "This is line 1\n",
+        "This is line 2\n",
+        "This is line 3\n",
+        "--- content\n",
+        "^^^\n\n",
+        "Then execute a command:\n\n",
+        "^^^execute_command\n",
+        "project: test-project\n",
+        "command_line ---\n",
+        "echo 'hello world'\n",
+        "--- command_line\n",
+        "^^^"
+    );
+
+    let filter = SingleToolFilter;
+    let (tools, truncated_text) =
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+
+    // Should only get the first tool
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "write_file");
+    assert_eq!(tools[0].input["project"], "test-project");
+    assert_eq!(tools[0].input["path"], "test.txt");
+
+    let content = tools[0].input["content"].as_str().unwrap();
+    assert!(content.contains("This is line 1"));
+    assert!(content.contains("This is line 2"));
+    assert!(content.contains("This is line 3"));
+
+    // Text should be truncated after the first tool
+    assert!(truncated_text.contains("^^^write_file"));
+    assert!(!truncated_text.contains("execute_command"));
+}
+
+#[tokio::test]
+async fn test_caret_parsing_edge_case_empty_arrays_with_filter() {
+    use crate::tools::parse::parse_caret_tool_invocations;
+    use crate::tools::tool_use_filter::SingleToolFilter;
+
+    let text = concat!(
+        "Testing with empty arrays:\n\n",
+        "^^^list_files\n",
+        "project: test-project\n",
+        "paths: [\n",
+        "]\n",
+        "^^^\n\n",
+        "^^^read_files\n",
+        "project: test-project\n",
+        "paths: [\n",
+        "file1.txt\n",
+        "]\n",
+        "^^^"
+    );
+
+    let filter = SingleToolFilter;
+    let (tools, truncated_text) =
+        parse_caret_tool_invocations(text, 123, 0, Some(&filter)).unwrap();
+
+    // Should only get the first tool
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "list_files");
+    assert_eq!(tools[0].input["project"], "test-project");
+
+    // Empty array should be preserved
+    let paths = tools[0].input["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 0);
+
+    // Text should be truncated after the first tool
+    assert!(truncated_text.contains("^^^list_files"));
+    assert!(!truncated_text.contains("read_files"));
+}
+
+#[tokio::test]
+async fn test_mixed_syntax_scenarios_with_filters() {
+    use crate::tools::parse::{parse_caret_tool_invocations, parse_xml_tool_invocations};
+    use crate::tools::tool_use_filter::{SingleToolFilter, SmartToolFilter};
+
+    // Test that each parser handles its own syntax correctly with filters
+
+    // XML with web tools (read operations)
+    let xml_text = r#"Let me fetch some web content:
+
+<tool:web_fetch>
+<param:url>https://example.com</param:url>
+</tool:web_fetch>
+
+<tool:web_search>
+<param:query>rust programming</param:query>
+<param:hits_page_number>1</param:hits_page_number>
+</tool:web_search>"#;
+
+    let smart_filter = SmartToolFilter::new();
+    let (xml_tools, _) = parse_xml_tool_invocations(xml_text, 123, 0, Some(&smart_filter)).unwrap();
+
+    // Should get both web tools (they're read operations)
+    assert_eq!(xml_tools.len(), 2);
+    assert_eq!(xml_tools[0].name, "web_fetch");
+    assert_eq!(xml_tools[1].name, "web_search");
+
+    // Caret with the same tools
+    let caret_text = concat!(
+        "Let me fetch some web content:\n\n",
+        "^^^web_fetch\n",
+        "url: https://example.com\n",
+        "^^^\n\n",
+        "^^^web_search\n",
+        "query: rust programming\n",
+        "hits_page_number: 1\n",
+        "^^^"
+    );
+
+    let (caret_tools, _) =
+        parse_caret_tool_invocations(caret_text, 123, 0, Some(&smart_filter)).unwrap();
+
+    // Should get both web tools (they're read operations)
+    assert_eq!(caret_tools.len(), 2);
+    assert_eq!(caret_tools[0].name, "web_fetch");
+    assert_eq!(caret_tools[1].name, "web_search");
+
+    // Test with SingleToolFilter - should only get first tool in both cases
+    let single_filter = SingleToolFilter;
+
+    let (xml_single, _) =
+        parse_xml_tool_invocations(xml_text, 123, 0, Some(&single_filter)).unwrap();
+    assert_eq!(xml_single.len(), 1);
+    assert_eq!(xml_single[0].name, "web_fetch");
+
+    let (caret_single, _) =
+        parse_caret_tool_invocations(caret_text, 123, 0, Some(&single_filter)).unwrap();
+    assert_eq!(caret_single.len(), 1);
+    assert_eq!(caret_single[0].name, "web_fetch");
+}

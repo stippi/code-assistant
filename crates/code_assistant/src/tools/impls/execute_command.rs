@@ -96,7 +96,12 @@ impl Tool for ExecuteCommandTool {
                 "readOnlyHint": false,
                 "idempotentHint": false
             })),
-            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            supported_scopes: &[
+                ToolScope::McpServer,
+                ToolScope::Agent,
+                ToolScope::AgentWithDiffBlocks,
+            ],
+            hidden: false,
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::persistence::ChatMetadata;
+use crate::persistence::{ChatMetadata, DraftAttachment};
 use crate::session::instance::SessionActivityState;
 use crate::types::WorkingMemory;
 use crate::ui::gpui::elements::MessageRole;
@@ -23,8 +23,11 @@ pub struct ToolResultData {
 /// Events for UI updates from the agent thread
 #[derive(Debug, Clone)]
 pub enum UiEvent {
-    /// Display user input message
-    DisplayUserInput { content: String },
+    /// Display user input message with optional attachments
+    DisplayUserInput {
+        content: String,
+        attachments: Vec<DraftAttachment>,
+    },
     /// Append to the last text block
     AppendToTextBlock { content: String },
     /// Append to the last thinking block
@@ -46,6 +49,8 @@ pub enum UiEvent {
     },
     /// End a tool invocation
     EndTool { id: String },
+    /// Add an image to the message
+    AddImage { media_type: String, data: String },
     /// Update the working memory view
     UpdateMemory { memory: WorkingMemory },
     /// Set all messages at once (for session loading, clears existing)
@@ -71,19 +76,27 @@ pub enum UiEvent {
     /// Clear all messages
     #[allow(dead_code)]
     ClearMessages,
-    /// Send user message to active session (triggers agent)
-    SendUserMessage { message: String, session_id: String },
+    /// Send user message with optional attachments to active session (triggers agent)
+    SendUserMessage {
+        message: String,
+        session_id: String,
+        attachments: Vec<DraftAttachment>,
+    },
     /// Update metadata for a single session without refreshing the entire list
-    #[allow(dead_code)]
     UpdateSessionMetadata { metadata: ChatMetadata },
     /// Update activity state for a single session
     UpdateSessionActivityState {
         session_id: String,
         activity_state: SessionActivityState,
     },
-    /// Queue a user message while agent is running
-    QueueUserMessage { message: String, session_id: String },
+    /// Queue a user message with optional attachments while agent is running
+    QueueUserMessage {
+        message: String,
+        session_id: String,
+        attachments: Vec<DraftAttachment>,
+    },
     /// Request to edit pending message (move back to input)
+    #[allow(dead_code)]
     RequestPendingMessageEdit { session_id: String },
     /// Update pending message display
     UpdatePendingMessage { message: Option<String> },

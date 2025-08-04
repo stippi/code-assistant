@@ -109,6 +109,10 @@ impl DefaultMessageConverter {
                         std::mem::discriminant(block).hash(&mut hasher);
                         match block {
                             ContentBlock::Text { text } => text.hash(&mut hasher),
+                            ContentBlock::Image { media_type, data } => {
+                                media_type.hash(&mut hasher);
+                                data.hash(&mut hasher);
+                            }
                             ContentBlock::ToolUse { id, name, input } => {
                                 id.hash(&mut hasher);
                                 name.hash(&mut hasher);
@@ -221,6 +225,16 @@ impl DefaultMessageConverter {
                                 ContentBlock::Text { text } => {
                                     ("text".to_string(), AnthropicBlockContent::Text { text })
                                 }
+                                ContentBlock::Image { media_type, data } => (
+                                    "image".to_string(),
+                                    AnthropicBlockContent::Image {
+                                        source: AnthropicImageSource {
+                                            source_type: "base64".to_string(),
+                                            media_type,
+                                            data,
+                                        },
+                                    },
+                                ),
                                 ContentBlock::ToolUse { id, name, input } => (
                                     "tool_use".to_string(),
                                     AnthropicBlockContent::ToolUse { id, name, input },
@@ -451,6 +465,9 @@ enum AnthropicBlockContent {
     Text {
         text: String,
     },
+    Image {
+        source: AnthropicImageSource,
+    },
     Thinking {
         thinking: String,
         signature: String,
@@ -469,6 +486,15 @@ enum AnthropicBlockContent {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+}
+
+/// Anthropic image source structure
+#[derive(Debug, Serialize)]
+struct AnthropicImageSource {
+    #[serde(rename = "type")]
+    source_type: String,
+    media_type: String,
+    data: String,
 }
 
 /// Anthropic-specific message structure
@@ -626,6 +652,18 @@ pub struct AnthropicClient {
 }
 
 impl AnthropicClient {
+    /// Substrings of model IDs that should enable thinking mode and higher limits
+    fn thinking_model_substrings() -> &'static [&'static str] {
+        &["claude-sonnet-4", "claude-3-7-sonnet", "claude-opus-4"]
+    }
+
+    /// Returns true if the current model should have thinking mode enabled
+    fn supports_thinking(&self) -> bool {
+        Self::thinking_model_substrings()
+            .iter()
+            .any(|substr| self.model.contains(substr))
+    }
+
     pub fn default_base_url() -> String {
         "https://api.anthropic.com/v1".to_string()
     }
@@ -758,9 +796,8 @@ impl AnthropicClient {
             request_builder = request_builder.header(key, value);
         }
 
-        // Add model-specific headers
-        if self.model.starts_with("claude-3-7-sonnet") || self.model.starts_with("claude-sonnet-4")
-        {
+        // Add model-specific headers for thinking-enabled models
+        if self.supports_thinking() {
             request_builder = request_builder.header("anthropic-beta", "output-128k-2025-02-19");
         }
 
@@ -1069,6 +1106,9 @@ impl AnthropicClient {
                 )?;
             }
 
+            // Send StreamingComplete to indicate streaming has finished
+            callback(&StreamingChunk::StreamingComplete)?;
+
             // End recording if a recorder is available
             if let Some(recorder) = &self.recorder {
                 recorder.end_recording()?;
@@ -1174,7 +1214,8 @@ impl LLMProvider for AnthropicClient {
             tools_json
         });
 
-        let (thinking, max_tokens) = if self.model.starts_with("claude-3-7-sonnet") {
+        // Configure thinking mode and max_tokens based on model
+        let (thinking, max_tokens) = if self.supports_thinking() {
             (
                 Some(ThinkingConfiguration {
                     thinking_type: "enabled".to_string(),
@@ -1193,7 +1234,7 @@ impl LLMProvider for AnthropicClient {
         let mut anthropic_request = serde_json::json!({
             "model": self.model,
             "max_tokens": max_tokens,
-            "temperature": 1.0,
+            "temperature": 0.7,
             "system": system,
             "stream": streaming_callback.is_some(),
             "messages": messages_json,

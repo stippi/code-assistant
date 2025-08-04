@@ -1,9 +1,11 @@
 use crate::ui::gpui::file_icons;
+use crate::ui::gpui::image;
 use crate::ui::gpui::parameter_renderers::ParameterRendererRegistry;
 use crate::ui::ToolStatus;
 use gpui::{
-    bounce, div, ease_in_out, percentage, px, svg, Animation, AnimationExt, Bounds, Context,
-    Entity, IntoElement, MouseButton, Pixels, SharedString, Styled, Task, Timer, Transformation,
+    bounce, div, ease_in_out, img, percentage, px, svg, Animation, AnimationExt, Bounds, Context,
+    Entity, ImageSource, IntoElement, MouseButton, ObjectFit, Pixels, SharedString, Styled, Task,
+    Timer, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
 use gpui_component::{label::Label, ActiveTheme};
@@ -12,6 +14,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::trace;
+
+/// Maximum height for rendered images in pixels
+const MAX_IMAGE_HEIGHT: f32 = 80.0;
 
 /// Role of a message in the conversation
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +65,8 @@ pub struct MessageContainer {
     /// each new request (see `UiEvent::StreamingStarted` in gpui/mod). When the user cancels
     /// streaming, all blocks that were created for that last, canceled request are removed.
     current_request_id: Arc<Mutex<u64>>,
+    /// Current project for parameter filtering
+    current_project: Arc<Mutex<String>>,
 }
 
 impl MessageContainer {
@@ -68,12 +75,18 @@ impl MessageContainer {
             elements: Arc::new(Mutex::new(Vec::new())),
             role,
             current_request_id: Arc::new(Mutex::new(0)),
+            current_project: Arc::new(Mutex::new(String::new())),
         }
     }
 
     // Set the current request ID for this message container
     pub fn set_current_request_id(&self, request_id: u64) {
         *self.current_request_id.lock().unwrap() = request_id;
+    }
+
+    /// Set the current project for parameter filtering
+    pub fn set_current_project(&self, project: String) {
+        *self.current_project.lock().unwrap() = project;
     }
 
     // Remove all blocks with the given request ID
@@ -119,7 +132,7 @@ impl MessageContainer {
         let block = BlockData::TextBlock(TextBlock {
             content: content.into(),
         });
-        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();
     }
@@ -132,7 +145,30 @@ impl MessageContainer {
         let request_id = *self.current_request_id.lock().unwrap();
         let mut elements = self.elements.lock().unwrap();
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.into()));
-        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        elements.push(view);
+        cx.notify();
+    }
+
+    // Add a new image block
+    pub fn add_image_block(
+        &self,
+        media_type: impl Into<String>,
+        data: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_any_thinking_blocks(cx);
+
+        let media_type = media_type.into();
+        let data = data.into();
+
+        // Try to parse the base64 image data
+        let image = image::parse_base64_image(&media_type, &data);
+
+        let request_id = *self.current_request_id.lock().unwrap();
+        let mut elements = self.elements.lock().unwrap();
+        let block = BlockData::ImageBlock(ImageBlock { media_type, image });
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();
     }
@@ -157,7 +193,7 @@ impl MessageContainer {
             output: None,
             is_collapsed: false, // Default to expanded
         });
-        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();
     }
@@ -228,7 +264,7 @@ impl MessageContainer {
         let block = BlockData::TextBlock(TextBlock {
             content: content.to_string(),
         });
-        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();
     }
@@ -261,7 +297,7 @@ impl MessageContainer {
         // If we reach here, we need to add a new thinking block
         let request_id = *self.current_request_id.lock().unwrap();
         let block = BlockData::ThinkingBlock(ThinkingBlock::new(content.to_string()));
-        let view = cx.new(|cx| BlockView::new(block, request_id, cx));
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
         cx.notify();
     }
@@ -352,7 +388,8 @@ impl MessageContainer {
             });
 
             let block = BlockData::ToolUse(tool);
-            let view = cx.new(|cx| BlockView::new(block, request_id, cx));
+            let view =
+                cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
             elements.push(view);
             cx.notify();
         }
@@ -389,6 +426,7 @@ pub enum BlockData {
     TextBlock(TextBlock),
     ThinkingBlock(ThinkingBlock),
     ToolUse(ToolUseBlock),
+    ImageBlock(ImageBlock),
 }
 
 impl BlockData {
@@ -422,17 +460,30 @@ pub struct BlockView {
     animation_state: AnimationState,
     content_height: Rc<Cell<Pixels>>,
     animation_task: Option<Task<()>>,
+    // Current project for parameter filtering
+    current_project: Arc<Mutex<String>>,
 }
 
 impl BlockView {
-    pub fn new(block: BlockData, request_id: u64, _cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        block: BlockData,
+        request_id: u64,
+        current_project: Arc<Mutex<String>>,
+        _cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             block,
             request_id,
             animation_state: AnimationState::Idle,
             content_height: Rc::new(Cell::new(px(0.0))),
             animation_task: None,
+            current_project,
         }
+    }
+
+    /// Check if this block is an image block
+    pub fn is_image_block(&self) -> bool {
+        matches!(self.block, BlockData::ImageBlock(_))
     }
 
     fn toggle_thinking_collapsed(&mut self, cx: &mut Context<Self>) {
@@ -816,13 +867,27 @@ impl Render for BlockView {
                     }
                 };
 
-                // Separate parameters into regular and full-width
+                // Filter out hidden parameters, then separate into regular and full-width
+                let current_project = self.current_project.lock().unwrap().clone();
+                let should_hide_param = |param: &ParameterBlock| {
+                    // Simple, focused logic for hiding project parameter when it matches current project
+                    param.name == "project"
+                        && !current_project.is_empty()
+                        && param.value == current_project
+                };
+
+                let visible_params: Vec<&ParameterBlock> = block
+                    .parameters
+                    .iter()
+                    .filter(|param| !should_hide_param(param))
+                    .collect();
+
                 let registry = ParameterRendererRegistry::global();
 
                 let (regular_params, fullwidth_params): (
                     Vec<&ParameterBlock>,
                     Vec<&ParameterBlock>,
-                ) = block.parameters.iter().partition(|param| {
+                ) = visible_params.into_iter().partition(|param| {
                     !registry.as_ref().map_or(false, |reg| {
                         reg.get_renderer(&block.name, &param.name)
                             .is_full_width(&block.name, &param.name)
@@ -1124,6 +1189,54 @@ impl Render for BlockView {
                     ])
                     .into_any_element()
             }
+            BlockData::ImageBlock(block) => {
+                if let Some(image) = &block.image {
+                    // Render the actual image - margins/spacing handled by parent container
+                    div()
+                        .flex_none() // Don't grow or shrink
+                        .child(
+                            div()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded_md()
+                                .overflow_hidden()
+                                .bg(cx.theme().card)
+                                .shadow_sm()
+                                .child(
+                                    img(ImageSource::Image(image.clone()))
+                                        .max_h(px(MAX_IMAGE_HEIGHT)) // Use constant for max height
+                                        .object_fit(ObjectFit::Contain), // Maintain aspect ratio
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    // Fallback to placeholder if image parsing failed
+                    div()
+                        .flex_none()
+                        .p_2()
+                        .bg(cx.theme().warning.opacity(0.1))
+                        .border_1()
+                        .border_color(cx.theme().warning.opacity(0.3))
+                        .rounded_md()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .max_w(px(200.0)) // Limit width of error message
+                        .child(
+                            div()
+                                .text_color(cx.theme().warning_foreground)
+                                .text_xs()
+                                .child("⚠️"),
+                        )
+                        .child(
+                            div()
+                                .text_color(cx.theme().warning_foreground.opacity(0.8))
+                                .text_xs()
+                                .child(format!("Failed: {}", block.media_type)),
+                        )
+                        .into_any_element()
+                }
+            }
         }
     }
 }
@@ -1142,6 +1255,14 @@ pub struct ThinkingBlock {
     pub is_completed: bool,
     pub start_time: std::time::Instant,
     pub end_time: std::time::Instant,
+}
+
+/// Image block with media type and base64 data
+#[derive(Debug, Clone)]
+pub struct ImageBlock {
+    pub media_type: String,
+    /// Parsed image ready for rendering, if parsing was successful
+    pub image: Option<Arc<gpui::Image>>,
 }
 
 impl ThinkingBlock {

@@ -1,4 +1,5 @@
 use crate::tools::core::ToolRegistry;
+use crate::tools::tool_use_filter::ToolUseFilter;
 use crate::tools::ToolRequest;
 use crate::types::{FileReplacement, ToolError};
 use anyhow::{anyhow, Result};
@@ -108,7 +109,8 @@ pub fn parse_caret_tool_invocations(
     text: &str,
     request_id: u64,
     _start_tool_count: usize,
-) -> Result<Vec<ToolRequest>> {
+    filter: Option<&dyn ToolUseFilter>,
+) -> Result<(Vec<ToolRequest>, String)> {
     let mut tool_requests = Vec::new();
     let tool_regex = regex::Regex::new(r"(?m)^\^\^\^([a-zA-Z0-9_]+)$").unwrap();
     let multiline_start_regex = regex::Regex::new(r"(?m)^([a-zA-Z0-9_]+)\s+---\s*$").unwrap();
@@ -116,6 +118,7 @@ pub fn parse_caret_tool_invocations(
     let tool_end_regex = regex::Regex::new(r"(?m)^\^\^\^$").unwrap();
 
     let mut remaining_text = text;
+    let mut truncation_pos = text.len(); // Default to end of text
 
     while let Some(tool_match) = tool_regex.find(remaining_text) {
         // Extract tool name
@@ -124,6 +127,15 @@ pub fn parse_caret_tool_invocations(
             .and_then(|caps| caps.get(1))
             .map(|m| m.as_str())
             .ok_or_else(|| ToolError::ParseError("Failed to extract tool name".to_string()))?;
+
+        // Check filter before processing this tool
+        let tool_index = tool_requests.len() + 1;
+        if let Some(filter) = filter {
+            if !filter.allow_tool_at_position(tool_name, tool_index) {
+                // Tool not allowed, keep existing truncation_pos
+                break;
+            }
+        }
 
         // Check if the tool exists in the registry
         if ToolRegistry::global().get(tool_name).is_none() {
@@ -134,15 +146,15 @@ pub fn parse_caret_tool_invocations(
         let tool_start = tool_match.end();
         let remaining_after_tool = &remaining_text[tool_start..];
 
-        let tool_content = if let Some(end_match) = tool_end_regex.find(remaining_after_tool) {
-            let content = &remaining_after_tool[..end_match.start()];
-            remaining_text = &remaining_after_tool[end_match.end()..];
-            content
-        } else {
-            // No end found, treat rest as tool content
-            remaining_text = "";
-            remaining_after_tool
-        };
+        let (tool_content, tool_end_pos) =
+            if let Some(end_match) = tool_end_regex.find(remaining_after_tool) {
+                let content = &remaining_after_tool[..end_match.start()];
+                let end_pos = tool_start + end_match.end();
+                (content, Some(end_pos))
+            } else {
+                // No end found, treat rest as tool content
+                (remaining_after_tool, None)
+            };
 
         // Parse parameters from tool content (returns raw HashMap)
         let raw_params = parse_caret_tool_parameters_raw(
@@ -168,8 +180,6 @@ pub fn parse_caret_tool_invocations(
         };
 
         // Generate a unique tool ID: tool-<request_id>-<tool_index_in_request>
-        // First tool in the request gets index 1, second gets index 2, etc.
-        let tool_index = tool_requests.len() + 1;
         let tool_id = format!("tool-{}-{}", request_id, tool_index);
 
         // Create a ToolRequest
@@ -180,253 +190,32 @@ pub fn parse_caret_tool_invocations(
         };
 
         tool_requests.push(tool_request);
-    }
 
-    Ok(tool_requests)
-}
+        // Update remaining text for next iteration
+        if let Some(end_pos) = tool_end_pos {
+            // Always update truncation position after each successfully processed tool
+            // This ensures we can truncate cleanly after the last allowed tool
+            let absolute_tool_end = text.len() - remaining_text.len() + end_pos;
+            truncation_pos = absolute_tool_end;
 
-pub fn parse_xml_tool_invocations(
-    text: &str,
-    request_id: u64,
-    _start_tool_count: usize,
-) -> Result<Vec<ToolRequest>> {
-    let mut tool_requests = Vec::new();
-    let mut state = ParseState::SearchingForTool;
-    let mut current_pos = 0;
-
-    while current_pos < text.len() {
-        // Find next '<' character
-        if let Some(tag_start) = text[current_pos..].find('<') {
-            let abs_tag_start = current_pos + tag_start;
-
-            // Extract tag content until '>'
-            if let Some(tag_end) = text[abs_tag_start..].find('>') {
-                let abs_tag_end = abs_tag_start + tag_end;
-                let tag_content = &text[abs_tag_start + 1..abs_tag_end]; // Skip '<' and '>'
-
-                debug!("Found tag: <{}>", tag_content);
-
-                // Check if this is a tool tag
-                if let Some(tool_name) = tag_content.strip_prefix(TOOL_TAG_PREFIX) {
-                    match &state {
-                        ParseState::SearchingForTool => {
-                            // Start of a new tool invocation
-                            state = ParseState::InTool {
-                                tool_name: tool_name.to_string(),
-                                start_pos: abs_tag_start,
-                            };
-                            current_pos = abs_tag_end + 1;
-                            continue;
-                        }
-                        ParseState::InTool {
-                            tool_name: current_tool,
-                            ..
-                        }
-                        | ParseState::InParam {
-                            tool_name: current_tool,
-                            ..
-                        } => {
-                            // Found another tool start while already in a tool - this is an error
-                            return Err(ToolError::ParseError(format!(
-                                "Malformed tool invocation: found nested tool invocation. Started '{}' but found start of '{}' before closing the first one",
-                                current_tool, tool_name
-                            )).into());
-                        }
-                    }
+            // Check if we should allow content after this tool
+            if let Some(filter) = filter {
+                if !filter.allow_content_after_tool(tool_name, tool_index) {
+                    // No content allowed after this tool, truncate here
+                    break;
                 }
-                // Check if this is a tool closing tag
-                else if let Some(tool_name) =
-                    tag_content.strip_prefix(&format!("/{}", TOOL_TAG_PREFIX))
-                {
-                    match &state {
-                        ParseState::SearchingForTool => {
-                            // Found closing tag without opening tag
-                            return Err(ToolError::ParseError(format!(
-                                "Malformed tool invocation: found closing tag '</tool:{}>' without corresponding opening tag",
-                                tool_name
-                            )).into());
-                        }
-                        ParseState::InTool {
-                            tool_name: current_tool,
-                            start_pos,
-                        } => {
-                            if tool_name != current_tool {
-                                // Mismatched closing tag
-                                return Err(ToolError::ParseError(format!(
-                                    "Malformed tool invocation: mismatching tool names in start and end tag. Expected '</tool:{}>' but found '</tool:{}>'",
-                                    current_tool, tool_name
-                                )).into());
-                            }
-
-                            // Extract the complete tool XML
-                            let tool_content = &text[*start_pos..abs_tag_end + 1];
-                            debug!("Found complete tool content:\n{}", tool_content);
-
-                            // Parse the tool XML to get tool name and parameters
-                            let (parsed_tool_name, tool_params) = parse_tool_xml(tool_content)?;
-
-                            // Check if the tool exists in the registry
-                            if ToolRegistry::global().get(&parsed_tool_name).is_none() {
-                                return Err(ToolError::UnknownTool(parsed_tool_name).into());
-                            }
-
-                            // Generate a unique tool ID: tool-<request_id>-<tool_index_in_request>
-                            // First tool in the request gets index 1, second gets index 2, etc.
-                            let tool_index = tool_requests.len() + 1;
-                            let tool_id = format!("tool-{}-{}", request_id, tool_index);
-
-                            // Create a ToolRequest
-                            let tool_request = ToolRequest {
-                                id: tool_id,
-                                name: parsed_tool_name,
-                                input: tool_params,
-                            };
-
-                            tool_requests.push(tool_request);
-
-                            // Reset state
-                            state = ParseState::SearchingForTool;
-                            current_pos = abs_tag_end + 1;
-                            continue;
-                        }
-                        ParseState::InParam {
-                            param_name: current_param,
-                            ..
-                        } => {
-                            // We're still inside a parameter when trying to close the tool - this is an error
-                            return Err(ToolError::ParseError(format!(
-                                "Malformed tool invocation: unclosed parameter '{}' in tool '{}' - missing closing tag '</param:{}>'",
-                                current_param, tool_name, current_param
-                            )).into());
-                        }
-                    }
-                }
-                // Check if this is a parameter tag
-                else if let Some(param_name) = tag_content.strip_prefix(PARAM_TAG_PREFIX) {
-                    match &state {
-                        ParseState::SearchingForTool => {
-                            // Parameter tag outside of tool - ignore it
-                            current_pos = abs_tag_end + 1;
-                            continue;
-                        }
-                        ParseState::InTool {
-                            tool_name,
-                            start_pos,
-                        } => {
-                            // Start of parameter
-                            state = ParseState::InParam {
-                                tool_name: tool_name.clone(),
-                                param_name: param_name.to_string(),
-                                start_pos: *start_pos,
-                            };
-                            current_pos = abs_tag_end + 1;
-                            continue;
-                        }
-                        ParseState::InParam {
-                            tool_name,
-                            param_name: current_param,
-                            ..
-                        } => {
-                            // Found another parameter start while already in a parameter - this is an error
-                            return Err(ToolError::ParseError(format!(
-                                "Malformed tool invocation: found nested parameter. Started parameter '{}' in tool '{}' but found start of parameter '{}' before closing the first one",
-                                current_param, tool_name, param_name
-                            )).into());
-                        }
-                    }
-                }
-                // Check if this is a parameter closing tag
-                else if let Some(param_name) =
-                    tag_content.strip_prefix(&format!("/{}", PARAM_TAG_PREFIX))
-                {
-                    match &state {
-                        ParseState::SearchingForTool | ParseState::InTool { .. } => {
-                            // Parameter closing tag outside of parameter - ignore it
-                            current_pos = abs_tag_end + 1;
-                            continue;
-                        }
-                        ParseState::InParam {
-                            tool_name,
-                            param_name: current_param,
-                            start_pos,
-                            ..
-                        } => {
-                            if param_name != current_param {
-                                // Mismatched parameter closing tag
-                                return Err(ToolError::ParseError(format!(
-                                    "Malformed tool invocation: mismatching parameter names in start and end tag. Expected '</param:{}>' but found '</param:{}>' in tool '{}'",
-                                    current_param, param_name, tool_name
-                                )).into());
-                            }
-
-                            // End of parameter - go back to InTool state
-                            state = ParseState::InTool {
-                                tool_name: tool_name.clone(),
-                                start_pos: *start_pos,
-                            };
-                            current_pos = abs_tag_end + 1;
-                            continue;
-                        }
-                    }
-                }
-                // Any other tag - check if we're inside a tool (but not inside a parameter)
-                else {
-                    match &state {
-                        ParseState::InTool { tool_name, .. } => {
-                            // Found non-tool/non-param tag inside a tool (but outside parameters) - this is an error
-                            return Err(ToolError::ParseError(format!(
-                                "Malformed tool invocation: found unexpected tag '<{}>' inside tool '{}'. Only parameter tags are allowed inside tool blocks",
-                                tag_content, tool_name
-                            )).into());
-                        }
-                        ParseState::InParam { .. } => {
-                            // Inside a parameter - tags are allowed as part of parameter content
-                            current_pos = abs_tag_end + 1;
-                            continue;
-                        }
-                        ParseState::SearchingForTool => {
-                            // Outside of tools - ignore other tags
-                            current_pos = abs_tag_end + 1;
-                            continue;
-                        }
-                    }
-                }
-            } else {
-                // Found '<' but no matching '>' - skip this character
-                current_pos = abs_tag_start + 1;
-                continue;
             }
+
+            remaining_text = &remaining_text[end_pos..];
         } else {
-            // No more '<' characters
+            // No tool end found, stop processing
             break;
         }
     }
 
-    // Check if we ended in an incomplete state
-    match state {
-        ParseState::SearchingForTool => {
-            // This is fine
-        }
-        ParseState::InTool { tool_name, .. } => {
-            return Err(ToolError::ParseError(format!(
-                "Malformed tool invocation: unclosed tool '{}' - missing closing tag '</tool:{}>'",
-                tool_name, tool_name
-            ))
-            .into());
-        }
-        ParseState::InParam {
-            tool_name,
-            param_name,
-            ..
-        } => {
-            return Err(ToolError::ParseError(format!(
-                "Malformed tool invocation: unclosed parameter '{}' in tool '{}' - missing closing tag '</param:{}>'",
-                param_name, tool_name, param_name
-            )).into());
-        }
-    }
-
-    Ok(tool_requests)
+    // Return the parsed tools and truncated text
+    let truncated_text = &text[..truncation_pos];
+    Ok((tool_requests, truncated_text.to_string()))
 }
 
 fn parse_caret_tool_parameters_raw(
@@ -914,6 +703,260 @@ pub fn convert_xml_params_to_json(
     Ok(result)
 }
 
+pub fn parse_xml_tool_invocations(
+    text: &str,
+    request_id: u64,
+    _start_tool_count: usize,
+    filter: Option<&dyn ToolUseFilter>,
+) -> Result<(Vec<ToolRequest>, String)> {
+    let mut tool_requests = Vec::new();
+    let mut state = ParseState::SearchingForTool;
+    let mut current_pos = 0;
+    let mut truncation_pos = text.len(); // Default to end of text
+
+    while current_pos < text.len() {
+        // Find next '<' character
+        if let Some(tag_start) = text[current_pos..].find('<') {
+            let abs_tag_start = current_pos + tag_start;
+
+            // Extract tag content until '>'
+            if let Some(tag_end) = text[abs_tag_start..].find('>') {
+                let abs_tag_end = abs_tag_start + tag_end;
+                let tag_content = &text[abs_tag_start + 1..abs_tag_end]; // Skip '<' and '>'
+
+                debug!("Found tag: <{}>", tag_content);
+
+                // Check if this is a tool tag
+                if let Some(tool_name) = tag_content.strip_prefix(TOOL_TAG_PREFIX) {
+                    match &state {
+                        ParseState::SearchingForTool => {
+                            // Check filter before starting this tool
+                            let tool_index = tool_requests.len() + 1;
+                            if let Some(filter) = filter {
+                                if !filter.allow_tool_at_position(tool_name, tool_index) {
+                                    // Tool not allowed at this position, keep existing truncation_pos
+                                    break;
+                                }
+                            }
+
+                            // Start of a new tool invocation
+                            state = ParseState::InTool {
+                                tool_name: tool_name.to_string(),
+                                start_pos: abs_tag_start,
+                            };
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                        ParseState::InTool {
+                            tool_name: current_tool,
+                            ..
+                        }
+                        | ParseState::InParam {
+                            tool_name: current_tool,
+                            ..
+                        } => {
+                            // Found another tool start while already in a tool - this is an error
+                            return Err(ToolError::ParseError(format!(
+                                "Malformed tool invocation: found nested tool invocation. Started '{}' but found start of '{}' before closing the first one",
+                                current_tool, tool_name
+                            )).into());
+                        }
+                    }
+                }
+                // Check if this is a tool closing tag
+                else if let Some(tool_name) =
+                    tag_content.strip_prefix(&format!("/{}", TOOL_TAG_PREFIX))
+                {
+                    match &state {
+                        ParseState::SearchingForTool => {
+                            // Found closing tag without opening tag
+                            return Err(ToolError::ParseError(format!(
+                                "Malformed tool invocation: found closing tag '</tool:{}>' without corresponding opening tag",
+                                tool_name
+                            )).into());
+                        }
+                        ParseState::InTool {
+                            tool_name: current_tool,
+                            start_pos,
+                        } => {
+                            if tool_name != current_tool {
+                                // Mismatched closing tag
+                                return Err(ToolError::ParseError(format!(
+                                    "Malformed tool invocation: mismatching tool names in start and end tag. Expected '</tool:{}>' but found '</tool:{}>'",
+                                    current_tool, tool_name
+                                )).into());
+                            }
+
+                            // Extract the complete tool XML
+                            let tool_content = &text[*start_pos..abs_tag_end + 1];
+                            debug!("Found complete tool content:\n{}", tool_content);
+
+                            // Parse the tool XML to get tool name and parameters
+                            let (parsed_tool_name, tool_params) = parse_tool_xml(tool_content)?;
+
+                            // Check if the tool exists in the registry
+                            if ToolRegistry::global().get(&parsed_tool_name).is_none() {
+                                return Err(ToolError::UnknownTool(parsed_tool_name).into());
+                            }
+
+                            // Generate a unique tool ID: tool-<request_id>-<tool_index_in_request>
+                            let tool_index = tool_requests.len() + 1;
+                            let tool_id = format!("tool-{}-{}", request_id, tool_index);
+
+                            // Create a ToolRequest
+                            let tool_request = ToolRequest {
+                                id: tool_id,
+                                name: parsed_tool_name.clone(),
+                                input: tool_params,
+                            };
+
+                            tool_requests.push(tool_request);
+
+                            // Always update truncation position after each successfully processed tool
+                            // This ensures we can truncate cleanly after the last allowed tool
+                            truncation_pos = abs_tag_end + 1;
+
+                            // Check if we should allow content after this tool
+                            if let Some(filter) = filter {
+                                if !filter.allow_content_after_tool(&parsed_tool_name, tool_index) {
+                                    // No content allowed after this tool, truncate here
+                                    state = ParseState::SearchingForTool;
+                                    break;
+                                }
+                            }
+
+                            // Reset state
+                            state = ParseState::SearchingForTool;
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                        ParseState::InParam {
+                            param_name: current_param,
+                            ..
+                        } => {
+                            // We're still inside a parameter when trying to close the tool - this is an error
+                            return Err(ToolError::ParseError(format!(
+                                "Malformed tool invocation: unclosed parameter '{}' in tool '{}' - missing closing tag '</param:{}>'",
+                                current_param, tool_name, current_param
+                            )).into());
+                        }
+                    }
+                }
+                // Handle parameter tags and other logic same as original function...
+                else if let Some(param_name) = tag_content.strip_prefix(PARAM_TAG_PREFIX) {
+                    match &state {
+                        ParseState::SearchingForTool => {
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                        ParseState::InTool {
+                            tool_name,
+                            start_pos,
+                        } => {
+                            state = ParseState::InParam {
+                                tool_name: tool_name.clone(),
+                                param_name: param_name.to_string(),
+                                start_pos: *start_pos,
+                            };
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                        ParseState::InParam {
+                            tool_name,
+                            param_name: current_param,
+                            ..
+                        } => {
+                            return Err(ToolError::ParseError(format!(
+                                "Malformed tool invocation: found nested parameter. Started parameter '{}' in tool '{}' but found start of parameter '{}' before closing the first one",
+                                current_param, tool_name, param_name
+                            )).into());
+                        }
+                    }
+                } else if let Some(param_name) =
+                    tag_content.strip_prefix(&format!("/{}", PARAM_TAG_PREFIX))
+                {
+                    match &state {
+                        ParseState::SearchingForTool | ParseState::InTool { .. } => {
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                        ParseState::InParam {
+                            tool_name,
+                            param_name: current_param,
+                            start_pos,
+                            ..
+                        } => {
+                            if param_name != current_param {
+                                return Err(ToolError::ParseError(format!(
+                                    "Malformed tool invocation: mismatching parameter names in start and end tag. Expected '</param:{}>' but found '</param:{}>' in tool '{}'",
+                                    current_param, param_name, tool_name
+                                )).into());
+                            }
+
+                            state = ParseState::InTool {
+                                tool_name: tool_name.clone(),
+                                start_pos: *start_pos,
+                            };
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                    }
+                } else {
+                    match &state {
+                        ParseState::InTool { tool_name, .. } => {
+                            return Err(ToolError::ParseError(format!(
+                                "Malformed tool invocation: found unexpected tag '<{}>' inside tool '{}'. Only parameter tags are allowed inside tool blocks",
+                                tag_content, tool_name
+                            )).into());
+                        }
+                        ParseState::InParam { .. } => {
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                        ParseState::SearchingForTool => {
+                            current_pos = abs_tag_end + 1;
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                current_pos = abs_tag_start + 1;
+                continue;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // Check if we ended in an incomplete state
+    match state {
+        ParseState::SearchingForTool => {
+            // This is fine
+        }
+        ParseState::InTool { tool_name, .. } => {
+            return Err(ToolError::ParseError(format!(
+                "Malformed tool invocation: unclosed tool '{}' - missing closing tag '</tool:{}>'",
+                tool_name, tool_name
+            ))
+            .into());
+        }
+        ParseState::InParam {
+            tool_name,
+            param_name,
+            ..
+        } => {
+            return Err(ToolError::ParseError(format!(
+                "Malformed tool invocation: unclosed parameter '{}' in tool '{}' - missing closing tag '</param:{}>'",
+                param_name, tool_name, param_name
+            )).into());
+        }
+    }
+
+    // Return the parsed tools and truncated text
+    let truncated_text = &text[..truncation_pos];
+    Ok((tool_requests, truncated_text.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::parse::parse_search_replace_blocks;
@@ -966,6 +1009,7 @@ mod tests {
                 }),
                 annotations: None,
                 supported_scopes: &[ToolScope::McpServer],
+                hidden: false,
             }
         }
 
@@ -1374,7 +1418,7 @@ mod tests {
     async fn test_parse_caret_tool_invocations_simple() {
         let text = concat!("^^^list_projects\n", "^^^");
 
-        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "list_projects");
     }
@@ -1392,7 +1436,7 @@ mod tests {
             "^^^"
         );
 
-        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "write_file");
         assert_eq!(result[0].input["project"], "test");
@@ -1420,7 +1464,7 @@ mod tests {
             "^^^"
         );
 
-        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
         assert_eq!(result[0].input["project"], "test");
@@ -1435,31 +1479,32 @@ mod tests {
     #[tokio::test]
     async fn test_parse_caret_tool_invocations_multiple_multiline() {
         let text = concat!(
-            "^^^replace_in_file\n",
+            "^^^edit\n",
             "project: test\n",
             "path: test.rs\n",
-            "diff ---\n",
+            "old_text ---\n",
             "old code here\n",
-            "--- diff\n",
-            "comment ---\n",
-            "This change fixes a bug\n",
-            "--- comment\n",
+            "--- old_text\n",
+            "new_text ---\n",
+            "new code here\n",
+            "--- new_text\n",
             "^^^"
         );
 
-        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].name, "replace_in_file");
+        assert_eq!(result[0].name, "edit");
         assert_eq!(result[0].input["project"], "test");
         assert_eq!(result[0].input["path"], "test.rs");
-        assert_eq!(result[0].input["diff"], "old code here");
+        assert_eq!(result[0].input["old_text"], "old code here");
+        assert_eq!(result[0].input["new_text"], "new code here");
     }
 
     #[tokio::test]
     async fn test_parse_caret_tool_invocations_with_text_before() {
         let text = concat!("I'll help you with that.\n\n", "^^^list_projects\n", "^^^");
 
-        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "list_projects");
     }
@@ -1468,7 +1513,7 @@ mod tests {
     async fn test_parse_caret_tool_invocations_no_tools() {
         let text = "This is just plain text with no tools.";
 
-        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
         assert_eq!(result.len(), 0);
     }
 
@@ -1476,7 +1521,7 @@ mod tests {
     async fn test_parse_caret_tool_invocations_unknown_tool() {
         let text = concat!("^^^unknown_tool\n", "param: value\n", "^^^");
 
-        let result = parse_caret_tool_invocations(text, 123, 0);
+        let result = parse_caret_tool_invocations(text, 123, 0, None);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1515,7 +1560,7 @@ mod tests {
             "^^^"
         );
 
-        let result = parse_caret_tool_invocations(text_single, 123, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text_single, 123, 0, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "write_file");
         assert_eq!(result[0].input["project"], "test");
@@ -1535,7 +1580,7 @@ mod tests {
             "^^^"
         );
 
-        let result = parse_caret_tool_invocations(text_array, 123, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text_array, 123, 0, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
         assert_eq!(result[0].input["project"], "test");
@@ -1559,7 +1604,7 @@ mod tests {
             "^^^"
         );
 
-        let result = parse_caret_tool_invocations(text_empty, 123, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text_empty, 123, 0, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
 
@@ -1580,7 +1625,7 @@ mod tests {
             "^^^"
         );
 
-        let result = parse_caret_tool_invocations(text_mixed, 123, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text_mixed, 123, 0, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "read_files");
 
@@ -1605,7 +1650,7 @@ mod tests {
             "^^^"
         );
 
-        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "list_files");
 
@@ -1637,7 +1682,7 @@ mod tests {
             "^^^"
         );
 
-        let result = parse_caret_tool_invocations(text, 123, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text, 123, 0, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "list_files");
 
@@ -1670,7 +1715,8 @@ mod tests {
         let request_id = 456;
         let start_tool_count = 0; // Not used in new format
 
-        let result = parse_caret_tool_invocations(text, request_id, start_tool_count).unwrap();
+        let (result, _) =
+            parse_caret_tool_invocations(text, request_id, start_tool_count, None).unwrap();
         assert_eq!(result.len(), 1);
 
         // Tool ID should follow the format: "tool-<request_id>-<tool_index_in_request>"
@@ -1699,7 +1745,7 @@ mod tests {
         );
 
         let request_id = 789;
-        let result = parse_caret_tool_invocations(text, request_id, 0).unwrap();
+        let (result, _) = parse_caret_tool_invocations(text, request_id, 0, None).unwrap();
         assert_eq!(result.len(), 3);
 
         // First tool should get index 1

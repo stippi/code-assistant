@@ -1,6 +1,6 @@
 [package]
 name = "code-assistant"
-version = "0.1.10"
+version = "0.1.13"
 edition = "2021"
 
 [dependencies]
@@ -57,6 +57,12 @@ rand = "0.8.5"
 # Diff visualization
 similar = { version = "2.5.0", features = ["inline"] }
 async-channel = "2.3.1"
+
+# Base64 encoding for images
+base64 = "0.22"
+
+# Image processing
+image = "0.25"
 
 [dev-dependencies]
 axum = "0.7"

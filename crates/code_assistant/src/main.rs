@@ -92,8 +92,8 @@ struct Args {
     #[arg(long, default_value = "8192")]
     num_ctx: Option<usize>,
 
-    /// Tool invocation syntax ('native' = tools via API, 'xml' = custom system message)
-    #[arg(long, default_value = "xml")]
+    /// Tool invocation syntax ('native' = tools via API, 'xml' and 'caret' = custom system message)
+    #[arg(long, default_value = "native")]
     tool_syntax: Option<ToolSyntax>,
 
     /// Record API responses to a file (only supported for Anthropic provider currently)
@@ -107,6 +107,10 @@ struct Args {
     /// Fast playback mode - ignore chunk timing when playing recordings
     #[arg(long)]
     fast_playback: bool,
+
+    /// Use the legacy diff format for file editing (enables replace_in_file tool instead of edit)
+    #[arg(long)]
+    use_diff_format: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -155,67 +159,79 @@ async fn create_llm_client(
             let config_path =
                 aicore_config.unwrap_or_else(|| AiCoreConfig::get_default_config_path());
 
-            if config_path.exists() {
-                // Use new JSON config file
-                let aicore_config =
-                    AiCoreConfig::load_from_file(&config_path).with_context(|| {
-                        format!("Failed to load AI Core config from {:?}", config_path)
-                    })?;
+            let aicore_config = match AiCoreConfig::load_from_file(&config_path) {
+                Ok(config) => config,
+                Err(e) => {
+                    // Output sample config file when loading fails
+                    eprintln!(
+                        "Failed to load AI Core config from {:?}: {}",
+                        config_path, e
+                    );
+                    eprintln!("\nPlease create the config file with the following structure:");
+                    eprintln!("```json");
+                    eprintln!("{{");
+                    eprintln!("  \"auth\": {{");
+                    eprintln!("    \"client_id\": \"<your service key client id>\",");
+                    eprintln!("    \"client_secret\": \"<your service key client secret>\",");
+                    eprintln!("    \"token_url\": \"https://<your service key url>/oauth/token\",");
+                    eprintln!(
+                        "    \"api_base_url\": \"https://<your service key api URL>/v2/inference\""
+                    );
+                    eprintln!("  }},");
+                    eprintln!("  \"models\": {{");
+                    eprintln!("    \"claude-sonnet-4\": \"<your deployment id for the model>\"");
+                    eprintln!("  }}");
+                    eprintln!("}}");
+                    eprintln!("```");
+                    eprintln!("\nDefault config file location: {:?}", config_path);
 
-                // Model name bestimmen und Deployment UUID holen
-                let model_name = model.unwrap_or_else(|| "claude-sonnet-4".to_string());
-                let deployment_uuid = aicore_config.get_deployment_for_model(&model_name)
-                    .ok_or_else(|| anyhow::anyhow!("No deployment found for model '{}' in config file. Available models: {:?}",
-                                                    model_name, aicore_config.models.keys().collect::<Vec<_>>()))?;
-
-                // Convert AiCoreAuthConfig to DeploymentConfig for TokenManager
-                let deployment_config = DeploymentConfig {
-                    client_id: aicore_config.auth.client_id.clone(),
-                    client_secret: aicore_config.auth.client_secret.clone(),
-                    token_url: aicore_config.auth.token_url.clone(),
-                    api_base_url: aicore_config.auth.api_base_url.clone(),
-                };
-
-                let token_manager = TokenManager::new(&deployment_config)
-                    .await
-                    .context("Failed to initialize token manager")?;
-
-                // Extend API URL with deployment ID
-                let base_api_url = base_url.unwrap_or(aicore_config.auth.api_base_url.clone());
-                let api_url = format!(
-                    "{}/deployments/{}",
-                    base_api_url.trim_end_matches('/'),
-                    deployment_uuid
-                );
-
-                if let Some(path) = record_path {
-                    Ok(Box::new(AiCoreClient::new_with_recorder(
-                        token_manager,
-                        api_url,
-                        path,
-                    )))
-                } else {
-                    Ok(Box::new(AiCoreClient::new(token_manager, api_url)))
+                    return Err(e.context(format!(
+                        "Failed to load AI Core config from {:?}",
+                        config_path
+                    )));
                 }
+            };
+
+            // Get matching deployment for given model ID
+            let model_name = model.unwrap_or_else(|| "claude-sonnet-4".to_string());
+            let deployment_uuid = aicore_config
+                .get_deployment_for_model(&model_name)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No deployment found for model '{}' in config file. Available models: {:?}",
+                        model_name,
+                        aicore_config.models.keys().collect::<Vec<_>>()
+                    )
+                })?;
+
+            // Convert AiCoreAuthConfig to DeploymentConfig for TokenManager
+            let deployment_config = DeploymentConfig {
+                client_id: aicore_config.auth.client_id.clone(),
+                client_secret: aicore_config.auth.client_secret.clone(),
+                token_url: aicore_config.auth.token_url.clone(),
+                api_base_url: aicore_config.auth.api_base_url.clone(),
+            };
+
+            let token_manager = TokenManager::new(&deployment_config)
+                .await
+                .context("Failed to initialize token manager")?;
+
+            // Extend API URL with deployment ID
+            let base_api_url = base_url.unwrap_or(aicore_config.auth.api_base_url.clone());
+            let api_url = format!(
+                "{}/deployments/{}",
+                base_api_url.trim_end_matches('/'),
+                deployment_uuid
+            );
+
+            if let Some(path) = record_path {
+                Ok(Box::new(AiCoreClient::new_with_recorder(
+                    token_manager,
+                    api_url,
+                    path,
+                )))
             } else {
-                // Fallback to old keyring system
-                let config = DeploymentConfig::load()
-                    .context("Failed to load AiCore deployment configuration from keyring. Consider creating an AI Core config file at ~/.config/code-assistant/ai-core.json")?;
-                let token_manager = TokenManager::new(&config)
-                    .await
-                    .context("Failed to initialize token manager")?;
-
-                let base_url = base_url.unwrap_or_else(|| config.api_base_url.clone());
-
-                if let Some(path) = record_path {
-                    Ok(Box::new(AiCoreClient::new_with_recorder(
-                        token_manager,
-                        base_url,
-                        path,
-                    )))
-                } else {
-                    Ok(Box::new(AiCoreClient::new(token_manager, base_url)))
-                }
+                Ok(Box::new(AiCoreClient::new(token_manager, api_url)))
             }
         }
 
@@ -351,6 +367,7 @@ async fn run_agent_terminal(
     aicore_config: Option<PathBuf>,
     num_ctx: usize,
     tool_syntax: ToolSyntax,
+    use_diff_format: bool,
     record: Option<PathBuf>,
     playback: Option<PathBuf>,
     fast_playback: bool,
@@ -358,7 +375,7 @@ async fn run_agent_terminal(
     let root_path = path.canonicalize()?;
 
     // Create file persistence for simple state management
-    let file_persistence = FileStatePersistence::new(&root_path, tool_syntax);
+    let file_persistence = FileStatePersistence::new(&root_path, tool_syntax, use_diff_format);
 
     // Setup dynamic types
     let project_manager = Box::new(DefaultProjectManager::new());
@@ -391,6 +408,11 @@ async fn run_agent_terminal(
         Some(root_path.clone()),
     );
 
+    // Configure diff blocks format if requested
+    if use_diff_format {
+        agent.enable_diff_blocks();
+    }
+
     // Check if we should continue from previous state or start new
     if continue_task && file_persistence.has_saved_state() {
         // Load from saved state
@@ -403,6 +425,7 @@ async fn run_agent_terminal(
             // Convert ChatSession to SessionState for the agent
             let session_state = crate::session::SessionState {
                 session_id: saved_session.id.clone(),
+                name: String::new(),
                 messages: saved_session.messages,
                 tool_executions: saved_session
                     .tool_executions
@@ -447,6 +470,7 @@ fn run_agent_gpui(
     aicore_config: Option<PathBuf>,
     num_ctx: usize,
     tool_syntax: ToolSyntax,
+    use_diff_format: bool,
     record: Option<PathBuf>,
     playback: Option<PathBuf>,
     fast_playback: bool,
@@ -466,7 +490,8 @@ fn run_agent_gpui(
     let agent_config = AgentConfig {
         tool_syntax: tool_syntax,
         init_path: Some(root_path.clone()),
-        initial_project: None,
+        initial_project: String::new(),
+        use_diff_blocks: use_diff_format,
     };
 
     // Create the new SessionManager
@@ -534,7 +559,7 @@ fn run_agent_gpui(
                     manager
                         .start_agent_for_message(
                             &session_id,
-                            initial_task,
+                            vec![llm::ContentBlock::new_text(initial_task)],
                             llm_client,
                             project_manager,
                             command_executor,
@@ -574,7 +599,39 @@ fn run_agent_gpui(
                         }
                     }
                 } else {
-                    info!("No existing sessions found - UI will start empty");
+                    info!("No existing sessions found - creating a new session automatically");
+
+                    // Create a new session automatically
+                    let new_session_id = {
+                        let mut manager = multi_session_manager.lock().unwrap();
+                        manager.create_session(None).unwrap_or_else(|e| {
+                            error!("Failed to create new session: {}", e);
+                            // Return a fallback session ID if creation fails
+                            "fallback".to_string()
+                        })
+                    };
+
+                    if new_session_id != "fallback" {
+                        debug!("Created new session: {}", new_session_id);
+
+                        // Connect to the newly created session
+                        let ui_events = {
+                            let mut manager = multi_session_manager.lock().unwrap();
+                            manager
+                                .set_active_session(new_session_id.clone())
+                                .await
+                                .unwrap_or_else(|e| {
+                                    error!("Failed to set active session: {}", e);
+                                    Vec::new()
+                                })
+                        };
+
+                        for event in ui_events {
+                            if let Err(e) = gui_for_thread.send_event(event).await {
+                                error!("Failed to send UI event: {}", e);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -613,8 +670,7 @@ async fn run_agent(args: Args) -> Result<()> {
     let base_url = args.base_url.clone();
     let aicore_config = args.aicore_config.clone();
     let num_ctx = args.num_ctx.unwrap_or(8192);
-    let tool_syntax = args.tool_syntax.unwrap_or(ToolSyntax::Xml);
-    let use_gui = args.ui;
+    let tool_syntax = args.tool_syntax.unwrap_or(ToolSyntax::Native);
 
     // Setup logging based on verbose flag
     setup_logging(verbose, true);
@@ -625,7 +681,7 @@ async fn run_agent(args: Args) -> Result<()> {
     }
 
     // Run in either GUI or terminal mode
-    if use_gui {
+    if args.ui {
         run_agent_gpui(
             path.clone(),
             task, // Can be None - will connect to latest session instead
@@ -635,6 +691,7 @@ async fn run_agent(args: Args) -> Result<()> {
             aicore_config,
             num_ctx,
             tool_syntax,
+            args.use_diff_format,
             args.record.clone(),
             args.playback.clone(),
             args.fast_playback,
@@ -651,6 +708,7 @@ async fn run_agent(args: Args) -> Result<()> {
             aicore_config,
             num_ctx,
             tool_syntax,
+            args.use_diff_format,
             args.record.clone(),
             args.playback.clone(),
             args.fast_playback,
@@ -783,27 +841,68 @@ async fn handle_backend_events(
             ui::gpui::BackendEvent::SendUserMessage {
                 session_id,
                 message,
+                attachments,
             } => {
-                debug!("User message for session {}: {}", session_id, message);
+                debug!(
+                    "User message with for session {}: {} (with {} attachments)",
+                    session_id,
+                    message,
+                    attachments.len()
+                );
 
-                // First: Display the user message immediately in the UI
+                // Convert DraftAttachments to ContentBlocks
+                let mut content_blocks = Vec::new();
+
+                // Add text content if not empty
+                if !message.is_empty() {
+                    content_blocks.push(llm::ContentBlock::Text {
+                        text: message.clone(),
+                    });
+                }
+
+                // Add image attachments
+                for attachment in &attachments {
+                    match attachment {
+                        persistence::DraftAttachment::Image { content, mime_type } => {
+                            content_blocks.push(llm::ContentBlock::Image {
+                                media_type: mime_type.clone(),
+                                data: content.clone(),
+                            });
+                        }
+                        persistence::DraftAttachment::Text { content } => {
+                            content_blocks.push(llm::ContentBlock::Text {
+                                text: content.clone(),
+                            });
+                        }
+                        persistence::DraftAttachment::File {
+                            content,
+                            filename,
+                            mime_type: _,
+                        } => {
+                            // For now, treat files as text content with filename prefix
+                            let file_text = format!("File: {}\n{}", filename, content);
+                            content_blocks.push(llm::ContentBlock::Text { text: file_text });
+                        }
+                    }
+                }
+
+                // Display the user message with attachments in the UI
                 if let Err(e) = gui
                     .send_event(crate::ui::UiEvent::DisplayUserInput {
                         content: message.clone(),
+                        attachments: attachments.clone(),
                     })
                     .await
                 {
-                    error!("Failed to display user message: {}", e);
+                    error!("Failed to display user message with attachments: {}", e);
                 }
 
-                // Use MultiSessionManager.start_agent_for_message() instead of creating a separate agent
+                // Start the agent with structured content
                 let result = {
-                    // Create components for the agent
                     let project_manager = Box::new(DefaultProjectManager::new());
                     let command_executor = Box::new(DefaultCommandExecutor);
                     let user_interface = Arc::new(Box::new(gui.clone()) as Box<dyn UserInterface>);
 
-                    // Create LLM client
                     let llm_client = create_llm_client(
                         provider.clone(),
                         model.clone(),
@@ -818,12 +917,11 @@ async fn handle_backend_events(
 
                     match llm_client {
                         Ok(client) => {
-                            // Use the MultiSessionManager to start the agent properly
                             let mut manager = multi_session_manager.lock().unwrap();
                             manager
                                 .start_agent_for_message(
                                     &session_id,
-                                    message.clone(),
+                                    content_blocks,
                                     client,
                                     project_manager,
                                     command_executor,
@@ -841,7 +939,6 @@ async fn handle_backend_events(
                 match result {
                     Ok(_) => {
                         debug!("Agent started for session {}", session_id);
-                        // No response needed for SendUserMessage - agent communicates via UI
                         continue;
                     }
                     Err(e) => {
@@ -856,18 +953,56 @@ async fn handle_backend_events(
             ui::gpui::BackendEvent::QueueUserMessage {
                 session_id,
                 message,
+                attachments,
             } => {
-                debug!("Queue user message for session {}: {}", session_id, message);
+                debug!(
+                    "Queue user message with attachments for session {}: {} (with {} attachments)",
+                    session_id,
+                    message,
+                    attachments.len()
+                );
+
+                // Convert DraftAttachments to ContentBlocks
+                let mut content_blocks = Vec::new();
+
+                if !message.is_empty() {
+                    content_blocks.push(llm::ContentBlock::Text {
+                        text: message.clone(),
+                    });
+                }
+
+                for attachment in &attachments {
+                    match attachment {
+                        persistence::DraftAttachment::Image { content, mime_type } => {
+                            content_blocks.push(llm::ContentBlock::Image {
+                                media_type: mime_type.clone(),
+                                data: content.clone(),
+                            });
+                        }
+                        persistence::DraftAttachment::Text { content } => {
+                            content_blocks.push(llm::ContentBlock::Text {
+                                text: content.clone(),
+                            });
+                        }
+                        persistence::DraftAttachment::File {
+                            content,
+                            filename,
+                            mime_type: _,
+                        } => {
+                            let file_text = format!("File: {}\n{}", filename, content);
+                            content_blocks.push(llm::ContentBlock::Text { text: file_text });
+                        }
+                    }
+                }
 
                 let result = {
                     let mut manager = multi_session_manager.lock().unwrap();
-                    manager.queue_user_message(&session_id, message)
+                    manager.queue_structured_user_message(&session_id, content_blocks)
                 };
 
                 match result {
                     Ok(_) => {
-                        debug!("Message queued for session {}", session_id);
-                        // Get the updated pending message and send it back to UI
+                        debug!("Message with attachments queued for session {}", session_id);
                         let pending_message = {
                             let manager = multi_session_manager.lock().unwrap();
                             manager.get_pending_message(&session_id).unwrap_or(None)
@@ -878,7 +1013,10 @@ async fn handle_backend_events(
                         }
                     }
                     Err(e) => {
-                        error!("Failed to queue message for session {}: {}", session_id, e);
+                        error!(
+                            "Failed to queue message with attachments for session {}: {}",
+                            session_id, e
+                        );
                         ui::gpui::BackendResponse::Error {
                             message: format!("Failed to queue message: {}", e),
                         }

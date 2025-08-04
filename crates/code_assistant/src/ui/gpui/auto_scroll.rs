@@ -241,11 +241,13 @@ impl<T: Render> AutoScrollContainer<T> {
                     if distance_to_target_abs_f32 < config.min_distance_to_stop
                         && current_scroll_speed.abs() < config.min_speed_to_stop
                     {
+                        // Round the target position to integer offset
+                        let rounded_target_y_px = px(target_y_px.0.round());
                         scroll_handle_for_update.set_offset(Point {
                             x: px(0.0),
-                            y: target_y_px,
+                            y: rounded_target_y_px,
                         });
-                        last_set_position_for_update.set(target_y_px.0);
+                        last_set_position_for_update.set(rounded_target_y_px.0);
                         autoscroll_active_for_update.set(false);
                         return false; // Stop task
                     }
@@ -274,14 +276,16 @@ impl<T: Render> AutoScrollContainer<T> {
                     }
 
                     let new_y_calculated_px = current_offset_y_px + px(final_scroll_delta_f32);
+                    // Round the scroll position to integer offset
+                    let rounded_new_y_px = px(new_y_calculated_px.0.round());
 
                     scroll_handle_for_update.set_offset(Point {
                         x: px(0.0),
-                        y: new_y_calculated_px,
+                        y: rounded_new_y_px,
                     });
 
                     // Remember the position we just set
-                    last_set_position_for_update.set(new_y_calculated_px.0);
+                    last_set_position_for_update.set(rounded_new_y_px.0);
 
                     model_cx.notify();
                     true // Continue task

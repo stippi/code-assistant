@@ -25,6 +25,8 @@ struct OllamaMessage {
     #[serde(default)]
     role: String,
     content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    images: Option<Vec<String>>,
     tool_calls: Option<Vec<OllamaToolCall>>,
 }
 
@@ -77,48 +79,70 @@ impl OllamaClient {
     }
 
     fn convert_message(message: &Message) -> OllamaMessage {
+        let (content, images) = match &message.content {
+            MessageContent::Text(text) => (text.clone(), None),
+            MessageContent::Structured(blocks) => {
+                // Collect text blocks
+                let text_content = blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text),
+                        _ => None,
+                    })
+                    .cloned()
+                    .collect::<Vec<String>>()
+                    .join("");
+
+                // Collect image blocks
+                let image_data: Vec<String> = blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Image { data, .. } => Some(data.clone()),
+                        _ => None,
+                    })
+                    .collect();
+
+                let images = if image_data.is_empty() {
+                    None
+                } else {
+                    Some(image_data)
+                };
+
+                (text_content, images)
+            }
+        };
+
+        let tool_calls = match &message.content {
+            MessageContent::Structured(blocks) => {
+                let tool_calls: Vec<OllamaToolCall> = blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::ToolUse { name, input, .. } => Some(OllamaToolCall {
+                            function: OllamaFunction {
+                                name: name.clone(),
+                                arguments: input.clone(),
+                            },
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(tool_calls)
+                }
+            }
+            _ => None,
+        };
+
         OllamaMessage {
             role: match message.role {
                 MessageRole::User => "user".to_string(),
                 MessageRole::Assistant => "assistant".to_string(),
             },
-            content: match &message.content {
-                MessageContent::Text(text) => text.clone(),
-                MessageContent::Structured(blocks) => {
-                    // Concatenate all text blocks into the content string
-                    blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            ContentBlock::Text { text } => Some(text),
-                            _ => None,
-                        })
-                        .cloned()
-                        .collect::<Vec<String>>()
-                        .join("")
-                }
-            },
-            tool_calls: match &message.content {
-                MessageContent::Structured(blocks) => {
-                    let tool_calls: Vec<OllamaToolCall> = blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            ContentBlock::ToolUse { name, input, .. } => Some(OllamaToolCall {
-                                function: OllamaFunction {
-                                    name: name.clone(),
-                                    arguments: input.clone(),
-                                },
-                            }),
-                            _ => None,
-                        })
-                        .collect();
-                    if tool_calls.is_empty() {
-                        None
-                    } else {
-                        Some(tool_calls)
-                    }
-                }
-                _ => None,
-            },
+            content,
+            images,
+            tool_calls,
         }
     }
 
@@ -265,6 +289,9 @@ impl OllamaClient {
             }
         }
 
+        // Send StreamingComplete to indicate streaming has finished
+        streaming_callback(&StreamingChunk::StreamingComplete)?;
+
         // Build final response
         let mut content = Vec::new();
 
@@ -311,6 +338,7 @@ impl LLMProvider for OllamaClient {
         messages.push(OllamaMessage {
             role: "system".to_string(),
             content: request.system_prompt,
+            images: None,
             tool_calls: None,
         });
 

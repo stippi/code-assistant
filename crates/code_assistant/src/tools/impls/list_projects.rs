@@ -73,6 +73,7 @@ impl Tool for ListProjectsTool {
                 "readOnlyHint": true
             })),
             supported_scopes: &[ToolScope::McpServer],
+            hidden: false,
         }
     }
 

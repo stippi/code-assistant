@@ -3,7 +3,7 @@ use llm::Message;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::tools::ToolRequest;
 use crate::types::{ToolSyntax, WorkingMemory};
@@ -28,10 +28,13 @@ pub struct ChatSession {
     /// Initial project path (if any)
     pub init_path: Option<PathBuf>,
     /// Initial project name
-    pub initial_project: Option<String>,
+    pub initial_project: String,
     /// Tool syntax used for this session (XML or Native)
     #[serde(alias = "tool_mode")]
     pub tool_syntax: ToolSyntax,
+    /// Whether this session uses diff blocks format (replace_in_file vs edit tool)
+    #[serde(default)]
+    pub use_diff_blocks: bool,
     /// Counter for generating unique request IDs within this session
     #[serde(default)]
     pub next_request_id: u64,
@@ -65,6 +68,10 @@ pub struct ChatMetadata {
     /// Token limit from rate limiting headers (if available)
     #[serde(default)]
     pub tokens_limit: Option<u32>,
+    /// Tool syntax used for this session
+    pub tool_syntax: ToolSyntax,
+    /// Initial project name
+    pub initial_project: String,
 }
 
 #[derive(Clone)]
@@ -127,6 +134,8 @@ impl FileSessionPersistence {
             total_usage,
             last_usage,
             tokens_limit,
+            tool_syntax: session.tool_syntax,
+            initial_project: session.initial_project.clone(),
         };
 
         if let Some(existing) = metadata_list.iter_mut().find(|m| m.id == session.id) {
@@ -161,7 +170,24 @@ impl FileSessionPersistence {
 
         let content = std::fs::read_to_string(metadata_path)?;
         let mut metadata_list: Vec<ChatMetadata> =
-            serde_json::from_str(&content).unwrap_or_default();
+            match serde_json::from_str::<Vec<ChatMetadata>>(&content) {
+                Ok(list) => {
+                    debug!(
+                        "Successfully parsed metadata file with {} entries",
+                        list.len()
+                    );
+                    list
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to deserialize chat metadata, will rebuild from sessions: {}",
+                        e
+                    );
+                    debug!("Metadata content that failed to parse: {}", content);
+                    // Try to rebuild metadata from existing session files
+                    self.rebuild_metadata_from_sessions()?
+                }
+            };
 
         // Sort by updated_at in descending order (newest first)
         metadata_list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -203,6 +229,77 @@ impl FileSessionPersistence {
             std::fs::write(metadata_path, metadata_json)?;
         }
 
+        Ok(())
+    }
+
+    /// Rebuild metadata from existing session files (used when metadata file is corrupted)
+    fn rebuild_metadata_from_sessions(&self) -> Result<Vec<ChatMetadata>> {
+        let mut metadata_list = Vec::new();
+
+        // Get all session files
+        let sessions_dir = self.root_dir.join("sessions");
+        if !sessions_dir.exists() {
+            return Ok(metadata_list);
+        }
+
+        for entry in std::fs::read_dir(sessions_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            // Only process .json files
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+
+            // Extract session ID from filename
+            if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
+                if let Ok(Some(session)) = self.load_chat_session(filename) {
+                    // Calculate usage information
+                    let (total_usage, last_usage, tokens_limit) = calculate_session_usage(&session);
+
+                    debug!(
+                        "Rebuilding metadata for session {}: initial_project='{}'",
+                        session.id, session.initial_project
+                    );
+
+                    let metadata = ChatMetadata {
+                        id: session.id.clone(),
+                        name: session.name.clone(),
+                        created_at: session.created_at,
+                        updated_at: session.updated_at,
+                        message_count: session.messages.len(),
+                        total_usage,
+                        last_usage,
+                        tokens_limit,
+                        tool_syntax: session.tool_syntax,
+                        initial_project: session.initial_project.clone(),
+                    };
+
+                    metadata_list.push(metadata);
+                }
+            }
+        }
+
+        // Save the rebuilt metadata
+        if !metadata_list.is_empty() {
+            if let Err(e) = self.save_metadata_list(&metadata_list) {
+                warn!("Failed to save rebuilt metadata: {}", e);
+            } else {
+                info!(
+                    "Successfully rebuilt metadata for {} sessions",
+                    metadata_list.len()
+                );
+            }
+        }
+
+        Ok(metadata_list)
+    }
+
+    /// Helper method to save metadata list to file
+    fn save_metadata_list(&self, metadata_list: &[ChatMetadata]) -> Result<()> {
+        let metadata_path = self.metadata_file_path()?;
+        let metadata_json = serde_json::to_string_pretty(metadata_list)?;
+        std::fs::write(metadata_path, metadata_json)?;
         Ok(())
     }
 
@@ -328,42 +425,49 @@ impl DraftStorage {
         self.drafts_dir.join(format!("{}.json", session_id))
     }
 
-    /// Save a draft for a session
-    pub fn save_draft(&self, session_id: &str, text_content: &str) -> Result<()> {
+    /// Save a draft with attachments for a session
+    pub fn save_draft(
+        &self,
+        session_id: &str,
+        text_content: &str,
+        attachments: &[DraftAttachment],
+    ) -> Result<()> {
         let file_path = self.draft_file_path(session_id);
 
-        if text_content.is_empty() {
-            // If content is empty, delete the draft file
+        if text_content.is_empty() && attachments.is_empty() {
+            // Remove the draft file if it exists
             if file_path.exists() {
                 std::fs::remove_file(&file_path)?;
-                debug!("Deleted empty draft for session: {}", session_id);
+                debug!("Cleared empty draft for session: {}", session_id);
             }
-        } else {
-            // Load existing draft or create new one
-            let mut draft = self
-                .load_draft_struct(session_id)?
-                .unwrap_or_else(|| SessionDraft::new(session_id.to_string()));
-
-            // Update message content
-            draft.set_message(text_content.to_string());
-
-            // Save as JSON
-            let json = serde_json::to_string_pretty(&draft)?;
-            std::fs::write(&file_path, json)?;
-            debug!(
-                "Saved draft for session {}: {} characters",
-                session_id,
-                text_content.len()
-            );
+            return Ok(());
         }
 
+        // Load existing draft or create new one
+        let mut draft = self
+            .load_draft_struct(session_id)?
+            .unwrap_or_else(|| SessionDraft::new(session_id.to_string()));
+
+        // Update message content and attachments
+        draft.set_message(text_content.to_string());
+        draft.attachments = attachments.to_vec();
+
+        // Serialize and save
+        let draft_json = serde_json::to_string_pretty(&draft)?;
+        std::fs::write(&file_path, draft_json)?;
+
+        debug!(
+            "Saved draft with {} attachments for session: {}",
+            attachments.len(),
+            session_id
+        );
         Ok(())
     }
 
-    /// Load a draft message for a session (backward compatibility)
-    pub fn load_draft(&self, session_id: &str) -> Result<Option<String>> {
+    /// Load a draft with attachments for a session
+    pub fn load_draft(&self, session_id: &str) -> Result<Option<(String, Vec<DraftAttachment>)>> {
         let draft = self.load_draft_struct(session_id)?;
-        Ok(draft.map(|d| d.get_message()))
+        Ok(draft.map(|d| (d.get_message(), d.attachments)))
     }
 
     /// Load the complete draft structure for a session

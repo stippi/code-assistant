@@ -46,6 +46,8 @@ struct VertexPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    inline_data: Option<VertexInlineData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     thought: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thought_signature: Option<String>,
@@ -53,6 +55,13 @@ struct VertexPart {
     function_call: Option<VertexFunctionCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     function_response: Option<VertexFunctionResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VertexInlineData {
+    mime_type: String,
+    data: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -282,6 +291,7 @@ impl VertexClient {
         let parts = match &message.content {
             MessageContent::Text(text) => vec![VertexPart {
                 text: Some(text.clone()),
+                inline_data: None,
                 thought: None,
                 thought_signature: None,
                 function_call: None,
@@ -295,6 +305,7 @@ impl VertexClient {
                         signature,
                     } => Some(VertexPart {
                         text: Some(thinking.clone()),
+                        inline_data: None,
                         thought: Some(true),
                         thought_signature: Some(signature.clone()),
                         function_call: None,
@@ -302,6 +313,18 @@ impl VertexClient {
                     }),
                     ContentBlock::Text { text } => Some(VertexPart {
                         text: Some(text.clone()),
+                        inline_data: None,
+                        thought: None,
+                        thought_signature: None,
+                        function_call: None,
+                        function_response: None,
+                    }),
+                    ContentBlock::Image { media_type, data } => Some(VertexPart {
+                        text: None,
+                        inline_data: Some(VertexInlineData {
+                            mime_type: media_type.clone(),
+                            data: data.clone(),
+                        }),
                         thought: None,
                         thought_signature: None,
                         function_call: None,
@@ -309,6 +332,7 @@ impl VertexClient {
                     }),
                     ContentBlock::ToolUse { name, input, .. } => Some(VertexPart {
                         text: None,
+                        inline_data: None,
                         thought: None,
                         thought_signature: None,
                         function_call: Some(VertexFunctionCall {
@@ -323,6 +347,7 @@ impl VertexClient {
                         ..
                     } => Some(VertexPart {
                         text: None,
+                        inline_data: None,
                         thought: None,
                         thought_signature: None,
                         function_call: None,
@@ -653,6 +678,9 @@ impl VertexClient {
                 &self.recorder,
             )?;
         }
+
+        // Send StreamingComplete to indicate streaming has finished
+        streaming_callback(&StreamingChunk::StreamingComplete)?;
 
         // End recording if a recorder is available
         if let Some(recorder) = &self.recorder {

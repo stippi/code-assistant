@@ -4,10 +4,11 @@ use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
 use crate::ui::ui_events::UiEvent;
 use gpui::{
-    div, prelude::*, px, AppContext, Context, Entity, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent, SharedString, Styled, Window,
+    div, prelude::*, px, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement,
+    MouseButton, MouseUpEvent, SharedString, StatefulInteractiveElement, Styled, Window,
 };
-use gpui_component::{ActiveTheme, Icon, StyledExt};
+use gpui_component::scroll::ScrollbarAxis;
+use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, StyledExt};
 use std::time::SystemTime;
 use tracing::{debug, trace, warn};
 
@@ -94,7 +95,11 @@ impl Focusable for ChatListItem {
 impl Render for ChatListItem {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let session_id = self.metadata.id.clone();
-        let name = self.metadata.name.clone();
+        let name = if self.metadata.name.is_empty() {
+            "Unnamed chat".to_string()
+        } else {
+            self.metadata.name.clone()
+        };
         let formatted_date = Self::format_date(self.metadata.created_at);
 
         div()
@@ -224,6 +229,46 @@ impl Render for ChatListItem {
                         |d| {
                             let mut token_elements = Vec::new();
 
+                            // Tool syntax icon - show which syntax this session uses
+                            let tool_icon_path = match self.metadata.tool_syntax {
+                                crate::types::ToolSyntax::Native => "icons/braces.svg",
+                                crate::types::ToolSyntax::Caret => "icons/chevron_up.svg",
+                                crate::types::ToolSyntax::Xml => "icons/code-xml.svg",
+                            };
+
+                            let tooltip_text = match self.metadata.tool_syntax {
+                                crate::types::ToolSyntax::Native => {
+                                    "Native tool use via provider API"
+                                }
+                                crate::types::ToolSyntax::Caret => {
+                                    "Custom tool use blocks with triple caret fence"
+                                }
+                                crate::types::ToolSyntax::Xml => {
+                                    "Custom tool use blocks with pseudo-XML tags"
+                                }
+                            };
+
+                            token_elements.push(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "tool-syntax-{}",
+                                        self.metadata.id
+                                    )))
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(tooltip_text).build(window, cx)
+                                    })
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from(tool_icon_path))
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .into_any(),
+                            );
+
                             // Input tokens from last request with arrow_up icon
                             if self.metadata.last_usage.input_tokens > 0 {
                                 token_elements.push(
@@ -241,7 +286,8 @@ impl Render for ChatListItem {
                                             "{}",
                                             self.metadata.last_usage.input_tokens
                                                 + self.metadata.last_usage.cache_read_input_tokens
-                                        ))),
+                                        )))
+                                        .into_any(),
                                 );
                             }
 
@@ -261,7 +307,8 @@ impl Render for ChatListItem {
                                         .child(SharedString::from(format!(
                                             "{}",
                                             self.metadata.last_usage.cache_read_input_tokens
-                                        ))),
+                                        )))
+                                        .into_any(),
                                 );
                             }
 
@@ -443,7 +490,6 @@ impl Render for ChatSidebar {
                 .bg(cx.theme().sidebar)
                 .border_r_1()
                 .border_color(cx.theme().sidebar_border)
-                .overflow_hidden()
                 .flex()
                 .flex_col()
                 .child(
@@ -485,26 +531,29 @@ impl Render for ChatSidebar {
                         ),
                 )
                 .child(
-                    // Chat list area
-                    div()
-                        .flex_1()
-                        .overflow_hidden()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .p_2()
-                        .children(self.items.clone())
-                        .when(self.items.is_empty(), |s| {
-                            s.child(
-                                div()
-                                    .px_3()
-                                    .py_4()
-                                    .text_center()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("No chats yet"),
-                            )
-                        }),
+                    // Chat list area - outer container with padding
+                    div().flex_1().min_h(px(0.)).child(
+                        div()
+                            .id("chat-items")
+                            .p_2()
+                            .h_full()
+                            .scrollable(ScrollbarAxis::Vertical)
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .children(self.items.clone())
+                            .when(self.items.is_empty(), |s| {
+                                s.child(
+                                    div()
+                                        .px_1()
+                                        .py_4()
+                                        .text_center()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("No chats yet"),
+                                )
+                            }),
+                    ),
                 )
         }
     }

@@ -221,8 +221,17 @@ impl UserInterface for MockUI {
             crate::ui::DisplayFragment::ThinkingText(text) => {
                 self.streaming.lock().unwrap().push(text.clone());
             }
+            crate::ui::DisplayFragment::Image { media_type, .. } => {
+                self.streaming
+                    .lock()
+                    .unwrap()
+                    .push(format!("\n• {}", media_type));
+            }
             crate::ui::DisplayFragment::ToolName { name, .. } => {
-                self.streaming.lock().unwrap().push(format!("\n• {}", name));
+                self.streaming
+                    .lock()
+                    .unwrap()
+                    .push(format!("\n• Image {}", name));
             }
             crate::ui::DisplayFragment::ToolParameter { name, value, .. } => {
                 self.streaming

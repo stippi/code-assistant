@@ -5,6 +5,8 @@ pub enum ToolScope {
     McpServer,
     /// Tool can be used in the message history agent
     Agent,
+    /// Tool can be used in the agent when configured for diff blocks format
+    AgentWithDiffBlocks,
 }
 
 /// Specification for a tool, including metadata
@@ -20,4 +22,6 @@ pub struct ToolSpec {
     pub annotations: Option<serde_json::Value>,
     /// Which execution modes this tool supports
     pub supported_scopes: &'static [ToolScope],
+    /// Whether this tool should be hidden from UI display
+    pub hidden: bool,
 }

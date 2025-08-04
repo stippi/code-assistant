@@ -1,4 +1,6 @@
 use super::{DisplayFragment, StreamProcessorTrait};
+use crate::tools::core::{ToolRegistry, ToolScope};
+use crate::tools::tool_use_filter::{SmartToolFilter, ToolUseFilter};
 use crate::ui::{UIError, UserInterface};
 use anyhow::Result;
 use llm::{ContentBlock, Message, MessageContent, StreamingChunk};
@@ -27,8 +29,22 @@ struct ProcessorState {
     at_block_start: bool,
     // Counter for tools processed in this request
     tool_counter: u64,
-    // Track wether we emitted a complete tool block already
-    complete_tool_emitted: bool,
+    // Track if the current tool is hidden
+    current_tool_hidden: bool,
+}
+
+/// Streaming state for managing tool filtering and buffering
+#[derive(Debug, PartialEq, Clone)]
+enum StreamingState {
+    /// Stream everything immediately (before any tools)
+    PreFirstTool,
+    /// Buffer content between tools until next tool is evaluated
+    BufferingAfterTool {
+        last_tool_name: String,
+        buffered_fragments: Vec<DisplayFragment>,
+    },
+    /// Stop streaming (tool was denied)
+    Blocked,
 }
 
 /// Manages the conversion of LLM streaming chunks to display fragments using XML-style tags
@@ -36,6 +52,8 @@ pub struct XmlStreamProcessor {
     state: ProcessorState,
     ui: Arc<Box<dyn UserInterface>>,
     request_id: u64,
+    filter: Box<dyn ToolUseFilter>,
+    streaming_state: StreamingState,
 }
 
 // Define tag types we need to process
@@ -56,6 +74,8 @@ impl StreamProcessorTrait for XmlStreamProcessor {
             state: ProcessorState::default(),
             ui,
             request_id,
+            filter: Box::new(SmartToolFilter::new()),
+            streaming_state: StreamingState::PreFirstTool,
         }
     }
 
@@ -88,7 +108,11 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                 // If this is the first part with tool info, send a ToolName fragment
                 if let (Some(name), Some(id)) = (tool_name, tool_id) {
                     if !name.is_empty() && !id.is_empty() {
-                        self.ui.display_fragment(&DisplayFragment::ToolName {
+                        // Check if tool is hidden and update state
+                        self.state.current_tool_hidden =
+                            ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
+
+                        self.emit_fragment(DisplayFragment::ToolName {
                             name: name.clone(),
                             id: id.clone(),
                         })?;
@@ -98,8 +122,12 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                 // For now, show the JSON as plain text
                 // In a more advanced implementation, we could parse the JSON
                 // and extract parameter names/values
-                self.ui
-                    .display_fragment(&DisplayFragment::PlainText(content.clone()))
+                self.emit_fragment(DisplayFragment::PlainText(content.clone()))
+            }
+
+            StreamingChunk::StreamingComplete => {
+                // Emit any remaining buffered fragments since no more content is coming
+                self.flush_buffered_content()
             }
 
             // For text chunks, we need to parse for tags
@@ -161,36 +189,50 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                                 );
                             }
                             ContentBlock::ToolUse { id, name, input } => {
-                                // Convert JSON ToolUse to XML-style fragments
-                                fragments.push(DisplayFragment::ToolName {
-                                    name: name.clone(),
-                                    id: id.clone(),
-                                });
+                                // Check if tool is hidden
+                                let tool_hidden =
+                                    ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
 
-                                // Parse JSON input into XML-style tool parameters
-                                if let Some(obj) = input.as_object() {
-                                    for (key, value) in obj {
-                                        let value_str = if value.is_string() {
-                                            value.as_str().unwrap_or("").to_string()
-                                        } else {
-                                            value.to_string()
-                                        };
+                                // Only add fragments if tool is not hidden
+                                if !tool_hidden {
+                                    // Convert JSON ToolUse to XML-style fragments
+                                    fragments.push(DisplayFragment::ToolName {
+                                        name: name.clone(),
+                                        id: id.clone(),
+                                    });
 
-                                        fragments.push(DisplayFragment::ToolParameter {
-                                            name: key.clone(),
-                                            value: value_str,
-                                            tool_id: id.clone(),
-                                        });
+                                    // Parse JSON input into XML-style tool parameters
+                                    if let Some(obj) = input.as_object() {
+                                        for (key, value) in obj {
+                                            let value_str = if value.is_string() {
+                                                value.as_str().unwrap_or("").to_string()
+                                            } else {
+                                                value.to_string()
+                                            };
+
+                                            fragments.push(DisplayFragment::ToolParameter {
+                                                name: key.clone(),
+                                                value: value_str,
+                                                tool_id: id.clone(),
+                                            });
+                                        }
                                     }
-                                }
 
-                                fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
+                                    fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
+                                }
                             }
                             ContentBlock::ToolResult { .. } => {
                                 // Tool results are typically not part of assistant messages
                             }
                             ContentBlock::RedactedThinking { .. } => {
                                 // Redacted thinking blocks are not displayed
+                            }
+                            ContentBlock::Image { media_type, data } => {
+                                // Images in assistant messages - preserve for display
+                                fragments.push(DisplayFragment::Image {
+                                    media_type: media_type.clone(),
+                                    data: data.clone(),
+                                });
                             }
                         }
                     }
@@ -341,8 +383,12 @@ impl XmlStreamProcessor {
                             self.state.tool_id =
                                 format!("tool-{}-{}", self.request_id, self.state.tool_counter);
 
+                            // Check if tool is hidden and update state
+                            self.state.current_tool_hidden = ToolRegistry::global()
+                                .is_tool_hidden(&self.state.tool_name, ToolScope::Agent);
+
                             // Send fragment with tool name
-                            self.ui.display_fragment(&DisplayFragment::ToolName {
+                            self.emit_fragment(DisplayFragment::ToolName {
                                 name: self.state.tool_name.clone(),
                                 id: self.state.tool_id.clone(),
                             })?;
@@ -358,10 +404,7 @@ impl XmlStreamProcessor {
                             let tool_id = self.state.tool_id.clone();
 
                             // Send fragment for tool end with the original tool ID
-                            self.ui
-                                .display_fragment(&DisplayFragment::ToolEnd { id: tool_id })?;
-
-                            self.state.complete_tool_emitted = true;
+                            self.emit_fragment(DisplayFragment::ToolEnd { id: tool_id })?;
                         }
 
                         // Always reset tool state when we see any tool end tag
@@ -486,43 +529,185 @@ impl XmlStreamProcessor {
         Ok(())
     }
 
-    fn emit_text(&self, text: &str) -> Result<(), UIError> {
-        if self.state.complete_tool_emitted {
-            // Already processed one complete tool block.
-            // Always trigger tool limit after any tool completes to stop streaming
-            return Err(UIError::IOError(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Tool limit reached - no additional text after complete tool block allowed",
-            )));
-        }
-        if self.state.in_thinking {
+    fn emit_text(&mut self, text: &str) -> Result<(), UIError> {
+        let fragment = if self.state.in_thinking {
             // In thinking mode, text is displayed as thinking text
-            self.ui
-                .display_fragment(&DisplayFragment::ThinkingText(text.to_string()))
+            DisplayFragment::ThinkingText(text.to_string())
         } else if self.state.in_param {
             // In parameter mode, text is collected as a parameter value
             // Only send if we have a valid tool_id
             if !self.state.tool_id.is_empty() {
-                self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                DisplayFragment::ToolParameter {
                     name: self.state.param_name.clone(),
                     value: text.to_string(),
                     tool_id: self.state.tool_id.clone(),
-                })
+                }
             } else {
                 // Log the issue and treat as plain text
                 warn!(
                     "Parameter '{}' found outside of tool context, treating as plain text",
                     self.state.param_name
                 );
-                self.ui
-                    .display_fragment(&DisplayFragment::PlainText(text.to_string()))
+                DisplayFragment::PlainText(text.to_string())
             }
         } else {
             // All other text (including inside tool tags but not in params)
             // is displayed as plain text
-            self.ui
-                .display_fragment(&DisplayFragment::PlainText(text.to_string()))
+            DisplayFragment::PlainText(text.to_string())
+        };
+
+        self.emit_fragment(fragment)
+    }
+
+    /// Emit fragments through this central function that handles filtering and buffering
+    fn emit_fragment(&mut self, fragment: DisplayFragment) -> Result<(), UIError> {
+        // Filter out tool-related fragments for hidden tools
+        if self.state.current_tool_hidden {
+            match &fragment {
+                DisplayFragment::ToolName { .. }
+                | DisplayFragment::ToolParameter { .. }
+                | DisplayFragment::ToolEnd { .. } => {
+                    // Skip tool-related fragments for hidden tools
+                    return Ok(());
+                }
+                _ => {
+                    // Allow non-tool fragments even when current tool is hidden
+                }
+            }
         }
+
+        match &self.streaming_state {
+            StreamingState::Blocked => {
+                // Already blocked, check if this is just whitespace and ignore silently
+                if let DisplayFragment::PlainText(text) = &fragment {
+                    if text.trim().is_empty() {
+                        return Ok(());
+                    }
+                }
+                // Non-whitespace content after blocking - return the blocking error
+                return Err(UIError::IOError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Tool limit reached - no additional text after complete tool block allowed",
+                )));
+            }
+            StreamingState::PreFirstTool => {
+                // Before first tool, emit everything immediately
+                match &fragment {
+                    DisplayFragment::ToolName { name, .. } => {
+                        // First tool starting - check if it's allowed (should always be allowed)
+                        if !self.filter.allow_tool_at_position(name, 1) {
+                            // First tool denied - block streaming
+                            self.streaming_state = StreamingState::Blocked;
+                            return Err(UIError::IOError(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "Tool limit reached - no additional text after complete tool block allowed",
+                            )));
+                        }
+                        // Emit the tool name fragment
+                        self.ui.display_fragment(&fragment)?;
+                    }
+                    DisplayFragment::ToolEnd { .. } => {
+                        // Tool ended - emit fragment and check if we should buffer after this tool
+                        self.ui.display_fragment(&fragment)?;
+
+                        // Get the tool name from processor state
+                        let tool_name = self.state.tool_name.clone();
+
+                        if self.filter.allow_content_after_tool(&tool_name, 1) {
+                            // Transition to buffering state
+                            self.streaming_state = StreamingState::BufferingAfterTool {
+                                last_tool_name: tool_name,
+                                buffered_fragments: Vec::new(),
+                            };
+                        } else {
+                            // No content allowed after this tool - block
+                            self.streaming_state = StreamingState::Blocked;
+                        }
+                    }
+                    _ => {
+                        // Regular fragment - emit immediately
+                        self.ui.display_fragment(&fragment)?;
+                    }
+                }
+            }
+            StreamingState::BufferingAfterTool {
+                last_tool_name,
+                buffered_fragments,
+            } => {
+                match &fragment {
+                    DisplayFragment::ToolName { name, .. } => {
+                        // New tool starting - check if it's allowed
+                        let tool_count = self.state.tool_counter + 1; // Next tool count
+                        if self
+                            .filter
+                            .allow_tool_at_position(name, tool_count as usize)
+                        {
+                            // Tool allowed - emit all buffered fragments first
+                            let mut buffered = buffered_fragments.clone();
+                            for buffered_fragment in buffered.drain(..) {
+                                self.ui.display_fragment(&buffered_fragment)?;
+                            }
+                            // Then emit the tool name fragment
+                            self.ui.display_fragment(&fragment)?;
+                            // Update state to continue buffering after this tool
+                            self.streaming_state = StreamingState::BufferingAfterTool {
+                                last_tool_name: name.clone(),
+                                buffered_fragments: Vec::new(),
+                            };
+                        } else {
+                            // Tool denied - discard buffered content and block
+                            self.streaming_state = StreamingState::Blocked;
+                            return Err(UIError::IOError(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "Tool limit reached - no additional text after complete tool block allowed",
+                            )));
+                        }
+                    }
+                    DisplayFragment::ToolEnd { .. } => {
+                        // Tool ended - emit fragment and check if we should continue buffering
+                        self.ui.display_fragment(&fragment)?;
+
+                        let tool_name = last_tool_name.clone();
+                        let tool_count = self.state.tool_counter as usize;
+
+                        if self.filter.allow_content_after_tool(&tool_name, tool_count) {
+                            // Continue buffering
+                            self.streaming_state = StreamingState::BufferingAfterTool {
+                                last_tool_name: tool_name,
+                                buffered_fragments: Vec::new(),
+                            };
+                        } else {
+                            // No content allowed after this tool - block
+                            self.streaming_state = StreamingState::Blocked;
+                        }
+                    }
+                    DisplayFragment::ToolParameter { .. } => {
+                        // Tool parameter - emit immediately (we've already decided to allow the tool)
+                        self.ui.display_fragment(&fragment)?;
+                    }
+                    DisplayFragment::PlainText(_) | DisplayFragment::ThinkingText(_) => {
+                        // Text or thinking - buffer it
+                        if let StreamingState::BufferingAfterTool {
+                            buffered_fragments, ..
+                        } = &mut self.streaming_state
+                        {
+                            buffered_fragments.push(fragment);
+                        }
+                    }
+                    DisplayFragment::Image { .. } => {
+                        // Image - buffer it
+                        if let StreamingState::BufferingAfterTool {
+                            buffered_fragments, ..
+                        } = &mut self.streaming_state
+                        {
+                            buffered_fragments.push(fragment);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Detect what kind of tag we're seeing and extract any tag information
@@ -773,5 +958,19 @@ impl XmlStreamProcessor {
         }
 
         Ok(fragments)
+    }
+
+    /// Flush any buffered content when streaming completes
+    fn flush_buffered_content(&mut self) -> Result<(), UIError> {
+        if let StreamingState::BufferingAfterTool {
+            buffered_fragments, ..
+        } = &mut self.streaming_state
+        {
+            // Emit all buffered fragments since no more tools are coming
+            for fragment in buffered_fragments.drain(..) {
+                self.ui.display_fragment(&fragment)?;
+            }
+        }
+        Ok(())
     }
 }

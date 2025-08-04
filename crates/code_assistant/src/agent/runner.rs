@@ -34,6 +34,7 @@ pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
     tool_syntax: ToolSyntax,
+    tool_scope: ToolScope,
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<Box<dyn UserInterface>>,
@@ -42,8 +43,8 @@ pub struct Agent {
     message_history: Vec<Message>,
     // Path provided during agent initialization
     init_path: Option<PathBuf>,
-    // Name of the initial project (if any)
-    initial_project: Option<String>,
+    // Name of the initial project
+    initial_project: String,
     // Store the history of tool executions
     tool_executions: Vec<crate::agent::types::ToolExecution>,
     // Cached system message
@@ -52,6 +53,10 @@ pub struct Agent {
     next_request_id: u64,
     // Session ID for this agent instance
     session_id: Option<String>,
+    // The actual session name (empty if not named yet)
+    session_name: String,
+    // Whether to inject naming reminders (disabled for tests)
+    enable_naming_reminders: bool,
     // Shared pending message with SessionInstance
     pending_message_ref: Option<Arc<Mutex<Option<String>>>>,
 }
@@ -87,24 +92,46 @@ impl Agent {
             working_memory: WorkingMemory::default(),
             llm_provider,
             tool_syntax,
+            tool_scope: ToolScope::Agent, // Default to Agent scope
             project_manager,
             ui,
             command_executor,
             state_persistence,
             message_history: Vec::new(),
             init_path,
-            initial_project: None,
+            initial_project: String::new(),
             tool_executions: Vec::new(),
             cached_system_message: OnceLock::new(),
             next_request_id: 1, // Start from 1
             session_id: None,
+            session_name: String::new(),
+            enable_naming_reminders: true, // Enabled by default
             pending_message_ref: None,
         }
+    }
+
+    /// Enable diff blocks format for file editing (uses replace_in_file tool instead of edit)
+    pub fn enable_diff_blocks(&mut self) {
+        self.tool_scope = ToolScope::AgentWithDiffBlocks;
+        // Clear cached system message so it gets regenerated with the new scope
+        self.cached_system_message = OnceLock::new();
     }
 
     /// Set the shared pending message reference from SessionInstance
     pub fn set_pending_message_ref(&mut self, pending_ref: Arc<Mutex<Option<String>>>) {
         self.pending_message_ref = Some(pending_ref);
+    }
+
+    /// Disable naming reminders (used for tests)
+    #[cfg(test)]
+    pub fn disable_naming_reminders(&mut self) {
+        self.enable_naming_reminders = false;
+    }
+
+    /// Set session name (used for tests)
+    #[cfg(test)]
+    pub(crate) fn set_session_name(&mut self, name: String) {
+        self.session_name = name;
     }
 
     /// Get and clear the pending message from shared state
@@ -154,13 +181,19 @@ impl Agent {
 
             ChatMetadata {
                 id: session_id.clone(),
-                name: format!("Session {}", &session_id[..8]), // Default name, will be overridden by persistence
-                created_at: SystemTime::now(),                 // Will be overridden by persistence
+                name: self.session_name.clone(), // Empty string if not named yet
+                created_at: SystemTime::now(),   // Will be overridden by persistence
                 updated_at: SystemTime::now(),
                 message_count: self.message_history.len(),
                 total_usage,
                 last_usage,
                 tokens_limit,
+                tool_syntax: self.tool_syntax,
+                initial_project: if self.initial_project.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    self.initial_project.clone()
+                },
             }
         })
     }
@@ -172,6 +205,7 @@ impl Agent {
             self.message_history.len()
         );
         self.state_persistence.save_agent_state(
+            self.session_name.clone(),
             self.message_history.clone(),
             self.tool_executions.clone(),
             self.working_memory.clone(),
@@ -248,6 +282,7 @@ impl Agent {
                 self.ui
                     .send_event(UiEvent::DisplayUserInput {
                         content: pending_message,
+                        attachments: Vec::new(),
                     })
                     .await?;
             }
@@ -353,6 +388,7 @@ impl Agent {
         self.working_memory = session_state.working_memory;
         self.init_path = session_state.init_path;
         self.initial_project = session_state.initial_project;
+        self.session_name = session_state.name;
 
         // Restore next_request_id from session, or calculate from existing messages for backward compatibility
         self.next_request_id = session_state.next_request_id.unwrap_or_else(|| {
@@ -382,7 +418,7 @@ impl Agent {
         self.working_memory.available_projects = Vec::new();
 
         // Reset the initial project
-        self.initial_project = None;
+        self.initial_project = String::new();
 
         self.init_working_memory_projects()
     }
@@ -394,7 +430,7 @@ impl Agent {
             let project_name = self.project_manager.add_temporary_project(path.clone())?;
 
             // Store the name of the initial project
-            self.initial_project = Some(project_name.clone());
+            self.initial_project = project_name.clone();
 
             // Create initial file tree for this project
             let mut explorer = self
@@ -448,10 +484,20 @@ impl Agent {
                 let error_text = Self::format_error_for_user(&e);
 
                 let error_msg = match self.tool_syntax {
-                    ToolSyntax::Xml => {
-                        // For XML mode, create structured tool-result message like regular tool results
+                    ToolSyntax::Native => {
+                        // For native mode, keep text message since parsing errors occur before
+                        // we have any LLM-provided tool IDs to reference
+                        Message {
+                            role: MessageRole::User,
+                            content: MessageContent::Text(error_text),
+                            request_id: None,
+                            usage: None,
+                        }
+                    }
+                    _ => {
+                        // For custom tool-syntax modes, create structured tool-result message like regular tool results
                         // Generate normal tool ID for consistency with UI expectations
-                        let tool_id = format!("tool-{}-0", request_counter);
+                        let tool_id = format!("tool-{}-1", request_counter);
 
                         // Create and store a ToolExecution for the parse error
                         let tool_execution =
@@ -465,25 +511,6 @@ impl Agent {
                                 content: error_text,
                                 is_error: Some(true),
                             }]),
-                            request_id: None,
-                            usage: None,
-                        }
-                    }
-                    ToolSyntax::Native => {
-                        // For native mode, keep text message since parsing errors occur before
-                        // we have any LLM-provided tool IDs to reference
-                        Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Text(error_text),
-                            request_id: None,
-                            usage: None,
-                        }
-                    }
-                    ToolSyntax::Caret => {
-                        // For caret mode, use text message like native mode
-                        Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Text(error_text),
                             request_id: None,
                             usage: None,
                         }
@@ -504,6 +531,7 @@ impl Agent {
         self.ui
             .send_event(UiEvent::DisplayUserInput {
                 content: user_input.clone(),
+                attachments: Vec::new(),
             })
             .await?;
         let user_msg = Message {
@@ -569,6 +597,7 @@ impl Agent {
         self.ui
             .send_event(UiEvent::DisplayUserInput {
                 content: task.clone(),
+                attachments: Vec::new(),
             })
             .await?;
 
@@ -600,18 +629,18 @@ impl Agent {
         }
 
         // Generate the system message using the tools module
-        let mut system_message = generate_system_message(self.tool_syntax, ToolScope::Agent);
+        let mut system_message = generate_system_message(self.tool_syntax, self.tool_scope);
 
         // Add project information
         let mut project_info = String::new();
 
         // Add information about the initial project if available
-        if let Some(project) = &self.initial_project {
+        if !self.initial_project.is_empty() {
             project_info.push_str("\n\n# Project Information\n\n");
-            project_info.push_str(&format!("## Initial Project: {}\n\n", project));
+            project_info.push_str(&format!("## Initial Project: {}\n\n", self.initial_project));
 
             // Add file tree for the initial project if available
-            if let Some(tree) = self.working_memory.file_trees.get(project) {
+            if let Some(tree) = self.working_memory.file_trees.get(&self.initial_project) {
                 project_info.push_str("### File Structure:\n");
                 project_info.push_str(&format!("```\n{}\n```\n\n", tree.to_string()));
             }
@@ -718,6 +747,63 @@ impl Agent {
             .collect()
     }
 
+    /// Inject system reminder for session naming if needed
+    pub(crate) fn inject_naming_reminder_if_needed(
+        &self,
+        mut messages: Vec<Message>,
+    ) -> Vec<Message> {
+        // Only inject if enabled, session is not named yet, and we have messages
+        if !self.enable_naming_reminders || !self.session_name.is_empty() || messages.is_empty() {
+            return messages;
+        }
+
+        // Find the last actual user message (not tool results) and add system reminder
+        // Iterate backwards through messages to find the last user message with actual content
+        for msg in messages.iter_mut().rev() {
+            if matches!(msg.role, MessageRole::User) {
+                let is_actual_user_message = match &msg.content {
+                    MessageContent::Text(_) => true, // Text content is always actual user input
+                    MessageContent::Structured(blocks) => {
+                        // Check if this message contains tool results
+                        // If it contains only ToolResult blocks, it's not an actual user message
+                        blocks
+                            .iter()
+                            .any(|block| !matches!(block, ContentBlock::ToolResult { .. }))
+                    }
+                };
+
+                if is_actual_user_message {
+                    let reminder_text = "<system-reminder>\nThis is an automatic reminder from the system. Please use the `name_session` tool first, provided the user has already given you a clear task or question. You can chain additional tools after using the `name_session` tool.\n</system-reminder>";
+
+                    trace!("Injecting session naming reminder to actual user message");
+
+                    match &mut msg.content {
+                        MessageContent::Text(original_text) => {
+                            // Convert from Text to Structured with two ContentBlocks
+                            let original_block = ContentBlock::Text {
+                                text: original_text.clone(),
+                            };
+                            let reminder_block = ContentBlock::Text {
+                                text: reminder_text.to_string(),
+                            };
+                            msg.content =
+                                MessageContent::Structured(vec![original_block, reminder_block]);
+                        }
+                        MessageContent::Structured(blocks) => {
+                            // Add reminder as a new ContentBlock
+                            blocks.push(ContentBlock::Text {
+                                text: reminder_text.to_string(),
+                            });
+                        }
+                    }
+                    break; // Found and updated the last actual user message, we're done
+                }
+            }
+        }
+
+        messages
+    }
+
     /// Gets the next assistant message from the LLM provider.
     async fn get_next_assistant_message(
         &mut self,
@@ -733,21 +819,23 @@ impl Agent {
             .await?;
         debug!("Starting LLM request with ID: {}", request_id);
 
+        // Inject naming reminder if session is not named yet
+        let messages_with_reminder = self.inject_naming_reminder_if_needed(messages);
+
         // Convert messages based on tool syntax
         // Native mode keeps ToolUse blocks, all other syntaxes convert to text
         let converted_messages = match self.tool_syntax {
-            ToolSyntax::Native => messages, // No conversion needed
-            _ => self.convert_tool_results_to_text(messages), // Convert ToolResults to Text
+            ToolSyntax::Native => messages_with_reminder, // No conversion needed
+            _ => self.convert_tool_results_to_text(messages_with_reminder), // Convert ToolResults to Text
         };
 
-        // Create the LLM request with appropriate tools
         let request = LLMRequest {
             messages: converted_messages,
             system_prompt: self.get_system_prompt(),
             tools: match self.tool_syntax {
                 ToolSyntax::Native => {
                     Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
-                        ToolRegistry::global().get_tool_definitions_for_scope(ToolScope::Agent),
+                        ToolRegistry::global().get_tool_definitions_for_scope(self.tool_scope),
                     ))
                 }
                 ToolSyntax::Xml => None,
@@ -950,6 +1038,35 @@ impl Agent {
             "Executing tool request: {} (id: {})",
             tool_request.name, tool_request.id
         );
+
+        // Handle name_session tool specially at agent level
+        if tool_request.name == "name_session" {
+            // Extract title from input
+            if let Some(title) = tool_request.input["title"].as_str() {
+                let title = title.trim();
+                if !title.is_empty() {
+                    trace!("Obtained session title from LLM: {}", title);
+                    self.session_name = title.to_string();
+
+                    // Create a successful tool execution record
+                    let tool_execution = ToolExecution {
+                        tool_request: tool_request.clone(),
+                        result: Box::new(crate::tools::impls::name_session::NameSessionOutput {
+                            title: title.to_string(),
+                        }),
+                    };
+                    self.tool_executions.push(tool_execution);
+                    return Ok(true); // Success, but don't show in UI
+                } else {
+                    warn!("Title for name_session is empty after trimming");
+                }
+            } else {
+                warn!("No 'title' field found in name_session input or it's not a string");
+            }
+
+            // If we get here, the input was invalid
+            return Err(anyhow::anyhow!("Invalid session title provided"));
+        }
 
         // Update status to Running before execution
         self.ui

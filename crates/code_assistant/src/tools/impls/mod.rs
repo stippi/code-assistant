@@ -1,8 +1,11 @@
 // Tool implementations
 pub mod delete_files;
+pub mod edit;
 pub mod execute_command;
+pub mod glob_files;
 pub mod list_files;
 pub mod list_projects;
+pub mod name_session;
 pub mod perplexity_ask;
 pub mod read_files;
 pub mod replace_in_file;
@@ -13,9 +16,12 @@ pub mod write_file;
 
 // Re-export all tools for registration
 pub use delete_files::DeleteFilesTool;
+pub use edit::EditTool;
 pub use execute_command::ExecuteCommandTool;
+pub use glob_files::GlobFilesTool;
 pub use list_files::ListFilesTool;
 pub use list_projects::ListProjectsTool;
+pub use name_session::NameSessionTool;
 pub use perplexity_ask::PerplexityAskTool;
 pub use read_files::ReadFilesTool;
 pub use replace_in_file::ReplaceInFileTool;

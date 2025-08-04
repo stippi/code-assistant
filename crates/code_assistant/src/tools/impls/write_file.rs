@@ -70,7 +70,7 @@ impl Tool for WriteFileTool {
     fn spec(&self) -> ToolSpec {
         let description = concat!(
             "Creates or overwrites a file. Use for new files or when updating most content of a file.\n",
-            "For smaller updates, prefer to use replace_in_file.\n",
+            "For smaller updates, prefer to use edit or replace_in_file.\n",
             "ALWAYS provide the contents of the COMPLETE file, especially when overwriting existing files!!\n",
             "If the file to write is large, write it in chunks making use of the 'append' parameter.\n",
             "Always end your turn after using this tool, especially when using 'append'.\n",
@@ -107,7 +107,12 @@ impl Tool for WriteFileTool {
                 "destructiveHint": true,
                 "idempotentHint": false
             })),
-            supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
+            supported_scopes: &[
+                ToolScope::McpServer,
+                ToolScope::Agent,
+                ToolScope::AgentWithDiffBlocks,
+            ],
+            hidden: false,
         }
     }
 

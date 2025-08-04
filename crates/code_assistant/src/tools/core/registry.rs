@@ -39,16 +39,29 @@ impl ToolRegistry {
         self.tools.get(name)
     }
 
+    /// Check if a tool is hidden by consulting the tool definitions
+    pub fn is_tool_hidden(&self, tool_name: &str, scope: ToolScope) -> bool {
+        self.tools
+            .values()
+            .filter(|tool| tool.spec().supported_scopes.contains(&scope))
+            .find(|tool| tool.spec().name == tool_name)
+            .map(|tool| tool.spec().hidden)
+            .unwrap_or(false)
+    }
+
     /// Get tool definitions for a specific mode
     pub fn get_tool_definitions_for_scope(&self, mode: ToolScope) -> Vec<AnnotatedToolDefinition> {
         self.tools
             .values()
             .filter(|tool| tool.spec().supported_scopes.contains(&mode))
-            .map(|tool| AnnotatedToolDefinition {
-                name: tool.spec().name.to_string(),
-                description: tool.spec().description.to_string(),
-                parameters: tool.spec().parameters_schema.clone(),
-                annotations: tool.spec().annotations.clone(),
+            .map(|tool| {
+                let spec = tool.spec();
+                AnnotatedToolDefinition {
+                    name: spec.name.to_string(),
+                    description: spec.description.to_string(),
+                    parameters: spec.parameters_schema.clone(),
+                    annotations: spec.annotations.clone(),
+                }
             })
             .collect()
     }
@@ -58,16 +71,19 @@ impl ToolRegistry {
     fn register_default_tools(&mut self) {
         // Import all tools
         use crate::tools::impls::{
-            DeleteFilesTool, ExecuteCommandTool, ListFilesTool, ListProjectsTool,
-            PerplexityAskTool, ReadFilesTool, ReplaceInFileTool, SearchFilesTool, WebFetchTool,
-            WebSearchTool, WriteFileTool,
+            DeleteFilesTool, EditTool, ExecuteCommandTool, GlobFilesTool, ListFilesTool,
+            ListProjectsTool, NameSessionTool, PerplexityAskTool, ReadFilesTool, ReplaceInFileTool,
+            SearchFilesTool, WebFetchTool, WebSearchTool, WriteFileTool,
         };
 
-        // Register tools
+        // Register all tools - the ToolScope system will filter which ones are available
         self.register(Box::new(DeleteFilesTool));
+        self.register(Box::new(EditTool));
         self.register(Box::new(ExecuteCommandTool));
+        self.register(Box::new(GlobFilesTool));
         self.register(Box::new(ListFilesTool));
         self.register(Box::new(ListProjectsTool));
+        self.register(Box::new(NameSessionTool));
         self.register(Box::new(PerplexityAskTool));
         self.register(Box::new(ReadFilesTool));
         self.register(Box::new(ReplaceInFileTool));

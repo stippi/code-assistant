@@ -5,6 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
 use tracing::debug;
 
@@ -96,18 +97,18 @@ impl OpenAIRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct OpenAIChatMessage {
-    role: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    content: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<OpenAIToolCall>>,
+pub struct OpenAIChatMessage {
+    pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_call_id: Option<String>,
+    pub content: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<OpenAIToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct OpenAIToolCall {
+pub struct OpenAIToolCall {
     id: String,
     #[serde(rename = "type")]
     call_type: String,
@@ -286,7 +287,7 @@ pub struct OpenAIClient {
     client: Client,
     base_url: String,
     model: String,
-
+    model_temperatures: HashMap<String, f32>,
     // Customization points
     auth_provider: Box<dyn AuthProvider>,
     request_customizer: Box<dyn RequestCustomizer>,
@@ -298,10 +299,12 @@ impl OpenAIClient {
     }
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
+        let model_temperatures = Self::default_temperatures();
         Self {
             client: Client::new(),
             base_url,
             model,
+            model_temperatures,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
         }
@@ -314,10 +317,12 @@ impl OpenAIClient {
         auth_provider: Box<dyn AuthProvider>,
         request_customizer: Box<dyn RequestCustomizer>,
     ) -> Self {
+        let model_temperatures = Self::default_temperatures();
         Self {
             client: Client::new(),
             base_url,
             model,
+            model_temperatures,
             auth_provider,
             request_customizer,
         }
@@ -328,18 +333,69 @@ impl OpenAIClient {
             .customize_url(&self.base_url, streaming)
     }
 
+    /// Returns default temperature mapping for known model IDs.
+    fn default_temperatures() -> HashMap<String, f32> {
+        let mut m = HashMap::new();
+        m.insert("o3".to_string(), 0.7);
+        m.insert("o4-mini".to_string(), 0.7);
+        m.insert("moonshotai/kimi-k2-instruct".to_string(), 0.6);
+        // Add other model defaults as needed
+        m
+    }
+
+    /// Returns the temperature for the current model, defaulting to 1.0 if not set.
+    fn get_temperature(&self) -> f32 {
+        self.model_temperatures
+            .get(&self.model)
+            .cloned()
+            .unwrap_or(1.0)
+    }
+
     /// Convert a single message to OpenAI format without special handling for tool results
-    fn convert_message(message: &Message) -> OpenAIChatMessage {
-        OpenAIChatMessage {
-            role: match message.role {
-                MessageRole::User => "user".to_string(),
-                MessageRole::Assistant => "assistant".to_string(),
-            },
-            content: match &message.content {
-                MessageContent::Text(text) => text.clone(),
-                MessageContent::Structured(blocks) => {
-                    // Concatenate all text blocks into the content string
-                    blocks
+    pub fn convert_message(message: &Message) -> OpenAIChatMessage {
+        let role = match message.role {
+            MessageRole::User => "user".to_string(),
+            MessageRole::Assistant => "assistant".to_string(),
+        };
+
+        let (content, tool_calls) = match &message.content {
+            MessageContent::Text(text) => (Some(serde_json::json!(text)), None),
+            MessageContent::Structured(blocks) => {
+                // Check if we have mixed content (text + images) or just text
+                let has_images = blocks
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Image { .. }));
+                let has_text = blocks
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Text { .. }));
+
+                let content = if has_images || (has_text && blocks.len() > 1) {
+                    // Use structured content format for mixed content
+                    let content_parts: Vec<serde_json::Value> = blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Text { text } => Some(serde_json::json!({
+                                "type": "text",
+                                "text": text
+                            })),
+                            ContentBlock::Image { media_type, data } => Some(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": format!("data:{};base64,{}", media_type, data)
+                                }
+                            })),
+                            _ => None,
+                        })
+                        .collect();
+
+                    if content_parts.is_empty() {
+                        Some(serde_json::json!(""))
+                    } else {
+                        Some(serde_json::json!(content_parts))
+                    }
+                } else {
+                    // Simple text content
+                    let text = blocks
                         .iter()
                         .filter_map(|block| match block {
                             ContentBlock::Text { text } => Some(text),
@@ -347,33 +403,40 @@ impl OpenAIClient {
                         })
                         .cloned()
                         .collect::<Vec<String>>()
-                        .join("")
-                }
-            },
-            tool_calls: match &message.content {
-                MessageContent::Structured(blocks) => {
-                    let tool_calls: Vec<OpenAIToolCall> = blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            ContentBlock::ToolUse { id, name, input } => Some(OpenAIToolCall {
-                                id: id.clone(),
-                                call_type: "function".to_string(),
-                                function: OpenAIFunction {
-                                    name: name.clone(),
-                                    arguments: serde_json::to_string(input).unwrap_or_default(),
-                                },
-                            }),
-                            _ => None,
-                        })
-                        .collect();
+                        .join("");
+                    Some(serde_json::json!(text))
+                };
+
+                let tool_calls: Vec<OpenAIToolCall> = blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::ToolUse { id, name, input } => Some(OpenAIToolCall {
+                            id: id.clone(),
+                            call_type: "function".to_string(),
+                            function: OpenAIFunction {
+                                name: name.clone(),
+                                arguments: serde_json::to_string(input).unwrap_or_default(),
+                            },
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+
+                (
+                    content,
                     if tool_calls.is_empty() {
                         None
                     } else {
                         Some(tool_calls)
-                    }
-                }
-                _ => None,
-            },
+                    },
+                )
+            }
+        };
+
+        OpenAIChatMessage {
+            role,
+            content,
+            tool_calls,
             tool_call_id: None,
         }
     }
@@ -409,7 +472,7 @@ impl OpenAIClient {
 
                                 openai_messages.push(OpenAIChatMessage {
                                     role: "tool".to_string(),
-                                    content: safe_content,
+                                    content: Some(serde_json::json!(safe_content)),
                                     tool_calls: None,
                                     tool_call_id: Some(tool_use_id.clone()),
                                 });
@@ -539,10 +602,14 @@ impl OpenAIClient {
                     let mut blocks = Vec::new();
 
                     // Add text content if present
-                    if !openai_response.choices[0].message.content.is_empty() {
-                        blocks.push(ContentBlock::Text {
-                            text: openai_response.choices[0].message.content.clone(),
-                        });
+                    if let Some(content) = &openai_response.choices[0].message.content {
+                        if let Some(text) = content.as_str() {
+                            if !text.is_empty() {
+                                blocks.push(ContentBlock::Text {
+                                    text: text.to_string(),
+                                });
+                            }
+                        }
                     }
 
                     // Add tool calls if present
@@ -773,6 +840,9 @@ impl OpenAIClient {
             )?;
         }
 
+        // Send StreamingComplete to indicate streaming has finished
+        streaming_callback(&StreamingChunk::StreamingComplete)?;
+
         let mut content = Vec::new();
         if let Some(text) = accumulated_content {
             content.push(ContentBlock::Text { text });
@@ -832,7 +902,7 @@ impl LLMProvider for OpenAIClient {
         // Add system message
         messages.push(OpenAIChatMessage {
             role: "system".to_string(),
-            content: request.system_prompt,
+            content: Some(serde_json::json!(request.system_prompt)),
             tool_calls: None,
             tool_call_id: None,
         });
@@ -843,7 +913,7 @@ impl LLMProvider for OpenAIClient {
         let openai_request = OpenAIRequest {
             model: self.model.clone(),
             messages,
-            temperature: 1.0,
+            temperature: self.get_temperature(),
             stream: None,
             stream_options: None,
             tool_choice: None,

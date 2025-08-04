@@ -1,5 +1,6 @@
 use super::DisplayFragment;
 use super::StreamProcessorTrait;
+use crate::tools::core::{ToolRegistry, ToolScope};
 use crate::ui::{UIError, UserInterface};
 use llm::{ContentBlock, Message, MessageContent, StreamingChunk};
 use std::sync::Arc;
@@ -34,6 +35,8 @@ struct JsonProcessorState {
     tool_id: String,
     /// Tool name for the current parsing context
     tool_name: String,
+    /// Track if the current tool is hidden
+    current_tool_hidden: bool,
     /// Track if we're inside thinking tags for text chunks
     in_thinking: bool,
     /// Track if we're at the beginning of a block (thinking/content) for text chunks
@@ -57,6 +60,7 @@ impl Default for JsonProcessorState {
             buffer: String::new(),
             tool_id: String::new(),
             tool_name: String::new(),
+            current_tool_hidden: false,
             in_thinking: false,
             at_block_start: false,
             emitted_string_part_for_current_key: false,
@@ -74,6 +78,28 @@ impl Default for JsonProcessorState {
 pub struct JsonStreamProcessor {
     state: JsonProcessorState,
     ui: Arc<Box<dyn UserInterface>>,
+}
+
+impl JsonStreamProcessor {
+    /// Emit a fragment through this central function that handles hidden tool filtering
+    fn emit_fragment(&self, fragment: DisplayFragment) -> Result<(), UIError> {
+        // Filter out tool-related fragments for hidden tools
+        if self.state.current_tool_hidden {
+            match &fragment {
+                DisplayFragment::ToolName { .. }
+                | DisplayFragment::ToolParameter { .. }
+                | DisplayFragment::ToolEnd { .. } => {
+                    // Skip tool-related fragments for hidden tools
+                    return Ok(());
+                }
+                _ => {
+                    // Allow non-tool fragments even when current tool is hidden
+                }
+            }
+        }
+
+        self.ui.display_fragment(&fragment)
+    }
 }
 
 impl StreamProcessorTrait for JsonStreamProcessor {
@@ -153,7 +179,15 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                             // Send the tool name to UI
                             // Ensure tool_name is valid before sending fragment
                             if !self.state.tool_name.is_empty() {
-                                self.ui.display_fragment(&DisplayFragment::ToolName {
+                                // Check if tool is hidden and update state
+                                self.state.current_tool_hidden = ToolRegistry::global()
+                                    .is_tool_hidden(
+                                        &self.state.tool_name,
+                                        crate::tools::core::ToolScope::Agent,
+                                    );
+
+                                // Emit fragment (will be filtered if tool is hidden)
+                                self.emit_fragment(DisplayFragment::ToolName {
                                     name: self.state.tool_name.clone(),
                                     id: self.state.tool_id.clone(),
                                 })?;
@@ -182,6 +216,12 @@ impl StreamProcessorTrait for JsonStreamProcessor {
 
                 // Process the JSON content using the new stream-based parser
                 self.process_json_stream(content)
+            }
+
+            StreamingChunk::StreamingComplete => {
+                // JSON processor doesn't need buffering like XML/Caret processors
+                // Just acknowledge the completion
+                Ok(())
             }
 
             StreamingChunk::Text(text) => self.process_text_with_thinking_tags(text),
@@ -213,33 +253,40 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                             );
                         }
                         ContentBlock::ToolUse { id, name, input } => {
-                            // Add tool name fragment
-                            fragments.push(DisplayFragment::ToolName {
-                                name: name.clone(),
-                                id: id.clone(),
-                            });
+                            // Check if tool is hidden
+                            let tool_hidden =
+                                ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
 
-                            // Parse JSON input into tool parameters
-                            if let Some(obj) = input.as_object() {
-                                for (key, value) in obj {
-                                    let value_str = if value.is_string() {
-                                        // Remove quotes from string values
-                                        value.as_str().unwrap_or("").to_string()
-                                    } else {
-                                        // For non-string values, serialize as JSON
-                                        value.to_string()
-                                    };
+                            // Only add fragments if tool is not hidden
+                            if !tool_hidden {
+                                // Add tool name fragment
+                                fragments.push(DisplayFragment::ToolName {
+                                    name: name.clone(),
+                                    id: id.clone(),
+                                });
 
-                                    fragments.push(DisplayFragment::ToolParameter {
-                                        name: key.clone(),
-                                        value: value_str,
-                                        tool_id: id.clone(),
-                                    });
+                                // Parse JSON input into tool parameters
+                                if let Some(obj) = input.as_object() {
+                                    for (key, value) in obj {
+                                        let value_str = if value.is_string() {
+                                            // Remove quotes from string values
+                                            value.as_str().unwrap_or("").to_string()
+                                        } else {
+                                            // For non-string values, serialize as JSON
+                                            value.to_string()
+                                        };
+
+                                        fragments.push(DisplayFragment::ToolParameter {
+                                            name: key.clone(),
+                                            value: value_str,
+                                            tool_id: id.clone(),
+                                        });
+                                    }
                                 }
-                            }
 
-                            // Add tool end fragment
-                            fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
+                                // Add tool end fragment
+                                fragments.push(DisplayFragment::ToolEnd { id: id.clone() });
+                            }
                         }
                         ContentBlock::ToolResult { .. } => {
                             // Tool results are typically not part of assistant messages
@@ -247,6 +294,13 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                         }
                         ContentBlock::RedactedThinking { .. } => {
                             // Redacted thinking blocks are not displayed
+                        }
+                        ContentBlock::Image { media_type, data } => {
+                            // Images in assistant messages - preserve for display
+                            fragments.push(DisplayFragment::Image {
+                                media_type: media_type.clone(),
+                                data: data.clone(),
+                            });
                         }
                     }
                 }
@@ -316,8 +370,7 @@ impl JsonStreamProcessor {
                         } else {
                             self.state.tool_id.clone()
                         };
-                        self.ui
-                            .display_fragment(&DisplayFragment::ToolEnd { id: tool_id })?;
+                        self.emit_fragment(DisplayFragment::ToolEnd { id: tool_id })?;
                         self.state.json_parsing_state = JsonParsingState::ExpectOpenBrace; // Reset for next potential JSON object
                         self.state.current_key = None;
                         self.state.buffer.clear(); // Object done, clear buffer of this object. This might be too aggressive if there's trailing content.
@@ -443,7 +496,7 @@ impl JsonStreamProcessor {
                             }
                         };
 
-                        self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                        self.emit_fragment(DisplayFragment::ToolParameter {
                             name: current_key_name,
                             value: escaped_char_as_string,
                             tool_id,
@@ -461,7 +514,7 @@ impl JsonStreamProcessor {
                         if !self.state.emitted_string_part_for_current_key {
                             // This means the string was empty, e.g., ""
                             // current_key_name and tool_id are already validated and cloned above
-                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                            self.emit_fragment(DisplayFragment::ToolParameter {
                                 name: current_key_name, // Already cloned
                                 value: String::new(),   // Empty string
                                 tool_id,                // Already cloned
@@ -513,7 +566,7 @@ impl JsonStreamProcessor {
                                 "Emitting segment for key '{}': '{}'",
                                 current_key_name, segment
                             );
-                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                            self.emit_fragment(DisplayFragment::ToolParameter {
                                 name: current_key_name.clone(), // Clone as key_name is used again if string continues
                                 value: segment,
                                 tool_id,
@@ -564,7 +617,7 @@ impl JsonStreamProcessor {
                             self.state.complex_value_nesting -= 1;
                             if self.state.complex_value_nesting == 0 {
                                 // Complex value finished, emit it as a single string
-                                self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                                self.emit_fragment(DisplayFragment::ToolParameter {
                                     name: current_key_name.clone(),
                                     value: self.state.temp_chars_for_value.clone(),
                                     tool_id,
@@ -608,7 +661,7 @@ impl JsonStreamProcessor {
                     {
                         // Terminator found. Emit accumulated value if any.
                         if !self.state.temp_chars_for_value.is_empty() {
-                            self.ui.display_fragment(&DisplayFragment::ToolParameter {
+                            self.emit_fragment(DisplayFragment::ToolParameter {
                                 name: current_key_name.clone(),
                                 value: self.state.temp_chars_for_value.clone(),
                                 tool_id,
@@ -640,8 +693,7 @@ impl JsonStreamProcessor {
                         } else {
                             self.state.tool_id.clone()
                         };
-                        self.ui
-                            .display_fragment(&DisplayFragment::ToolEnd { id: tool_id })?;
+                        self.emit_fragment(DisplayFragment::ToolEnd { id: tool_id })?;
                         self.state.json_parsing_state = JsonParsingState::ExpectOpenBrace; // Reset for next potential JSON object
                         self.state.current_key = None;
                     } else {
@@ -767,9 +819,7 @@ impl JsonStreamProcessor {
 
                     if !processed_pre_text.is_empty() {
                         if self.state.in_thinking {
-                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
-                                processed_pre_text,
-                            ))?;
+                            self.emit_fragment(DisplayFragment::ThinkingText(processed_pre_text))?;
                         } else {
                             let mut final_pre_text = processed_pre_text;
 
@@ -783,9 +833,7 @@ impl JsonStreamProcessor {
                             }
 
                             if !final_pre_text.is_empty() {
-                                self.ui.display_fragment(&DisplayFragment::PlainText(
-                                    final_pre_text,
-                                ))?;
+                                self.emit_fragment(DisplayFragment::PlainText(final_pre_text))?;
                             }
                         }
                     }
@@ -821,11 +869,11 @@ impl JsonStreamProcessor {
 
                         if !single_char_slice_str.is_empty() {
                             if self.state.in_thinking {
-                                self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                                self.emit_fragment(DisplayFragment::ThinkingText(
                                     single_char_slice_str.to_string(),
                                 ))?;
                             } else {
-                                self.ui.display_fragment(&DisplayFragment::PlainText(
+                                self.emit_fragment(DisplayFragment::PlainText(
                                     single_char_slice_str.to_string(),
                                 ))?;
                             }
@@ -854,11 +902,11 @@ impl JsonStreamProcessor {
 
                     if !processed_remaining_text.is_empty() {
                         if self.state.in_thinking {
-                            self.ui.display_fragment(&DisplayFragment::ThinkingText(
+                            self.emit_fragment(DisplayFragment::ThinkingText(
                                 processed_remaining_text,
                             ))?;
                         } else {
-                            self.ui.display_fragment(&DisplayFragment::PlainText(
+                            self.emit_fragment(DisplayFragment::PlainText(
                                 processed_remaining_text,
                             ))?;
                         }
