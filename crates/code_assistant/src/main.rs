@@ -24,8 +24,8 @@ use config::DefaultProjectManager;
 use llm::auth::TokenManager;
 use llm::config::{AiCoreConfig, DeploymentConfig};
 use llm::{
-    AiCoreClient, AnthropicClient, GroqClient, LLMProvider, OllamaClient, OpenAIClient,
-    OpenRouterClient, VertexClient,
+    AiCoreClient, AnthropicClient, GroqClient, LLMProvider, MistralAiClient, OllamaClient,
+    OpenAIClient, OpenRouterClient, VertexClient,
 };
 use std::io;
 use std::path::PathBuf;
@@ -38,6 +38,7 @@ enum LLMProviderType {
     AiCore,
     Anthropic,
     Groq,
+    MistralAI,
     Ollama,
     OpenAI,
     OpenRouter,
@@ -258,6 +259,17 @@ async fn create_llm_client(
             let base_url = base_url.unwrap_or(GroqClient::default_base_url());
 
             Ok(Box::new(GroqClient::new(api_key, model_name, base_url)))
+        }
+
+        LLMProviderType::MistralAI => {
+            let api_key = std::env::var("MISTRALAI_API_KEY")
+                .context("MISTRALAI_API_KEY environment variable not set")?;
+            let model_name = model.unwrap_or_else(|| "devstral-medium-2507".to_string());
+            let base_url = base_url.unwrap_or(MistralAiClient::default_base_url());
+
+            Ok(Box::new(MistralAiClient::new(
+                api_key, model_name, base_url,
+            )))
         }
 
         LLMProviderType::OpenAI => {
