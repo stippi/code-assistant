@@ -816,7 +816,16 @@ impl AnthropicClient {
                                 return Ok(());
                             }
                             StreamEvent::MessageDelta { usage: delta_usage } => {
+                                // Use max() to ensure counts never decrease during streaming
+                                usage.input_tokens =
+                                    usage.input_tokens.max(delta_usage.input_tokens);
                                 usage.output_tokens = delta_usage.output_tokens;
+                                usage.cache_creation_input_tokens = usage
+                                    .cache_creation_input_tokens
+                                    .max(delta_usage.cache_creation_input_tokens);
+                                usage.cache_read_input_tokens = usage
+                                    .cache_read_input_tokens
+                                    .max(delta_usage.cache_read_input_tokens);
                                 return Ok(());
                             }
                             _ => return Ok(()), // Early return for events without index
