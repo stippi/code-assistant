@@ -7,10 +7,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
-use std::collections::{hash_map::DefaultHasher, HashMap};
-use std::hash::{Hash, Hasher};
 use std::str::{self};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use tracing::{debug, warn};
 
 /// Trait for providing authentication headers
@@ -67,15 +65,11 @@ impl RequestCustomizer for DefaultRequestCustomizer {
 }
 
 /// Default message converter with Anthropic caching logic
-pub struct DefaultMessageConverter {
-    cache_state: HashMap<String, CacheEntry>,
-}
+pub struct DefaultMessageConverter;
 
 impl Default for DefaultMessageConverter {
     fn default() -> Self {
-        Self {
-            cache_state: HashMap::new(),
-        }
+        Self
     }
 }
 
@@ -84,131 +78,42 @@ impl DefaultMessageConverter {
         Self::default()
     }
 
-    /// Generate a stable cache key based on message windows
-    fn generate_stable_cache_key(&self, messages: &[Message]) -> String {
-        // Stable window: new hash every 10 messages
-        let stable_count = (messages.len() / 10) * 10;
-
-        // Hash the first stable_count messages
-        let stable_messages = &messages[..stable_count.min(messages.len())];
-
-        let mut hasher = DefaultHasher::new();
-        for msg in stable_messages {
-            // Hash role + content
-            match msg.role {
-                MessageRole::User => "user".hash(&mut hasher),
-                MessageRole::Assistant => "assistant".hash(&mut hasher),
-            };
-            match &msg.content {
-                MessageContent::Text(text) => {
-                    text.hash(&mut hasher);
-                }
-                MessageContent::Structured(blocks) => {
-                    for block in blocks {
-                        // Hash block discriminant and content
-                        std::mem::discriminant(block).hash(&mut hasher);
-                        match block {
-                            ContentBlock::Text { text } => text.hash(&mut hasher),
-                            ContentBlock::Image { media_type, data } => {
-                                media_type.hash(&mut hasher);
-                                data.hash(&mut hasher);
-                            }
-                            ContentBlock::ToolUse { id, name, input } => {
-                                id.hash(&mut hasher);
-                                name.hash(&mut hasher);
-                                input.to_string().hash(&mut hasher);
-                            }
-                            ContentBlock::ToolResult {
-                                tool_use_id,
-                                content,
-                                is_error,
-                            } => {
-                                tool_use_id.hash(&mut hasher);
-                                content.hash(&mut hasher);
-                                is_error.hash(&mut hasher);
-                            }
-                            ContentBlock::Thinking {
-                                thinking,
-                                signature,
-                            } => {
-                                thinking.hash(&mut hasher);
-                                signature.hash(&mut hasher);
-                            }
-                            ContentBlock::RedactedThinking { data } => {
-                                data.hash(&mut hasher);
-                            }
-                        }
-                    }
-                }
-            }
+    /// Get cache marker positions based purely on message count
+    /// 0-4 messages: no cache markers
+    /// 5-9 messages: marker at index 4
+    /// 10-14 messages: markers at indices 4 and 9
+    /// 15-19 messages: markers at indices 9 and 14
+    /// 20-24 messages: markers at indices 14 and 19
+    /// etc.
+    fn get_cache_marker_positions(&self, messages: &[Message]) -> Vec<usize> {
+        if messages.len() < 5 {
+            return vec![];
         }
-
-        format!("cache_{}_{:x}", stable_count, hasher.finish())
-    }
-
-    /// Determine cache marker positions (old and new for smooth transitions)
-    fn get_cache_marker_positions(
-        &mut self,
-        messages: &[Message],
-    ) -> (Option<usize>, Option<usize>) {
-        let cache_key = self.generate_stable_cache_key(messages);
-
-        // Cleanup old entries (>5min = Anthropic cache lifetime)
-        let now = SystemTime::now();
-        self.cache_state.retain(|_, entry| {
-            now.duration_since(entry.last_used)
-                .unwrap_or(Duration::from_secs(0))
-                < Duration::from_secs(300)
-        });
-
-        let cache_key_for_debug = cache_key.clone();
-        let entry = self.cache_state.entry(cache_key).or_insert(CacheEntry {
-            count: 0,
-            last_used: now,
-            current_cache_position: None,
-        });
-
-        entry.count += 1;
-        entry.last_used = now;
-
-        // Move cache-marker every 5 requests
-        if entry.count % 5 == 0 {
-            // Calc new cache-marker position
-            let stable_count = (messages.len() / 10) * 10;
-            let new_cache_position = stable_count.saturating_sub(1);
-
-            let old_position = entry.current_cache_position;
-            entry.current_cache_position = Some(new_cache_position);
-
-            debug!(
-                "Moving cache marker from {:?} to {} for cache key {} (count: {})",
-                old_position, new_cache_position, cache_key_for_debug, entry.count
-            );
-
-            // Return old and new marker
-            (old_position, Some(new_cache_position))
+        let remainder = messages.len() % 5;
+        let last_marker = messages.len() - remainder;
+        if last_marker > 5 {
+            vec![last_marker - 6, last_marker - 1]
         } else {
-            // Return only the current marker
-            (entry.current_cache_position, None)
+            vec![last_marker - 1]
         }
     }
 
     /// Convert generic messages to Anthropic-specific format with cache control
-    fn convert_messages_with_cache(&mut self, messages: Vec<Message>) -> Vec<AnthropicMessage> {
-        let (old_cache_position, new_cache_position) = self.get_cache_marker_positions(&messages);
+    fn convert_messages_with_cache(&self, messages: Vec<Message>) -> Vec<AnthropicMessage> {
+        let cache_positions = self.get_cache_marker_positions(&messages);
 
         messages
             .into_iter()
             .enumerate()
             .map(|(msg_index, msg)| {
+                let should_cache = cache_positions.contains(&msg_index);
+
                 let content_blocks = match msg.content {
                     MessageContent::Text(text) => {
                         vec![AnthropicContentBlock {
                             block_type: "text".to_string(),
                             content: AnthropicBlockContent::Text { text },
-                            cache_control: if old_cache_position == Some(msg_index)
-                                || new_cache_position == Some(msg_index)
-                            {
+                            cache_control: if should_cache {
                                 Some(CacheControl {
                                     cache_type: "ephemeral".to_string(),
                                 })
@@ -268,22 +173,18 @@ impl DefaultMessageConverter {
                                 }
                             };
 
-                            Some(AnthropicContentBlock {
+                            AnthropicContentBlock {
                                 block_type,
                                 content,
-                                cache_control: if (old_cache_position == Some(msg_index)
-                                    || new_cache_position == Some(msg_index))
-                                    && block_index == 0
-                                {
+                                cache_control: if should_cache && block_index == 0 {
                                     Some(CacheControl {
                                         cache_type: "ephemeral".to_string(),
                                     })
                                 } else {
                                     None
                                 },
-                            })
+                            }
                         })
-                        .filter_map(|x| x)
                         .collect(),
                 };
 
@@ -427,14 +328,6 @@ impl RateLimitHandler for AnthropicRateLimitInfo {
 struct CacheControl {
     #[serde(rename = "type")]
     cache_type: String,
-}
-
-/// Cache state tracking for a specific content prefix
-#[derive(Debug)]
-struct CacheEntry {
-    count: u32,
-    last_used: SystemTime,
-    current_cache_position: Option<usize>,
 }
 
 /// System content block with optional cache control
@@ -1256,5 +1149,570 @@ impl LLMProvider for AnthropicClient {
 
         self.send_with_retry(&anthropic_request, streaming_callback, 3)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use serde_json::json;
+
+    /// Test cache marker placement based on message count (stateless)
+    #[test]
+    fn test_message_count_based_cache_markers() {
+        let converter = DefaultMessageConverter::new();
+
+        // Helper function to create a simple text message
+        fn create_message(role: MessageRole, text: &str) -> Message {
+            Message {
+                role,
+                content: MessageContent::Text(text.to_string()),
+                request_id: None,
+                usage: None,
+            }
+        }
+
+        // Helper to count cache markers in messages
+        fn count_message_cache_markers(result: &[AnthropicMessage]) -> Vec<usize> {
+            let mut marker_positions = Vec::new();
+            for (msg_idx, msg) in result.iter().enumerate() {
+                for (block_idx, block) in msg.content.iter().enumerate() {
+                    if block.cache_control.is_some() && block_idx == 0 {
+                        marker_positions.push(msg_idx);
+                    }
+                }
+            }
+            marker_positions
+        }
+
+        // Test 0-4 messages: No cache markers
+        for msg_count in 0..=4 {
+            let messages: Vec<Message> = (0..msg_count)
+                .map(|i| create_message(MessageRole::User, &format!("Message {}", i)))
+                .collect();
+
+            let result = converter.convert_messages_with_cache(messages);
+            let markers = count_message_cache_markers(&result);
+            assert!(
+                markers.is_empty(),
+                "{} messages: Should have no cache markers",
+                msg_count
+            );
+        }
+
+        // Test 5-9 messages: Cache marker at index 4
+        for msg_count in 5..=9 {
+            let messages: Vec<Message> = (0..msg_count)
+                .map(|i| create_message(MessageRole::User, &format!("Message {}", i)))
+                .collect();
+
+            let result = converter.convert_messages_with_cache(messages);
+            let markers = count_message_cache_markers(&result);
+            assert_eq!(
+                markers,
+                vec![4],
+                "{} messages: Should have cache marker at index 4",
+                msg_count
+            );
+        }
+
+        // Test 10-14 messages: Cache markers at indices 4 and 9
+        for msg_count in 10..=14 {
+            let messages: Vec<Message> = (0..msg_count)
+                .map(|i| create_message(MessageRole::User, &format!("Message {}", i)))
+                .collect();
+
+            let result = converter.convert_messages_with_cache(messages);
+            let markers = count_message_cache_markers(&result);
+            assert_eq!(
+                markers,
+                vec![4, 9],
+                "{} messages: Should have cache markers at indices 4 and 9",
+                msg_count
+            );
+        }
+
+        // Test 15-19 messages: Cache markers at indices 9 and 14
+        for msg_count in 15..=19 {
+            let messages: Vec<Message> = (0..msg_count)
+                .map(|i| create_message(MessageRole::User, &format!("Message {}", i)))
+                .collect();
+
+            let result = converter.convert_messages_with_cache(messages);
+            let markers = count_message_cache_markers(&result);
+            assert_eq!(
+                markers,
+                vec![9, 14],
+                "{} messages: Should have cache markers at indices 9 and 14",
+                msg_count
+            );
+        }
+
+        // Test 20-24 messages: Cache markers at indices 14 and 19
+        for msg_count in 20..=24 {
+            let messages: Vec<Message> = (0..msg_count)
+                .map(|i| create_message(MessageRole::User, &format!("Message {}", i)))
+                .collect();
+
+            let result = converter.convert_messages_with_cache(messages);
+            let markers = count_message_cache_markers(&result);
+            assert_eq!(
+                markers,
+                vec![14, 19],
+                "{} messages: Should have cache markers at indices 14 and 19",
+                msg_count
+            );
+        }
+    }
+
+    /// Test cache markers with tool interactions
+    #[test]
+    fn test_cache_markers_with_tools() {
+        let converter = DefaultMessageConverter::new();
+
+        // Helper to create tool use message
+        fn create_tool_message(id: &str) -> Message {
+            Message {
+                role: MessageRole::Assistant,
+                content: MessageContent::Structured(vec![
+                    ContentBlock::Text {
+                        text: "Using tool".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: id.to_string(),
+                        name: "test_tool".to_string(),
+                        input: json!({"param": "value"}),
+                    },
+                ]),
+                request_id: None,
+                usage: None,
+            }
+        }
+
+        // Helper to create tool result message
+        fn create_tool_result(tool_id: &str, content: &str) -> Message {
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                    tool_use_id: tool_id.to_string(),
+                    content: content.to_string(),
+                    is_error: Some(false),
+                }]),
+                request_id: None,
+                usage: None,
+            }
+        }
+
+        // Test with 15 messages (should have cache markers at indices 9 and 14)
+        let mut messages = Vec::new();
+        for i in 0..5 {
+            messages.push(Message {
+                role: MessageRole::User,
+                content: MessageContent::Text(format!("Request {}", i)),
+                request_id: None,
+                usage: None,
+            });
+            messages.push(create_tool_message(&format!("tool_{}", i)));
+            messages.push(create_tool_result(
+                &format!("tool_{}", i),
+                &format!("Result {}", i),
+            ));
+        }
+        // Total: 15 messages
+
+        let result = converter.convert_messages_with_cache(messages);
+
+        // Should have cache markers at indices 9 and 14
+        let mut cache_markers = Vec::new();
+        for (idx, msg) in result.iter().enumerate() {
+            if let Some(block) = msg.content.get(0) {
+                if block.cache_control.is_some() {
+                    cache_markers.push(idx);
+                }
+            }
+        }
+        assert_eq!(
+            cache_markers,
+            vec![9, 14],
+            "15 messages should have cache markers at indices 9 and 14"
+        );
+
+        // Verify structured content is preserved
+        assert_eq!(
+            result[1].content.len(),
+            2,
+            "Tool message should have 2 blocks"
+        );
+        assert_eq!(result[1].content[0].block_type, "text");
+        assert_eq!(result[1].content[1].block_type, "tool_use");
+
+        assert_eq!(
+            result[2].content.len(),
+            1,
+            "Tool result should have 1 block"
+        );
+        assert_eq!(result[2].content[0].block_type, "tool_result");
+    }
+
+    /// Test that cache markers work across different message histories (agent-agnostic)
+    #[test]
+    fn test_agent_agnostic_cache_markers() {
+        let converter = DefaultMessageConverter::new();
+
+        // Create two different message histories with the same count (15)
+        let messages_a: Vec<Message> = (0..15)
+            .map(|i| Message {
+                role: if i % 2 == 0 {
+                    MessageRole::User
+                } else {
+                    MessageRole::Assistant
+                },
+                content: MessageContent::Text(format!("Message A{}", i)),
+                request_id: None,
+                usage: None,
+            })
+            .collect();
+
+        let messages_b: Vec<Message> = (0..15)
+            .map(|i| Message {
+                role: if i % 2 == 0 {
+                    MessageRole::User
+                } else {
+                    MessageRole::Assistant
+                },
+                content: MessageContent::Text(format!("Completely different B{}", i)),
+                request_id: None,
+                usage: None,
+            })
+            .collect();
+
+        // Both should have identical cache marker placement (indices 9, 14)
+        let result_a = converter.convert_messages_with_cache(messages_a);
+        let result_b = converter.convert_messages_with_cache(messages_b);
+
+        // Helper to extract marker positions
+        let get_markers = |result: &[AnthropicMessage]| -> Vec<usize> {
+            result
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, msg)| {
+                    if msg.content.get(0)?.cache_control.is_some() {
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        let markers_a = get_markers(&result_a);
+        let markers_b = get_markers(&result_b);
+
+        assert_eq!(
+            markers_a,
+            vec![9, 14],
+            "Message set A should have markers at indices 9, 14"
+        );
+        assert_eq!(
+            markers_b,
+            vec![9, 14],
+            "Message set B should have markers at indices 9, 14"
+        );
+        assert_eq!(
+            markers_a, markers_b,
+            "Both message sets should have identical marker placement"
+        );
+
+        // Test with different message counts to ensure it's truly stateless
+        let messages_short: Vec<Message> = (0..7)
+            .map(|i| Message {
+                role: MessageRole::User,
+                content: MessageContent::Text(format!("Short {}", i)),
+                request_id: None,
+                usage: None,
+            })
+            .collect();
+
+        let result_short = converter.convert_messages_with_cache(messages_short);
+        let markers_short = get_markers(&result_short);
+        assert_eq!(
+            markers_short,
+            vec![4],
+            "7 messages should have marker at index 4"
+        );
+    }
+
+    /// Sophisticated test that validates cache marker behavior with different message counts
+    /// and tool interactions, demonstrating agent-agnostic stateless behavior
+    #[test]
+    fn test_sophisticated_cache_marker_injection() {
+        let converter = DefaultMessageConverter::new();
+
+        // Create a realistic conversation with mixed content types
+        let mut messages = Vec::new();
+
+        // Initial user request
+        messages.push(Message {
+            role: MessageRole::User,
+            content: MessageContent::Text("Help me analyze this data".to_string()),
+            request_id: None,
+            usage: None,
+        });
+
+        // Assistant response with tool use
+        messages.push(Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Structured(vec![
+                ContentBlock::Text {
+                    text: "I'll help you analyze the data using the appropriate tools.".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "analysis_tool_1".to_string(),
+                    name: "data_analyzer".to_string(),
+                    input: json!({"dataset": "user_data.csv", "analysis_type": "statistical"}),
+                },
+            ]),
+            request_id: None,
+            usage: None,
+        });
+
+        // Tool result
+        messages.push(Message {
+            role: MessageRole::User,
+            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                tool_use_id: "analysis_tool_1".to_string(),
+                content: "Analysis complete: Mean=45.2, StdDev=12.8, Outliers=3".to_string(),
+                is_error: Some(false),
+            }]),
+            request_id: None,
+            usage: None,
+        });
+
+        // Continue building conversation to 20+ messages
+        for i in 1..=9 {
+            messages.push(Message {
+                role: MessageRole::User,
+                content: MessageContent::Text(format!("Follow up question {}", i)),
+                request_id: None,
+                usage: None,
+            });
+
+            messages.push(Message {
+                role: MessageRole::Assistant,
+                content: MessageContent::Structured(vec![
+                    ContentBlock::Text {
+                        text: format!("Let me help with question {}.", i),
+                    },
+                    ContentBlock::ToolUse {
+                        id: format!("tool_{}", i),
+                        name: "helper_tool".to_string(),
+                        input: json!({"query": format!("query_{}", i), "context": "analysis"}),
+                    },
+                ]),
+                request_id: None,
+                usage: None,
+            });
+
+            messages.push(Message {
+                role: MessageRole::User,
+                content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                    tool_use_id: format!("tool_{}", i),
+                    content: format!("Tool result for query {}", i),
+                    is_error: Some(false),
+                }]),
+                request_id: None,
+                usage: None,
+            });
+        }
+
+        // We now have 30 messages total (3 initial + 27 from loop)
+        assert_eq!(
+            messages.len(),
+            30,
+            "Should have 30 messages for comprehensive testing"
+        );
+
+        // Helper to extract cache marker positions
+        let get_markers = |result: &[AnthropicMessage]| -> Vec<usize> {
+            result
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, msg)| {
+                    if msg.content.get(0)?.cache_control.is_some() {
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        // Test with the full 30-message conversation
+        let result30 = converter.convert_messages_with_cache(messages.clone());
+        let markers30 = get_markers(&result30);
+        assert_eq!(
+            markers30,
+            vec![24, 29],
+            "30 messages: Should have cache markers at indices 24 and 29, found: {:?}",
+            markers30
+        );
+
+        // Test different message counts to demonstrate stateless behavior
+        // Simulate different agents calling with different conversation lengths
+
+        // Agent 1: Short conversation (7 messages)
+        let short_messages = messages[..7].to_vec();
+        let result_short = converter.convert_messages_with_cache(short_messages);
+        let markers_short = get_markers(&result_short);
+        assert_eq!(
+            markers_short,
+            vec![4],
+            "7 messages should have marker at index 4"
+        );
+
+        // Agent 2: Medium conversation (12 messages)
+        let medium_messages = messages[..12].to_vec();
+        let result_medium = converter.convert_messages_with_cache(medium_messages);
+        let markers_medium = get_markers(&result_medium);
+        assert_eq!(
+            markers_medium,
+            vec![4, 9],
+            "12 messages should have markers at indices 4, 9"
+        );
+
+        // Agent 3: Long conversation (18 messages)
+        let long_messages = messages[..18].to_vec();
+        let result_long = converter.convert_messages_with_cache(long_messages);
+        let markers_long = get_markers(&result_long);
+        assert_eq!(
+            markers_long,
+            vec![9, 14],
+            "18 messages should have markers at indices 9, 14"
+        );
+
+        // Agent 4: Very long conversation (25 messages)
+        let very_long_messages = messages[..25].to_vec();
+        let result_very_long = converter.convert_messages_with_cache(very_long_messages);
+        let markers_very_long = get_markers(&result_very_long);
+        assert_eq!(
+            markers_very_long,
+            vec![19, 24],
+            "25 messages should have markers at indices 19, 24"
+        );
+
+        // Verify that cache markers are only placed on first content block of structured messages
+        let structured_message = &result30[1]; // This should be an assistant message with tool use
+        assert_eq!(
+            structured_message.content.len(),
+            2,
+            "Assistant message should have 2 content blocks"
+        );
+        assert_eq!(structured_message.content[0].block_type, "text");
+        assert_eq!(structured_message.content[1].block_type, "tool_use");
+
+        // If this message has a cache marker, it should only be on the first block
+        if structured_message.content[0].cache_control.is_some() {
+            assert!(
+                structured_message.content[1].cache_control.is_none(),
+                "Cache marker should only be on first content block"
+            );
+        }
+
+        // Verify tool result messages are properly formatted
+        let tool_result_message = &result30[2]; // This should be a tool result message
+        assert_eq!(
+            tool_result_message.content.len(),
+            1,
+            "Tool result message should have 1 content block"
+        );
+        assert_eq!(tool_result_message.content[0].block_type, "tool_result");
+
+        if let AnthropicBlockContent::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } = &tool_result_message.content[0].content
+        {
+            assert_eq!(tool_use_id, "analysis_tool_1");
+            assert!(content.contains("Analysis complete"));
+            assert_eq!(*is_error, Some(false));
+        } else {
+            panic!("Expected ToolResult content");
+        }
+
+        // Test with fake tool results (error case)
+        let mut error_messages = messages.clone();
+        error_messages.push(Message {
+            role: MessageRole::User,
+            content: MessageContent::Text("Try something that might fail".to_string()),
+            request_id: None,
+            usage: None,
+        });
+
+        error_messages.push(Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Structured(vec![
+                ContentBlock::Text {
+                    text: "I'll try that operation.".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "risky_tool".to_string(),
+                    name: "risky_operation".to_string(),
+                    input: json!({"operation": "dangerous_task", "safety": false}),
+                },
+            ]),
+            request_id: None,
+            usage: None,
+        });
+
+        error_messages.push(Message {
+            role: MessageRole::User,
+            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
+                tool_use_id: "risky_tool".to_string(),
+                content: "ERROR: Operation failed due to safety constraints".to_string(),
+                is_error: Some(true),
+            }]),
+            request_id: None,
+            usage: None,
+        });
+
+        // Convert with error scenario
+        let error_result = converter.convert_messages_with_cache(error_messages);
+
+        // Find and verify the error tool result
+        let error_tool_result = error_result
+            .iter()
+            .find(|msg| {
+                msg.content.iter().any(|block| {
+                    matches!(
+                        block.content,
+                        AnthropicBlockContent::ToolResult {
+                            is_error: Some(true),
+                            ..
+                        }
+                    )
+                })
+            })
+            .expect("Should find error tool result message");
+
+        let error_block = error_tool_result
+            .content
+            .iter()
+            .find(|block| block.block_type == "tool_result")
+            .expect("Should find tool_result block");
+
+        if let AnthropicBlockContent::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } = &error_block.content
+        {
+            assert_eq!(tool_use_id, "risky_tool");
+            assert!(content.contains("ERROR"));
+            assert_eq!(*is_error, Some(true));
+        } else {
+            panic!("Expected ToolResult content");
+        }
     }
 }
