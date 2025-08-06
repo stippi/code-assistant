@@ -155,6 +155,10 @@ struct OpenAIDelta {
     role: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<OpenAIToolCallDelta>>,
+    #[serde(default)]
+    reasoning: Option<String>,
+    #[serde(default)]
+    channel: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -796,7 +800,26 @@ impl OpenAIClient {
                 }
 
                 if let Ok(chunk_response) = serde_json::from_str::<OpenAIStreamResponse>(data) {
+                    debug!("Received stream event: '{}'", data);
                     if let Some(delta) = chunk_response.choices.first() {
+                        // Handle reasoning/thinking streaming (Groq-specific)
+                        if let Some(reasoning) = &delta.delta.reasoning {
+                            // Check if this is analysis channel (thinking content)
+                            if delta.delta.channel.as_deref() == Some("analysis") {
+                                callback(&StreamingChunk::Thinking(reasoning.clone()))?;
+                            } else {
+                                // Treat as regular content if not analysis channel
+                                *accumulated_content = Some(
+                                    accumulated_content
+                                        .as_ref()
+                                        .unwrap_or(&String::new())
+                                        .clone()
+                                        + reasoning,
+                                );
+                                callback(&StreamingChunk::Text(reasoning.clone()))?;
+                            }
+                        }
+
                         // Handle content streaming
                         if let Some(content) = &delta.delta.content {
                             *accumulated_content = Some(
@@ -814,14 +837,27 @@ impl OpenAIClient {
                             for tool_call in tool_calls {
                                 if let Some(function) = &tool_call.function {
                                     if tool_call.id.is_some() {
-                                        // New tool call
+                                        // New tool call - handle both incremental (OpenAI) and complete (Groq) styles
                                         if let Some(prev_tool) = current_tool.take() {
                                             accumulated_tool_calls
                                                 .push(OpenAIClient::build_tool_block(prev_tool)?);
                                         }
+
+                                        // Store the new tool call
                                         *current_tool = Some(tool_call.clone());
+
+                                        // If this tool call has complete arguments (Groq style), stream them immediately
+                                        if let Some(args) = &function.arguments {
+                                            if !args.is_empty() {
+                                                callback(&StreamingChunk::InputJson {
+                                                    content: args.clone(),
+                                                    tool_name: function.name.clone(),
+                                                    tool_id: tool_call.id.clone(),
+                                                })?;
+                                            }
+                                        }
                                     } else if let Some(curr_tool) = current_tool {
-                                        // Update existing tool
+                                        // Update existing tool (incremental OpenAI style)
                                         if let Some(args) = &function.arguments {
                                             if let Some(ref mut curr_func) = curr_tool.function {
                                                 // Store previous arguments for diffing
@@ -991,5 +1027,218 @@ impl LLMProvider for OpenAIClient {
 
         self.send_with_retry(&openai_request, streaming_callback, 3)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::StreamingChunk;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn test_groq_reasoning_parsing() {
+        // Test that we can parse Groq's reasoning field correctly
+        let json_data = r#"
+        {
+            "id": "chatcmpl-e72401da-d422-4f38-9818-9b20b9411669",
+            "object": "chat.completion.chunk",
+            "created": 1754471438,
+            "model": "openai/gpt-oss-120b",
+            "system_fingerprint": "fp_dee443f41b",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "reasoning": " The",
+                        "channel": "analysis"
+                    },
+                    "logprobs": null,
+                    "finish_reason": null
+                }
+            ]
+        }
+        "#;
+
+        let parsed: OpenAIStreamResponse = serde_json::from_str(json_data).unwrap();
+
+        assert_eq!(parsed.choices.len(), 1);
+        let choice = &parsed.choices[0];
+        assert_eq!(choice.delta.reasoning, Some(" The".to_string()));
+        assert_eq!(choice.delta.channel, Some("analysis".to_string()));
+    }
+
+    #[test]
+    fn test_reasoning_callback_logic() {
+        // Test that reasoning content with "analysis" channel triggers Thinking callback
+        let captured_chunks: Arc<Mutex<Vec<StreamingChunk>>> = Arc::new(Mutex::new(Vec::new()));
+        let chunks_clone = captured_chunks.clone();
+
+        let callback = Box::new(move |chunk: &StreamingChunk| -> anyhow::Result<()> {
+            chunks_clone.lock().unwrap().push(chunk.clone());
+            Ok(())
+        });
+
+        // Simulate the callback logic
+        let reasoning_content = "This is reasoning content".to_string();
+        let channel = Some("analysis".to_string());
+
+        // This simulates the logic from the streaming function
+        if channel.as_deref() == Some("analysis") {
+            callback(&StreamingChunk::Thinking(reasoning_content.clone())).unwrap();
+        }
+
+        let chunks = captured_chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1);
+
+        match &chunks[0] {
+            StreamingChunk::Thinking(content) => {
+                assert_eq!(content, &reasoning_content);
+            }
+            _ => panic!("Expected Thinking chunk"),
+        }
+    }
+
+    #[test]
+    fn test_reasoning_without_analysis_channel() {
+        // Test that reasoning content without "analysis" channel is treated as regular text
+        let captured_chunks: Arc<Mutex<Vec<StreamingChunk>>> = Arc::new(Mutex::new(Vec::new()));
+        let chunks_clone = captured_chunks.clone();
+
+        let callback = Box::new(move |chunk: &StreamingChunk| -> anyhow::Result<()> {
+            chunks_clone.lock().unwrap().push(chunk.clone());
+            Ok(())
+        });
+
+        let reasoning_content = "This is regular reasoning".to_string();
+        let channel = Some("regular".to_string()); // Not "analysis"
+
+        // This simulates the logic from the streaming function
+        if channel.as_deref() == Some("analysis") {
+            callback(&StreamingChunk::Thinking(reasoning_content.clone())).unwrap();
+        } else {
+            callback(&StreamingChunk::Text(reasoning_content.clone())).unwrap();
+        }
+
+        let chunks = captured_chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1);
+
+        match &chunks[0] {
+            StreamingChunk::Text(content) => {
+                assert_eq!(content, &reasoning_content);
+            }
+            _ => panic!("Expected Text chunk"),
+        }
+    }
+
+    #[test]
+    fn test_groq_complete_tool_call_parsing() {
+        // Test that we can parse Groq's complete tool call format correctly
+        let json_data = r#"
+        {
+            "id": "chatcmpl-4731d47a-97f6-438e-ad47-9825cde4cf2d",
+            "object": "chat.completion.chunk",
+            "created": 1754472775,
+            "model": "openai/gpt-oss-120b",
+            "system_fingerprint": "fp_dee443f41b",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "id": "fc_6f0724b4-fe14-42f9-a84a-0e340c6ec4eb",
+                                "type": "function",
+                                "function": {
+                                    "name": "name_session",
+                                    "arguments": "{\"name\":\"code quality review\"}"
+                                },
+                                "index": 0
+                            }
+                        ]
+                    },
+                    "logprobs": null,
+                    "finish_reason": null
+                }
+            ]
+        }
+        "#;
+
+        let parsed: OpenAIStreamResponse = serde_json::from_str(json_data).unwrap();
+
+        assert_eq!(parsed.choices.len(), 1);
+        let choice = &parsed.choices[0];
+        assert!(choice.delta.tool_calls.is_some());
+
+        let tool_calls = choice.delta.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+
+        let tool_call = &tool_calls[0];
+        assert_eq!(
+            tool_call.id,
+            Some("fc_6f0724b4-fe14-42f9-a84a-0e340c6ec4eb".to_string())
+        );
+
+        let function = tool_call.function.as_ref().unwrap();
+        assert_eq!(function.name, Some("name_session".to_string()));
+        assert_eq!(
+            function.arguments,
+            Some("{\"name\":\"code quality review\"}".to_string())
+        );
+    }
+
+    #[test]
+    fn test_complete_tool_call_streaming() {
+        // Test that complete tool calls (Groq style) trigger InputJson callbacks
+        let captured_chunks: Arc<Mutex<Vec<StreamingChunk>>> = Arc::new(Mutex::new(Vec::new()));
+        let chunks_clone = captured_chunks.clone();
+
+        let callback = Box::new(move |chunk: &StreamingChunk| -> anyhow::Result<()> {
+            chunks_clone.lock().unwrap().push(chunk.clone());
+            Ok(())
+        });
+
+        // Simulate a complete tool call like Groq sends
+        let tool_call = OpenAIToolCallDelta {
+            index: 0,
+            id: Some("test_tool_id".to_string()),
+            call_type: Some("function".to_string()),
+            function: Some(OpenAIFunctionDelta {
+                name: Some("test_function".to_string()),
+                arguments: Some("{\"param\": \"value\"}".to_string()),
+            }),
+        };
+
+        // This simulates the logic for a new tool call with complete arguments
+        if tool_call.id.is_some() {
+            if let Some(function) = &tool_call.function {
+                if let Some(args) = &function.arguments {
+                    if !args.is_empty() {
+                        callback(&StreamingChunk::InputJson {
+                            content: args.clone(),
+                            tool_name: function.name.clone(),
+                            tool_id: tool_call.id.clone(),
+                        })
+                        .unwrap();
+                    }
+                }
+            }
+        }
+
+        let chunks = captured_chunks.lock().unwrap();
+        assert_eq!(chunks.len(), 1);
+
+        match &chunks[0] {
+            StreamingChunk::InputJson {
+                content,
+                tool_name,
+                tool_id,
+            } => {
+                assert_eq!(content, "{\"param\": \"value\"}");
+                assert_eq!(tool_name, &Some("test_function".to_string()));
+                assert_eq!(tool_id, &Some("test_tool_id".to_string()));
+            }
+            _ => panic!("Expected InputJson chunk, got: {:?}", chunks[0]),
+        }
     }
 }
