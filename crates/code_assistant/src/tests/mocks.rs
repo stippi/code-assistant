@@ -295,7 +295,7 @@ impl CodeExplorer for MockExplorer {
         PathBuf::from("./root")
     }
 
-    fn read_file(&self, path: &PathBuf) -> Result<String, anyhow::Error> {
+    fn read_file(&self, path: &Path) -> Result<String, anyhow::Error> {
         self.files
             .lock()
             .unwrap()
@@ -306,7 +306,7 @@ impl CodeExplorer for MockExplorer {
 
     fn read_file_range(
         &self,
-        path: &PathBuf,
+        path: &Path,
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String, anyhow::Error> {
@@ -342,7 +342,7 @@ impl CodeExplorer for MockExplorer {
         Ok(selected_content)
     }
 
-    fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<String> {
+    fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String> {
         // Check parent directories
         for component in path.parent().unwrap_or(path).components() {
             let current = PathBuf::from(component.as_os_str());
@@ -364,18 +364,18 @@ impl CodeExplorer for MockExplorer {
                 *existing = format!("{existing}{content}");
                 result_content = existing.clone();
             } else {
-                result_content = content.clone();
+                result_content = content.to_string();
             }
         } else {
             // Write or overwrite file
-            files.insert(path.to_path_buf(), content.clone());
-            result_content = content.clone();
+            files.insert(path.to_path_buf(), content.to_string());
+            result_content = content.to_string();
         }
 
         Ok(result_content)
     }
 
-    fn delete_file(&self, path: &PathBuf) -> Result<()> {
+    fn delete_file(&self, path: &Path) -> Result<()> {
         let mut files = self.files.lock().unwrap();
         if files.contains_key(path) {
             files.remove(path);
@@ -395,7 +395,7 @@ impl CodeExplorer for MockExplorer {
 
     fn list_files(
         &mut self,
-        path: &PathBuf,
+        path: &Path,
         _max_depth: Option<usize>,
     ) -> Result<FileTreeEntry, anyhow::Error> {
         let file_tree = self.file_tree.lock().unwrap();

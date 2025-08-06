@@ -35,8 +35,8 @@ impl ToolRegistry {
     }
 
     /// Get a tool by name
-    pub fn get(&self, name: &str) -> Option<&Box<dyn DynTool>> {
-        self.tools.get(name)
+    pub fn get(&self, name: &str) -> Option<&dyn DynTool> {
+        self.tools.get(name).map(|boxed| boxed.as_ref())
     }
 
     /// Check if a tool is hidden by consulting the tool definitions

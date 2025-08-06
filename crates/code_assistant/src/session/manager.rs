@@ -2,13 +2,14 @@ use anyhow::Result;
 use llm::Message;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::SystemTime;
+use tokio::sync::Mutex;
 
-use crate::agent::ToolExecution;
 use crate::config::ProjectManager;
 use crate::persistence::{generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence};
 use crate::session::instance::SessionInstance;
+use crate::session::SessionState;
 use crate::types::{ToolSyntax, WorkingMemory};
 use crate::ui::UserInterface;
 use crate::utils::CommandExecutor;
@@ -221,16 +222,7 @@ impl SessionManager {
         };
 
         // Now save the session state with the user message (outside the borrow scope)
-        self.save_session_state(
-            session_id,
-            session_state.name.clone(),
-            session_state.messages.clone(),
-            session_state.tool_executions.clone(),
-            session_state.working_memory.clone(),
-            session_state.init_path.clone(),
-            session_state.initial_project.clone(),
-            session_state.next_request_id.unwrap_or(1),
-        )?;
+        self.save_session_state(session_state.clone())?;
 
         // Broadcast the initial state change
         let _ = ui
@@ -360,39 +352,30 @@ impl SessionManager {
     }
 
     /// Save agent state to a specific session
-    pub fn save_session_state(
-        &mut self,
-        session_id: &str,
-        name: String,
-        messages: Vec<Message>,
-        tool_executions: Vec<ToolExecution>,
-        working_memory: WorkingMemory,
-        init_path: Option<PathBuf>,
-        initial_project: String,
-        next_request_id: u64,
-    ) -> Result<()> {
+    pub fn save_session_state(&mut self, state: SessionState) -> Result<()> {
         let mut session = self
             .persistence
-            .load_chat_session(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+            .load_chat_session(&state.session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", state.session_id))?;
 
         // Update session with current state
-        session.name = name;
-        session.messages = messages;
-        session.tool_executions = tool_executions
+        session.name = state.name;
+        session.messages = state.messages;
+        session.tool_executions = state
+            .tool_executions
             .into_iter()
             .map(|te| te.serialize())
             .collect::<Result<Vec<_>>>()?;
-        session.working_memory = working_memory;
-        session.init_path = init_path;
-        session.initial_project = initial_project;
-        session.next_request_id = next_request_id;
+        session.working_memory = state.working_memory;
+        session.init_path = state.init_path;
+        session.initial_project = state.initial_project;
+        session.next_request_id = state.next_request_id.unwrap_or(0);
         session.updated_at = SystemTime::now();
 
         self.persistence.save_chat_session(&session)?;
 
         // Update active session instance if it exists
-        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+        if let Some(instance) = self.active_sessions.get_mut(&state.session_id) {
             instance.session = session;
         }
 

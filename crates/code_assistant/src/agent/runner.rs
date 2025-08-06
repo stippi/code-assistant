@@ -204,15 +204,17 @@ impl Agent {
             "saving {} messages to persistence",
             self.message_history.len()
         );
-        self.state_persistence.save_agent_state(
-            self.session_name.clone(),
-            self.message_history.clone(),
-            self.tool_executions.clone(),
-            self.working_memory.clone(),
-            self.init_path.clone(),
-            self.initial_project.clone(),
-            self.next_request_id,
-        )?;
+        let session_state = crate::session::SessionState {
+            session_id: "agent-session".to_string(), // TODO: Get actual session ID
+            name: self.session_name.clone(),
+            messages: self.message_history.clone(),
+            tool_executions: self.tool_executions.clone(),
+            working_memory: self.working_memory.clone(),
+            init_path: self.init_path.clone(),
+            initial_project: self.initial_project.clone(),
+            next_request_id: Some(self.next_request_id),
+        };
+        self.state_persistence.save_agent_state(session_state)?;
 
         // Send updated session metadata to UI
         if let Some(metadata) = self.build_current_metadata() {
@@ -642,7 +644,7 @@ impl Agent {
             // Add file tree for the initial project if available
             if let Some(tree) = self.working_memory.file_trees.get(&self.initial_project) {
                 project_info.push_str("### File Structure:\n");
-                project_info.push_str(&format!("```\n{}\n```\n\n", tree.to_string()));
+                project_info.push_str(&format!("```\n{tree}\n```\n\n"));
             }
         }
 

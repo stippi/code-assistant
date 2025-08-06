@@ -29,7 +29,8 @@ use llm::{
 };
 use std::io;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace};
 use tracing_subscriber::fmt::SubscriberBuilder;
 
@@ -43,6 +44,19 @@ enum LLMProviderType {
     OpenAI,
     OpenRouter,
     Vertex,
+}
+
+/// Configuration for creating an LLM client
+#[derive(Debug, Clone)]
+struct LLMClientConfig {
+    provider: LLMProviderType,
+    model: Option<String>,
+    base_url: Option<String>,
+    aicore_config: Option<PathBuf>,
+    num_ctx: usize,
+    record_path: Option<PathBuf>,
+    playback_path: Option<PathBuf>,
+    fast_playback: bool,
 }
 
 // Define the application arguments
@@ -123,18 +137,9 @@ enum Mode {
     },
 }
 
-async fn create_llm_client(
-    provider: LLMProviderType,
-    model: Option<String>,
-    base_url: Option<String>,
-    aicore_config: Option<PathBuf>,
-    num_ctx: usize,
-    record_path: Option<PathBuf>,
-    playback_path: Option<PathBuf>,
-    fast_playback: bool,
-) -> Result<Box<dyn LLMProvider>> {
+async fn create_llm_client(config: LLMClientConfig) -> Result<Box<dyn LLMProvider>> {
     // If playback is specified, use the recording player regardless of provider
-    if let Some(path) = playback_path {
+    if let Some(path) = config.playback_path {
         use llm::anthropic_playback::RecordingPlayer;
         let player = RecordingPlayer::from_file(path)?;
 
@@ -145,7 +150,7 @@ async fn create_llm_client(
         let mut provider = player.create_provider()?;
 
         // Configure timing simulation based on command line flag
-        if fast_playback {
+        if config.fast_playback {
             provider.set_simulate_timing(false);
         }
 
@@ -153,10 +158,12 @@ async fn create_llm_client(
     }
 
     // Otherwise continue with normal provider setup
-    match provider {
+    match config.provider {
         LLMProviderType::AiCore => {
             // Try new config file first, fallback to keyring
-            let config_path = aicore_config.unwrap_or_else(AiCoreConfig::get_default_config_path);
+            let config_path = config
+                .aicore_config
+                .unwrap_or_else(AiCoreConfig::get_default_config_path);
 
             let aicore_config = match AiCoreConfig::load_from_file(&config_path) {
                 Ok(config) => config,
@@ -188,7 +195,9 @@ async fn create_llm_client(
             };
 
             // Get matching deployment for given model ID
-            let model_name = model.unwrap_or_else(|| "claude-sonnet-4".to_string());
+            let model_name = config
+                .model
+                .unwrap_or_else(|| "claude-sonnet-4".to_string());
             let deployment_uuid = aicore_config
                 .get_deployment_for_model(&model_name)
                 .ok_or_else(|| {
@@ -212,14 +221,16 @@ async fn create_llm_client(
                 .context("Failed to initialize token manager")?;
 
             // Extend API URL with deployment ID
-            let base_api_url = base_url.unwrap_or(aicore_config.auth.api_base_url.clone());
+            let base_api_url = config
+                .base_url
+                .unwrap_or(aicore_config.auth.api_base_url.clone());
             let api_url = format!(
                 "{}/deployments/{}",
                 base_api_url.trim_end_matches('/'),
                 deployment_uuid
             );
 
-            if let Some(path) = record_path {
+            if let Some(path) = config.record_path {
                 Ok(Box::new(AiCoreClient::new_with_recorder(
                     token_manager,
                     api_url,
@@ -233,10 +244,14 @@ async fn create_llm_client(
         LLMProviderType::Anthropic => {
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .context("ANTHROPIC_API_KEY environment variable not set")?;
-            let model_name = model.unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
-            let base_url = base_url.unwrap_or(AnthropicClient::default_base_url());
+            let model_name = config
+                .model
+                .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
+            let base_url = config
+                .base_url
+                .unwrap_or(AnthropicClient::default_base_url());
 
-            if let Some(path) = record_path {
+            if let Some(path) = config.record_path {
                 Ok(Box::new(AnthropicClient::new_with_recorder(
                     api_key, model_name, base_url, path,
                 )))
@@ -250,8 +265,10 @@ async fn create_llm_client(
         LLMProviderType::Groq => {
             let api_key = std::env::var("GROQ_API_KEY")
                 .context("GROQ_API_KEY environment variable not set")?;
-            let model_name = model.unwrap_or_else(|| "moonshotai/kimi-k2-instruct".to_string());
-            let base_url = base_url.unwrap_or(GroqClient::default_base_url());
+            let model_name = config
+                .model
+                .unwrap_or_else(|| "moonshotai/kimi-k2-instruct".to_string());
+            let base_url = config.base_url.unwrap_or(GroqClient::default_base_url());
 
             Ok(Box::new(GroqClient::new(api_key, model_name, base_url)))
         }
@@ -259,8 +276,12 @@ async fn create_llm_client(
         LLMProviderType::MistralAI => {
             let api_key = std::env::var("MISTRALAI_API_KEY")
                 .context("MISTRALAI_API_KEY environment variable not set")?;
-            let model_name = model.unwrap_or_else(|| "devstral-medium-2507".to_string());
-            let base_url = base_url.unwrap_or(MistralAiClient::default_base_url());
+            let model_name = config
+                .model
+                .unwrap_or_else(|| "devstral-medium-2507".to_string());
+            let base_url = config
+                .base_url
+                .unwrap_or(MistralAiClient::default_base_url());
 
             Ok(Box::new(MistralAiClient::new(
                 api_key, model_name, base_url,
@@ -270,8 +291,8 @@ async fn create_llm_client(
         LLMProviderType::OpenAI => {
             let api_key = std::env::var("OPENAI_API_KEY")
                 .context("OPENAI_API_KEY environment variable not set")?;
-            let model_name = model.unwrap_or_else(|| "gpt-4.1".to_string());
-            let base_url = base_url.unwrap_or(OpenAIClient::default_base_url());
+            let model_name = config.model.unwrap_or_else(|| "gpt-4.1".to_string());
+            let base_url = config.base_url.unwrap_or(OpenAIClient::default_base_url());
 
             Ok(Box::new(OpenAIClient::new(api_key, model_name, base_url)))
         }
@@ -279,10 +300,12 @@ async fn create_llm_client(
         LLMProviderType::Vertex => {
             let api_key = std::env::var("GOOGLE_API_KEY")
                 .context("GOOGLE_API_KEY environment variable not set")?;
-            let model_name = model.unwrap_or_else(|| "gemini-2.5-pro-preview-06-05".to_string());
-            let base_url = base_url.unwrap_or(VertexClient::default_base_url());
+            let model_name = config
+                .model
+                .unwrap_or_else(|| "gemini-2.5-pro-preview-06-05".to_string());
+            let base_url = config.base_url.unwrap_or(VertexClient::default_base_url());
 
-            if let Some(path) = record_path {
+            if let Some(path) = config.record_path {
                 Ok(Box::new(VertexClient::new_with_recorder(
                     api_key, model_name, base_url, path,
                 )))
@@ -292,20 +315,26 @@ async fn create_llm_client(
         }
 
         LLMProviderType::Ollama => {
-            let base_url = base_url.unwrap_or(OllamaClient::default_base_url());
+            let base_url = config.base_url.unwrap_or(OllamaClient::default_base_url());
 
             Ok(Box::new(OllamaClient::new(
-                model.context("Model name is required for Ollama provider")?,
+                config
+                    .model
+                    .context("Model name is required for Ollama provider")?,
                 base_url,
-                num_ctx,
+                config.num_ctx,
             )))
         }
 
         LLMProviderType::OpenRouter => {
             let api_key = std::env::var("OPENROUTER_API_KEY")
                 .context("OPENROUTER_API_KEY environment variable not set")?;
-            let model = model.unwrap_or_else(|| "anthropic/claude-sonnet-4".to_string());
-            let base_url = base_url.unwrap_or(OpenRouterClient::default_base_url());
+            let model = config
+                .model
+                .unwrap_or_else(|| "anthropic/claude-sonnet-4".to_string());
+            let base_url = config
+                .base_url
+                .unwrap_or(OpenRouterClient::default_base_url());
 
             Ok(Box::new(OpenRouterClient::new(api_key, model, base_url)))
         }
@@ -374,16 +403,16 @@ async fn run_agent_terminal(
     let command_executor = Box::new(DefaultCommandExecutor);
 
     // Setup LLM client with the specified provider
-    let llm_client = create_llm_client(
+    let llm_client = create_llm_client(LLMClientConfig {
         provider,
         model,
         base_url,
         aicore_config,
         num_ctx,
-        record,
-        playback,
+        record_path: record,
+        playback_path: playback,
         fast_playback,
-    )
+    })
     .await
     .context("Failed to initialize LLM client")?;
 
@@ -503,7 +532,7 @@ fn run_agent_gpui(
                 debug!("Creating initial session with task: {}", initial_task);
 
                 let session_id = {
-                    let mut manager = multi_session_manager.lock().unwrap();
+                    let mut manager = multi_session_manager.lock().await;
                     manager.create_session(None).unwrap()
                 };
 
@@ -511,7 +540,7 @@ fn run_agent_gpui(
 
                 // Connect session to UI and start agent
                 let ui_events = {
-                    let mut manager = multi_session_manager.lock().unwrap();
+                    let mut manager = multi_session_manager.lock().await;
                     manager
                         .set_active_session(session_id.clone())
                         .await
@@ -532,21 +561,21 @@ fn run_agent_gpui(
                 let user_interface =
                     Arc::new(Box::new(gui_for_thread.clone()) as Box<dyn UserInterface>);
 
-                let llm_client = create_llm_client(
-                    provider.clone(),
-                    model.clone(),
-                    base_url.clone(),
-                    aicore_config.clone(),
+                let llm_client = create_llm_client(LLMClientConfig {
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    base_url: base_url.clone(),
+                    aicore_config: aicore_config.clone(),
                     num_ctx,
-                    record.clone(),
-                    playback.clone(),
+                    record_path: record.clone(),
+                    playback_path: playback.clone(),
                     fast_playback,
-                )
+                })
                 .await
                 .expect("Failed to create LLM client");
 
                 {
-                    let mut manager = multi_session_manager.lock().unwrap();
+                    let mut manager = multi_session_manager.lock().await;
                     manager
                         .start_agent_for_message(
                             &session_id,
@@ -566,7 +595,7 @@ fn run_agent_gpui(
                 info!("No task provided, connecting to latest session");
 
                 let latest_session_id = {
-                    let manager = multi_session_manager.lock().unwrap();
+                    let manager = multi_session_manager.lock().await;
                     manager.get_latest_session_id().unwrap_or(None)
                 };
 
@@ -574,7 +603,7 @@ fn run_agent_gpui(
                     debug!("Connecting to existing session: {}", session_id);
 
                     let ui_events = {
-                        let mut manager = multi_session_manager.lock().unwrap();
+                        let mut manager = multi_session_manager.lock().await;
                         manager
                             .set_active_session(session_id.clone())
                             .await
@@ -594,7 +623,7 @@ fn run_agent_gpui(
 
                     // Create a new session automatically
                     let new_session_id = {
-                        let mut manager = multi_session_manager.lock().unwrap();
+                        let mut manager = multi_session_manager.lock().await;
                         manager.create_session(None).unwrap_or_else(|e| {
                             error!("Failed to create new session: {}", e);
                             // Return a fallback session ID if creation fails
@@ -607,7 +636,7 @@ fn run_agent_gpui(
 
                         // Connect to the newly created session
                         let ui_events = {
-                            let mut manager = multi_session_manager.lock().unwrap();
+                            let mut manager = multi_session_manager.lock().await;
                             manager
                                 .set_active_session(new_session_id.clone())
                                 .await
@@ -732,7 +761,7 @@ async fn handle_backend_events(
             ui::gpui::BackendEvent::ListSessions => {
                 // Simple sync operation - no mutex across await
                 let sessions = {
-                    let manager = multi_session_manager.lock().unwrap();
+                    let manager = multi_session_manager.lock().await;
                     manager.list_all_sessions()
                 };
                 match sessions {
@@ -753,7 +782,7 @@ async fn handle_backend_events(
                 // Clone the manager reference for the async call
                 let manager_clone = multi_session_manager.clone();
                 let create_result = {
-                    let mut manager = manager_clone.lock().unwrap();
+                    let mut manager = manager_clone.lock().await;
                     manager.create_session(name.clone())
                 };
 
@@ -777,7 +806,7 @@ async fn handle_backend_events(
 
                 // Use set_active_session to get properly processed UI events (same as initial connection)
                 let ui_events_result = {
-                    let mut manager = multi_session_manager.lock().unwrap();
+                    let mut manager = multi_session_manager.lock().await;
                     manager.set_active_session(session_id.clone()).await
                 };
 
@@ -811,7 +840,7 @@ async fn handle_backend_events(
 
                 // Now we can call delete_session directly since it's synchronous
                 let delete_result = {
-                    let mut manager = multi_session_manager.lock().unwrap();
+                    let mut manager = multi_session_manager.lock().await;
                     manager.delete_session(&session_id)
                 };
 
@@ -894,21 +923,21 @@ async fn handle_backend_events(
                     let command_executor = Box::new(DefaultCommandExecutor);
                     let user_interface = Arc::new(Box::new(gui.clone()) as Box<dyn UserInterface>);
 
-                    let llm_client = create_llm_client(
-                        provider.clone(),
-                        model.clone(),
-                        base_url.clone(),
-                        aicore_config.clone(),
+                    let llm_client = create_llm_client(LLMClientConfig {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        base_url: base_url.clone(),
+                        aicore_config: aicore_config.clone(),
                         num_ctx,
-                        record.clone(),
-                        playback.clone(),
+                        record_path: record.clone(),
+                        playback_path: playback.clone(),
                         fast_playback,
-                    )
+                    })
                     .await;
 
                     match llm_client {
                         Ok(client) => {
-                            let mut manager = multi_session_manager.lock().unwrap();
+                            let mut manager = multi_session_manager.lock().await;
                             manager
                                 .start_agent_for_message(
                                     &session_id,
@@ -987,7 +1016,7 @@ async fn handle_backend_events(
                 }
 
                 let result = {
-                    let mut manager = multi_session_manager.lock().unwrap();
+                    let mut manager = multi_session_manager.lock().await;
                     manager.queue_structured_user_message(&session_id, content_blocks)
                 };
 
@@ -995,7 +1024,7 @@ async fn handle_backend_events(
                     Ok(_) => {
                         debug!("Message with attachments queued for session {}", session_id);
                         let pending_message = {
-                            let manager = multi_session_manager.lock().unwrap();
+                            let manager = multi_session_manager.lock().await;
                             manager.get_pending_message(&session_id).unwrap_or(None)
                         };
                         ui::gpui::BackendResponse::PendingMessageUpdated {
@@ -1019,7 +1048,7 @@ async fn handle_backend_events(
                 debug!("Request pending message edit for session {}", session_id);
 
                 let result = {
-                    let mut manager = multi_session_manager.lock().unwrap();
+                    let mut manager = multi_session_manager.lock().await;
                     manager.request_pending_message_for_edit(&session_id)
                 };
 

@@ -69,31 +69,37 @@ impl UserInterface for TerminalUI {
             UiEvent::UpdateToolStatus {
                 tool_id: _,
                 status,
-                message,
+                message: Some(msg),
                 output: _,
             } => {
                 // For terminal UI, we just print a status message if provided
-                if let Some(msg) = message {
-                    // Choose color based on status
-                    let color = match status {
-                        ToolStatus::Pending => Color::DarkGrey,
-                        ToolStatus::Running => Color::Blue,
-                        ToolStatus::Success => Color::Green,
-                        ToolStatus::Error => Color::Red,
-                    };
+                // Choose color based on status
+                let color = match status {
+                    ToolStatus::Pending => Color::DarkGrey,
+                    ToolStatus::Running => Color::Blue,
+                    ToolStatus::Success => Color::Green,
+                    ToolStatus::Error => Color::Red,
+                };
 
-                    // Format status symbol
-                    let symbol = match status {
-                        ToolStatus::Pending => "⋯",
-                        ToolStatus::Running => "⚙",
-                        ToolStatus::Success => "✓",
-                        ToolStatus::Error => "✗",
-                    };
+                // Format status symbol
+                let symbol = match status {
+                    ToolStatus::Pending => "⋯",
+                    ToolStatus::Running => "⚙",
+                    ToolStatus::Success => "✓",
+                    ToolStatus::Error => "✗",
+                };
 
-                    // Format and print message
-                    let formatted_msg = format!("{} {}", symbol.with(color), msg);
-                    self.write_line(&formatted_msg).await?;
-                }
+                // Format and print message
+                let formatted_msg = format!("{} {}", symbol.with(color), msg);
+                self.write_line(&formatted_msg).await?;
+            }
+            UiEvent::UpdateToolStatus {
+                tool_id: _,
+                status: _,
+                message: None,
+                output: _,
+            } => {
+                // No message to display
             }
             UiEvent::StreamingStarted(request_id) => {
                 // Optionally display a message that we're starting a new request

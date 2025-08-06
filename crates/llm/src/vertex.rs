@@ -398,7 +398,7 @@ impl VertexClient {
                         .map(|part| {
                             if let Some(function_call) = part.function_call {
                                 tool_counter += 1;
-                                let tool_id = format!("tool-{}-{}", request_id, tool_counter);
+                                let tool_id = format!("tool-{request_id}-{tool_counter}");
                                 ContentBlock::ToolUse {
                                     id: tool_id,
                                     name: function_call.name,

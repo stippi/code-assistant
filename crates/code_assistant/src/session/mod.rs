@@ -11,7 +11,7 @@ pub mod manager;
 pub use manager::{AgentConfig, SessionManager};
 
 /// State data needed to restore an agent session
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SessionState {
     pub session_id: String,
     pub name: String,

@@ -1,30 +1,29 @@
 use anyhow::Result;
-use llm::Message;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
-use crate::agent::types::ToolExecution;
+#[cfg(test)]
+use crate::agent::ToolExecution;
+#[cfg(test)]
+use crate::types::WorkingMemory;
+#[cfg(test)]
+use llm::Message;
+
 use crate::persistence::{ChatSession, SerializedToolExecution};
 use crate::session::SessionManager;
-use crate::types::{ToolSyntax, WorkingMemory};
+use crate::types::ToolSyntax;
 
 use std::time::SystemTime;
 use tracing::{debug, info};
+
+use crate::session::SessionState;
 
 /// Trait for persisting agent state
 /// This abstracts away the storage mechanism from the Agent implementation
 pub trait AgentStatePersistence: Send + Sync {
     /// Save the current agent state
-    fn save_agent_state(
-        &mut self,
-        name: String,
-        messages: Vec<Message>,
-        tool_executions: Vec<ToolExecution>,
-        working_memory: WorkingMemory,
-        init_path: Option<PathBuf>,
-        initial_project: String,
-        next_request_id: u64,
-    ) -> Result<()>;
+    fn save_agent_state(&mut self, state: SessionState) -> Result<()>;
 }
 
 /// Mock implementation for testing
@@ -50,20 +49,11 @@ impl MockStatePersistence {
 
 #[cfg(test)]
 impl AgentStatePersistence for MockStatePersistence {
-    fn save_agent_state(
-        &mut self,
-        _name: String,
-        messages: Vec<Message>,
-        tool_executions: Vec<ToolExecution>,
-        working_memory: WorkingMemory,
-        _init_path: Option<PathBuf>,
-        _initial_project: String,
-        _next_request_id: u64,
-    ) -> Result<()> {
+    fn save_agent_state(&mut self, state: SessionState) -> Result<()> {
         self.save_count += 1;
-        self.last_saved_messages = Some(messages);
-        self.last_saved_tool_executions = Some(tool_executions);
-        self.last_saved_working_memory = Some(working_memory);
+        self.last_saved_messages = Some(state.messages);
+        self.last_saved_tool_executions = Some(state.tool_executions);
+        self.last_saved_working_memory = Some(state.working_memory);
         Ok(())
     }
 }
@@ -86,31 +76,13 @@ impl SessionStatePersistence {
 }
 
 impl AgentStatePersistence for SessionStatePersistence {
-    fn save_agent_state(
-        &mut self,
-        name: String,
-        messages: Vec<Message>,
-        tool_executions: Vec<ToolExecution>,
-        working_memory: WorkingMemory,
-        init_path: Option<PathBuf>,
-        initial_project: String,
-        next_request_id: u64,
-    ) -> Result<()> {
+    fn save_agent_state(&mut self, state: SessionState) -> Result<()> {
         let mut session_manager = self
             .session_manager
-            .lock()
+            .try_lock()
             .map_err(|_| anyhow::anyhow!("Failed to lock session manager"))?;
 
-        session_manager.save_session_state(
-            &self.session_id,
-            name,
-            messages,
-            tool_executions,
-            working_memory,
-            init_path,
-            initial_project,
-            next_request_id,
-        )
+        session_manager.save_session_state(state)
     }
 }
 
@@ -167,38 +139,32 @@ impl FileStatePersistence {
 }
 
 impl AgentStatePersistence for FileStatePersistence {
-    fn save_agent_state(
-        &mut self,
-        name: String,
-        messages: Vec<Message>,
-        tool_executions: Vec<ToolExecution>,
-        working_memory: WorkingMemory,
-        init_path: Option<PathBuf>,
-        initial_project: String,
-        next_request_id: u64,
-    ) -> Result<()> {
+    fn save_agent_state(&mut self, state: SessionState) -> Result<()> {
         debug!("Saving agent state to {}", self.state_file_path.display());
 
         // Convert tool executions to serialized form
-        let serialized_executions: Result<Vec<SerializedToolExecution>> =
-            tool_executions.iter().map(|te| te.serialize()).collect();
+        let serialized_executions: Result<Vec<SerializedToolExecution>> = state
+            .tool_executions
+            .iter()
+            .map(|te| te.serialize())
+            .collect();
 
         let serialized_executions = serialized_executions?;
 
         // Create a ChatSession with the current state
         let session = ChatSession {
-            id: "terminal-session".to_string(),
-            name,
+            id: state.session_id,
+            name: state.name,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
-            messages,
+            messages: state.messages,
             tool_executions: serialized_executions,
-            working_memory,
-            init_path,
-            initial_project,
+            working_memory: state.working_memory,
+            init_path: state.init_path,
+            initial_project: state.initial_project,
             tool_syntax: self.tool_syntax,
             use_diff_blocks: self.use_diff_blocks,
-            next_request_id,
+            next_request_id: state.next_request_id.unwrap_or(0),
         };
 
         // Save to file

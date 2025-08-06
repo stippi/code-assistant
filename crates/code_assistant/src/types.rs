@@ -47,7 +47,7 @@ impl Default for FileEncoding {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum LineEnding {
     LF,   // Unix: \n
-    CRLF, // Windows: \r\n
+    Crlf, // Windows: \r\n
     CR,   // Legacy Mac: \r
 }
 
@@ -256,20 +256,20 @@ impl ValueEnum for ToolSyntax {
 pub trait CodeExplorer: Send + Sync {
     fn root_dir(&self) -> PathBuf;
     /// Reads the content of a file
-    fn read_file(&self, path: &PathBuf) -> Result<String>;
+    fn read_file(&self, path: &Path) -> Result<String>;
     /// Reads the content of a file between specific line numbers
     fn read_file_range(
         &self,
-        path: &PathBuf,
+        path: &Path,
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String>;
     /// Write the content of a file and return the complete content after writing
-    fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<String>;
-    fn delete_file(&self, path: &PathBuf) -> Result<()>;
+    fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String>;
+    fn delete_file(&self, path: &Path) -> Result<()>;
     #[allow(dead_code)]
     fn create_initial_tree(&mut self, max_depth: usize) -> Result<FileTreeEntry>;
-    fn list_files(&mut self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry>;
+    fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry>;
     /// Applies FileReplacements to a file
     fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String>;
     /// Search for text in files with advanced options

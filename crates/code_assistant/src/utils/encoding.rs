@@ -142,7 +142,7 @@ pub fn write_file_with_encoding(path: &Path, content: &str, encoding: &FileEncod
 /// Detects the line ending used in a string
 pub fn detect_line_ending(content: &str) -> LineEnding {
     if content.contains("\r\n") {
-        LineEnding::CRLF
+        LineEnding::Crlf
     } else if content.contains('\r') && !content.contains('\n') {
         LineEnding::CR
     } else {
@@ -173,7 +173,7 @@ pub fn restore_format(content: &str, format: &FileFormat) -> String {
 
     // Restore line endings
     match format.line_ending {
-        LineEnding::CRLF => {
+        LineEnding::Crlf => {
             result = result.replace('\n', "\r\n");
         }
         LineEnding::CR => {
@@ -193,7 +193,7 @@ pub fn write_file_with_format(path: &Path, content: &str, format: &FileFormat) -
 
     // Ensure content ends with exactly one newline
     let line_ending = match format.line_ending {
-        LineEnding::CRLF => "\r\n",
+        LineEnding::Crlf => "\r\n",
         LineEnding::CR => "\r",
         LineEnding::LF => "\n",
     };
@@ -245,13 +245,13 @@ mod tests {
         assert_eq!(detect_line_ending("Line1\nLine2\nLine3"), LineEnding::LF);
         assert_eq!(
             detect_line_ending("Line1\r\nLine2\r\nLine3"),
-            LineEnding::CRLF
+            LineEnding::Crlf
         );
         assert_eq!(detect_line_ending("Line1\rLine2\rLine3"), LineEnding::CR);
         // Mixed should prioritize CRLF
         assert_eq!(
             detect_line_ending("Line1\r\nLine2\nLine3"),
-            LineEnding::CRLF
+            LineEnding::Crlf
         );
     }
 
@@ -261,7 +261,7 @@ mod tests {
 
         let crlf_format = FileFormat {
             encoding: FileEncoding::UTF8,
-            line_ending: LineEnding::CRLF,
+            line_ending: LineEnding::Crlf,
         };
 
         let cr_format = FileFormat {

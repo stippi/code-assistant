@@ -104,11 +104,10 @@ impl Render for SearchFilesOutput {
         } else {
             // Full mode: show snippets with context, but limit by snippet count
             const MAX_DISPLAYED_SNIPPETS: usize = 20; // Show max 20 snippets in full mode
-            let mut snippets_shown = 0;
             let mut files_with_snippets = 0;
 
             // Show detailed results for top matches
-            for result in &self.results {
+            for (snippets_shown, result) in self.results.iter().enumerate() {
                 if snippets_shown >= MAX_DISPLAYED_SNIPPETS {
                     break;
                 }
@@ -133,7 +132,6 @@ impl Render for SearchFilesOutput {
                 }
 
                 formatted.push_str("<<<<< END RESULT\n\n");
-                snippets_shown += 1;
                 files_with_snippets += 1;
             }
 

@@ -6,6 +6,7 @@ use anyhow::Result;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::debug;
@@ -44,12 +45,13 @@ pub struct Explorer {
     file_formats: Arc<RwLock<HashMap<PathBuf, FileFormat>>>,
 }
 
-impl FileTreeEntry {
-    /// Converts the file tree to a readable string representation
-    pub fn to_string(&self) -> String {
-        self.to_string_with_indent(0, "")
+impl fmt::Display for FileTreeEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_string_with_indent(0, ""))
     }
+}
 
+impl FileTreeEntry {
     fn to_string_with_indent(&self, level: usize, prefix: &str) -> String {
         let mut result = String::new();
 
@@ -143,12 +145,9 @@ impl Explorer {
         // Try to add the .gitignore file
         let gitignore_path = self.root_dir.join(".gitignore");
         if gitignore_path.exists() {
-            match builder.add(gitignore_path) {
-                Some(err) => {
-                    debug!("Error loading .gitignore: {:?}", err);
-                    return false;
-                }
-                None => {} // Successfully added
+            if let Some(err) = builder.add(gitignore_path) {
+                debug!("Error loading .gitignore: {:?}", err);
+                return false;
             }
         } else {
             return false; // No .gitignore file, nothing is ignored
@@ -257,7 +256,7 @@ impl Explorer {
     /// * `Err(...)` - If an error occurs during file reading or line extraction
     fn read_file_lines(
         &self,
-        path: &PathBuf,
+        path: &Path,
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String> {
@@ -300,11 +299,11 @@ impl Explorer {
 
         // Store the format information
         let mut formats = self.file_formats.write().unwrap();
-        formats.insert(path.clone(), file_format.clone());
+        formats.insert(path.to_path_buf(), file_format.clone());
 
         // Also store in the old encodings map for backward compatibility
         let mut encodings = self.file_encodings.write().unwrap();
-        encodings.insert(path.clone(), encoding);
+        encodings.insert(path.to_path_buf(), encoding);
 
         // Normalize content for consistent line ending and removal of trailing whitespace
         let normalized_content = crate::utils::encoding::normalize_content(&content);
@@ -368,7 +367,7 @@ impl CodeExplorer for Explorer {
         Ok(root)
     }
 
-    fn read_file(&self, path: &PathBuf) -> Result<String> {
+    fn read_file(&self, path: &Path) -> Result<String> {
         debug!("Reading entire file: {}", path.display());
 
         // Check if file is ignored by .gitignore
@@ -398,11 +397,11 @@ impl CodeExplorer for Explorer {
 
         // Store the format information
         let mut formats = self.file_formats.write().unwrap();
-        formats.insert(path.clone(), file_format.clone());
+        formats.insert(path.to_path_buf(), file_format.clone());
 
         // Also store in the old encodings map for backward compatibility
         let mut encodings = self.file_encodings.write().unwrap();
-        encodings.insert(path.clone(), encoding);
+        encodings.insert(path.to_path_buf(), encoding);
 
         // Normalize content for LLM
         let normalized_content = crate::utils::encoding::normalize_content(&content);
@@ -413,14 +412,14 @@ impl CodeExplorer for Explorer {
     // New method for reading partial files with line ranges
     fn read_file_range(
         &self,
-        path: &PathBuf,
+        path: &Path,
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String> {
         self.read_file_lines(path, start_line, end_line)
     }
 
-    fn write_file(&self, path: &PathBuf, content: &String, append: bool) -> Result<String> {
+    fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String> {
         debug!("Writing file: {}, append: {}", path.display(), append);
 
         // Check if file is ignored by .gitignore
@@ -450,10 +449,10 @@ impl CodeExplorer for Explorer {
                     let normalized_existing = crate::utils::encoding::normalize_content(&existing);
                     normalized_existing + content
                 }
-                Err(_) => content.clone(), // Fallback if reading fails
+                Err(_) => content.to_string(), // Fallback if reading fails
             }
         } else {
-            content.clone()
+            content.to_string()
         };
 
         // Write the content with the correct format
@@ -463,19 +462,19 @@ impl CodeExplorer for Explorer {
         Ok(content_to_write)
     }
 
-    fn delete_file(&self, path: &PathBuf) -> Result<()> {
+    fn delete_file(&self, path: &Path) -> Result<()> {
         std::fs::remove_file(path)?;
         Ok(())
     }
 
-    fn list_files(&mut self, path: &PathBuf, max_depth: Option<usize>) -> Result<FileTreeEntry> {
+    fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry> {
         // Check if the path exists before proceeding
         if !path.exists() {
             return Err(anyhow::anyhow!("Path not found"));
         }
 
         // Remember that this path was explicitly listed
-        self.expanded_paths.insert(path.clone());
+        self.expanded_paths.insert(path.to_path_buf());
 
         let mut entry = FileTreeEntry {
             name: path
@@ -493,12 +492,7 @@ impl CodeExplorer for Explorer {
         };
 
         if path.is_dir() {
-            self.expand_directory(
-                path.as_path(),
-                &mut entry,
-                0,
-                max_depth.unwrap_or(usize::MAX),
-            )?;
+            self.expand_directory(path, &mut entry, 0, max_depth.unwrap_or(usize::MAX))?;
         }
 
         Ok(entry)
