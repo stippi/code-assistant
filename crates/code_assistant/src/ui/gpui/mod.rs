@@ -203,7 +203,6 @@ impl Gpui {
         let session_event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let current_request_id = Arc::new(Mutex::new(0));
 
-
         // Initialize parameter renderers registry with default renderer
         let mut registry = ParameterRendererRegistry::new(Box::new(DefaultParameterRenderer));
 

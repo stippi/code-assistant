@@ -15,8 +15,6 @@ pub enum ToolStatus {
     Error,   // Error during execution
 }
 
-
-
 #[derive(Error, Debug)]
 pub enum UIError {
     #[error("IO error: {0}")]
