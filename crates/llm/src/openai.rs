@@ -705,8 +705,9 @@ impl OpenAIClient {
         request: &OpenAIRequest,
         streaming_callback: &StreamingCallback,
     ) -> Result<(LLMResponse, OpenAIRateLimitInfo)> {
-        debug!("Sending streaming request");
         let mut request_json = serde_json::to_value(request.clone().into_streaming())?;
+
+        debug!("Sending streaming request: {}", request_json);
 
         // Allow request customizer to modify the request
         self.request_customizer
@@ -1007,7 +1008,7 @@ impl LLMProvider for OpenAIClient {
             temperature: self.get_temperature(),
             stream: None,
             stream_options: None,
-            tool_choice: None,
+            tool_choice: Some(serde_json::json!("auto")),
             tools: request.tools.map(|tools| {
                 tools
                     .into_iter()
