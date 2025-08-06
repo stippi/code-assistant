@@ -36,13 +36,27 @@ pub struct ToolDefinition {
 }
 
 /// Generic request structure that can be mapped to different providers
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LLMRequest {
     pub messages: Vec<Message>,
     pub system_prompt: String,
     pub tools: Option<Vec<ToolDefinition>>,
     /// Custom text sequences that will cause the model to stop generating
     pub stop_sequences: Option<Vec<String>>,
+    /// Request ID for consistent tool ID generation across providers
+    pub request_id: u64,
+}
+
+impl Default for LLMRequest {
+    fn default() -> Self {
+        Self {
+            messages: Vec::new(),
+            system_prompt: String::new(),
+            tools: None,
+            stop_sequences: None,
+            request_id: 1,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

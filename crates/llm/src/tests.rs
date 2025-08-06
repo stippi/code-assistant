@@ -37,6 +37,7 @@ impl TestCase {
                 system_prompt: "You are a helpful assistant.".to_string(),
                 tools: None,
                 stop_sequences: None,
+                request_id: 1,
             },
             expected_text_chunks: vec!["Hi!".to_string(), " How can I help you today?".to_string()],
             expected_tool_json: None,
@@ -55,7 +56,12 @@ impl TestCase {
         }
     }
 
-    fn with_tool() -> Self {
+    fn with_tool_for_provider(provider: &str) -> Self {
+        let tool_id = match provider {
+            "ollama" | "vertex" => "tool-1-1".to_string(),
+            _ => "tool-get_weather-0".to_string(), // OpenAI/Anthropic use their own IDs
+        };
+
         Self {
             name: "Function calling response".to_string(),
             request: LLMRequest {
@@ -81,12 +87,13 @@ impl TestCase {
                     }),
                 }]),
                 stop_sequences: None,
+                request_id: 1,
             },
             expected_text_chunks: vec![],
             expected_tool_json: Some(r#"{"location":"current"}"#.to_string()),
             expected_response: LLMResponse {
                 content: vec![ContentBlock::ToolUse {
-                    id: "tool-get_weather-0".to_string(),
+                    id: tool_id,
                     name: "get_weather".to_string(),
                     input: json!({"location": "current"}),
                 }],
@@ -644,7 +651,11 @@ async fn run_provider_tests<T: MockResponseGenerator + Clone + 'static>(
     create_client: impl Fn(&str) -> Box<dyn LLMProvider>,
     generator: T,
 ) -> Result<()> {
-    let test_cases = vec![TestCase::text_only(), TestCase::with_tool()];
+    let provider_key = provider_name.to_lowercase();
+    let test_cases = vec![
+        TestCase::text_only(),
+        TestCase::with_tool_for_provider(&provider_key),
+    ];
 
     for case in test_cases {
         println!("Running {} test case: {}", provider_name, case.name);
@@ -759,12 +770,10 @@ async fn test_vertex_provider() -> Result<()> {
     run_provider_tests(
         "Vertex",
         |url| {
-            let fixed_generator = Box::new(FixedToolIDGenerator::new("0".to_string()));
-            Box::new(VertexClient::new_with_tool_id_generator(
+            Box::new(VertexClient::new(
                 "test-key".to_string(),
                 "gemini-pro".to_string(),
                 url.to_string(),
-                fixed_generator,
             ))
         },
         VertexMockGenerator,
@@ -824,6 +833,7 @@ async fn test_anthropic_rate_limit_retry() -> Result<()> {
         system_prompt: "You are a helpful assistant.".to_string(),
         tools: None,
         stop_sequences: None,
+        request_id: 0,
     };
 
     // The request should eventually succeed after retries

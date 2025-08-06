@@ -185,6 +185,7 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
         system_prompt: "You are a helpful assistant.".to_string(),
         tools: None,
         stop_sequences: None,
+        request_id: 1,
     };
 
     // Send the request with streaming - this should trigger tool limit detection

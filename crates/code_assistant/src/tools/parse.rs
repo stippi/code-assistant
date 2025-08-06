@@ -168,9 +168,7 @@ pub fn parse_caret_tool_invocations(
             // Use schema-based conversion for registered tools
             convert_xml_params_to_json(tool_name, &raw_params, ToolRegistry::global()).map_err(
                 |e| {
-                    ToolError::ParseError(format!(
-                        "Error converting caret parameters to JSON: {e}"
-                    ))
+                    ToolError::ParseError(format!("Error converting caret parameters to JSON: {e}"))
                 },
             )?
         } else {
@@ -385,9 +383,7 @@ fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
 
     // Convert parameters to JSON using the ToolRegistry
     let json_params = convert_xml_params_to_json(&tool_name, &params, ToolRegistry::global())
-        .map_err(|e| {
-            ToolError::ParseError(format!("Error converting parameters to JSON: {e}"))
-        })?;
+        .map_err(|e| ToolError::ParseError(format!("Error converting parameters to JSON: {e}")))?;
 
     Ok((tool_name, json_params))
 }

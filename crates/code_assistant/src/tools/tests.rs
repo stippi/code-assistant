@@ -685,7 +685,10 @@ fn test_tool_use_docs_generation() {
 
     // Test Native documentation (should be None)
     let native_parser = ParserRegistry::get(ToolSyntax::Native);
-    if native_parser.generate_tool_documentation(ToolScope::Agent).is_some() {
+    if native_parser
+        .generate_tool_documentation(ToolScope::Agent)
+        .is_some()
+    {
         println!("Native parser unexpectedly returned documentation");
     } else {
         println!("=== Native Tool Documentation ===");

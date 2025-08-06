@@ -14,8 +14,7 @@ use async_trait::async_trait;
 use tracing::{debug, error, trace};
 
 /// Represents the current activity state of a session
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum SessionActivityState {
     /// No agent running, waiting for user input
     #[default]
@@ -27,7 +26,6 @@ pub enum SessionActivityState {
     /// Agent is rate limited with countdown
     RateLimited { seconds_remaining: u64 },
 }
-
 
 /// Represents a single session instance with its own agent and state
 pub struct SessionInstance {

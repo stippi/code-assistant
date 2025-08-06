@@ -41,7 +41,8 @@ impl Render for EditOutput {
         if let Some(error) = &self.error {
             match error {
                 FileUpdaterError::SearchBlockNotFound(_, _) => {
-                    "Could not find old_text. Make sure it matches exactly what's in the file.".to_string()
+                    "Could not find old_text. Make sure it matches exactly what's in the file."
+                        .to_string()
                 }
                 FileUpdaterError::MultipleMatches(count, _, _) => {
                     format!(

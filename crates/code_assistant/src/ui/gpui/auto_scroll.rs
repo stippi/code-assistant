@@ -265,9 +265,10 @@ impl<T: Render> AutoScrollContainer<T> {
                         let planned_displacement_f32 = planned_offset_y_f32 - target_y_px.0;
 
                         if planned_displacement_f32.signum() != current_displacement_sign
-                            && distance_to_target_abs_f32 > config.min_distance_to_stop {
-                                final_scroll_delta_f32 = -displacement_x_f32;
-                            }
+                            && distance_to_target_abs_f32 > config.min_distance_to_stop
+                        {
+                            final_scroll_delta_f32 = -displacement_x_f32;
+                        }
                     }
 
                     if final_scroll_delta_f32.abs() > distance_to_target_abs_f32 {

@@ -285,9 +285,7 @@ fn test_caret_must_start_at_line_beginning() {
     // First test with no chunking to see if it works at all
     let test_ui_no_chunking = process_chunked_text(input, input.len());
     let fragments_no_chunking = test_ui_no_chunking.get_fragments();
-    println!(
-        "No chunking - Actual fragments: {fragments_no_chunking:?}"
-    );
+    println!("No chunking - Actual fragments: {fragments_no_chunking:?}");
     assert_eq!(expected_fragments, fragments_no_chunking);
 
     // Then test with chunking
@@ -703,9 +701,7 @@ fn test_streaming_vs_buffering_behavior() {
         .unwrap();
 
     let fragments_after_complete_tool = test_ui.get_raw_fragments();
-    println!(
-        "After complete tool line: {fragments_after_complete_tool:?}"
-    );
+    println!("After complete tool line: {fragments_after_complete_tool:?}");
 
     // Now should have emitted the tool name
     assert!(

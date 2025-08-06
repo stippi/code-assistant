@@ -218,7 +218,11 @@ impl OllamaClient {
         messages
     }
 
-    async fn try_send_request(&self, request: &OllamaRequest) -> Result<LLMResponse> {
+    async fn try_send_request(
+        &self,
+        request: &OllamaRequest,
+        request_id: u64,
+    ) -> Result<LLMResponse> {
         let response = self
             .client
             .post(self.get_url())
@@ -258,7 +262,7 @@ impl OllamaClient {
         if let Some(tool_calls) = ollama_response.message.tool_calls {
             for (index, tool_call) in tool_calls.into_iter().enumerate() {
                 content.push(ContentBlock::ToolUse {
-                    id: format!("tool-{}-{}", tool_call.function.name, index),
+                    id: format!("tool-{}-{}", request_id, index + 1),
                     name: tool_call.function.name,
                     input: tool_call.function.arguments,
                 });
@@ -281,6 +285,7 @@ impl OllamaClient {
     async fn try_send_request_streaming(
         &self,
         request: &OllamaRequest,
+        request_id: u64,
         streaming_callback: &StreamingCallback,
     ) -> Result<LLMResponse> {
         let response = self
@@ -338,8 +343,8 @@ impl OllamaClient {
                                             tool_name: Some(tool_call.function.name.clone()),
                                             tool_id: Some(format!(
                                                 "tool-{}-{}",
-                                                tool_call.function.name,
-                                                tool_calls.len()
+                                                request_id,
+                                                tool_calls.len() + 1
                                             )),
                                         })?;
                                     }
@@ -379,7 +384,7 @@ impl OllamaClient {
         // Add tool calls if present
         for (index, tool_call) in tool_calls.into_iter().enumerate() {
             content.push(ContentBlock::ToolUse {
-                id: format!("tool-{}-{}", tool_call.function.name, index),
+                id: format!("tool-{}-{}", request_id, index + 1),
                 name: tool_call.function.name,
                 input: tool_call.function.arguments,
             });
@@ -447,12 +452,14 @@ impl LLMProvider for OllamaClient {
 
         debug!("Sending request to Ollama: {:?}", ollama_request);
 
+        let request_id = request.request_id;
+
         if let Some(callback) = streaming_callback {
             ollama_request.stream = true;
-            self.try_send_request_streaming(&ollama_request, callback)
+            self.try_send_request_streaming(&ollama_request, request_id, callback)
                 .await
         } else {
-            self.try_send_request(&ollama_request).await
+            self.try_send_request(&ollama_request, request_id).await
         }
     }
 }

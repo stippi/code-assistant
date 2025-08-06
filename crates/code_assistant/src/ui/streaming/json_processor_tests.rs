@@ -475,9 +475,7 @@ mod tests {
                     value,
                     tool_id,
                 } => {
-                    println!(
-                        "  [{i}] ToolParameter: {name} = {value} (tool_id: {tool_id})"
-                    );
+                    println!("  [{i}] ToolParameter: {name} = {value} (tool_id: {tool_id})");
                 }
                 _ => println!("  [{i}] Other: {fragment:?}"),
             }
@@ -616,9 +614,7 @@ mod tests {
                     value,
                     tool_id,
                 } => {
-                    println!(
-                        "  [{i}] ToolParameter: {name} = {value} (tool_id: {tool_id})"
-                    );
+                    println!("  [{i}] ToolParameter: {name} = {value} (tool_id: {tool_id})");
                 }
                 _ => println!("  [{i}] {fragment:?}"),
             }

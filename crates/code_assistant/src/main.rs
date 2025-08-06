@@ -156,16 +156,13 @@ async fn create_llm_client(
     match provider {
         LLMProviderType::AiCore => {
             // Try new config file first, fallback to keyring
-            let config_path =
-                aicore_config.unwrap_or_else(AiCoreConfig::get_default_config_path);
+            let config_path = aicore_config.unwrap_or_else(AiCoreConfig::get_default_config_path);
 
             let aicore_config = match AiCoreConfig::load_from_file(&config_path) {
                 Ok(config) => config,
                 Err(e) => {
                     // Output sample config file when loading fails
-                    eprintln!(
-                        "Failed to load AI Core config from {config_path:?}: {e}"
-                    );
+                    eprintln!("Failed to load AI Core config from {config_path:?}: {e}");
                     eprintln!("\nPlease create the config file with the following structure:");
                     eprintln!("```json");
                     eprintln!("{{");
@@ -287,11 +284,7 @@ async fn create_llm_client(
 
             if let Some(path) = record_path {
                 Ok(Box::new(VertexClient::new_with_recorder(
-                    api_key,
-                    model_name,
-                    base_url,
-                    Box::new(llm::vertex::DefaultToolIDGenerator::new()), // Add default tool_id_generator
-                    path,
+                    api_key, model_name, base_url, path,
                 )))
             } else {
                 Ok(Box::new(VertexClient::new(api_key, model_name, base_url)))

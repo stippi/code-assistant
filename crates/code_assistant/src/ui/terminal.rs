@@ -154,9 +154,9 @@ impl UserInterface for TerminalUI {
                     "Input EOF",
                 )))
             }
-            Err(e) => Err(UIError::IOError(io::Error::other(
-                format!("Input error: {e}"),
-            ))),
+            Err(e) => Err(UIError::IOError(io::Error::other(format!(
+                "Input error: {e}"
+            )))),
         }
     }
 

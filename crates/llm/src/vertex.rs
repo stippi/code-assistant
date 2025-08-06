@@ -163,62 +163,11 @@ impl RateLimitHandler for VertexRateLimitInfo {
     }
 }
 
-// Tool ID generation trait and implementations
-pub trait ToolIDGenerator {
-    fn generate_id(&self, name: &str) -> String;
-}
-
-/// Default implementation using an atomic counter
-pub struct DefaultToolIDGenerator {
-    counter: std::sync::atomic::AtomicU64,
-}
-
-impl DefaultToolIDGenerator {
-    pub fn new() -> Self {
-        Self {
-            counter: std::sync::atomic::AtomicU64::new(0),
-        }
-    }
-}
-
-impl Default for DefaultToolIDGenerator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ToolIDGenerator for DefaultToolIDGenerator {
-    fn generate_id(&self, name: &str) -> String {
-        let counter = self
-            .counter
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        format!("tool-{name}-{counter}")
-    }
-}
-
-/// Fixed pattern implementation for testing
-pub struct FixedToolIDGenerator {
-    id_pattern: String,
-}
-
-impl FixedToolIDGenerator {
-    pub fn new(id_pattern: String) -> Self {
-        Self { id_pattern }
-    }
-}
-
-impl ToolIDGenerator for FixedToolIDGenerator {
-    fn generate_id(&self, name: &str) -> String {
-        format!("tool-{}-{}", name, self.id_pattern)
-    }
-}
-
 pub struct VertexClient {
     client: Client,
     api_key: String,
     model: String,
     base_url: String,
-    tool_id_generator: Box<dyn ToolIDGenerator + Send + Sync>,
     recorder: Option<APIRecorder>,
 }
 
@@ -229,26 +178,11 @@ impl VertexClient {
     }
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
-        Self::new_with_tool_id_generator(
-            api_key,
-            model,
-            base_url,
-            Box::new(DefaultToolIDGenerator::new()),
-        )
-    }
-
-    pub fn new_with_tool_id_generator(
-        api_key: String,
-        model: String,
-        base_url: String,
-        tool_id_generator: Box<dyn ToolIDGenerator + Send + Sync>,
-    ) -> Self {
         Self {
             client: Client::new(),
             api_key,
             model,
             base_url,
-            tool_id_generator,
             recorder: None,
         }
     }
@@ -258,7 +192,6 @@ impl VertexClient {
         api_key: String,
         model: String,
         base_url: String,
-        tool_id_generator: Box<dyn ToolIDGenerator + Send + Sync>,
         recording_path: P,
     ) -> Self {
         Self {
@@ -266,7 +199,6 @@ impl VertexClient {
             api_key,
             model,
             base_url,
-            tool_id_generator,
             recorder: Some(APIRecorder::new(recording_path)),
         }
     }
@@ -374,6 +306,7 @@ impl VertexClient {
     async fn send_with_retry(
         &self,
         request: &VertexRequest,
+        request_id: u64,
         streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
     ) -> Result<LLMResponse> {
@@ -381,9 +314,10 @@ impl VertexClient {
 
         loop {
             match if let Some(callback) = streaming_callback {
-                self.try_send_request_streaming(request, callback).await
+                self.try_send_request_streaming(request, request_id, callback)
+                    .await
             } else {
-                self.try_send_request(request).await
+                self.try_send_request(request, request_id).await
             } {
                 Ok((response, rate_limits)) => {
                     rate_limits.log_status();
@@ -410,6 +344,7 @@ impl VertexClient {
     async fn try_send_request(
         &self,
         request: &VertexRequest,
+        request_id: u64,
     ) -> Result<(LLMResponse, VertexRateLimitInfo)> {
         let url = self.get_url(false);
 
@@ -450,6 +385,7 @@ impl VertexClient {
             .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {e}")))?;
 
         // Convert to our generic LLMResponse format
+        let mut tool_counter = 0;
         let response = LLMResponse {
             content: vertex_response
                 .candidates
@@ -461,8 +397,8 @@ impl VertexClient {
                         .into_iter()
                         .map(|part| {
                             if let Some(function_call) = part.function_call {
-                                let tool_id =
-                                    self.tool_id_generator.generate_id(&function_call.name);
+                                tool_counter += 1;
+                                let tool_id = format!("tool-{}-{}", request_id, tool_counter);
                                 ContentBlock::ToolUse {
                                     id: tool_id,
                                     name: function_call.name,
@@ -509,6 +445,7 @@ impl VertexClient {
     async fn try_send_request_streaming(
         &self,
         request: &VertexRequest,
+        request_id: u64,
         streaming_callback: &StreamingCallback,
     ) -> Result<(LLMResponse, VertexRateLimitInfo)> {
         // Start recording if a recorder is available
@@ -532,13 +469,15 @@ impl VertexClient {
         let mut content_blocks = Vec::new();
         let mut last_usage: Option<VertexUsageMetadata> = None;
         let mut line_buffer = String::new();
+        let mut tool_counter = 0;
 
         // Helper function to process SSE lines
         let process_sse_line = |line: &str,
                                 blocks: &mut Vec<ContentBlock>,
                                 usage: &mut Option<VertexUsageMetadata>,
                                 callback: &StreamingCallback,
-                                tool_id_generator: &Box<dyn ToolIDGenerator + Send + Sync>,
+                                tool_counter: &mut u32,
+                                request_id: u64,
                                 recorder: &Option<APIRecorder>|
          -> Result<()> {
             if let Some(data) = line.strip_prefix("data: ") {
@@ -600,8 +539,9 @@ impl VertexClient {
                                     callback(&StreamingChunk::Text(text.clone()))?;
                                 }
                             } else if let Some(function_call) = &part.function_call {
-                                // Generate a tool ID that includes the function name for later extraction
-                                let tool_id = tool_id_generator.generate_id(&function_call.name);
+                                // Generate a tool ID using request_id and counter
+                                *tool_counter += 1;
+                                let tool_id = format!("tool-{}-{}", request_id, *tool_counter);
 
                                 // Always create a new tool use block (they don't get extended)
                                 blocks.push(ContentBlock::ToolUse {
@@ -641,7 +581,8 @@ impl VertexClient {
                             &mut content_blocks,
                             &mut last_usage,
                             streaming_callback,
-                            &self.tool_id_generator,
+                            &mut tool_counter,
+                            request_id,
                             &self.recorder,
                         ) {
                             Ok(()) => {
@@ -670,7 +611,8 @@ impl VertexClient {
                 &mut content_blocks,
                 &mut last_usage,
                 streaming_callback,
-                &self.tool_id_generator,
+                &mut tool_counter,
+                request_id,
                 &self.recorder,
             )?;
         }
@@ -743,7 +685,9 @@ impl LLMProvider for VertexClient {
             tool_config: None,
         };
 
-        self.send_with_retry(&vertex_request, streaming_callback, 3)
+        let request_id = request.request_id;
+
+        self.send_with_retry(&vertex_request, request_id, streaming_callback, 3)
             .await
     }
 }

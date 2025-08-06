@@ -49,7 +49,11 @@ impl AttachmentView {
                         .into_any_element()
                 } else {
                     // Fallback to text if parsing failed
-                    let display_text = mime_type.split('/').next_back().unwrap_or("image").to_string();
+                    let display_text = mime_type
+                        .split('/')
+                        .next_back()
+                        .unwrap_or("image")
+                        .to_string();
                     div()
                         .bg(cx.theme().muted)
                         .size_full()

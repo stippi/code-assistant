@@ -842,6 +842,7 @@ impl Agent {
                 ToolSyntax::Caret => None,
             },
             stop_sequences: None,
+            request_id,
         };
 
         // Log messages for debugging
