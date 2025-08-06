@@ -3,7 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[derive(Debug, Serialize)]
 struct OllamaRequest {
@@ -78,72 +78,144 @@ impl OllamaClient {
         format!("{}/api/chat", self.base_url)
     }
 
-    fn convert_message(message: &Message) -> OllamaMessage {
-        let (content, images) = match &message.content {
-            MessageContent::Text(text) => (text.clone(), None),
-            MessageContent::Structured(blocks) => {
-                // Collect text blocks
-                let text_content = blocks
-                    .iter()
-                    .filter_map(|block| match block {
-                        ContentBlock::Text { text } => Some(text),
-                        _ => None,
-                    })
-                    .cloned()
-                    .collect::<Vec<String>>()
-                    .join("");
-
-                // Collect image blocks
-                let image_data: Vec<String> = blocks
-                    .iter()
-                    .filter_map(|block| match block {
-                        ContentBlock::Image { data, .. } => Some(data.clone()),
-                        _ => None,
-                    })
-                    .collect();
-
-                let images = if image_data.is_empty() {
-                    None
-                } else {
-                    Some(image_data)
-                };
-
-                (text_content, images)
+    fn convert_message(message: &Message) -> Vec<OllamaMessage> {
+        match &message.content {
+            MessageContent::Text(text) => {
+                vec![OllamaMessage {
+                    role: match message.role {
+                        MessageRole::User => "user".to_string(),
+                        MessageRole::Assistant => "assistant".to_string(),
+                    },
+                    content: text.clone(),
+                    images: None,
+                    tool_calls: None,
+                }]
             }
-        };
+            MessageContent::Structured(blocks) => Self::convert_structured_content(message, blocks),
+        }
+    }
 
-        let tool_calls = match &message.content {
-            MessageContent::Structured(blocks) => {
-                let tool_calls: Vec<OllamaToolCall> = blocks
-                    .iter()
-                    .filter_map(|block| match block {
-                        ContentBlock::ToolUse { name, input, .. } => Some(OllamaToolCall {
-                            function: OllamaFunction {
-                                name: name.clone(),
-                                arguments: input.clone(),
-                            },
-                        }),
-                        _ => None,
-                    })
-                    .collect();
-                if tool_calls.is_empty() {
-                    None
-                } else {
-                    Some(tool_calls)
+    fn convert_structured_content(
+        message: &Message,
+        blocks: &[ContentBlock],
+    ) -> Vec<OllamaMessage> {
+        match message.role {
+            MessageRole::Assistant => {
+                // For Assistant: Collect all ToolUse in tool_calls, rest as content
+                Self::convert_assistant_message(blocks)
+            }
+            MessageRole::User => {
+                // For User: Separate messages for ToolResult (role="tool"), rest combined
+                Self::convert_user_message(blocks)
+            }
+        }
+    }
+
+    fn convert_assistant_message(blocks: &[ContentBlock]) -> Vec<OllamaMessage> {
+        let mut content_parts = Vec::new();
+        let mut tool_calls = Vec::new();
+        let mut images = Vec::new();
+
+        for block in blocks {
+            match block {
+                ContentBlock::Text { text } => content_parts.push(text.clone()),
+                ContentBlock::Image { data, .. } => images.push(data.clone()),
+                ContentBlock::ToolUse { name, input, .. } => {
+                    tool_calls.push(OllamaToolCall {
+                        function: OllamaFunction {
+                            name: name.clone(),
+                            arguments: input.clone(),
+                        },
+                    });
+                }
+                ContentBlock::Thinking { thinking, .. } => content_parts.push(thinking.clone()),
+                ContentBlock::RedactedThinking { .. } => {
+                    // Ignore redacted thinking blocks
+                }
+                _ => {
+                    warn!(
+                        "Unexpected content block type in assistant message: {:?}",
+                        block
+                    );
                 }
             }
-            _ => None,
-        };
-
-        OllamaMessage {
-            role: match message.role {
-                MessageRole::User => "user".to_string(),
-                MessageRole::Assistant => "assistant".to_string(),
-            },
-            content,
-            images,
-            tool_calls,
         }
+
+        vec![OllamaMessage {
+            role: "assistant".to_string(),
+            content: content_parts.join("\n\n"),
+            images: if images.is_empty() {
+                None
+            } else {
+                Some(images)
+            },
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
+        }]
+    }
+
+    fn convert_user_message(blocks: &[ContentBlock]) -> Vec<OllamaMessage> {
+        let mut messages = Vec::new();
+        let mut current_content = Vec::new();
+        let mut current_images = Vec::new();
+
+        for block in blocks {
+            match block {
+                ContentBlock::ToolResult { content, .. } => {
+                    // Add previous user content as separate message if any
+                    if !current_content.is_empty() || !current_images.is_empty() {
+                        messages.push(OllamaMessage {
+                            role: "user".to_string(),
+                            content: current_content.join("\n\n"),
+                            images: if current_images.is_empty() {
+                                None
+                            } else {
+                                Some(current_images.clone())
+                            },
+                            tool_calls: None,
+                        });
+                        current_content.clear();
+                        current_images.clear();
+                    }
+
+                    // ToolResult as separate "tool" message
+                    messages.push(OllamaMessage {
+                        role: "tool".to_string(),
+                        content: content.clone(),
+                        images: None,
+                        tool_calls: None,
+                    });
+                }
+                ContentBlock::Text { text } => current_content.push(text.clone()),
+                ContentBlock::Image { data, .. } => current_images.push(data.clone()),
+                ContentBlock::Thinking { thinking, .. } => current_content.push(thinking.clone()),
+                ContentBlock::RedactedThinking { .. } => {
+                    // Ignore redacted thinking blocks
+                }
+                _ => {
+                    warn!("Unexpected content block type in user message: {:?}", block);
+                }
+            }
+        }
+
+        // Add remaining user content if any
+        if !current_content.is_empty() || !current_images.is_empty() {
+            messages.push(OllamaMessage {
+                role: "user".to_string(),
+                content: current_content.join("\n\n"),
+                images: if current_images.is_empty() {
+                    None
+                } else {
+                    Some(current_images)
+                },
+                tool_calls: None,
+            });
+        }
+
+        messages
     }
 
     async fn try_send_request(&self, request: &OllamaRequest) -> Result<LLMResponse> {
@@ -280,6 +352,8 @@ impl OllamaClient {
                                 final_eval_counts =
                                     (chunk_response.prompt_eval_count, chunk_response.eval_count);
                             }
+                        } else {
+                            warn!("Failed to parse chunk line '{}'", line_buffer);
                         }
                         line_buffer.clear();
                     }
@@ -343,7 +417,9 @@ impl LLMProvider for OllamaClient {
         });
 
         // Add conversation messages
-        messages.extend(request.messages.iter().map(Self::convert_message));
+        for message in &request.messages {
+            messages.extend(Self::convert_message(message));
+        }
 
         let mut ollama_request = OllamaRequest {
             model: self.model.clone(),
