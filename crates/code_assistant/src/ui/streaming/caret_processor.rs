@@ -470,10 +470,7 @@ impl CaretStreamProcessor {
             after_carets
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '_')
-        } else if line.starts_with("^^") {
-            // Could become ^^^tool_name
-            true
-        } else if line.starts_with("^") {
+        } else if line == "^^" || line == "^" {
             // Could become ^^^tool_name
             true
         } else {
