@@ -878,10 +878,26 @@ async fn test_image_content_blocks() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_image_message_conversion() -> Result<()> {
-    // Create a message with mixed text and image content
+async fn test_openai_message_conversion() -> Result<()> {
+    // Test simple text message
+    let text_message = Message {
+        role: MessageRole::User,
+        content: MessageContent::Text("Hello world".to_string()),
+        request_id: None,
+        usage: None,
+    };
+
+    let openai_messages = OpenAIClient::convert_message(&text_message);
+    assert_eq!(openai_messages.len(), 1);
+    assert_eq!(openai_messages[0].role, "user");
+    assert_eq!(
+        openai_messages[0].content,
+        Some(serde_json::json!("Hello world"))
+    );
+
+    // Test message with mixed text and image content
     let image_data = "aGVsbG8gd29ybGQ="; // "hello world" in base64
-    let message = Message {
+    let mixed_message = Message {
         role: MessageRole::User,
         content: MessageContent::Structured(vec![
             ContentBlock::Text {
@@ -896,12 +912,12 @@ async fn test_image_message_conversion() -> Result<()> {
         usage: None,
     };
 
-    // Test OpenAI conversion
-    let openai_message = OpenAIClient::convert_message(&message);
-    assert_eq!(openai_message.role, "user");
+    let openai_messages = OpenAIClient::convert_message(&mixed_message);
+    assert_eq!(openai_messages.len(), 1);
+    assert_eq!(openai_messages[0].role, "user");
 
-    // Should use structured content format
-    if let Some(content) = openai_message.content {
+    // Should use structured content format for mixed content
+    if let Some(content) = &openai_messages[0].content {
         if let Some(content_array) = content.as_array() {
             assert_eq!(content_array.len(), 2);
 
@@ -921,6 +937,84 @@ async fn test_image_message_conversion() -> Result<()> {
     } else {
         panic!("Expected content in OpenAI message");
     }
+
+    // Test assistant message with tool calls
+    let assistant_message = Message {
+        role: MessageRole::Assistant,
+        content: MessageContent::Structured(vec![
+            ContentBlock::Text {
+                text: "I'll help you with that.".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "tool_123".to_string(),
+                name: "get_weather".to_string(),
+                input: serde_json::json!({"location": "Berlin"}),
+            },
+        ]),
+        request_id: None,
+        usage: None,
+    };
+
+    let openai_messages = OpenAIClient::convert_message(&assistant_message);
+    assert_eq!(openai_messages.len(), 1);
+    assert_eq!(openai_messages[0].role, "assistant");
+    assert_eq!(
+        openai_messages[0].content,
+        Some(serde_json::json!("I'll help you with that."))
+    );
+
+    let tool_calls = openai_messages[0].tool_calls.as_ref().unwrap();
+    assert_eq!(tool_calls.len(), 1);
+    assert_eq!(tool_calls[0].id, "tool_123");
+    assert_eq!(tool_calls[0].function.name, "get_weather");
+
+    // Test user message with tool results
+    let user_with_tool_result = Message {
+        role: MessageRole::User,
+        content: MessageContent::Structured(vec![
+            ContentBlock::Text {
+                text: "Here's some context.".to_string(),
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "tool_123".to_string(),
+                content: "Weather is sunny, 25°C".to_string(),
+                is_error: None,
+            },
+            ContentBlock::Text {
+                text: "What should I wear?".to_string(),
+            },
+        ]),
+        request_id: None,
+        usage: None,
+    };
+
+    let openai_messages = OpenAIClient::convert_message(&user_with_tool_result);
+    assert_eq!(openai_messages.len(), 3); // user + tool + user
+
+    // First message: user content before tool result
+    assert_eq!(openai_messages[0].role, "user");
+    assert_eq!(
+        openai_messages[0].content,
+        Some(serde_json::json!("Here's some context."))
+    );
+
+    // Second message: tool result
+    assert_eq!(openai_messages[1].role, "tool");
+    assert_eq!(
+        openai_messages[1].content,
+        Some(serde_json::json!("Weather is sunny, 25°C"))
+    );
+    assert_eq!(
+        openai_messages[1].tool_call_id,
+        Some("tool_123".to_string())
+    );
+
+    // Third message: user content after tool result
+    assert_eq!(openai_messages[2].role, "user");
+    assert_eq!(
+        openai_messages[2].content,
+        Some(serde_json::json!("What should I wear?"))
+    );
 
     Ok(())
 }

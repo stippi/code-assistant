@@ -7,7 +7,7 @@ use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Trait for providing authentication headers
 #[async_trait]
@@ -109,16 +109,16 @@ pub struct OpenAIChatMessage {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OpenAIToolCall {
-    id: String,
+    pub id: String,
     #[serde(rename = "type")]
-    call_type: String,
-    function: OpenAIFunction,
+    pub call_type: String,
+    pub function: OpenAIFunction,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct OpenAIFunction {
-    name: String,
-    arguments: String,
+pub struct OpenAIFunction {
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,166 +351,217 @@ impl OpenAIClient {
             .unwrap_or(1.0)
     }
 
-    /// Convert a single message to OpenAI format without special handling for tool results
-    pub fn convert_message(message: &Message) -> OpenAIChatMessage {
-        let role = match message.role {
-            MessageRole::User => "user".to_string(),
-            MessageRole::Assistant => "assistant".to_string(),
-        };
-
-        let (content, tool_calls) = match &message.content {
-            MessageContent::Text(text) => (Some(serde_json::json!(text)), None),
-            MessageContent::Structured(blocks) => {
-                // Check if we have mixed content (text + images) or just text
-                let has_images = blocks
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::Image { .. }));
-                let has_text = blocks
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::Text { .. }));
-
-                let content = if has_images || (has_text && blocks.len() > 1) {
-                    // Use structured content format for mixed content
-                    let content_parts: Vec<serde_json::Value> = blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            ContentBlock::Text { text } => Some(serde_json::json!({
-                                "type": "text",
-                                "text": text
-                            })),
-                            ContentBlock::Image { media_type, data } => Some(serde_json::json!({
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": format!("data:{};base64,{}", media_type, data)
-                                }
-                            })),
-                            _ => None,
-                        })
-                        .collect();
-
-                    if content_parts.is_empty() {
-                        Some(serde_json::json!(""))
-                    } else {
-                        Some(serde_json::json!(content_parts))
-                    }
-                } else {
-                    // Simple text content
-                    let text = blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            ContentBlock::Text { text } => Some(text),
-                            _ => None,
-                        })
-                        .cloned()
-                        .collect::<Vec<String>>()
-                        .join("");
-                    Some(serde_json::json!(text))
-                };
-
-                let tool_calls: Vec<OpenAIToolCall> = blocks
-                    .iter()
-                    .filter_map(|block| match block {
-                        ContentBlock::ToolUse { id, name, input } => Some(OpenAIToolCall {
-                            id: id.clone(),
-                            call_type: "function".to_string(),
-                            function: OpenAIFunction {
-                                name: name.clone(),
-                                arguments: serde_json::to_string(input).unwrap_or_default(),
-                            },
-                        }),
-                        _ => None,
-                    })
-                    .collect();
-
-                (
-                    content,
-                    if tool_calls.is_empty() {
-                        None
-                    } else {
-                        Some(tool_calls)
+    pub(crate) fn convert_message(message: &Message) -> Vec<OpenAIChatMessage> {
+        match &message.content {
+            MessageContent::Text(text) => {
+                vec![OpenAIChatMessage {
+                    role: match message.role {
+                        MessageRole::User => "user".to_string(),
+                        MessageRole::Assistant => "assistant".to_string(),
                     },
-                )
+                    content: Some(serde_json::json!(text)),
+                    tool_calls: None,
+                    tool_call_id: None,
+                }]
             }
-        };
-
-        OpenAIChatMessage {
-            role,
-            content,
-            tool_calls,
-            tool_call_id: None,
+            MessageContent::Structured(blocks) => Self::convert_structured_content(message, blocks),
         }
     }
 
-    /// Convert messages to OpenAI format with special handling for tool results
-    fn convert_messages(messages: &[Message]) -> Vec<OpenAIChatMessage> {
-        let mut openai_messages = Vec::new();
+    fn convert_structured_content(
+        message: &Message,
+        blocks: &[ContentBlock],
+    ) -> Vec<OpenAIChatMessage> {
+        match message.role {
+            MessageRole::Assistant => {
+                // For Assistant: Collect all ToolUse in tool_calls, rest as content
+                Self::convert_assistant_message(blocks)
+            }
+            MessageRole::User => {
+                // For User: Separate messages for ToolResult (role="tool"), rest combined
+                Self::convert_user_message(blocks)
+            }
+        }
+    }
 
-        for message in messages {
-            match &message.content {
-                MessageContent::Structured(blocks) if message.role == MessageRole::User => {
-                    // Check if message contains tool result blocks
-                    let tool_results: Vec<&ContentBlock> = blocks
-                        .iter()
-                        .filter(|block| matches!(block, ContentBlock::ToolResult { .. }))
-                        .collect();
+    fn convert_assistant_message(blocks: &[ContentBlock]) -> Vec<OpenAIChatMessage> {
+        let mut content_parts = Vec::new();
+        let mut tool_calls = Vec::new();
+        let mut images = Vec::new();
 
-                    if !tool_results.is_empty() {
-                        // For each tool result, create a separate "tool" message
-                        for block in tool_results {
-                            if let ContentBlock::ToolResult {
-                                tool_use_id,
-                                content,
-                                is_error: _,
-                            } = block
-                            {
-                                // Ensure content is never empty
-                                let safe_content = if content.is_empty() {
-                                    "No output".to_string()
-                                } else {
-                                    content.clone()
-                                };
-
-                                openai_messages.push(OpenAIChatMessage {
-                                    role: "tool".to_string(),
-                                    content: Some(serde_json::json!(safe_content)),
-                                    tool_calls: None,
-                                    tool_call_id: Some(tool_use_id.clone()),
-                                });
-                            }
+        for block in blocks {
+            match block {
+                ContentBlock::Text { text } => content_parts.push(serde_json::json!({
+                    "type": "text",
+                    "text": text
+                })),
+                ContentBlock::Image { media_type, data } => {
+                    images.push(serde_json::json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:{};base64,{}", media_type, data)
                         }
-
-                        // If there are other content blocks, handle them separately
-                        let other_blocks: Vec<&ContentBlock> = blocks
-                            .iter()
-                            .filter(|block| !matches!(block, ContentBlock::ToolResult { .. }))
-                            .collect();
-
-                        if !other_blocks.is_empty() {
-                            // Create a user message with the remaining blocks
-                            // This creates a clone of the message with only non-tool-result blocks
-                            let user_message = Message {
-                                role: MessageRole::User,
-                                content: MessageContent::Structured(
-                                    other_blocks.iter().map(|&b| b.clone()).collect(),
-                                ),
-                                request_id: None,
-                                usage: None,
-                            };
-                            openai_messages.push(Self::convert_message(&user_message));
-                        }
-                    } else {
-                        // Normal conversion for user messages without tool results
-                        openai_messages.push(Self::convert_message(message));
-                    }
+                    }));
+                }
+                ContentBlock::ToolUse { id, name, input } => {
+                    tool_calls.push(OpenAIToolCall {
+                        id: id.clone(),
+                        call_type: "function".to_string(),
+                        function: OpenAIFunction {
+                            name: name.clone(),
+                            arguments: serde_json::to_string(input).unwrap_or_default(),
+                        },
+                    });
+                }
+                ContentBlock::Thinking { thinking, .. } => content_parts.push(serde_json::json!({
+                    "type": "text",
+                    "text": thinking
+                })),
+                ContentBlock::RedactedThinking { .. } => {
+                    // Ignore redacted thinking blocks
                 }
                 _ => {
-                    // Normal conversion for all other message types
-                    openai_messages.push(Self::convert_message(message));
+                    warn!(
+                        "Unexpected content block type in assistant message: {:?}",
+                        block
+                    );
                 }
             }
         }
 
-        openai_messages
+        // Combine content parts and images
+        let mut all_content = content_parts;
+        all_content.extend(images);
+
+        let content = if all_content.is_empty() {
+            Some(serde_json::json!(""))
+        } else if all_content.len() == 1
+            && all_content[0].get("type") == Some(&serde_json::json!("text"))
+        {
+            // Single text content - use simple string format
+            Some(serde_json::json!(all_content[0]["text"]
+                .as_str()
+                .unwrap_or("")))
+        } else {
+            // Multiple content parts or images - use structured format
+            Some(serde_json::json!(all_content))
+        };
+
+        vec![OpenAIChatMessage {
+            role: "assistant".to_string(),
+            content,
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
+            tool_call_id: None,
+        }]
+    }
+
+    fn convert_user_message(blocks: &[ContentBlock]) -> Vec<OpenAIChatMessage> {
+        let mut messages = Vec::new();
+        let mut current_content = Vec::new();
+        let mut current_images = Vec::new();
+
+        for block in blocks {
+            match block {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } => {
+                    // Add previous user content as separate message if any
+                    if !current_content.is_empty() || !current_images.is_empty() {
+                        messages.push(Self::create_user_content_message(
+                            &current_content,
+                            &current_images,
+                        ));
+                        current_content.clear();
+                        current_images.clear();
+                    }
+
+                    // ToolResult as separate "tool" message
+                    let safe_content = if content.is_empty() {
+                        "No output".to_string()
+                    } else {
+                        content.clone()
+                    };
+
+                    messages.push(OpenAIChatMessage {
+                        role: "tool".to_string(),
+                        content: Some(serde_json::json!(safe_content)),
+                        tool_calls: None,
+                        tool_call_id: Some(tool_use_id.clone()),
+                    });
+                }
+                ContentBlock::Text { text } => current_content.push(text.clone()),
+                ContentBlock::Image { media_type, data } => {
+                    current_images.push(serde_json::json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:{};base64,{}", media_type, data)
+                        }
+                    }));
+                }
+                ContentBlock::Thinking { thinking, .. } => current_content.push(thinking.clone()),
+                ContentBlock::RedactedThinking { .. } => {
+                    // Ignore redacted thinking blocks
+                }
+                _ => {
+                    warn!("Unexpected content block type in user message: {:?}", block);
+                }
+            }
+        }
+
+        // Add remaining user content if any
+        if !current_content.is_empty() || !current_images.is_empty() {
+            messages.push(Self::create_user_content_message(
+                &current_content,
+                &current_images,
+            ));
+        }
+
+        messages
+    }
+
+    fn create_user_content_message(
+        text_parts: &[String],
+        images: &[serde_json::Value],
+    ) -> OpenAIChatMessage {
+        let mut content_parts = Vec::new();
+
+        // Add text content
+        if !text_parts.is_empty() {
+            content_parts.push(serde_json::json!({
+                "type": "text",
+                "text": text_parts.join("\n\n")
+            }));
+        }
+
+        // Add images
+        content_parts.extend(images.iter().cloned());
+
+        let content = if content_parts.is_empty() {
+            Some(serde_json::json!(""))
+        } else if content_parts.len() == 1
+            && content_parts[0].get("type") == Some(&serde_json::json!("text"))
+        {
+            // Single text content - use simple string format
+            Some(serde_json::json!(content_parts[0]["text"]
+                .as_str()
+                .unwrap_or("")))
+        } else {
+            // Multiple content parts or images - use structured format
+            Some(serde_json::json!(content_parts))
+        };
+
+        OpenAIChatMessage {
+            role: "user".to_string(),
+            content,
+            tool_calls: None,
+            tool_call_id: None,
+        }
     }
 
     async fn send_with_retry(
@@ -811,6 +862,8 @@ impl OpenAIClient {
                     if let Some(chunk_usage) = chunk_response.usage {
                         *usage = Some(chunk_usage);
                     }
+                } else {
+                    warn!("Failed to parse stream event: '{}'", data);
                 }
             }
             Ok(())
@@ -907,8 +960,10 @@ impl LLMProvider for OpenAIClient {
             tool_call_id: None,
         });
 
-        // Add conversation messages with special handling for tool results
-        messages.extend(Self::convert_messages(&request.messages));
+        // Add conversation messages
+        for message in &request.messages {
+            messages.extend(Self::convert_message(message));
+        }
 
         let openai_request = OpenAIRequest {
             model: self.model.clone(),
