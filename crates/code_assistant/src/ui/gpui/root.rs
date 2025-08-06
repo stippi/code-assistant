@@ -8,7 +8,7 @@ use super::theme;
 use super::{CloseWindow, Gpui, UiEventSender};
 use crate::persistence::{ChatMetadata, DraftAttachment};
 use crate::ui::ui_events::UiEvent;
-use crate::ui::StreamingState;
+
 use base64::Engine;
 use gpui::{
     bounce, div, ease_in_out, percentage, prelude::*, px, rgba, svg, Animation, AnimationExt, App,
@@ -37,8 +37,6 @@ pub struct RootView {
     chat_collapsed: bool,
     current_session_id: Option<String>,
     chat_sessions: Vec<ChatMetadata>,
-    // Streaming state - shared with Gpui
-    streaming_state: Arc<Mutex<StreamingState>>,
     // Subscription to text input events
     _input_subscription: gpui::Subscription,
     // Attachments for the current message being composed
@@ -57,7 +55,6 @@ impl RootView {
         cx: &mut Context<Self>,
         input_value: Arc<Mutex<Option<String>>>,
         input_requested: Arc<Mutex<bool>>,
-        streaming_state: Arc<Mutex<StreamingState>>,
     ) -> Self {
         // Create the auto-scroll container that wraps the messages view
         let auto_scroll_container =
@@ -79,7 +76,6 @@ impl RootView {
             chat_collapsed: false, // Chat sidebar is visible by default
             current_session_id: None,
             chat_sessions: Vec::new(),
-            streaming_state,
             _input_subscription: input_subscription,
             attachments: Vec::new(),
             attachment_views: Vec::new(),
@@ -246,8 +242,15 @@ impl RootView {
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        // Set streaming state to StopRequested
-        *self.streaming_state.lock().unwrap() = StreamingState::StopRequested;
+        // Add current session to stop requests
+        if let Some(session_id) = &self.current_session_id {
+            if let Some(gpui) = cx.try_global::<Gpui>() {
+                gpui.session_stop_requests
+                    .lock()
+                    .unwrap()
+                    .insert(session_id.clone());
+            }
+        }
         cx.notify();
     }
 
@@ -257,8 +260,15 @@ impl RootView {
         _window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        // Set streaming state to StopRequested (same as cancel button)
-        *self.streaming_state.lock().unwrap() = StreamingState::StopRequested;
+        // Add current session to stop requests
+        if let Some(session_id) = &self.current_session_id {
+            if let Some(gpui) = cx.try_global::<Gpui>() {
+                gpui.session_stop_requests
+                    .lock()
+                    .unwrap()
+                    .insert(session_id.clone());
+            }
+        }
         cx.notify();
     }
 
@@ -533,9 +543,8 @@ impl Focusable for RootView {
 
 impl Render for RootView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Check if input is requested and current streaming state
+        // Check if input is requested
         let is_input_requested = *self.input_requested.lock().unwrap();
-        let current_streaming_state = *self.streaming_state.lock().unwrap();
 
         // Get current chat state from global Gpui
         let (chat_sessions, current_session_id) = if let Some(gpui) = cx.try_global::<Gpui>() {
@@ -836,9 +845,15 @@ impl Render for RootView {
                                         }
                                         buttons.push(send_button);
 
-                                        // Cancel button - enabled when agent is running or streaming
-                                        let cancel_enabled = agent_is_running || !matches!(current_streaming_state, StreamingState::Idle);
-                                        let cancel_disabled = matches!(current_streaming_state, StreamingState::StopRequested);
+                                        // Cancel button - enabled only when current session's agent is running
+                                        let mut cancel_enabled = agent_is_running;
+
+                                        // Check if current session has requested a stop
+                                        if let (Some(gpui), Some(session_id)) = (cx.try_global::<Gpui>(), &current_session_id) {
+                                            if gpui.session_stop_requests.lock().unwrap().contains(session_id) {
+                                                cancel_enabled = false;
+                                            }
+                                        }
 
                                         let mut cancel_button = div()
                                             .size(px(40.))
@@ -846,7 +861,7 @@ impl Render for RootView {
                                             .flex()
                                             .items_center()
                                             .justify_center()
-                                            .cursor(if cancel_enabled && !cancel_disabled {
+                                            .cursor(if cancel_enabled {
                                                 CursorStyle::PointingHand
                                             } else {
                                                 CursorStyle::OperationNotAllowed
@@ -854,7 +869,7 @@ impl Render for RootView {
                                             .child(file_icons::render_icon(
                                                 &file_icons::get().get_type_icon(file_icons::STOP),
                                                 22.0,
-                                                if cancel_enabled && !cancel_disabled {
+                                                if cancel_enabled {
                                                     cx.theme().danger
                                                 } else {
                                                     cx.theme().muted_foreground
@@ -862,7 +877,7 @@ impl Render for RootView {
                                                 "⬜",
                                             ));
 
-                                        if cancel_enabled && !cancel_disabled {
+                                        if cancel_enabled {
                                             cancel_button = cancel_button
                                                 .hover(|s| s.bg(cx.theme().muted))
                                                 .on_mouse_up(

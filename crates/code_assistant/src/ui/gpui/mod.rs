@@ -24,7 +24,7 @@ use crate::ui::gpui::{
     parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
     simple_renderers::SimpleParameterRenderer,
 };
-use crate::ui::{async_trait, DisplayFragment, StreamingState, UIError, UiEvent, UserInterface};
+use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
 use assets::Assets;
 use async_channel;
 use gpui::{
@@ -127,7 +127,6 @@ pub struct Gpui {
     current_request_id: Arc<Mutex<u64>>,
     #[allow(dead_code)]
     parameter_renderers: Arc<ParameterRendererRegistry>,
-    streaming_state: Arc<Mutex<StreamingState>>,
     // Unified backend communication
     backend_event_sender: Arc<Mutex<Option<async_channel::Sender<BackendEvent>>>>,
     backend_response_receiver: Arc<Mutex<Option<async_channel::Receiver<BackendResponse>>>>,
@@ -137,6 +136,8 @@ pub struct Gpui {
     chat_sessions: Arc<Mutex<Vec<ChatMetadata>>>,
     current_session_activity_state:
         Arc<Mutex<Option<crate::session::instance::SessionActivityState>>>,
+    // Track which session has requested streaming to stop
+    session_stop_requests: Arc<Mutex<std::collections::HashSet<String>>>,
 
     // UI components
     chat_sidebar: Arc<Mutex<Option<Entity<chat_sidebar::ChatSidebar>>>>,
@@ -201,7 +202,7 @@ impl Gpui {
         let event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let session_event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let current_request_id = Arc::new(Mutex::new(0));
-        let streaming_state = Arc::new(Mutex::new(StreamingState::Idle));
+
 
         // Initialize parameter renderers registry with default renderer
         let mut registry = ParameterRendererRegistry::new(Box::new(DefaultParameterRenderer));
@@ -260,13 +261,13 @@ impl Gpui {
             session_event_task,
             current_request_id,
             parameter_renderers,
-            streaming_state,
             backend_event_sender: Arc::new(Mutex::new(None)),
             backend_response_receiver: Arc::new(Mutex::new(None)),
 
             current_session_id: Arc::new(Mutex::new(None)),
             chat_sessions: Arc::new(Mutex::new(Vec::new())),
             current_session_activity_state: Arc::new(Mutex::new(None)),
+            session_stop_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
 
             chat_sidebar: Arc::new(Mutex::new(None)),
             messages_view: Arc::new(Mutex::new(None)),
@@ -435,7 +436,6 @@ impl Gpui {
                                 cx,
                                 input_value.clone(),
                                 input_requested.clone(),
-                                gpui_clone.streaming_state.clone(),
                             )
                         });
 
@@ -599,6 +599,12 @@ impl Gpui {
                     *self.current_session_id.lock().unwrap() = Some(session_id.clone());
                     // Reset activity state when switching sessions - it will be updated by subsequent events
                     *self.current_session_activity_state.lock().unwrap() = None;
+
+                    // Clear any stop request for the new session to start fresh
+                    self.session_stop_requests
+                        .lock()
+                        .unwrap()
+                        .remove(session_id);
 
                     // Find the current project for this session and update MessagesView
                     let current_project = {
@@ -1249,14 +1255,17 @@ impl UserInterface for Gpui {
         // Handle special events that need state management
         match &event {
             UiEvent::StreamingStarted(request_id) => {
-                // Set streaming state to Streaming
-                *self.streaming_state.lock().unwrap() = StreamingState::Streaming;
                 // Store the request ID
                 *self.current_request_id.lock().unwrap() = *request_id;
             }
             UiEvent::StreamingStopped { .. } => {
-                // Reset streaming state to Idle
-                *self.streaming_state.lock().unwrap() = StreamingState::Idle;
+                // Clear stop request for current session since streaming has stopped
+                if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
+                    self.session_stop_requests
+                        .lock()
+                        .unwrap()
+                        .remove(current_session_id);
+                }
             }
             _ => {}
         }
@@ -1361,10 +1370,16 @@ impl UserInterface for Gpui {
     }
 
     fn should_streaming_continue(&self) -> bool {
-        match *self.streaming_state.lock().unwrap() {
-            StreamingState::StopRequested => false,
-            _ => true,
+        // Check if the current session has requested a stop
+        if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
+            let stop_requests = self.session_stop_requests.lock().unwrap();
+            if stop_requests.contains(current_session_id) {
+                return false;
+            }
         }
+
+        // Default: continue streaming
+        true
     }
 
     fn notify_rate_limit(&self, _seconds_remaining: u64) {
