@@ -21,7 +21,7 @@ impl RequestCustomizer for MistralAiRequestCustomizer {
     }
 
     fn customize_url(&self, base_url: &str, _streaming: bool) -> String {
-        format!("{}/chat/completions", base_url)
+        format!("{base_url}/chat/completions")
     }
 }
 

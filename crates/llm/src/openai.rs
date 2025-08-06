@@ -56,7 +56,7 @@ impl RequestCustomizer for DefaultRequestCustomizer {
     }
 
     fn customize_url(&self, base_url: &str, _streaming: bool) -> String {
-        format!("{}/chat/completions", base_url)
+        format!("{base_url}/chat/completions")
     }
 }
 
@@ -648,7 +648,7 @@ impl OpenAIClient {
 
         // Parse the successful response
         let openai_response: OpenAIResponse = serde_json::from_str(&response_text)
-            .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
+            .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {e}")))?;
 
         // Convert to our generic LLMResponse format
         Ok((
@@ -673,8 +673,7 @@ impl OpenAIClient {
                             let input =
                                 serde_json::from_str(&call.function.arguments).map_err(|e| {
                                     ApiError::Unknown(format!(
-                                        "Failed to parse tool arguments: {}",
-                                        e
+                                        "Failed to parse tool arguments: {e}"
                                     ))
                                 })?;
                             blocks.push(ContentBlock::ToolUse {
