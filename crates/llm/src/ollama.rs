@@ -25,6 +25,8 @@ struct OllamaMessage {
     #[serde(default)]
     role: String,
     content: String,
+    #[serde(default)]
+    thinking: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     images: Option<Vec<String>>,
     tool_calls: Option<Vec<OllamaToolCall>>,
@@ -87,6 +89,7 @@ impl OllamaClient {
                         MessageRole::Assistant => "assistant".to_string(),
                     },
                     content: text.clone(),
+                    thinking: "".to_string(),
                     images: None,
                     tool_calls: None,
                 }]
@@ -113,6 +116,7 @@ impl OllamaClient {
 
     fn convert_assistant_message(blocks: &[ContentBlock]) -> Vec<OllamaMessage> {
         let mut content_parts = Vec::new();
+        let mut thinking_parts = Vec::new();
         let mut tool_calls = Vec::new();
         let mut images = Vec::new();
 
@@ -128,7 +132,7 @@ impl OllamaClient {
                         },
                     });
                 }
-                ContentBlock::Thinking { thinking, .. } => content_parts.push(thinking.clone()),
+                ContentBlock::Thinking { thinking, .. } => thinking_parts.push(thinking.clone()),
                 ContentBlock::RedactedThinking { .. } => {
                     // Ignore redacted thinking blocks
                 }
@@ -144,6 +148,7 @@ impl OllamaClient {
         vec![OllamaMessage {
             role: "assistant".to_string(),
             content: content_parts.join("\n\n"),
+            thinking: thinking_parts.join("\n\n"),
             images: if images.is_empty() {
                 None
             } else {
@@ -170,6 +175,7 @@ impl OllamaClient {
                         messages.push(OllamaMessage {
                             role: "user".to_string(),
                             content: current_content.join("\n\n"),
+                            thinking: "".to_string(),
                             images: if current_images.is_empty() {
                                 None
                             } else {
@@ -185,6 +191,7 @@ impl OllamaClient {
                     messages.push(OllamaMessage {
                         role: "tool".to_string(),
                         content: content.clone(),
+                        thinking: "".to_string(),
                         images: None,
                         tool_calls: None,
                     });
@@ -206,6 +213,7 @@ impl OllamaClient {
             messages.push(OllamaMessage {
                 role: "user".to_string(),
                 content: current_content.join("\n\n"),
+                thinking: "".to_string(),
                 images: if current_images.is_empty() {
                     None
                 } else {
@@ -323,10 +331,18 @@ impl OllamaClient {
                         if let Ok(chunk_response) =
                             serde_json::from_str::<OllamaResponse>(&line_buffer)
                         {
+                            debug!("Received stream event '{line_buffer}'");
                             // Handle text content
                             if !chunk_response.message.content.is_empty() {
                                 streaming_callback(&StreamingChunk::Text(
                                     chunk_response.message.content.clone(),
+                                ))?;
+                                accumulated_content.push_str(&chunk_response.message.content);
+                            }
+                            // Handle tinking content
+                            if !chunk_response.message.thinking.is_empty() {
+                                streaming_callback(&StreamingChunk::Thinking(
+                                    chunk_response.message.thinking.clone(),
                                 ))?;
                                 accumulated_content.push_str(&chunk_response.message.content);
                             }
@@ -417,6 +433,7 @@ impl LLMProvider for OllamaClient {
         messages.push(OllamaMessage {
             role: "system".to_string(),
             content: request.system_prompt,
+            thinking: "".to_string(),
             images: None,
             tool_calls: None,
         });
