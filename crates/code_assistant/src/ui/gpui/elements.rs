@@ -214,7 +214,7 @@ impl MessageContainer {
             element.update(cx, |view, cx| {
                 if let Some(tool) = view.block.as_tool_mut() {
                     if tool.id == tool_id {
-                        tool.status = status.clone();
+                        tool.status = status;
                         tool.status_message = message.clone();
                         tool.output = output.clone();
 
@@ -662,9 +662,9 @@ impl Render for BlockView {
 
                 // Use theme utilities for colors
                 let blue_base = cx.theme().info; // Theme color for thinking block
-                let thinking_bg = crate::ui::gpui::theme::colors::thinking_block_bg(&cx.theme());
+                let thinking_bg = crate::ui::gpui::theme::colors::thinking_block_bg(cx.theme());
                 let chevron_color =
-                    crate::ui::gpui::theme::colors::thinking_block_chevron(&cx.theme());
+                    crate::ui::gpui::theme::colors::thinking_block_chevron(cx.theme());
                 let text_color = cx.theme().info_foreground;
 
                 div()
@@ -840,14 +840,14 @@ impl Render for BlockView {
 
                 // Use theme utilities for colors
                 let icon_color =
-                    crate::ui::gpui::theme::colors::tool_block_icon(&cx.theme(), &block.status);
+                    crate::ui::gpui::theme::colors::tool_block_icon(cx.theme(), &block.status);
                 let tool_name_color =
-                    crate::ui::gpui::theme::colors::tool_block_name(&cx.theme(), &block.status);
+                    crate::ui::gpui::theme::colors::tool_block_name(cx.theme(), &block.status);
                 let status_color = crate::ui::gpui::theme::colors::tool_border_by_status(
-                    &cx.theme(),
+                    cx.theme(),
                     &block.status,
                 );
-                let tool_bg = crate::ui::gpui::theme::colors::tool_block_bg(&cx.theme());
+                let tool_bg = crate::ui::gpui::theme::colors::tool_block_bg(cx.theme());
                 let chevron_color = cx.theme().muted_foreground;
 
                 // Parameter rendering function that uses the global registry if available
@@ -859,7 +859,7 @@ impl Render for BlockView {
                             &block.name,
                             &param.name,
                             &param.value,
-                            &cx.theme(),
+                            cx.theme(),
                         )
                     } else {
                         // Fallback to empty element
@@ -888,7 +888,7 @@ impl Render for BlockView {
                     Vec<&ParameterBlock>,
                     Vec<&ParameterBlock>,
                 ) = visible_params.into_iter().partition(|param| {
-                    !registry.as_ref().map_or(false, |reg| {
+                    !registry.as_ref().is_some_and(|reg| {
                         reg.get_renderer(&block.name, &param.name)
                             .is_full_width(&block.name, &param.name)
                     })
@@ -999,7 +999,7 @@ impl Render for BlockView {
 
                                     let content_height_rc = self.content_height.clone();
                                     let has_expandable_content = !fullwidth_params.is_empty() ||
-                                        block.output.as_ref().map_or(false, |o| !o.is_empty());
+                                        block.output.as_ref().is_some_and(|o| !o.is_empty());
 
                                     if has_expandable_content && (!block.is_collapsed || scale > 0.0) {
                                         elements.push(
@@ -1079,7 +1079,7 @@ impl Render for BlockView {
                                                         // Add bottom padding to prevent content overlapping with collapse bar
                                                         .when(
                                                             !fullwidth_params.is_empty() ||
-                                                            block.output.as_ref().map_or(false, |o| !o.is_empty()),
+                                                            block.output.as_ref().is_some_and(|o| !o.is_empty()),
                                                             |div| div.pb(px(24.0))
                                                         )
                                                 )
@@ -1092,7 +1092,7 @@ impl Render for BlockView {
                                 if block.status == crate::ui::ToolStatus::Error
                                     && block.status_message.is_some()
                                     && (block.is_collapsed
-                                        || block.output.as_ref().map_or(true, |o| o.is_empty()))
+                                        || block.output.as_ref().is_none_or(|o| o.is_empty()))
                                 {
                                     elements.push(
                                         div()
@@ -1116,7 +1116,7 @@ impl Render for BlockView {
                             };
 
                             let has_expandable_content = !fullwidth_params.is_empty() ||
-                                block.output.as_ref().map_or(false, |o| !o.is_empty());
+                                block.output.as_ref().is_some_and(|o| !o.is_empty());
 
                             if has_expandable_content && (!block.is_collapsed || scale > 0.0) {
                                 // Calculate opacity based on animation phase and direction
@@ -1292,7 +1292,7 @@ impl ThinkingBlock {
         } else {
             let minutes = duration.as_secs() / 60;
             let seconds = duration.as_secs() % 60;
-            format!("{}m{}s", minutes, seconds)
+            format!("{minutes}m{seconds}s")
         }
     }
 }

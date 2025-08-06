@@ -188,7 +188,7 @@ impl AgentStatePersistence for FileStatePersistence {
         // Create a ChatSession with the current state
         let session = ChatSession {
             id: "terminal-session".to_string(),
-            name: name,
+            name,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
             messages,

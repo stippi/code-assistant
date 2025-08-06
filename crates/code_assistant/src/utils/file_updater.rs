@@ -14,15 +14,14 @@ impl std::fmt::Display for FileUpdaterError {
             FileUpdaterError::SearchBlockNotFound(index, ..) => {
                 write!(
                     f,
-                    "Could not find SEARCH block with index {} in the file contents",
-                    index
+                    "Could not find SEARCH block with index {index} in the file contents"
                 )
             }
             FileUpdaterError::MultipleMatches(count, index, _) => {
-                write!(f, "Found {} occurrences of SEARCH block with index {}\nA SEARCH block must match exactly one location. Try enlarging the section to replace.", count, index)
+                write!(f, "Found {count} occurrences of SEARCH block with index {index}\nA SEARCH block must match exactly one location. Try enlarging the section to replace.")
             }
             FileUpdaterError::Other(msg) => {
-                write!(f, "{}", msg)
+                write!(f, "{msg}")
             }
         }
     }
@@ -141,8 +140,7 @@ fn test_apply_replacements_normalized() -> Result<(), anyhow::Error> {
             (Err(e), Err(exp)) => assert!(e.to_string().contains(exp)),
             _ => {
                 panic!(
-                    "Test case result did not match expected outcome:\nResult: {:?}\nExpected: {:?}",
-                    result, expected
+                    "Test case result did not match expected outcome:\nResult: {result:?}\nExpected: {expected:?}"
                 );
             }
         }

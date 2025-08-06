@@ -140,7 +140,7 @@ impl ChunkCollector {
                     chunks
                         .lock()
                         .unwrap()
-                        .push(format!("<thinking>{}</thinking>", text));
+                        .push(format!("<thinking>{text}</thinking>"));
                 }
                 StreamingChunk::InputJson {
                     content,
@@ -569,7 +569,7 @@ async fn create_mock_server(
         axum::serve(listener, app).await.unwrap();
     });
 
-    format!("http://{}", server_addr)
+    format!("http://{server_addr}")
 }
 
 // Helper to create a rate-limited mock server
@@ -635,7 +635,7 @@ async fn create_rate_limited_mock_server(
         axum::serve(listener, app).await.unwrap();
     });
 
-    format!("http://{}", server_addr)
+    format!("http://{server_addr}")
 }
 
 // Run all test cases for a given provider configuration
@@ -679,8 +679,7 @@ async fn run_provider_tests<T: MockResponseGenerator + Clone + 'static>(
         assert_eq!(
             collector.get_chunks(),
             case.expected_text_chunks,
-            "Streaming text chunks mismatch for provider: {}",
-            provider_name
+            "Streaming text chunks mismatch for provider: {provider_name}"
         );
 
         // If we expect tool JSON, validate it
@@ -689,8 +688,7 @@ async fn run_provider_tests<T: MockResponseGenerator + Clone + 'static>(
 
             assert!(
                 normalized_json.is_some(),
-                "Expected tool JSON for provider {}, but none was received",
-                provider_name
+                "Expected tool JSON for provider {provider_name}, but none was received"
             );
 
             if let Some(actual_json) = normalized_json {
@@ -708,8 +706,7 @@ async fn run_provider_tests<T: MockResponseGenerator + Clone + 'static>(
 
                 assert_eq!(
                     expected, actual,
-                    "Tool JSON structure mismatch for provider: {}",
-                    provider_name
+                    "Tool JSON structure mismatch for provider: {provider_name}"
                 );
             }
         } else {
@@ -717,9 +714,7 @@ async fn run_provider_tests<T: MockResponseGenerator + Clone + 'static>(
             let tool_chunks = collector.get_tool_chunks();
             assert!(
                 tool_chunks.is_empty(),
-                "Provider {} sent unexpected tool chunks: {:?}",
-                provider_name,
-                tool_chunks
+                "Provider {provider_name} sent unexpected tool chunks: {tool_chunks:?}"
             );
         }
     }
@@ -929,7 +924,7 @@ async fn test_openai_message_conversion() -> Result<()> {
             // Check image part
             let image_part = &content_array[1];
             assert_eq!(image_part["type"], "image_url");
-            let expected_url = format!("data:image/png;base64,{}", image_data);
+            let expected_url = format!("data:image/png;base64,{image_data}");
             assert_eq!(image_part["image_url"]["url"], expected_url);
         } else {
             panic!("Expected array content for mixed message");

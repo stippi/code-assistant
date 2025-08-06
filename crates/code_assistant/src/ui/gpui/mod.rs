@@ -421,7 +421,7 @@ impl Gpui {
                         *gpui_clone.messages_view.lock().unwrap() = Some(messages_view.clone());
 
                         // Create ChatSidebar and store it in Gpui
-                        let chat_sidebar = cx.new(|cx| chat_sidebar::ChatSidebar::new(cx));
+                        let chat_sidebar = cx.new(chat_sidebar::ChatSidebar::new);
                         *gpui_clone.chat_sidebar.lock().unwrap() = Some(chat_sidebar.clone());
 
                         // Create RootView
@@ -487,7 +487,7 @@ impl Gpui {
                             crate::persistence::DraftAttachment::File {
                                 content, filename, ..
                             } => {
-                                let file_text = format!("File: {}\n{}", filename, content);
+                                let file_text = format!("File: {filename}\n{content}");
                                 new_message.add_text_block(&file_text, cx);
                             }
                         }
@@ -514,7 +514,7 @@ impl Gpui {
                 let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
                     // Since StreamingStarted ensures last container is Assistant, we can safely append
-                    cx.update_entity(&last, |message, cx| {
+                    cx.update_entity(last, |message, cx| {
                         message.add_or_append_to_text_block(&content, cx)
                     })
                     .expect("Failed to update entity");
@@ -524,7 +524,7 @@ impl Gpui {
                 let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
                     // Since StreamingStarted ensures last container is Assistant, we can safely append
-                    cx.update_entity(&last, |message, cx| {
+                    cx.update_entity(last, |message, cx| {
                         message.add_or_append_to_thinking_block(&content, cx)
                     })
                     .expect("Failed to update entity");
@@ -534,7 +534,7 @@ impl Gpui {
                 let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
                     // Since StreamingStarted ensures last container is Assistant, we can safely add tool
-                    cx.update_entity(&last, |message, cx| {
+                    cx.update_entity(last, |message, cx| {
                         message.add_tool_use_block(&name, &id, cx);
                     })
                     .expect("Failed to update entity");
@@ -547,7 +547,7 @@ impl Gpui {
             } => {
                 let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
-                    cx.update_entity(&last, |message, cx| {
+                    cx.update_entity(last, |message, cx| {
                         message.add_or_update_tool_parameter(&tool_id, &name, &value, cx);
                     })
                     .expect("Failed to update entity");
@@ -561,7 +561,7 @@ impl Gpui {
             } => {
                 let queue = self.message_queue.lock().unwrap();
                 for message_container in queue.iter() {
-                    cx.update_entity(&message_container, |message_container, cx| {
+                    cx.update_entity(message_container, |message_container, cx| {
                         message_container.update_tool_status(
                             &tool_id,
                             status,
@@ -576,7 +576,7 @@ impl Gpui {
             UiEvent::EndTool { id } => {
                 let queue = self.message_queue.lock().unwrap();
                 for message_container in queue.iter() {
-                    cx.update_entity(&message_container, |message_container, cx| {
+                    cx.update_entity(message_container, |message_container, cx| {
                         message_container.end_tool_use(&id, cx);
                     })
                     .expect("Failed to update entity");
@@ -612,7 +612,7 @@ impl Gpui {
                             .iter()
                             .find(|s| s.id == *session_id)
                             .map(|s| s.initial_project.clone())
-                            .unwrap_or_else(|| String::new())
+                            .unwrap_or_else(String::new)
                     };
 
                     warn!("Using initial project: '{}'", current_project);
@@ -640,7 +640,7 @@ impl Gpui {
                         .iter()
                         .find(|s| s.id == *session_id)
                         .map(|s| s.initial_project.clone())
-                        .unwrap_or_else(|| String::new())
+                        .unwrap_or_else(String::new)
                 } else {
                     String::new()
                 };
@@ -742,7 +742,7 @@ impl Gpui {
 
                 // Check if we need to create a new assistant container
                 let needs_new_container = if let Some(last) = queue.last() {
-                    cx.update_entity(&last, |message, _cx| message.is_user_message())
+                    cx.update_entity(last, |message, _cx| message.is_user_message())
                         .expect("Failed to update entity")
                 } else {
                     true
@@ -981,7 +981,7 @@ impl Gpui {
                 let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
                     // Add image to the last message container
-                    cx.update_entity(&last, |message, cx| {
+                    cx.update_entity(last, |message, cx| {
                         message.add_image_block(media_type, data, cx);
                     })
                     .expect("Failed to update entity");
@@ -1318,7 +1318,7 @@ impl UserInterface for Gpui {
                     );
                     return Err(UIError::IOError(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        format!("Empty tool ID for tool '{}'", name),
+                        format!("Empty tool ID for tool '{name}'"),
                     )));
                 }
 
@@ -1336,7 +1336,7 @@ impl UserInterface for Gpui {
                     error!("StreamingProcessor provided empty tool ID for parameter '{}' - this is a bug!", name);
                     return Err(UIError::IOError(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        format!("Empty tool ID for parameter '{}'", name),
+                        format!("Empty tool ID for parameter '{name}'"),
                     )));
                 }
 

@@ -34,7 +34,7 @@ impl WebClient {
         tokio::spawn(async move {
             while let Some(event) = handler.next().await {
                 if let Err(e) = event {
-                    eprintln!("Browser handler error: {}", e);
+                    eprintln!("Browser handler error: {e}");
                 }
             }
         });
@@ -67,7 +67,7 @@ impl WebClient {
                 let encoded_url = link.value().attr("href").unwrap_or_default();
 
                 // Parse the redirect URL
-                let redirect_url = Url::parse(&format!("https:{}", encoded_url))?;
+                let redirect_url = Url::parse(&format!("https:{encoded_url}"))?;
 
                 // Get the actual URL from the 'uddg' parameter
                 let url = redirect_url
@@ -145,7 +145,7 @@ impl WebClient {
             .replace_all(&content, |caps: &regex::Captures| {
                 let link_text = &caps[1];
                 let link_url = &caps[0][caps[1].len() + 3..].trim_end_matches(')');
-                format!("[{}]({}{})", link_text, base_url, link_url)
+                format!("[{link_text}]({base_url}{link_url})")
             })
             .into_owned();
 

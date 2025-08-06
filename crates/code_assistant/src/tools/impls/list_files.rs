@@ -88,9 +88,9 @@ impl Render for ListFilesOutput {
         if !self.failed_paths.is_empty() {
             output.push_str("Failed paths:\n");
             for (path, error) in &self.failed_paths {
-                output.push_str(&format!("- '{}': {}\n", path, error));
+                output.push_str(&format!("- '{path}': {error}\n"));
             }
-            output.push_str("\n");
+            output.push('\n');
         }
 
         // Format expanded paths
@@ -100,7 +100,7 @@ impl Render for ListFilesOutput {
 
                 // Use the built-in to_string method of FileTreeEntry
                 output.push_str(&tree.to_string());
-                output.push_str("\n");
+                output.push('\n');
             }
         } else if self.failed_paths.is_empty() {
             output.push_str("No files found.\n");
@@ -232,7 +232,7 @@ impl Tool for ListFilesTool {
             // Update file tree with each entry
             for (path, entry) in &expanded_paths {
                 if let Err(e) = update_tree_entry(file_tree, path.clone(), entry.clone()) {
-                    eprintln!("Error updating tree entry: {}", e);
+                    eprintln!("Error updating tree entry: {e}");
                     // Continue with other entries even if one fails
                 }
             }

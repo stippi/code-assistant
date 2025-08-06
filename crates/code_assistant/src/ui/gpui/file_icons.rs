@@ -162,8 +162,8 @@ impl FileIcons {
             None => {
                 let path_str = path.to_string_lossy().to_string();
                 self.log_missing_icon(
-                    &format!("[FileIcons]: No suffix found for path: {:?}", path),
-                    &format!("no_suffix:{}", path_str),
+                    &format!("[FileIcons]: No suffix found for path: {path:?}"),
+                    &format!("no_suffix:{path_str}"),
                 );
                 return self.get_type_icon(DEFAULT);
             }
@@ -211,8 +211,8 @@ impl FileIcons {
         // Default icon
         let path_str = path.to_string_lossy().to_string();
         self.log_missing_icon(
-            &format!("[FileIcons]: Using default icon for: {:?}", path),
-            &format!("default_icon:{}", path_str),
+            &format!("[FileIcons]: Using default icon for: {path:?}"),
+            &format!("default_icon:{path_str}"),
         );
         self.get_type_icon(DEFAULT)
     }
@@ -262,8 +262,8 @@ impl FileIcons {
 
         // Finally, if everything else fails, fall back to emojis
         self.log_missing_icon(
-            &format!("[FileIcons]: No icon found for type: '{}'", typ),
-            &format!("no_icon_type:{}", typ),
+            &format!("[FileIcons]: No icon found for type: '{typ}'"),
+            &format!("no_icon_type:{typ}"),
         );
 
         match typ {

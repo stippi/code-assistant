@@ -24,7 +24,7 @@ pub struct WebFetchOutput {
 impl Render for WebFetchOutput {
     fn status(&self) -> String {
         if let Some(e) = &self.error {
-            format!("Failed to fetch page: {}", e)
+            format!("Failed to fetch page: {e}")
         } else {
             "Page fetched successfully".to_string()
         }
@@ -32,7 +32,7 @@ impl Render for WebFetchOutput {
 
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
         if let Some(e) = &self.error {
-            return format!("Failed to fetch page: {}", e);
+            return format!("Failed to fetch page: {e}");
         }
 
         format!(
@@ -110,7 +110,7 @@ impl Tool for WebFetchTool {
             Err(e) => {
                 return Ok(WebFetchOutput {
                     page: WebPage::default(),
-                    error: Some(format!("Failed to create web client: {}", e)),
+                    error: Some(format!("Failed to create web client: {e}")),
                 });
             }
         };

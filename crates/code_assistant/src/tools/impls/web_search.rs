@@ -26,9 +26,9 @@ pub struct WebSearchOutput {
 impl Render for WebSearchOutput {
     fn status(&self) -> String {
         if let Some(e) = &self.error {
-            format!("Search failed: {}", e)
+            format!("Search failed: {e}")
         } else if self.results.is_empty() {
-            format!("No search results found")
+            "No search results found".to_string()
         } else {
             format!("Found {} result(s)", self.results.len())
         }
@@ -36,11 +36,11 @@ impl Render for WebSearchOutput {
 
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
         if let Some(e) = &self.error {
-            return format!("Search failed: {}", e);
+            return format!("Search failed: {e}");
         }
 
         if self.results.is_empty() {
-            return format!("No search results found.");
+            return "No search results found.".to_string();
         }
 
         let mut output = format!("Found {} result(s):", self.results.len());
@@ -123,7 +123,7 @@ impl Tool for WebSearchTool {
                 return Ok(WebSearchOutput {
                     query: input.query,
                     results: vec![],
-                    error: Some(format!("Failed to create web client: {}", e)),
+                    error: Some(format!("Failed to create web client: {e}")),
                 });
             }
         };

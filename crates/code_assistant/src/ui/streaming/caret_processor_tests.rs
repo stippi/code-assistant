@@ -130,7 +130,7 @@ fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
     for chunk in chunk_str(text, chunk_size) {
         if let Err(e) = processor.process(&StreamingChunk::Text(chunk)) {
             // Unlike XML processor, caret processor doesn't have tool limits yet
-            panic!("Unexpected error: {}", e);
+            panic!("Unexpected error: {e}");
         }
     }
 
@@ -286,15 +286,14 @@ fn test_caret_must_start_at_line_beginning() {
     let test_ui_no_chunking = process_chunked_text(input, input.len());
     let fragments_no_chunking = test_ui_no_chunking.get_fragments();
     println!(
-        "No chunking - Actual fragments: {:?}",
-        fragments_no_chunking
+        "No chunking - Actual fragments: {fragments_no_chunking:?}"
     );
     assert_eq!(expected_fragments, fragments_no_chunking);
 
     // Then test with chunking
     let test_ui_chunked = process_chunked_text(input, 5);
     let fragments_chunked = test_ui_chunked.get_fragments();
-    println!("With chunking - Actual fragments: {:?}", fragments_chunked);
+    println!("With chunking - Actual fragments: {fragments_chunked:?}");
     assert_eq!(expected_fragments, fragments_chunked);
 }
 
@@ -311,14 +310,14 @@ fn test_simple_text_processing() {
     let raw_fragments = test_ui.get_raw_fragments();
     let merged_fragments = test_ui.get_fragments();
 
-    println!("Simple text - Raw fragments: {:?}", raw_fragments);
-    println!("Simple text - Merged fragments: {:?}", merged_fragments);
+    println!("Simple text - Raw fragments: {raw_fragments:?}");
+    println!("Simple text - Merged fragments: {merged_fragments:?}");
 
     // Check a few raw fragments to see what's being emitted
     if raw_fragments.len() > 5 {
         println!("First few raw fragments:");
         for (i, frag) in raw_fragments.iter().take(5).enumerate() {
-            println!("  [{}]: {:?}", i, frag);
+            println!("  [{i}]: {frag:?}");
         }
     }
 
@@ -599,9 +598,7 @@ fn test_caret_raw_vs_merged_fragments() {
     // Due to chunking, we should have more raw text fragments than merged ones
     assert!(
         raw_text_count >= merged_text_count,
-        "Raw fragments ({}) should have at least as many text fragments as merged ({})",
-        raw_text_count,
-        merged_text_count
+        "Raw fragments ({raw_text_count}) should have at least as many text fragments as merged ({merged_text_count})"
     );
 
     // The merged result should still be correct
@@ -646,7 +643,7 @@ fn test_streaming_vs_buffering_behavior() {
         .unwrap();
 
     let fragments_after_hello = test_ui.get_raw_fragments();
-    println!("After 'Hello ': {:?}", fragments_after_hello);
+    println!("After 'Hello ': {fragments_after_hello:?}");
 
     // Key assertion: text that cannot be tool syntax should be emitted immediately
     assert!(
@@ -663,7 +660,7 @@ fn test_streaming_vs_buffering_behavior() {
         .unwrap();
 
     let fragments_after_world = test_ui.get_raw_fragments();
-    println!("After 'world\\n': {:?}", fragments_after_world);
+    println!("After 'world\\n': {fragments_after_world:?}");
 
     // Should have additional content
     assert!(fragments_after_world.len() >= 2);
@@ -674,7 +671,7 @@ fn test_streaming_vs_buffering_behavior() {
         .unwrap();
 
     let fragments_after_caret = test_ui.get_raw_fragments();
-    println!("After '^': {:?}", fragments_after_caret);
+    println!("After '^': {fragments_after_caret:?}");
 
     // The single caret should be buffered (not emitted) since it could be start of tool syntax
     // We should have the same number of fragments as before the caret
@@ -691,7 +688,7 @@ fn test_streaming_vs_buffering_behavior() {
         .unwrap();
 
     let fragments_after_tool_start = test_ui.get_raw_fragments();
-    println!("After '^^list': {:?}", fragments_after_tool_start);
+    println!("After '^^list': {fragments_after_tool_start:?}");
 
     // Still building tool name, should still be buffered
     assert_eq!(
@@ -707,8 +704,7 @@ fn test_streaming_vs_buffering_behavior() {
 
     let fragments_after_complete_tool = test_ui.get_raw_fragments();
     println!(
-        "After complete tool line: {:?}",
-        fragments_after_complete_tool
+        "After complete tool line: {fragments_after_complete_tool:?}"
     );
 
     // Now should have emitted the tool name
@@ -738,7 +734,7 @@ fn test_newline_boundary_trimming() {
     // Large chunk - newline should be naturally trimmed
     let test_ui_large = process_chunked_text(input1, input1.len());
     let fragments_large = test_ui_large.get_fragments();
-    println!("Large chunk trimming: {:?}", fragments_large);
+    println!("Large chunk trimming: {fragments_large:?}");
 
     // Should not have a separate newline fragment between text and tool
     let has_standalone_newline = fragments_large
@@ -752,7 +748,7 @@ fn test_newline_boundary_trimming() {
     // Test case 2: Small chunks should show the newline because it arrives separately
     let test_ui_small = process_chunked_text(input1, 1);
     let fragments_small = test_ui_small.get_fragments();
-    println!("Small chunk behavior: {:?}", fragments_small);
+    println!("Small chunk behavior: {fragments_small:?}");
 
     // With small chunks, we might see the newline processed separately, which is correct streaming behavior
 
@@ -761,7 +757,7 @@ fn test_newline_boundary_trimming() {
 
     let test_ui_trailing = process_chunked_text(input2, input2.len());
     let fragments_trailing = test_ui_trailing.get_fragments();
-    println!("Trailing newline (large chunk): {:?}", fragments_trailing);
+    println!("Trailing newline (large chunk): {fragments_trailing:?}");
 
     // Should not have trailing newline fragment
     let ends_with_newline = matches!(fragments_trailing.last(),

@@ -174,7 +174,7 @@ impl MessageHandler {
                 .await
             }
             None => {
-                self.send_error(id, -32001, format!("Resource not found: {}", uri), None)
+                self.send_error(id, -32001, format!("Resource not found: {uri}"), None)
                     .await
             }
         }
@@ -185,7 +185,7 @@ impl MessageHandler {
         debug!("Handling resources/subscribe request for {}", uri);
         if self.resources.read_resource(&uri).is_none() {
             return self
-                .send_error(id, -32001, format!("Resource not found: {}", uri), None)
+                .send_error(id, -32001, format!("Resource not found: {uri}"), None)
                 .await;
         }
         self.resources.subscribe(&uri);
@@ -364,7 +364,7 @@ impl MessageHandler {
                                     id,
                                     ToolCallResult {
                                         content: vec![ToolResultContent::Text {
-                                            text: format!("Invalid tool parameters: {}", e),
+                                            text: format!("Invalid tool parameters: {e}"),
                                         }],
                                         is_error: true,
                                     },
@@ -379,7 +379,7 @@ impl MessageHandler {
                     }
 
                     method => {
-                        self.send_error(id, -32601, format!("Method not found: {}", method), None)
+                        self.send_error(id, -32601, format!("Method not found: {method}"), None)
                             .await?;
                     }
                 }

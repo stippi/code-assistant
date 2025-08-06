@@ -118,7 +118,7 @@ async fn test_mixed_tool_start_end() -> Result<()> {
     };
 
     let result = parse_and_truncate_llm_response(&response, 1);
-    println!("result: {:?}", result);
+    println!("result: {result:?}");
 
     // This should return an error, not Ok([])
     assert!(
@@ -130,18 +130,15 @@ async fn test_mixed_tool_start_end() -> Result<()> {
         let error_msg = error.to_string();
         assert!(
             error_msg.contains("mismatching tool names"),
-            "Error should mention mismatching tool names: {}",
-            error_msg
+            "Error should mention mismatching tool names: {error_msg}"
         );
         assert!(
             error_msg.contains("read_files"),
-            "Error should mention read_files: {}",
-            error_msg
+            "Error should mention read_files: {error_msg}"
         );
         assert!(
             error_msg.contains("list_files"),
-            "Error should mention list_files: {}",
-            error_msg
+            "Error should mention list_files: {error_msg}"
         );
     }
 
@@ -224,7 +221,7 @@ async fn test_missing_closing_param_tag() -> Result<()> {
     };
 
     let result = parse_and_truncate_llm_response(&response, 1);
-    println!("result: {:?}", result);
+    println!("result: {result:?}");
 
     // This should return an error, not Ok([])
     assert!(
@@ -310,18 +307,15 @@ fn test_html_between_tool_tags_should_error() -> Result<()> {
         let error_msg = error.to_string();
         assert!(
             error_msg.contains("unexpected tag"),
-            "Error should mention unexpected tag: {}",
-            error_msg
+            "Error should mention unexpected tag: {error_msg}"
         );
         assert!(
             error_msg.contains("div"),
-            "Error should mention the div tag: {}",
-            error_msg
+            "Error should mention the div tag: {error_msg}"
         );
         assert!(
             error_msg.contains("read_files"),
-            "Error should mention the tool name: {}",
-            error_msg
+            "Error should mention the tool name: {error_msg}"
         );
     }
 
@@ -701,8 +695,7 @@ async fn test_parse_error_handling() -> Result<()> {
             let error_content = content.to_lowercase();
             assert!(
                 error_content.contains("parameter"),
-                "Error should mention parameters: {}",
-                content
+                "Error should mention parameters: {content}"
             );
         } else {
             panic!("Expected ToolResult block in error message");
@@ -873,15 +866,15 @@ fn test_caret_array_parsing() -> Result<()> {
 
     // This should be an array, not a string
     let paths = tool_requests[0].input.get("paths").unwrap();
-    println!("paths value: {:?}", paths);
-    println!("paths type: {:?}", paths);
+    println!("paths value: {paths:?}");
+    println!("paths type: {paths:?}");
 
     if paths.is_array() {
         let paths_array = paths.as_array().unwrap();
         assert_eq!(paths_array.len(), 1);
         assert_eq!(paths_array[0], "docs/customizable-tool-syntax.md");
     } else {
-        panic!("Expected paths to be an array, but got: {:?}", paths);
+        panic!("Expected paths to be an array, but got: {paths:?}");
     }
 
     Ok(())
@@ -1102,10 +1095,10 @@ fn test_original_caret_issue_reproduction() -> Result<()> {
             assert_eq!(paths_array[0], "docs/customizable-tool-syntax.md");
 
             println!("✅ Original issue has been fixed!");
-            println!("   paths parsed as: {:?}", paths);
+            println!("   paths parsed as: {paths:?}");
         }
         Err(e) => {
-            panic!("Parser should not fail anymore, but got error: {}", e);
+            panic!("Parser should not fail anymore, but got error: {e}");
         }
     }
 

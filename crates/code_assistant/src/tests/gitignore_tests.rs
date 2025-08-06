@@ -62,7 +62,7 @@ fn test_list_files_respects_gitignore() -> Result<()> {
     let listed_files = result.to_string();
 
     // Print for debugging
-    println!("Listed files: {}", listed_files);
+    println!("Listed files: {listed_files}");
 
     // Verify visible files are included
     assert!(listed_files.contains("visible.txt"));
@@ -112,8 +112,7 @@ fn test_read_files_respects_gitignore() -> Result<()> {
     let error = ignored_result.unwrap_err().to_string();
     assert!(
         error.contains("ignored") || error.contains("hidden") || error.contains("gitignore"),
-        "Error message doesn't mention the file is ignored: {}",
-        error
+        "Error message doesn't mention the file is ignored: {error}"
     );
 
     // Test read_file_range with line ranges
@@ -159,8 +158,7 @@ fn test_write_file_respects_gitignore() -> Result<()> {
     let error = write_ignored.unwrap_err().to_string();
     assert!(
         error.contains("ignored") || error.contains("hidden") || error.contains("gitignore"),
-        "Error message doesn't mention the file is ignored: {}",
-        error
+        "Error message doesn't mention the file is ignored: {error}"
     );
 
     // Appending to an ignored file should also fail

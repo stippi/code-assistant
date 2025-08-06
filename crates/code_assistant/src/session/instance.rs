@@ -15,8 +15,10 @@ use tracing::{debug, error, trace};
 
 /// Represents the current activity state of a session
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Default)]
 pub enum SessionActivityState {
     /// No agent running, waiting for user input
+    #[default]
     Idle,
     /// Agent loop is active (running tools, processing)
     AgentRunning,
@@ -26,11 +28,6 @@ pub enum SessionActivityState {
     RateLimited { seconds_remaining: u64 },
 }
 
-impl Default for SessionActivityState {
-    fn default() -> Self {
-        SessionActivityState::Idle
-    }
-}
 
 /// Represents a single session instance with its own agent and state
 pub struct SessionInstance {

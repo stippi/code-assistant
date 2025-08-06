@@ -27,7 +27,7 @@ impl AuthProvider for AiCoreAuthProvider {
         let token = self.token_manager.get_valid_token().await?;
         Ok(vec![(
             "Authorization".to_string(),
-            format!("Bearer {}", token),
+            format!("Bearer {token}"),
         )])
     }
 }
@@ -63,9 +63,9 @@ impl RequestCustomizer for AiCoreRequestCustomizer {
 
     fn customize_url(&self, base_url: &str, streaming: bool) -> String {
         if streaming {
-            format!("{}/invoke-with-response-stream", base_url)
+            format!("{base_url}/invoke-with-response-stream")
         } else {
-            format!("{}/invoke", base_url)
+            format!("{base_url}/invoke")
         }
     }
 }

@@ -98,7 +98,7 @@ impl FileSessionPersistence {
 
     fn chat_file_path(&self, session_id: &str) -> Result<PathBuf> {
         let chats_dir = self.ensure_chats_dir()?;
-        Ok(chats_dir.join(format!("{}.json", session_id)))
+        Ok(chats_dir.join(format!("{session_id}.json")))
     }
 
     fn metadata_file_path(&self) -> Result<PathBuf> {
@@ -122,7 +122,7 @@ impl FileSessionPersistence {
         };
 
         // Calculate usage information
-        let (total_usage, last_usage, tokens_limit) = calculate_session_usage(&session);
+        let (total_usage, last_usage, tokens_limit) = calculate_session_usage(session);
 
         // Update or add metadata for this session
         let new_metadata = ChatMetadata {
@@ -319,7 +319,7 @@ pub fn generate_session_id() -> String {
     // Simple random component using timestamp
     let random_part = (timestamp % 10000) + (std::process::id() as u64 % 1000);
 
-    format!("chat_{:x}_{:x}", timestamp, random_part)
+    format!("chat_{timestamp:x}_{random_part:x}")
 }
 
 /// Calculate usage information from session messages
@@ -422,7 +422,7 @@ impl DraftStorage {
 
     /// Get the path for a draft file for a given session
     fn draft_file_path(&self, session_id: &str) -> PathBuf {
-        self.drafts_dir.join(format!("{}.json", session_id))
+        self.drafts_dir.join(format!("{session_id}.json"))
     }
 
     /// Save a draft with attachments for a session

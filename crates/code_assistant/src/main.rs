@@ -157,15 +157,14 @@ async fn create_llm_client(
         LLMProviderType::AiCore => {
             // Try new config file first, fallback to keyring
             let config_path =
-                aicore_config.unwrap_or_else(|| AiCoreConfig::get_default_config_path());
+                aicore_config.unwrap_or_else(AiCoreConfig::get_default_config_path);
 
             let aicore_config = match AiCoreConfig::load_from_file(&config_path) {
                 Ok(config) => config,
                 Err(e) => {
                     // Output sample config file when loading fails
                     eprintln!(
-                        "Failed to load AI Core config from {:?}: {}",
-                        config_path, e
+                        "Failed to load AI Core config from {config_path:?}: {e}"
                     );
                     eprintln!("\nPlease create the config file with the following structure:");
                     eprintln!("```json");
@@ -183,11 +182,10 @@ async fn create_llm_client(
                     eprintln!("  }}");
                     eprintln!("}}");
                     eprintln!("```");
-                    eprintln!("\nDefault config file location: {:?}", config_path);
+                    eprintln!("\nDefault config file location: {config_path:?}");
 
                     return Err(e.context(format!(
-                        "Failed to load AI Core config from {:?}",
-                        config_path
+                        "Failed to load AI Core config from {config_path:?}"
                     )));
                 }
             };
@@ -448,7 +446,7 @@ async fn run_agent_terminal(
 
     // If a new task was provided, add it and continue
     if let Some(new_task) = task {
-        println!("Adding new task: {}", new_task);
+        println!("Adding new task: {new_task}");
         let user_msg = llm::Message {
             role: llm::MessageRole::User,
             content: llm::MessageContent::Text(new_task),
@@ -488,7 +486,7 @@ fn run_agent_gpui(
     let persistence = crate::persistence::FileSessionPersistence::new();
 
     let agent_config = AgentConfig {
-        tool_syntax: tool_syntax,
+        tool_syntax,
         init_path: Some(root_path.clone()),
         initial_project: String::new(),
         use_diff_blocks: use_diff_format,
@@ -880,7 +878,7 @@ async fn handle_backend_events(
                             mime_type: _,
                         } => {
                             // For now, treat files as text content with filename prefix
-                            let file_text = format!("File: {}\n{}", filename, content);
+                            let file_text = format!("File: {filename}\n{content}");
                             content_blocks.push(llm::ContentBlock::Text { text: file_text });
                         }
                     }
@@ -944,7 +942,7 @@ async fn handle_backend_events(
                     Err(e) => {
                         error!("Failed to start agent for session {}: {}", session_id, e);
                         ui::gpui::BackendResponse::Error {
-                            message: format!("Failed to start agent: {}", e),
+                            message: format!("Failed to start agent: {e}"),
                         }
                     }
                 }
@@ -989,7 +987,7 @@ async fn handle_backend_events(
                             filename,
                             mime_type: _,
                         } => {
-                            let file_text = format!("File: {}\n{}", filename, content);
+                            let file_text = format!("File: {filename}\n{content}");
                             content_blocks.push(llm::ContentBlock::Text { text: file_text });
                         }
                     }
@@ -1018,7 +1016,7 @@ async fn handle_backend_events(
                             session_id, e
                         );
                         ui::gpui::BackendResponse::Error {
-                            message: format!("Failed to queue message: {}", e),
+                            message: format!("Failed to queue message: {e}"),
                         }
                     }
                 }
@@ -1053,7 +1051,7 @@ async fn handle_backend_events(
                             session_id, e
                         );
                         ui::gpui::BackendResponse::Error {
-                            message: format!("Failed to get pending message: {}", e),
+                            message: format!("Failed to get pending message: {e}"),
                         }
                     }
                 }

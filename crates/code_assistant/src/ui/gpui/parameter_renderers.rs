@@ -8,7 +8,7 @@ pub type ParameterKey = String;
 
 /// Helper function to create a unique key for a tool-parameter combination
 pub fn create_parameter_key(tool_name: &str, param_name: &str) -> ParameterKey {
-    format!("{}:{}", tool_name, param_name)
+    format!("{tool_name}:{param_name}")
 }
 
 /// Trait for parameter renderers that can provide custom rendering for tool parameters
@@ -150,7 +150,7 @@ impl ParameterRenderer for DefaultParameterRenderer {
                         div()
                             .font_weight(FontWeight(500.0))
                             .text_color(crate::ui::gpui::theme::colors::tool_parameter_label(theme))
-                            .child(format!("{}:", param_name))
+                            .child(format!("{param_name}:"))
                             .into_any(),
                         div()
                             .text_color(crate::ui::gpui::theme::colors::tool_parameter_value(theme))

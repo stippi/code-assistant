@@ -50,7 +50,7 @@ impl PathWithLineRange {
                         None // file.txt:-20
                     } else {
                         Some(start.parse::<usize>().map_err(|_| {
-                            ToolError::ParseError(format!("Invalid start line number: {}", start))
+                            ToolError::ParseError(format!("Invalid start line number: {start}"))
                         })?)
                     };
 
@@ -58,7 +58,7 @@ impl PathWithLineRange {
                         None // file.txt:10-
                     } else {
                         Some(end.parse::<usize>().map_err(|_| {
-                            ToolError::ParseError(format!("Invalid end line number: {}", end))
+                            ToolError::ParseError(format!("Invalid end line number: {end}"))
                         })?)
                     };
 
@@ -70,7 +70,7 @@ impl PathWithLineRange {
                 } else {
                     // Single line: file.txt:15
                     let line_num = line_range.parse::<usize>().map_err(|_| {
-                        ToolError::ParseError(format!("Invalid line number: {}", line_range))
+                        ToolError::ParseError(format!("Invalid line number: {line_range}"))
                     })?;
 
                     return Ok(Self {
@@ -166,11 +166,10 @@ pub fn parse_caret_tool_invocations(
         // Convert parameters to JSON using schema-based approach if tool exists, otherwise use fallback
         let tool_params = if ToolRegistry::global().get(tool_name).is_some() {
             // Use schema-based conversion for registered tools
-            convert_xml_params_to_json(tool_name, &raw_params, &ToolRegistry::global()).map_err(
+            convert_xml_params_to_json(tool_name, &raw_params, ToolRegistry::global()).map_err(
                 |e| {
                     ToolError::ParseError(format!(
-                        "Error converting caret parameters to JSON: {}",
-                        e
+                        "Error converting caret parameters to JSON: {e}"
                     ))
                 },
             )?
@@ -180,7 +179,7 @@ pub fn parse_caret_tool_invocations(
         };
 
         // Generate a unique tool ID: tool-<request_id>-<tool_index_in_request>
-        let tool_id = format!("tool-{}-{}", request_id, tool_index);
+        let tool_id = format!("tool-{request_id}-{tool_index}");
 
         // Create a ToolRequest
         let tool_request = ToolRequest {
@@ -337,7 +336,7 @@ fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
 
     let tool_name = xml
         .trim()
-        .strip_prefix(&format!("<{}", TOOL_TAG_PREFIX))
+        .strip_prefix(&format!("<{TOOL_TAG_PREFIX}"))
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.strip_suffix('>'))
         .ok_or_else(|| ToolError::ParseError("Missing tool name".into()))?
@@ -349,15 +348,15 @@ fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
     let mut current_param = String::new();
     let mut content_start = 0;
 
-    let mut chars = xml.char_indices().peekable();
-    while let Some((i, ch)) = chars.next() {
+    let chars = xml.char_indices().peekable();
+    for (i, ch) in chars {
         if ch == '<' {
             // Check for parameter tag
             let rest = &xml[i..];
             trace!("Found '<', rest of string: {}", rest);
-            if rest.starts_with(&format!("</{}", PARAM_TAG_PREFIX)) {
+            if rest.starts_with(&format!("</{PARAM_TAG_PREFIX}")) {
                 // Closing tag
-                let param_name = rest[format!("</{}", PARAM_TAG_PREFIX).len()..] // skip the "</param:"
+                let param_name = rest[format!("</{PARAM_TAG_PREFIX}").len()..] // skip the "</param:"
                     .split('>')
                     .next()
                     .ok_or_else(|| ToolError::ParseError("Invalid closing tag format".into()))?;
@@ -371,11 +370,11 @@ fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
                         .push(content.to_string());
                     current_param.clear();
                 }
-            } else if let Some(param_start) = rest.strip_prefix(&format!("<{}", PARAM_TAG_PREFIX)) {
+            } else if let Some(param_start) = rest.strip_prefix(&format!("<{PARAM_TAG_PREFIX}")) {
                 // Opening tag
                 if let Some(param_name) = param_start.split('>').next() {
                     current_param = param_name.to_string();
-                    content_start = i + format!("<{}{}>", PARAM_TAG_PREFIX, param_name).len();
+                    content_start = i + format!("<{PARAM_TAG_PREFIX}{param_name}>").len();
                     trace!("Found param start: {} at {}", current_param, content_start);
                 }
             }
@@ -385,9 +384,9 @@ fn parse_tool_xml(xml: &str) -> Result<(String, Value), ToolError> {
     trace!("Final parameters: {:?}", params);
 
     // Convert parameters to JSON using the ToolRegistry
-    let json_params = convert_xml_params_to_json(&tool_name, &params, &ToolRegistry::global())
+    let json_params = convert_xml_params_to_json(&tool_name, &params, ToolRegistry::global())
         .map_err(|e| {
-            ToolError::ParseError(format!("Error converting parameters to JSON: {}", e))
+            ToolError::ParseError(format!("Error converting parameters to JSON: {e}"))
         })?;
 
     Ok((tool_name, json_params))
@@ -441,7 +440,7 @@ pub(crate) fn parse_search_replace_blocks(
             let mut found_separator = false;
 
             // Collect search content until we find the separator
-            while let Some(line) = lines.next() {
+            for line in lines.by_ref() {
                 if line.trim_end() == "=======" {
                     found_separator = true;
                     break;
@@ -470,12 +469,12 @@ pub(crate) fn parse_search_replace_blocks(
             // additional separator markers in the remaining content
             {
                 // Clone the iterator to peek ahead without consuming it
-                let mut preview_iter = lines.clone();
+                let preview_iter = lines.clone();
                 let mut lines_to_end_marker = Vec::new();
                 let mut reached_end_marker = false;
 
                 // Collect all lines until end marker
-                while let Some(line) = preview_iter.next() {
+                for line in preview_iter {
                     if line.trim_end() == end_marker {
                         reached_end_marker = true;
                         break;
@@ -500,7 +499,7 @@ pub(crate) fn parse_search_replace_blocks(
                     let last_line = lines_to_end_marker.last();
 
                     if separator_count > 1
-                        || (last_line.map_or(false, |line| line.trim_end() != "======="))
+                        || (last_line.is_some_and(|line| line.trim_end() != "======="))
                     {
                         return Err(ToolError::ParseError(
                             "Malformed diff: Multiple separator markers (=======) found in the content. This is not allowed as it would make it impossible to edit files containing separators.".to_string(),
@@ -559,7 +558,7 @@ pub(crate) fn parse_search_replace_blocks(
     }
 
     // Check for non-whitespace content after all blocks are processed
-    while let Some(line) = lines.next() {
+    for line in lines {
         if !line.trim().is_empty() {
             return Err(ToolError::ParseError(
                 "Malformed diff: Unexpected content after diff blocks".to_string(),
@@ -617,7 +616,7 @@ pub fn convert_xml_params_to_json(
                             prop_name[0..prop_name.len() - 1].to_string()
                         } else {
                             // Add 's' for plural form
-                            format!("{}s", prop_name)
+                            format!("{prop_name}s")
                         };
 
                         if let Some(alt_values) = params.get(&alt_name) {
@@ -757,22 +756,20 @@ pub fn parse_xml_tool_invocations(
                         } => {
                             // Found another tool start while already in a tool - this is an error
                             return Err(ToolError::ParseError(format!(
-                                "Malformed tool invocation: found nested tool invocation. Started '{}' but found start of '{}' before closing the first one",
-                                current_tool, tool_name
+                                "Malformed tool invocation: found nested tool invocation. Started '{current_tool}' but found start of '{tool_name}' before closing the first one"
                             )).into());
                         }
                     }
                 }
                 // Check if this is a tool closing tag
                 else if let Some(tool_name) =
-                    tag_content.strip_prefix(&format!("/{}", TOOL_TAG_PREFIX))
+                    tag_content.strip_prefix(&format!("/{TOOL_TAG_PREFIX}"))
                 {
                     match &state {
                         ParseState::SearchingForTool => {
                             // Found closing tag without opening tag
                             return Err(ToolError::ParseError(format!(
-                                "Malformed tool invocation: found closing tag '</tool:{}>' without corresponding opening tag",
-                                tool_name
+                                "Malformed tool invocation: found closing tag '</tool:{tool_name}>' without corresponding opening tag"
                             )).into());
                         }
                         ParseState::InTool {
@@ -782,8 +779,7 @@ pub fn parse_xml_tool_invocations(
                             if tool_name != current_tool {
                                 // Mismatched closing tag
                                 return Err(ToolError::ParseError(format!(
-                                    "Malformed tool invocation: mismatching tool names in start and end tag. Expected '</tool:{}>' but found '</tool:{}>'",
-                                    current_tool, tool_name
+                                    "Malformed tool invocation: mismatching tool names in start and end tag. Expected '</tool:{current_tool}>' but found '</tool:{tool_name}>'"
                                 )).into());
                             }
 
@@ -801,7 +797,7 @@ pub fn parse_xml_tool_invocations(
 
                             // Generate a unique tool ID: tool-<request_id>-<tool_index_in_request>
                             let tool_index = tool_requests.len() + 1;
-                            let tool_id = format!("tool-{}-{}", request_id, tool_index);
+                            let tool_id = format!("tool-{request_id}-{tool_index}");
 
                             // Create a ToolRequest
                             let tool_request = ToolRequest {
@@ -836,8 +832,7 @@ pub fn parse_xml_tool_invocations(
                         } => {
                             // We're still inside a parameter when trying to close the tool - this is an error
                             return Err(ToolError::ParseError(format!(
-                                "Malformed tool invocation: unclosed parameter '{}' in tool '{}' - missing closing tag '</param:{}>'",
-                                current_param, tool_name, current_param
+                                "Malformed tool invocation: unclosed parameter '{current_param}' in tool '{tool_name}' - missing closing tag '</param:{current_param}>'"
                             )).into());
                         }
                     }
@@ -867,13 +862,12 @@ pub fn parse_xml_tool_invocations(
                             ..
                         } => {
                             return Err(ToolError::ParseError(format!(
-                                "Malformed tool invocation: found nested parameter. Started parameter '{}' in tool '{}' but found start of parameter '{}' before closing the first one",
-                                current_param, tool_name, param_name
+                                "Malformed tool invocation: found nested parameter. Started parameter '{current_param}' in tool '{tool_name}' but found start of parameter '{param_name}' before closing the first one"
                             )).into());
                         }
                     }
                 } else if let Some(param_name) =
-                    tag_content.strip_prefix(&format!("/{}", PARAM_TAG_PREFIX))
+                    tag_content.strip_prefix(&format!("/{PARAM_TAG_PREFIX}"))
                 {
                     match &state {
                         ParseState::SearchingForTool | ParseState::InTool { .. } => {
@@ -888,8 +882,7 @@ pub fn parse_xml_tool_invocations(
                         } => {
                             if param_name != current_param {
                                 return Err(ToolError::ParseError(format!(
-                                    "Malformed tool invocation: mismatching parameter names in start and end tag. Expected '</param:{}>' but found '</param:{}>' in tool '{}'",
-                                    current_param, param_name, tool_name
+                                    "Malformed tool invocation: mismatching parameter names in start and end tag. Expected '</param:{current_param}>' but found '</param:{param_name}>' in tool '{tool_name}'"
                                 )).into());
                             }
 
@@ -905,8 +898,7 @@ pub fn parse_xml_tool_invocations(
                     match &state {
                         ParseState::InTool { tool_name, .. } => {
                             return Err(ToolError::ParseError(format!(
-                                "Malformed tool invocation: found unexpected tag '<{}>' inside tool '{}'. Only parameter tags are allowed inside tool blocks",
-                                tag_content, tool_name
+                                "Malformed tool invocation: found unexpected tag '<{tag_content}>' inside tool '{tool_name}'. Only parameter tags are allowed inside tool blocks"
                             )).into());
                         }
                         ParseState::InParam { .. } => {
@@ -935,8 +927,7 @@ pub fn parse_xml_tool_invocations(
         }
         ParseState::InTool { tool_name, .. } => {
             return Err(ToolError::ParseError(format!(
-                "Malformed tool invocation: unclosed tool '{}' - missing closing tag '</tool:{}>'",
-                tool_name, tool_name
+                "Malformed tool invocation: unclosed tool '{tool_name}' - missing closing tag '</tool:{tool_name}>'"
             ))
             .into());
         }
@@ -946,8 +937,7 @@ pub fn parse_xml_tool_invocations(
             ..
         } => {
             return Err(ToolError::ParseError(format!(
-                "Malformed tool invocation: unclosed parameter '{}' in tool '{}' - missing closing tag '</param:{}>'",
-                param_name, tool_name, param_name
+                "Malformed tool invocation: unclosed parameter '{param_name}' in tool '{tool_name}' - missing closing tag '</param:{param_name}>'"
             )).into());
         }
     }
@@ -1162,7 +1152,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].search, "if a > b {\n    return a;\n}");
         assert_eq!(result[0].replace, "if a >= b {\n    return a;\n}");
-        assert_eq!(result[0].replace_all, false);
+        assert!(!result[0].replace_all);
     }
 
     #[test]
@@ -1237,7 +1227,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].search, "console.log(");
         assert_eq!(result[0].replace, "logger.debug(");
-        assert_eq!(result[0].replace_all, true);
+        assert!(result[0].replace_all);
     }
 
     #[test]
@@ -1259,10 +1249,10 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].search, "function test() {");
         assert_eq!(result[0].replace, "function renamed() {");
-        assert_eq!(result[0].replace_all, false);
+        assert!(!result[0].replace_all);
         assert_eq!(result[1].search, "console.log(");
         assert_eq!(result[1].replace, "logger.debug(");
-        assert_eq!(result[1].replace_all, true);
+        assert!(result[1].replace_all);
     }
 
     #[test]
@@ -1287,10 +1277,10 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].search, "function test() {");
         assert_eq!(result[0].replace, "function renamed() {");
-        assert_eq!(result[0].replace_all, false);
+        assert!(!result[0].replace_all);
         assert_eq!(result[1].search, "console.log(");
         assert_eq!(result[1].replace, "logger.debug(");
-        assert_eq!(result[1].replace_all, false);
+        assert!(!result[1].replace_all);
     }
 
     #[test]
@@ -1309,8 +1299,7 @@ mod tests {
         let error_message = result.unwrap_err().to_string();
         assert!(
             error_message.contains("Missing closing marker"),
-            "Error should mention the missing closing marker: {}",
-            error_message
+            "Error should mention the missing closing marker: {error_message}"
         );
     }
 
@@ -1336,8 +1325,7 @@ mod tests {
 
         assert!(
             error_message.contains("Multiple separator markers"),
-            "Error should mention the problem with multiple separator markers: {}",
-            error_message
+            "Error should mention the problem with multiple separator markers: {error_message}"
         );
     }
 
@@ -1357,8 +1345,7 @@ mod tests {
         let error_message = result.unwrap_err().to_string();
         assert!(
             error_message.contains("content before diff markers"),
-            "Error should mention unexpected content: {}",
-            error_message
+            "Error should mention unexpected content: {error_message}"
         );
     }
 
@@ -1384,8 +1371,7 @@ mod tests {
         let error_message = result.unwrap_err().to_string();
         assert!(
             error_message.contains("Unexpected content between diff blocks"),
-            "Error should mention unexpected content between blocks: {}",
-            error_message
+            "Error should mention unexpected content between blocks: {error_message}"
         );
     }
 
@@ -1409,8 +1395,7 @@ mod tests {
         // since we don't distinguish between "after last block" and "between blocks"
         assert!(
             error_message.contains("Unexpected content between diff blocks"),
-            "Error should mention unexpected content: {}",
-            error_message
+            "Error should mention unexpected content: {error_message}"
         );
     }
 

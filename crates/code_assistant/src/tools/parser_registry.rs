@@ -197,7 +197,7 @@ impl XmlParser {
             if !tool
                 .parameters
                 .get("properties")
-                .map_or(false, |p| p.is_object())
+                .is_some_and(|p| p.is_object())
             {
                 continue;
             }
@@ -209,12 +209,12 @@ impl XmlParser {
             // Tool parameters
             docs.push_str("Parameters:\n");
             docs.push_str(&self.generate_xml_parameters_doc(&tool.parameters));
-            docs.push_str("\n");
+            docs.push('\n');
 
             // Tool usage
             docs.push_str("Usage:\n");
             docs.push_str(&self.generate_xml_usage_example(&tool.name, &tool.parameters));
-            docs.push_str("\n");
+            docs.push('\n');
         }
 
         docs
@@ -248,7 +248,7 @@ impl XmlParser {
         param: &serde_json::Value,
         is_required: bool,
     ) -> String {
-        let mut doc = format!("- {}", name);
+        let mut doc = format!("- {name}");
 
         // Add required flag if needed
         if is_required {
@@ -260,7 +260,7 @@ impl XmlParser {
             if let Some(desc_str) = description.as_str() {
                 // Remove any (required) markers from the description since we handle it separately
                 let desc_str = desc_str.replace("(required)", "").trim().to_string();
-                doc.push_str(&format!(": {}", desc_str));
+                doc.push_str(&format!(": {desc_str}"));
             }
         }
 
@@ -272,7 +272,7 @@ impl XmlParser {
         tool_name: &str,
         parameters: &serde_json::Value,
     ) -> String {
-        let mut example = format!("<tool:{}>\n", tool_name);
+        let mut example = format!("<tool:{tool_name}>\n");
 
         // Get the properties object
         if let Some(properties) = parameters.get("properties").and_then(|p| p.as_object()) {
@@ -300,7 +300,7 @@ impl XmlParser {
             }
         }
 
-        example.push_str(&format!("</tool:{}>\n", tool_name));
+        example.push_str(&format!("</tool:{tool_name}>\n"));
         example
     }
 
@@ -327,7 +327,7 @@ impl XmlParser {
 
         // Generate appropriate placeholder text
         let placeholder = if is_multiline {
-            format!("\nYour {} here\n", name)
+            format!("\nYour {name} here\n")
         } else if name == "project" {
             "project-name".to_string()
         } else if name == "path" || name == "paths" {
@@ -347,20 +347,18 @@ impl XmlParser {
         } else if name == "max_depth" {
             "level (optional)".to_string()
         } else {
-            format!("{} here", name)
+            format!("{name} here")
         };
 
         // Add the parameter to the example
         example.push_str(&format!(
-            "<param:{}>{}</param:{}>\n",
-            param_name, placeholder, param_name
+            "<param:{param_name}>{placeholder}</param:{param_name}>\n"
         ));
 
         // For array types, add a second example parameter to show multiple items
         if is_array {
             example.push_str(&format!(
-                "<param:{}>Another {} here</param:{}>\n",
-                param_name, name, param_name
+                "<param:{param_name}>Another {name} here</param:{param_name}>\n"
             ));
         }
     }
@@ -440,7 +438,7 @@ impl CaretParser {
             if !tool
                 .parameters
                 .get("properties")
-                .map_or(false, |p| p.is_object())
+                .is_some_and(|p| p.is_object())
             {
                 continue;
             }
@@ -452,12 +450,12 @@ impl CaretParser {
             // Tool parameters
             docs.push_str("Parameters:\n");
             docs.push_str(&self.generate_caret_parameters_doc(&tool.parameters));
-            docs.push_str("\n");
+            docs.push('\n');
 
             // Tool usage
             docs.push_str("Usage:\n");
             docs.push_str(&self.generate_caret_usage_example(&tool.name, &tool.parameters));
-            docs.push_str("\n");
+            docs.push('\n');
         }
 
         docs
@@ -491,7 +489,7 @@ impl CaretParser {
         param: &serde_json::Value,
         is_required: bool,
     ) -> String {
-        let mut doc = format!("- {}", name);
+        let mut doc = format!("- {name}");
 
         // Add required flag if needed
         if is_required {
@@ -503,7 +501,7 @@ impl CaretParser {
             if let Some(desc_str) = description.as_str() {
                 // Remove any (required) markers from the description since we handle it separately
                 let desc_str = desc_str.replace("(required)", "").trim().to_string();
-                doc.push_str(&format!(": {}", desc_str));
+                doc.push_str(&format!(": {desc_str}"));
             }
         }
 
@@ -515,7 +513,7 @@ impl CaretParser {
         tool_name: &str,
         parameters: &serde_json::Value,
     ) -> String {
-        let mut example = format!("^^^{}\n", tool_name);
+        let mut example = format!("^^^{tool_name}\n");
 
         // Get the properties object
         if let Some(properties) = parameters.get("properties").and_then(|p| p.as_object()) {
@@ -584,23 +582,23 @@ impl CaretParser {
         } else if name == "max_depth" {
             "level (optional)".to_string()
         } else {
-            format!("{} here", name)
+            format!("{name} here")
         };
 
         if is_array {
             // Array parameter
-            example.push_str(&format!("{}: [\n", name));
-            example.push_str(&format!("{}\n", placeholder));
-            example.push_str(&format!("Another {} here\n", name));
+            example.push_str(&format!("{name}: [\n"));
+            example.push_str(&format!("{placeholder}\n"));
+            example.push_str(&format!("Another {name} here\n"));
             example.push_str("]\n");
         } else if is_multiline {
             // Multiline parameter
-            example.push_str(&format!("{} ---\n", name));
-            example.push_str(&format!("Your {} here\n", name));
-            example.push_str(&format!("--- {}\n", name));
+            example.push_str(&format!("{name} ---\n"));
+            example.push_str(&format!("Your {name} here\n"));
+            example.push_str(&format!("--- {name}\n"));
         } else {
             // Simple parameter
-            example.push_str(&format!("{}: {}\n", name, placeholder));
+            example.push_str(&format!("{name}: {placeholder}\n"));
         }
     }
 

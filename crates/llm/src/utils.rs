@@ -26,7 +26,7 @@ pub async fn check_response_error<T: RateLimitHandler + std::fmt::Debug + Send +
         StatusCode::UNAUTHORIZED => ApiError::Authentication(response_text),
         StatusCode::BAD_REQUEST => ApiError::InvalidRequest(response_text),
         status if status.is_server_error() => ApiError::ServiceError(response_text),
-        _ => ApiError::Unknown(format!("Status {}: {}", status, response_text)),
+        _ => ApiError::Unknown(format!("Status {status}: {response_text}")),
     };
 
     Err(ApiErrorContext {
@@ -82,15 +82,12 @@ pub async fn handle_retryable_error<
                                 let elapsed = start_time.elapsed();
                                 let remaining_secs = delay_secs.saturating_sub(elapsed.as_secs());
 
-                                match callback(&StreamingChunk::RateLimit {
+                                if let Err(_) = callback(&StreamingChunk::RateLimit {
                                     seconds_remaining: remaining_secs,
                                 }) {
-                                    Err(_) => {
-                                        // User requested streaming to cancel, exit the wait loop
-                                        let _ = callback(&StreamingChunk::RateLimitClear);
-                                        return false;
-                                    }
-                                    _ => {}
+                                    // User requested streaming to cancel, exit the wait loop
+                                    let _ = callback(&StreamingChunk::RateLimitClear);
+                                    return false;
                                 }
 
                                 // Schedule next update

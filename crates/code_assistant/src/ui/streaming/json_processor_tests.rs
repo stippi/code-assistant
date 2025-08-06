@@ -141,7 +141,7 @@ mod tests {
         let large_content = "This is a very large content that should be streamed incrementally rather than waiting for the entire value to be complete.";
 
         // Create the complete JSON
-        let json = format!(r#"{{"content": "{}", "path": "test.txt"}}"#, large_content);
+        let json = format!(r#"{{"content": "{large_content}", "path": "test.txt"}}"#);
 
         // Split into small chunks using the helper
         let chunks = chunk_str(&json, 5);
@@ -391,7 +391,7 @@ mod tests {
             };
 
             if let Err(e) = processor.process(&chunk) {
-                eprintln!("Error processing chunk {}: {}", content, e);
+                eprintln!("Error processing chunk {content}: {e}");
             }
         }
 
@@ -468,7 +468,7 @@ mod tests {
         for (i, fragment) in fragments.iter().enumerate() {
             match fragment {
                 DisplayFragment::ToolName { name, id } => {
-                    println!("  [{}] ToolName: {} (id: {})", i, name, id);
+                    println!("  [{i}] ToolName: {name} (id: {id})");
                 }
                 DisplayFragment::ToolParameter {
                     name,
@@ -476,11 +476,10 @@ mod tests {
                     tool_id,
                 } => {
                     println!(
-                        "  [{}] ToolParameter: {} = {} (tool_id: {})",
-                        i, name, value, tool_id
+                        "  [{i}] ToolParameter: {name} = {value} (tool_id: {tool_id})"
                     );
                 }
-                _ => println!("  [{}] Other: {:?}", i, fragment),
+                _ => println!("  [{i}] Other: {fragment:?}"),
             }
         }
 
@@ -508,7 +507,7 @@ mod tests {
             })
             .collect();
 
-        println!("Found parameter names: {:?}", param_names);
+        println!("Found parameter names: {param_names:?}");
 
         // Check for expected parameters (allowing for duplicates due to streaming)
         assert!(
@@ -618,11 +617,10 @@ mod tests {
                     tool_id,
                 } => {
                     println!(
-                        "  [{}] ToolParameter: {} = {} (tool_id: {})",
-                        i, name, value, tool_id
+                        "  [{i}] ToolParameter: {name} = {value} (tool_id: {tool_id})"
                     );
                 }
-                _ => println!("  [{}] {:?}", i, fragment),
+                _ => println!("  [{i}] {fragment:?}"),
             }
         }
 
@@ -1035,7 +1033,7 @@ mod tests {
         let mut all_expected_found = true;
         for expected_frag in &expected_raw_fragments_subset {
             if !raw_fragments.contains(expected_frag) {
-                eprintln!("Missing expected fragment: {:?}", expected_frag);
+                eprintln!("Missing expected fragment: {expected_frag:?}");
                 all_expected_found = false;
             }
         }

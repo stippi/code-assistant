@@ -225,11 +225,7 @@ impl CaretStreamProcessor {
         let lines: Vec<&str> = text.lines().collect();
         let mut current_pos = 0;
         let mut tool_counter = 1;
-        let request_id = if let Some(req_id) = request_id {
-            req_id
-        } else {
-            1
-        };
+        let request_id = request_id.unwrap_or(1);
 
         while current_pos < lines.len() {
             // Look for tool start pattern: ^^^tool_name on its own line
@@ -301,7 +297,7 @@ impl CaretStreamProcessor {
         let first_line = lines[0].trim();
         if let Some(caps) = self.tool_regex.captures(first_line) {
             let tool_name = caps.get(1).unwrap().as_str();
-            let tool_id = format!("tool-{}-{}", request_id, tool_counter);
+            let tool_id = format!("tool-{request_id}-{tool_counter}");
 
             // Find the closing ^^^
             let mut tool_end_idx = None;
@@ -463,9 +459,8 @@ impl CaretStreamProcessor {
         }
 
         // Check if line starts with caret characters
-        if line.starts_with("^^^") {
+        if let Some(after_carets) = line.strip_prefix("^^^") {
             // If we have at least 3 carets, check if it could be valid tool name
-            let after_carets = &line[3..];
             if after_carets.is_empty() {
                 return true; // Still building the tool name
             }
@@ -497,7 +492,7 @@ impl CaretStreamProcessor {
 
                 // Check if this line is the end marker
                 if let Some(caps) = self.multiline_end_regex.captures(line_content) {
-                    if caps.get(1).map_or(false, |m| m.as_str() == param_name) {
+                    if caps.get(1).is_some_and(|m| m.as_str() == param_name) {
                         // This is the end marker, emit the complete line for processing
                         return Ok(Some(self.buffer[..=newline_pos].to_string()));
                     }
@@ -574,7 +569,7 @@ impl CaretStreamProcessor {
                 streamed: _,
             } => {
                 if let Some(caps) = self.multiline_end_regex.captures(line) {
-                    if caps.get(1).map_or(false, |m| m.as_str() == param_name) {
+                    if caps.get(1).is_some_and(|m| m.as_str() == param_name) {
                         // End marker found, just transition back to InsideTool state
                         // No need to send final parameter since we've been streaming chunks
                         self.state = ParserState::InsideTool;
@@ -619,7 +614,7 @@ impl CaretStreamProcessor {
                         "[{}]",
                         elements
                             .iter()
-                            .map(|e| format!("\"{}\"", e))
+                            .map(|e| format!("\"{e}\""))
                             .collect::<Vec<_>>()
                             .join(",")
                     );
@@ -653,7 +648,7 @@ impl CaretStreamProcessor {
             self.send_tool_start(tool_name, &tool_id)?;
             self.state = ParserState::InsideTool;
         } else {
-            self.send_plain_text(&format!("{}\n", line))?;
+            self.send_plain_text(&format!("{line}\n"))?;
         }
         Ok(())
     }
@@ -700,7 +695,7 @@ impl CaretStreamProcessor {
                 let value = value.trim();
                 if value == "[" {
                     let mut elements = vec![];
-                    while let Some(element_line) = lines.next() {
+                    for element_line in lines.by_ref() {
                         if element_line.trim() == "]" {
                             break;
                         }
@@ -713,9 +708,9 @@ impl CaretStreamProcessor {
             } else if let Some(caps) = self.multiline_start_regex.captures(line) {
                 let param_name = caps.get(1).unwrap().as_str();
                 let mut content = String::new();
-                while let Some(content_line) = lines.next() {
+                for content_line in lines.by_ref() {
                     if let Some(end_caps) = self.multiline_end_regex.captures(content_line) {
-                        if end_caps.get(1).map_or(false, |m| m.as_str() == param_name) {
+                        if end_caps.get(1).is_some_and(|m| m.as_str() == param_name) {
                             break;
                         }
                     }
@@ -941,7 +936,7 @@ impl CaretStreamProcessor {
         let content_to_stream = if is_first_line {
             content.to_string()
         } else {
-            format!("\n{}", content)
+            format!("\n{content}")
         };
 
         self.emit_fragment(DisplayFragment::ToolParameter {

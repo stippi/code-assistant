@@ -84,7 +84,7 @@ fn test_terminal_formatting() {
 
     // Check the output
     let output = writer.lock().unwrap().get_output();
-    println!("Output:\n{}", output);
+    println!("Output:\n{output}");
 
     // Verify various formatting aspects
     assert!(

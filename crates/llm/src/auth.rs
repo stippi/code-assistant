@@ -61,7 +61,7 @@ impl TokenManager {
 
         let res = client
             .post(&self.token_url)
-            .header("Authorization", format!("Basic {}", auth))
+            .header("Authorization", format!("Basic {auth}"))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body("grant_type=client_credentials")
             .send()

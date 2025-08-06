@@ -47,7 +47,7 @@ impl CommandExecutor for DefaultCommandExecutor {
         #[cfg(target_family = "unix")]
         let mut cmd = std::process::Command::new(shell);
         #[cfg(target_family = "unix")]
-        cmd.args(["-c", &format!("{} 2>&1", command_line)]);
+        cmd.args(["-c", &format!("{command_line} 2>&1")]);
 
         #[cfg(target_family = "windows")]
         let mut cmd = std::process::Command::new("cmd");

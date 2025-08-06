@@ -204,10 +204,7 @@ pub fn assert_fragments_match(expected: &[DisplayFragment], actual: &[DisplayFra
     for (i, (expected, actual)) in expected.iter().zip(actual.iter()).enumerate() {
         assert!(
             fragments_match(expected, actual),
-            "Fragment mismatch at position {}: \nExpected: {:?}\nActual: {:?}",
-            i,
-            expected,
-            actual
+            "Fragment mismatch at position {i}: \nExpected: {expected:?}\nActual: {actual:?}"
         );
     }
 }

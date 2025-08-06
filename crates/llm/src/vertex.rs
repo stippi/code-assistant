@@ -192,7 +192,7 @@ impl ToolIDGenerator for DefaultToolIDGenerator {
         let counter = self
             .counter
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        format!("tool-{}-{}", name, counter)
+        format!("tool-{name}-{counter}")
     }
 }
 
@@ -447,7 +447,7 @@ impl VertexClient {
         );
 
         let vertex_response: VertexResponse = serde_json::from_str(&response_text)
-            .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
+            .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {e}")))?;
 
         // Convert to our generic LLMResponse format
         let response = LLMResponse {

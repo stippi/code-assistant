@@ -27,7 +27,7 @@ pub struct PerplexityAskOutput {
 impl Render for PerplexityAskOutput {
     fn status(&self) -> String {
         if let Some(e) = &self.error {
-            format!("Failed to get answer from Perplexity: {}", e)
+            format!("Failed to get answer from Perplexity: {e}")
         } else {
             "Answer received from Perplexity".to_string()
         }
@@ -35,7 +35,7 @@ impl Render for PerplexityAskOutput {
 
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
         if let Some(e) = &self.error {
-            return format!("Failed to get answer from Perplexity: {}", e);
+            return format!("Failed to get answer from Perplexity: {e}");
         }
 
         let mut output = self.answer.clone();
@@ -125,10 +125,7 @@ impl Tool for PerplexityAskTool {
         input: Self::Input,
     ) -> Result<Self::Output> {
         // Check if the API key exists
-        let api_key = match std::env::var("PERPLEXITY_API_KEY") {
-            Ok(key) => Some(key),
-            Err(_) => None,
-        };
+        let api_key = std::env::var("PERPLEXITY_API_KEY").ok();
 
         // Create a new Perplexity client
         let client = PerplexityClient::new(api_key);
@@ -138,7 +135,7 @@ impl Tool for PerplexityAskTool {
             .messages
             .iter()
             .filter(|m| m.role == "user")
-            .last()
+            .next_back()
             .map(|m| m.content.clone())
             .unwrap_or_else(|| "No user query found".to_string());
 

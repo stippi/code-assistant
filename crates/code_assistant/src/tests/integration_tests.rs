@@ -132,7 +132,7 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -193,7 +193,7 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
         .await;
 
     // Debug: print what happened
-    println!("Result: {:?}", result);
+    println!("Result: {result:?}");
     println!(
         "Tool limit triggered: {}",
         *tool_limit_triggered.lock().unwrap()
@@ -206,7 +206,7 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
     // Verify the response contains the complete text up to and including the tool
     assert_eq!(response.content.len(), 1);
     if let ContentBlock::Text { text } = &response.content[0] {
-        println!("Final LLM response text: '{}'", text);
+        println!("Final LLM response text: '{text}'");
         println!("Text length: {}", text.len());
 
         // Check that we have the complete tool text but not the extra content
@@ -254,7 +254,7 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
                     text: truncated_text,
                 } = &truncated_response.content[0]
                 {
-                    println!("Truncated text: '{}'", truncated_text);
+                    println!("Truncated text: '{truncated_text}'");
                     println!("Truncated text length: {}", truncated_text.len());
 
                     // The key test: truncated response should end exactly at the tool close tag
@@ -267,8 +267,7 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
                     // Should NOT contain the extra content after the tool
                     assert!(
                         !truncated_text.contains("---"),
-                        "Truncated text should not contain extra content after tool: {}",
-                        truncated_text
+                        "Truncated text should not contain extra content after tool: {truncated_text}"
                     );
                 } else {
                     panic!(
@@ -278,7 +277,7 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
                 }
             }
             Err(e) => {
-                println!("❌ parse_and_truncate_llm_response failed: {:?}", e);
+                println!("❌ parse_and_truncate_llm_response failed: {e:?}");
                 panic!("parse_and_truncate_llm_response should succeed with valid tool response");
             }
         }

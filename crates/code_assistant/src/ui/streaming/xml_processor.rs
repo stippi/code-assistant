@@ -857,7 +857,7 @@ impl XmlStreamProcessor {
 
                                 // Generate consistent tool ID using request_id (same as live streaming)
                                 local_tool_id = if let Some(req_id) = request_id {
-                                    format!("tool-{}-{}", req_id, tool_counter)
+                                    format!("tool-{req_id}-{tool_counter}")
                                 } else {
                                     // Fallback for messages without request_id
                                     String::new()

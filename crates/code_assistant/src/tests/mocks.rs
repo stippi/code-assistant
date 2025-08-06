@@ -51,18 +51,18 @@ impl MockLLMProvider {
         let requests = self.requests.lock().unwrap();
         println!("\nTotal number of requests: {}", requests.len());
         for (i, request) in requests.iter().enumerate() {
-            println!("\nRequest {}:", i);
+            println!("\nRequest {i}:");
             for (j, message) in request.messages.iter().enumerate() {
-                println!("  Message {}:", j);
+                println!("  Message {j}:");
                 // Using the Display trait implementation for Message
-                let formatted_message = format!("{}", message);
+                let formatted_message = format!("{message}");
                 // Add indentation to the message output
                 let indented = formatted_message
                     .lines()
-                    .map(|line| format!("    {}", line))
+                    .map(|line| format!("    {line}"))
                     .collect::<Vec<String>>()
                     .join("\n");
-                println!("{}", indented);
+                println!("{indented}");
             }
         }
     }
@@ -206,8 +206,7 @@ impl UserInterface for MockUI {
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or(Err(UIError::IOError(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            .unwrap_or(Err(UIError::IOError(std::io::Error::other(
                 "No more mock responses",
             ))))
     }
@@ -225,19 +224,19 @@ impl UserInterface for MockUI {
                 self.streaming
                     .lock()
                     .unwrap()
-                    .push(format!("\n• {}", media_type));
+                    .push(format!("\n• {media_type}"));
             }
             crate::ui::DisplayFragment::ToolName { name, .. } => {
                 self.streaming
                     .lock()
                     .unwrap()
-                    .push(format!("\n• Image {}", name));
+                    .push(format!("\n• Image {name}"));
             }
             crate::ui::DisplayFragment::ToolParameter { name, value, .. } => {
                 self.streaming
                     .lock()
                     .unwrap()
-                    .push(format!("  {}: {}", name, value));
+                    .push(format!("  {name}: {value}"));
             }
             crate::ui::DisplayFragment::ToolEnd { .. } => {}
         }
@@ -279,7 +278,7 @@ impl MockExplorer {
         println!("\nMock files contents:");
         for (path, contents) in files.iter() {
             println!("- {}:", path.display());
-            println!("{}", contents);
+            println!("{contents}");
         }
     }
 }
@@ -362,7 +361,7 @@ impl CodeExplorer for MockExplorer {
         if append && files.contains_key(path) {
             // Append content to existing file
             if let Some(existing) = files.get_mut(path) {
-                *existing = format!("{}{}", existing, content);
+                *existing = format!("{existing}{content}");
                 result_content = existing.clone();
             } else {
                 result_content = content.clone();

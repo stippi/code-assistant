@@ -60,7 +60,7 @@ impl RequestCustomizer for DefaultRequestCustomizer {
     }
 
     fn customize_url(&self, base_url: &str, _streaming: bool) -> String {
-        format!("{}/messages", base_url)
+        format!("{base_url}/messages")
     }
 }
 
@@ -75,7 +75,7 @@ impl Default for DefaultMessageConverter {
 
 impl DefaultMessageConverter {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
     /// Get cache marker positions based purely on message count
@@ -1039,7 +1039,7 @@ impl AnthropicClient {
                 .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
             let anthropic_response: AnthropicResponse = serde_json::from_str(&response_text)
-                .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {}", e)))?;
+                .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {e}")))?;
 
             // Convert AnthropicResponse to LLMResponse
             let llm_response = LLMResponse {
@@ -1198,22 +1198,21 @@ mod tests {
         // Test 0-4 messages: No cache markers
         for msg_count in 0..=4 {
             let messages: Vec<Message> = (0..msg_count)
-                .map(|i| create_message(MessageRole::User, &format!("Message {}", i)))
+                .map(|i| create_message(MessageRole::User, &format!("Message {i}")))
                 .collect();
 
             let result = converter.convert_messages_with_cache(messages);
             let markers = count_message_cache_markers(&result);
             assert!(
                 markers.is_empty(),
-                "{} messages: Should have no cache markers",
-                msg_count
+                "{msg_count} messages: Should have no cache markers"
             );
         }
 
         // Test 5-9 messages: Cache marker at index 4
         for msg_count in 5..=9 {
             let messages: Vec<Message> = (0..msg_count)
-                .map(|i| create_message(MessageRole::User, &format!("Message {}", i)))
+                .map(|i| create_message(MessageRole::User, &format!("Message {i}")))
                 .collect();
 
             let result = converter.convert_messages_with_cache(messages);
@@ -1221,15 +1220,14 @@ mod tests {
             assert_eq!(
                 markers,
                 vec![4],
-                "{} messages: Should have cache marker at index 4",
-                msg_count
+                "{msg_count} messages: Should have cache marker at index 4"
             );
         }
 
         // Test 10-14 messages: Cache markers at indices 4 and 9
         for msg_count in 10..=14 {
             let messages: Vec<Message> = (0..msg_count)
-                .map(|i| create_message(MessageRole::User, &format!("Message {}", i)))
+                .map(|i| create_message(MessageRole::User, &format!("Message {i}")))
                 .collect();
 
             let result = converter.convert_messages_with_cache(messages);
@@ -1237,15 +1235,14 @@ mod tests {
             assert_eq!(
                 markers,
                 vec![4, 9],
-                "{} messages: Should have cache markers at indices 4 and 9",
-                msg_count
+                "{msg_count} messages: Should have cache markers at indices 4 and 9"
             );
         }
 
         // Test 15-19 messages: Cache markers at indices 9 and 14
         for msg_count in 15..=19 {
             let messages: Vec<Message> = (0..msg_count)
-                .map(|i| create_message(MessageRole::User, &format!("Message {}", i)))
+                .map(|i| create_message(MessageRole::User, &format!("Message {i}")))
                 .collect();
 
             let result = converter.convert_messages_with_cache(messages);
@@ -1253,15 +1250,14 @@ mod tests {
             assert_eq!(
                 markers,
                 vec![9, 14],
-                "{} messages: Should have cache markers at indices 9 and 14",
-                msg_count
+                "{msg_count} messages: Should have cache markers at indices 9 and 14"
             );
         }
 
         // Test 20-24 messages: Cache markers at indices 14 and 19
         for msg_count in 20..=24 {
             let messages: Vec<Message> = (0..msg_count)
-                .map(|i| create_message(MessageRole::User, &format!("Message {}", i)))
+                .map(|i| create_message(MessageRole::User, &format!("Message {i}")))
                 .collect();
 
             let result = converter.convert_messages_with_cache(messages);
@@ -1269,8 +1265,7 @@ mod tests {
             assert_eq!(
                 markers,
                 vec![14, 19],
-                "{} messages: Should have cache markers at indices 14 and 19",
-                msg_count
+                "{msg_count} messages: Should have cache markers at indices 14 and 19"
             );
         }
     }
@@ -1318,14 +1313,14 @@ mod tests {
         for i in 0..5 {
             messages.push(Message {
                 role: MessageRole::User,
-                content: MessageContent::Text(format!("Request {}", i)),
+                content: MessageContent::Text(format!("Request {i}")),
                 request_id: None,
                 usage: None,
             });
-            messages.push(create_tool_message(&format!("tool_{}", i)));
+            messages.push(create_tool_message(&format!("tool_{i}")));
             messages.push(create_tool_result(
-                &format!("tool_{}", i),
-                &format!("Result {}", i),
+                &format!("tool_{i}"),
+                &format!("Result {i}"),
             ));
         }
         // Total: 15 messages
@@ -1335,7 +1330,7 @@ mod tests {
         // Should have cache markers at indices 9 and 14
         let mut cache_markers = Vec::new();
         for (idx, msg) in result.iter().enumerate() {
-            if let Some(block) = msg.content.get(0) {
+            if let Some(block) = msg.content.first() {
                 if block.cache_control.is_some() {
                     cache_markers.push(idx);
                 }
@@ -1377,7 +1372,7 @@ mod tests {
                 } else {
                     MessageRole::Assistant
                 },
-                content: MessageContent::Text(format!("Message A{}", i)),
+                content: MessageContent::Text(format!("Message A{i}")),
                 request_id: None,
                 usage: None,
             })
@@ -1390,7 +1385,7 @@ mod tests {
                 } else {
                     MessageRole::Assistant
                 },
-                content: MessageContent::Text(format!("Completely different B{}", i)),
+                content: MessageContent::Text(format!("Completely different B{i}")),
                 request_id: None,
                 usage: None,
             })
@@ -1406,7 +1401,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, msg)| {
-                    if msg.content.get(0)?.cache_control.is_some() {
+                    if msg.content.first()?.cache_control.is_some() {
                         Some(idx)
                     } else {
                         None
@@ -1437,7 +1432,7 @@ mod tests {
         let messages_short: Vec<Message> = (0..7)
             .map(|i| Message {
                 role: MessageRole::User,
-                content: MessageContent::Text(format!("Short {}", i)),
+                content: MessageContent::Text(format!("Short {i}")),
                 request_id: None,
                 usage: None,
             })
@@ -1502,7 +1497,7 @@ mod tests {
         for i in 1..=9 {
             messages.push(Message {
                 role: MessageRole::User,
-                content: MessageContent::Text(format!("Follow up question {}", i)),
+                content: MessageContent::Text(format!("Follow up question {i}")),
                 request_id: None,
                 usage: None,
             });
@@ -1511,10 +1506,10 @@ mod tests {
                 role: MessageRole::Assistant,
                 content: MessageContent::Structured(vec![
                     ContentBlock::Text {
-                        text: format!("Let me help with question {}.", i),
+                        text: format!("Let me help with question {i}."),
                     },
                     ContentBlock::ToolUse {
-                        id: format!("tool_{}", i),
+                        id: format!("tool_{i}"),
                         name: "helper_tool".to_string(),
                         input: json!({"query": format!("query_{}", i), "context": "analysis"}),
                     },
@@ -1526,8 +1521,8 @@ mod tests {
             messages.push(Message {
                 role: MessageRole::User,
                 content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                    tool_use_id: format!("tool_{}", i),
-                    content: format!("Tool result for query {}", i),
+                    tool_use_id: format!("tool_{i}"),
+                    content: format!("Tool result for query {i}"),
                     is_error: Some(false),
                 }]),
                 request_id: None,
@@ -1548,7 +1543,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, msg)| {
-                    if msg.content.get(0)?.cache_control.is_some() {
+                    if msg.content.first()?.cache_control.is_some() {
                         Some(idx)
                     } else {
                         None
@@ -1563,8 +1558,7 @@ mod tests {
         assert_eq!(
             markers30,
             vec![24, 29],
-            "30 messages: Should have cache markers at indices 24 and 29, found: {:?}",
-            markers30
+            "30 messages: Should have cache markers at indices 24 and 29, found: {markers30:?}"
         );
 
         // Test different message counts to demonstrate stateless behavior

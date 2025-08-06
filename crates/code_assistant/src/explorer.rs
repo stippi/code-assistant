@@ -92,9 +92,9 @@ impl FileTreeEntry {
                 // Construct the prefix for this child
                 let child_prefix = if level == 0 {
                     if is_last {
-                        format!("└─ ")
+                        "└─ ".to_string()
                     } else {
-                        format!("├─ ")
+                        "├─ ".to_string()
                     }
                 } else if is_last {
                     format!("{}└─ ", prefix.replace("├─ ", "│  ").replace("└─ ", "   "))
@@ -364,7 +364,7 @@ impl CodeExplorer for Explorer {
         };
 
         let root_dir = &self.root_dir.clone();
-        self.expand_directory(&root_dir, &mut root, 0, max_depth)?;
+        self.expand_directory(root_dir, &mut root, 0, max_depth)?;
         Ok(root)
     }
 

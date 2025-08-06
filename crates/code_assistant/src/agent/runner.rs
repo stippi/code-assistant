@@ -67,15 +67,15 @@ impl Agent {
         if let Some(tool_error) = error.downcast_ref::<ToolError>() {
             match tool_error {
                 ToolError::UnknownTool(t) => {
-                    format!("Unknown tool '{}'. Please use only available tools.", t)
+                    format!("Unknown tool '{t}'. Please use only available tools.")
                 }
                 ToolError::ParseError(msg) => {
-                    format!("Tool error: {}. Please try again.", msg)
+                    format!("Tool error: {msg}. Please try again.")
                 }
             }
         } else {
             // Generic fallback for other error types
-            format!("Error in tool request: {}", error)
+            format!("Error in tool request: {error}")
         }
     }
 
@@ -497,7 +497,7 @@ impl Agent {
                     _ => {
                         // For custom tool-syntax modes, create structured tool-result message like regular tool results
                         // Generate normal tool ID for consistency with UI expectations
-                        let tool_id = format!("tool-{}-1", request_counter);
+                        let tool_id = format!("tool-{request_counter}-1");
 
                         // Create and store a ToolExecution for the parse error
                         let tool_execution =
@@ -650,13 +650,13 @@ impl Agent {
         if !self.working_memory.available_projects.is_empty() {
             project_info.push_str("## Available Projects:\n");
             for project in &self.working_memory.available_projects {
-                project_info.push_str(&format!("- {}\n", project));
+                project_info.push_str(&format!("- {project}\n"));
             }
         }
 
         // Append project information to base prompt if available
         if !project_info.is_empty() {
-            system_message = format!("{}\n{}", system_message, project_info);
+            system_message = format!("{system_message}\n{project_info}");
         }
 
         // Cache the system message
@@ -848,11 +848,11 @@ impl Agent {
         for (i, message) in request.messages.iter().enumerate() {
             debug!("Message {}:", i);
             // Using the Display trait implementation for Message
-            let formatted_message = format!("{}", message);
+            let formatted_message = format!("{message}");
             // Add indentation to the message output
             let indented = formatted_message
                 .lines()
-                .map(|line| format!("  {}", line))
+                .map(|line| format!("  {line}"))
                 .collect::<Vec<String>>()
                 .join("\n");
             debug!("{}", indented);

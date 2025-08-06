@@ -404,7 +404,7 @@ impl RootView {
                     crate::session::instance::SessionActivityState::RateLimited {
                         seconds_remaining,
                     } => (
-                        format!("Rate limited - retrying in {}s...", seconds_remaining),
+                        format!("Rate limited - retrying in {seconds_remaining}s..."),
                         if cx.theme().is_dark() {
                             rgba(0x43140780) // Dark orange background with transparency
                         } else {

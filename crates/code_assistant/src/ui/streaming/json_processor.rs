@@ -492,7 +492,7 @@ impl JsonStreamProcessor {
                                     "Invalid JSON escape sequence in string: \\\\{}",
                                     char_to_process
                                 ); // Log actual chars \ and {}
-                                format!("\\{}", char_to_process) // Create string like "\z"
+                                format!("\\{char_to_process}") // Create string like "\z"
                             }
                         };
 

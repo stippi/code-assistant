@@ -191,7 +191,7 @@ impl SessionManager {
 
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
-                name: name,
+                name,
                 messages: session_instance.messages().to_vec(),
                 tool_executions: session_instance
                     .session
@@ -474,7 +474,7 @@ impl SessionManager {
             .filter_map(|block| match block {
                 llm::ContentBlock::Text { text } => Some(text.clone()),
                 llm::ContentBlock::Image { media_type, .. } => {
-                    Some(format!("[Image: {}]", media_type))
+                    Some(format!("[Image: {media_type}]"))
                 }
                 _ => None,
             })

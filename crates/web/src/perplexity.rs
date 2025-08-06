@@ -72,7 +72,7 @@ impl PerplexityClient {
             .http_client
             .post(endpoint)
             .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Authorization", format!("Bearer {api_key}"))
             .json(&body)
             .send()
             .await?;
@@ -151,7 +151,7 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        format!("http://{}", server_addr)
+        format!("http://{server_addr}")
     }
 
     #[tokio::test]

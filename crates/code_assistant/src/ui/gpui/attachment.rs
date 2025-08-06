@@ -49,7 +49,7 @@ impl AttachmentView {
                         .into_any_element()
                 } else {
                     // Fallback to text if parsing failed
-                    let display_text = mime_type.split('/').last().unwrap_or("image").to_string();
+                    let display_text = mime_type.split('/').next_back().unwrap_or("image").to_string();
                     div()
                         .bg(cx.theme().muted)
                         .size_full()
@@ -60,7 +60,7 @@ impl AttachmentView {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(format!("⚠️ {}", display_text)),
+                                .child(format!("⚠️ {display_text}")),
                         )
                         .into_any_element()
                 }
@@ -117,7 +117,7 @@ impl Render for AttachmentView {
         let index = self.index;
 
         div()
-            .id(SharedString::from(format!("attachment-{}", index)))
+            .id(SharedString::from(format!("attachment-{index}")))
             .relative()
             .w(px(ATTACHMENT_THUMBNAIL_SIZE))
             .h(px(ATTACHMENT_THUMBNAIL_SIZE))

@@ -19,7 +19,7 @@ fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
                 // Tool limit reached, stop processing - this is expected behavior
                 break;
             }
-            Err(e) => panic!("Unexpected error: {}", e),
+            Err(e) => panic!("Unexpected error: {e}"),
         }
     }
 
@@ -126,8 +126,7 @@ mod tests {
         let error_msg = result.unwrap_err().to_string();
         assert!(
             error_msg.contains("Tool limit reached"),
-            "Error should mention tool limit: {}",
-            error_msg
+            "Error should mention tool limit: {error_msg}"
         );
 
         // Should have processed the first tool completely, but not the second tool
@@ -634,8 +633,7 @@ mod tests {
         let error_msg = result.unwrap_err().to_string();
         assert!(
             error_msg.contains("Tool limit reached"),
-            "Error should mention tool limit: {}",
-            error_msg
+            "Error should mention tool limit: {error_msg}"
         );
 
         // Should have processed orphaned param, first tool completely, but not the second tool
@@ -647,7 +645,7 @@ mod tests {
             .filter(|f| matches!(f, DisplayFragment::PlainText(text) if text.contains("orphaned1")))
             .collect();
         assert!(
-            orphaned_before.len() > 0,
+            !orphaned_before.is_empty(),
             "Should have orphaned parameter before first tool"
         );
 
@@ -734,8 +732,7 @@ mod tests {
         let error_msg = result.unwrap_err().to_string();
         assert!(
             error_msg.contains("Tool limit reached"),
-            "Error should mention tool limit: {}",
-            error_msg
+            "Error should mention tool limit: {error_msg}"
         );
 
         let expected_fragments = vec![
@@ -804,7 +801,7 @@ mod tests {
                     // Tool limit reached, stop processing - this is expected behavior
                     break;
                 }
-                Err(e) => panic!("Unexpected error: {}", e),
+                Err(e) => panic!("Unexpected error: {e}"),
             }
         }
 

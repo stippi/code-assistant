@@ -46,7 +46,7 @@ impl TerminalUI {
 
     async fn write_line(&self, s: &str) -> Result<(), UIError> {
         let mut stdout = io::stdout().lock();
-        writeln!(stdout, "{}", s)?;
+        writeln!(stdout, "{s}")?;
         Ok(())
     }
 }
@@ -98,7 +98,7 @@ impl UserInterface for TerminalUI {
             UiEvent::StreamingStarted(request_id) => {
                 // Optionally display a message that we're starting a new request
                 self.write_line(
-                    &format!("Starting new LLM request ({})", request_id)
+                    &format!("Starting new LLM request ({request_id})")
                         .dark_blue()
                         .to_string(),
                 )
@@ -110,9 +110,9 @@ impl UserInterface for TerminalUI {
             } => {
                 // Optionally display a message that the request has completed
                 let message = if cancelled {
-                    format!("Cancelled LLM request ({})", request_id)
+                    format!("Cancelled LLM request ({request_id})")
                 } else {
-                    format!("Completed LLM request ({})", request_id)
+                    format!("Completed LLM request ({request_id})")
                 };
 
                 self.write_line(&message.dark_blue().to_string()).await?;
@@ -154,9 +154,8 @@ impl UserInterface for TerminalUI {
                     "Input EOF",
                 )))
             }
-            Err(e) => Err(UIError::IOError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Input error: {}", e),
+            Err(e) => Err(UIError::IOError(io::Error::other(
+                format!("Input error: {e}"),
             ))),
         }
     }
@@ -175,12 +174,12 @@ impl UserInterface for TerminalUI {
         match fragment {
             DisplayFragment::PlainText(text) => {
                 // Normal text, output as-is
-                write!(writer, "{}", text)?;
+                write!(writer, "{text}")?;
             }
             DisplayFragment::ThinkingText(text) => {
                 // Format thinking text with crossterm
                 let styled_text = text.clone().dark_grey().italic();
-                write!(writer, "{}", styled_text)?;
+                write!(writer, "{styled_text}")?;
             }
             DisplayFragment::ToolName { name, .. } => {
                 // Format tool name in bold blue with bullet point
@@ -190,7 +189,7 @@ impl UserInterface for TerminalUI {
                 // Format parameter name in cyan with indentation
                 write!(writer, "  {}: ", name.clone().cyan())?;
                 // Parameter value in normal text
-                write!(writer, "{}", value)?;
+                write!(writer, "{value}")?;
             }
             DisplayFragment::ToolEnd { .. } => {
                 // No special formatting needed at tool end
@@ -213,7 +212,7 @@ impl UserInterface for TerminalUI {
     fn notify_rate_limit(&self, seconds_remaining: u64) {
         // For terminal UI, we could print immediately, but let's keep it simple
         // In a real implementation, this might use a channel to communicate with the terminal
-        println!("Rate limited - retrying in {}s...", seconds_remaining);
+        println!("Rate limited - retrying in {seconds_remaining}s...");
     }
 
     fn clear_rate_limit(&self) {

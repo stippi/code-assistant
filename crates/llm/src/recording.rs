@@ -119,7 +119,7 @@ impl APIRecorder {
                 .open(file_path)
                 .context("Failed to open recording file")?;
 
-            writeln!(file, "{}", json)?;
+            writeln!(file, "{json}")?;
             writeln!(file, "]")?;
         }
 

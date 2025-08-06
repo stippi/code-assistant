@@ -41,14 +41,11 @@ impl Render for EditOutput {
         if let Some(error) = &self.error {
             match error {
                 FileUpdaterError::SearchBlockNotFound(_, _) => {
-                    format!(
-                        "Could not find old_text. Make sure it matches exactly what's in the file."
-                    )
+                    "Could not find old_text. Make sure it matches exactly what's in the file.".to_string()
                 }
                 FileUpdaterError::MultipleMatches(count, _, _) => {
                     format!(
-                        "Found {} occurrences of old_text\nIt must match exactly one location. Try enlarging old_text to make it unique or use replace_all to replace all occurrences.",
-                        count
+                        "Found {count} occurrences of old_text\nIt must match exactly one location. Try enlarging old_text to make it unique or use replace_all to replace all occurrences."
                     )
                 }
                 FileUpdaterError::Other(msg) => {

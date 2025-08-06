@@ -74,7 +74,7 @@ where
         // Deserialize input
         let input: T::Input = serde_json::from_value(params).map_err(|e| {
             // Convert Serde error to ToolError::ParseError
-            ToolError::ParseError(format!("Failed to parse parameters: {}", e))
+            ToolError::ParseError(format!("Failed to parse parameters: {e}"))
         })?;
 
         // Execute the tool

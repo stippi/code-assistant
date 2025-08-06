@@ -33,8 +33,8 @@ impl Render for ListProjectsOutput {
         }
 
         let mut output = String::from("Available projects:\n");
-        for (name, _) in &self.projects {
-            output.push_str(&format!("- {}\n", name));
+        for name in self.projects.keys() {
+            output.push_str(&format!("- {name}\n"));
         }
 
         output

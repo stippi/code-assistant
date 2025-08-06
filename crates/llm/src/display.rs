@@ -22,7 +22,7 @@ impl fmt::Display for ContentBlock {
                 )
             }
             ContentBlock::ToolUse { id, name, input } => {
-                writeln!(f, "ToolUse: id={}, name={}", id, name)?;
+                writeln!(f, "ToolUse: id={id}, name={name}")?;
                 writeln!(
                     f,
                     "  Input: {}",
@@ -45,14 +45,14 @@ impl fmt::Display for ContentBlock {
                 } else {
                     ""
                 };
-                writeln!(f, "ToolResult: tool_use_id={}{}", tool_use_id, error_suffix)?;
+                writeln!(f, "ToolResult: tool_use_id={tool_use_id}{error_suffix}")?;
                 writeln!(f, "  Content: {}", content.replace('\n', "\n  "))
             }
             ContentBlock::Thinking {
                 thinking,
                 signature,
             } => {
-                writeln!(f, "Thinking: signature={}", signature)?;
+                writeln!(f, "Thinking: signature={signature}")?;
                 writeln!(f, "  Content: {}", thinking.replace('\n', "\n  "))
             }
             ContentBlock::RedactedThinking { data } => {
@@ -72,9 +72,9 @@ impl fmt::Display for MessageContent {
             MessageContent::Structured(blocks) => {
                 writeln!(f, "Structured content with {} blocks:", blocks.len())?;
                 for (k, block) in blocks.iter().enumerate() {
-                    write!(f, "  Block {}: ", k)?;
+                    write!(f, "  Block {k}: ")?;
                     // Convert the block display output to a string so we can add indentation
-                    let block_output = format!("{}", block);
+                    let block_output = format!("{block}");
                     // Already includes a newline, so we don't need to add one here
                     write!(f, "{}", block_output.replace('\n', "\n  "))?;
                 }

@@ -60,7 +60,7 @@ impl ProjectManager for DefaultProjectManager {
         let mut counter = 1;
         let original_name = name.clone();
         while projects.contains_key(&name) {
-            name = format!("{}_{}", original_name, counter);
+            name = format!("{original_name}_{counter}");
             counter += 1;
         }
 

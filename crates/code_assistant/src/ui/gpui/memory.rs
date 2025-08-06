@@ -301,7 +301,7 @@ impl Render for FileTreeView {
             // File tree content - generate a flat list of items
             if !memory.file_trees.is_empty() {
                 let mut all_entries = Vec::new();
-                for (_project_name, root_entry) in &memory.file_trees {
+                for root_entry in memory.file_trees.values() {
                     // Generate flat list of all entries for this project
                     // The root entry is already the project name
                     let entries = self.generate_file_tree(root_entry, 0, cx);

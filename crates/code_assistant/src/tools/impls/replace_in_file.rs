@@ -43,14 +43,12 @@ impl Render for ReplaceInFileOutput {
             match error {
                 crate::utils::FileUpdaterError::SearchBlockNotFound(idx, _) => {
                     format!(
-                        "Please adjust your SEARCH block with index {} to the current contents of the file.",
-                        idx
+                        "Please adjust your SEARCH block with index {idx} to the current contents of the file."
                     )
                 }
                 crate::utils::FileUpdaterError::MultipleMatches(count, idx, _) => {
                     format!(
-                        "Found {} occurrences of SEARCH block with index {}\nA SEARCH block must match exactly one location. Try enlarging the section to replace.",
-                        count, idx
+                        "Found {count} occurrences of SEARCH block with index {idx}\nA SEARCH block must match exactly one location. Try enlarging the section to replace."
                     )
                 }
                 crate::utils::FileUpdaterError::Other(msg) => {
@@ -146,8 +144,7 @@ impl Tool for ReplaceInFileTool {
                     project: input.project,
                     path: PathBuf::from(&input.path),
                     error: Some(crate::utils::FileUpdaterError::Other(format!(
-                        "Failed to parse replacements: {}",
-                        e
+                        "Failed to parse replacements: {e}"
                     ))),
                 });
             }

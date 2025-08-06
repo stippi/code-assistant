@@ -123,8 +123,8 @@ impl Render for SearchFilesOutput {
                 ));
 
                 // Display the matched content with context
-                for (_, line) in result.line_content.iter().enumerate() {
-                    formatted.push_str(&format!("{}", line));
+                for line in result.line_content.iter() {
+                    formatted.push_str(&line.to_string());
 
                     // Add a newline if not already present
                     if !line.ends_with('\n') {
@@ -513,7 +513,7 @@ mod tests {
         let mut many_results = Vec::new();
         for i in 0..100 {
             let result = SearchResult {
-                file: PathBuf::from(format!("src/file_{}.rs", i)),
+                file: PathBuf::from(format!("src/file_{i}.rs")),
                 start_line: 0,
                 line_content: vec![format!("let x = {};", i)],
                 match_lines: vec![0],
@@ -569,9 +569,7 @@ mod tests {
         // Source file should have higher relevance than deeply nested file
         assert!(
             src_score > nested_score,
-            "Source file score ({}) should be higher than nested file score ({})",
-            src_score,
-            nested_score
+            "Source file score ({src_score}) should be higher than nested file score ({nested_score})"
         );
     }
 
@@ -614,7 +612,7 @@ mod tests {
         // Test with many results (should trigger summary mode)
         let many_results: Vec<SearchResult> = (0..50)
             .map(|i| SearchResult {
-                file: PathBuf::from(format!("file{}.rs", i)),
+                file: PathBuf::from(format!("file{i}.rs")),
                 start_line: 0,
                 line_content: vec![format!("let x{} = {};", i, i)],
                 match_lines: vec![0],
