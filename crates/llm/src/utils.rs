@@ -82,9 +82,11 @@ pub async fn handle_retryable_error<
                                 let elapsed = start_time.elapsed();
                                 let remaining_secs = delay_secs.saturating_sub(elapsed.as_secs());
 
-                                if let Err(_) = callback(&StreamingChunk::RateLimit {
+                                if callback(&StreamingChunk::RateLimit {
                                     seconds_remaining: remaining_secs,
-                                }) {
+                                })
+                                .is_err()
+                                {
                                     // User requested streaming to cancel, exit the wait loop
                                     let _ = callback(&StreamingChunk::RateLimitClear);
                                     return false;
