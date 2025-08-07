@@ -5,3 +5,4 @@ mcp-config.json
 /.code-assistant-chats
 tarpaulin-report.html
 .DS_Store
+code-assistant

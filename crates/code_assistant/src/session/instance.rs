@@ -416,16 +416,29 @@ impl ProxyUI {
     fn update_activity_state(&self, new_state: SessionActivityState) {
         // Update our internal state
         if let Ok(mut state) = self.session_activity_state.lock() {
+            // Don't allow transitions from Idle back to other states
+            // Idle is a terminal state until a new agent starts
+            if matches!(*state, SessionActivityState::Idle)
+                && !matches!(new_state, SessionActivityState::Idle)
+            {
+                debug!(
+                    "Ignoring state transition from Idle to {:?} for session {}",
+                    new_state, self.session_id
+                );
+                return;
+            }
+
             if *state != new_state {
                 *state = new_state.clone();
 
                 // Always broadcast activity state changes to UI (regardless of connection status)
                 // This ensures the chat sidebar shows current activity for all sessions
-                let _ = tokio::runtime::Handle::try_current().map(|_| {
+                // Send synchronously to avoid race conditions with async task spawning
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
                     let ui = self.real_ui.clone();
                     let session_id = self.session_id.clone();
                     let activity_state = new_state;
-                    tokio::spawn(async move {
+                    handle.spawn(async move {
                         let _ = ui
                             .send_event(UiEvent::UpdateSessionActivityState {
                                 session_id,
@@ -433,7 +446,7 @@ impl ProxyUI {
                             })
                             .await;
                     });
-                });
+                }
             }
         }
     }
@@ -458,7 +471,7 @@ impl UserInterface for ProxyUI {
                     buffer.clear();
                 }
                 // Only update activity state back to agent running if streaming was not cancelled
-                // If cancelled, the agent task will end soon and set state to Idle
+                // and the agent hasn't already completed (i.e., state is not already Idle)
                 if !cancelled {
                     let current_state = self.session_activity_state.lock().unwrap().clone();
                     if matches!(
@@ -500,6 +513,7 @@ impl UserInterface for ProxyUI {
         }
 
         // First fragment indicates streaming has started - transition from WaitingForResponse
+        // But only if the agent is still running (not Idle)
         let current_state = self.session_activity_state.lock().unwrap().clone();
         if matches!(current_state, SessionActivityState::WaitingForResponse) {
             self.update_activity_state(SessionActivityState::AgentRunning);

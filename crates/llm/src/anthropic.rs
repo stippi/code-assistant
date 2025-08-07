@@ -761,6 +761,7 @@ impl AnthropicClient {
                 recorder: &Option<APIRecorder>,
             ) -> Result<()> {
                 if let Some(data) = line.strip_prefix("data: ") {
+                    debug!("Received stream event: {}", data);
                     // Record the chunk if recorder is available
                     if let Some(recorder) = &recorder {
                         recorder.record_chunk(data)?;
