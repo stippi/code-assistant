@@ -114,7 +114,7 @@ export OPENAI_API_KEY="sk-..."
 code-assistant --provider openai --model gpt-4o
 ```
 
-**AI Core**:
+**SAP AI Core**:
 Create `~/.config/code-assistant/ai-core.json`:
 ```json
 {
