@@ -8,7 +8,7 @@ An AI coding assistant built in Rust that provides both command-line and graphic
 
 **Multi-Modal Tool Execution**: Adapts to different LLM capabilities with pluggable tool invocation modes - native function calling, XML-style tags, and triple-caret blocks - ensuring compatibility across various AI providers.
 
-**Real-Time Streaming Interface**: Advanced streaming processors parse and display tool invocations as they execute, with smart filtering to prevent unsafe tool combinations.
+**Real-Time Streaming Interface**: Advanced streaming processors parse and display tool invocations as they stream from the LLM, with smart filtering to prevent unsafe tool combinations.
 
 **Session-Based Project Management**: Each chat session is tied to a specific project and maintains persistent state, working memory, and draft messages with attachment support.
 
