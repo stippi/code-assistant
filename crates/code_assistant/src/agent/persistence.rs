@@ -63,25 +63,21 @@ impl AgentStatePersistence for MockStatePersistence {
 /// needing to track a single "current" session (which would break concurrent agents)
 pub struct SessionStatePersistence {
     session_manager: Arc<Mutex<SessionManager>>,
-    session_id: String,
 }
 
 impl SessionStatePersistence {
-    pub fn new(session_manager: Arc<Mutex<SessionManager>>, session_id: String) -> Self {
-        Self {
-            session_manager,
-            session_id,
-        }
+    pub fn new(session_manager: Arc<Mutex<SessionManager>>) -> Self {
+        Self { session_manager }
     }
 }
 
 impl AgentStatePersistence for SessionStatePersistence {
     fn save_agent_state(&mut self, state: SessionState) -> Result<()> {
-        let mut session_manager = self
-            .session_manager
-            .try_lock()
-            .map_err(|_| anyhow::anyhow!("Failed to lock session manager"))?;
-
+        // Use blocking_lock to avoid async context issues
+        // This is safe because we're in a background task context
+        let mut session_manager = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.session_manager.lock())
+        });
         session_manager.save_session_state(state)
     }
 }

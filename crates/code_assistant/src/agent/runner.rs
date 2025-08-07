@@ -204,17 +204,19 @@ impl Agent {
             "saving {} messages to persistence",
             self.message_history.len()
         );
-        let session_state = crate::session::SessionState {
-            session_id: "agent-session".to_string(), // TODO: Get actual session ID
-            name: self.session_name.clone(),
-            messages: self.message_history.clone(),
-            tool_executions: self.tool_executions.clone(),
-            working_memory: self.working_memory.clone(),
-            init_path: self.init_path.clone(),
-            initial_project: self.initial_project.clone(),
-            next_request_id: Some(self.next_request_id),
-        };
-        self.state_persistence.save_agent_state(session_state)?;
+        if let Some(session_id) = &self.session_id {
+            let session_state = crate::session::SessionState {
+                session_id: session_id.clone(),
+                name: self.session_name.clone(),
+                messages: self.message_history.clone(),
+                tool_executions: self.tool_executions.clone(),
+                working_memory: self.working_memory.clone(),
+                init_path: self.init_path.clone(),
+                initial_project: self.initial_project.clone(),
+                next_request_id: Some(self.next_request_id),
+            };
+            self.state_persistence.save_agent_state(session_state)?;
+        }
 
         // Send updated session metadata to UI
         if let Some(metadata) = self.build_current_metadata() {

@@ -240,7 +240,6 @@ impl SessionManager {
 
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
             session_manager_ref,
-            session_id.to_string(),
         ));
 
         let mut agent = crate::agent::Agent::new(
@@ -301,11 +300,24 @@ impl SessionManager {
                 );
             }
 
-            debug!(
-                "Agent completed for session {} with result: {:?}",
-                session_id_clone,
-                result.is_ok()
-            );
+            // Log the completion with detailed error information if failed
+            match &result {
+                Ok(()) => {
+                    debug!(
+                        "Agent completed successfully for session {}",
+                        session_id_clone
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("Agent failed for session {}: {}", session_id_clone, e);
+                    // Also log the full error chain for debugging
+                    tracing::debug!(
+                        "Agent error chain for session {}: {:?}",
+                        session_id_clone,
+                        e
+                    );
+                }
+            }
             result
         });
 
@@ -438,6 +450,66 @@ impl SessionManager {
             None => {
                 // Set as new pending message
                 *pending = Some(message);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check for completed agent tasks and handle their results
+    /// This should be called periodically to catch agent failures
+    pub async fn check_completed_tasks(&mut self) -> Result<()> {
+        let mut completed_sessions = Vec::new();
+
+        // Check all active sessions for completed tasks
+        for (session_id, session_instance) in &mut self.active_sessions {
+            if let Some(ref mut task_handle) = session_instance.task_handle {
+                // Check if the task is finished (non-blocking)
+                if task_handle.is_finished() {
+                    // Task is complete, get the result
+                    match task_handle.await {
+                        Ok(Ok(())) => {
+                            debug!(
+                                "Agent task completed successfully for session {}",
+                                session_id
+                            );
+                        }
+                        Ok(Err(e)) => {
+                            tracing::error!("Agent task failed for session {}: {}", session_id, e);
+                            // Log the full error chain for debugging
+                            tracing::debug!(
+                                "Agent error chain for session {}: {:?}",
+                                session_id,
+                                e
+                            );
+                        }
+                        Err(join_error) => {
+                            if join_error.is_cancelled() {
+                                debug!("Agent task was cancelled for session {}", session_id);
+                            } else if join_error.is_panic() {
+                                tracing::error!(
+                                    "Agent task panicked for session {}: {:?}",
+                                    session_id,
+                                    join_error
+                                );
+                            } else {
+                                tracing::error!(
+                                    "Agent task join error for session {}: {}",
+                                    session_id,
+                                    join_error
+                                );
+                            }
+                        }
+                    }
+                    completed_sessions.push(session_id.clone());
+                }
+            }
+        }
+
+        // Clear task handles for completed sessions
+        for session_id in completed_sessions {
+            if let Some(session_instance) = self.active_sessions.get_mut(&session_id) {
+                session_instance.task_handle = None;
             }
         }
 
