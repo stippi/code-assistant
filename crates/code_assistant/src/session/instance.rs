@@ -418,7 +418,9 @@ impl ProxyUI {
         if let Ok(mut state) = self.session_activity_state.lock() {
             // Don't allow transitions from Idle back to other states
             // Idle is a terminal state until a new agent starts
-            if matches!(*state, SessionActivityState::Idle) && !matches!(new_state, SessionActivityState::Idle) {
+            if matches!(*state, SessionActivityState::Idle)
+                && !matches!(new_state, SessionActivityState::Idle)
+            {
                 debug!(
                     "Ignoring state transition from Idle to {:?} for session {}",
                     new_state, self.session_id
