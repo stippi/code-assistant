@@ -2,81 +2,91 @@
 
 [![CI](https://github.com/stippi/code-assistant/actions/workflows/build.yml/badge.svg)](https://github.com/stippi/code-assistant/actions/workflows/build.yml)
 
-A CLI tool built in Rust for assisting with code-related tasks.
+An AI coding assistant built in Rust that provides both command-line and graphical interfaces for autonomous code analysis and modification.
 
-## Features
+## Key Features
 
-- **Autonomous Exploration**: The agent can intelligently explore codebases and build up working memory of the project structure.
-- **Reading/Writing Files**: The agent can read file contents and make changes to files as needed.
-- **User Interface**: The agent can run with a UI based on [Zed](https://zed.dev)'s [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui).
-- **Interactive Communication**: Ability to ask users questions and get responses for better decision-making.
-- **MCP Server Mode**: Can run as a Model Context Protocol server, providing tools and resources to LLMs running in an MCP client.
+**Multi-Modal Tool Execution**: Adapts to different LLM capabilities with pluggable tool invocation modes - native function calling, XML-style tags, and triple-caret blocks - ensuring compatibility across various AI providers.
+
+**Real-Time Streaming Interface**: Advanced streaming processors parse and display tool invocations as they execute, with smart filtering to prevent unsafe tool combinations.
+
+**Session-Based Project Management**: Each chat session is tied to a specific project and maintains persistent state, working memory, and draft messages with attachment support.
+
+**Multiple Interface Options**: Choose between a modern GUI built on Zed's GPUI framework, traditional terminal interface, or headless MCP server mode for integration with MCP clients such as Claude Desktop.
+
+**Intelligent Project Exploration**: Autonomously builds understanding of codebases through working memory that tracks file structures, dependencies, and project context.
 
 ## Installation
 
-Ensure you have [Rust installed](https://www.rust-lang.org/tools/install) on your system. Then:
-
 ```bash
-# Clone the repository
 git clone https://github.com/stippi/code-assistant
-
-# Navigate to the project directory
 cd code-assistant
-
-# Build the project
 cargo build --release
-
-# The binary will be available in target/release/code-assistant
 ```
 
-## Configuration in Claude Desktop
+The binary will be available at `target/release/code-assistant`.
 
-The `code-assistant` implements the [Model Context Protocol](https://modelcontextprotocol.io/introduction) by Anthropic.
-This means it can be added as a plugin to MCP client applications such as **Claude Desktop**.
+## Project Configuration
 
-### Configure Your Projects
-
-Create a file `~/.config/code-assistant/projects.json`.
-This file adds available projects in MCP server mode (`list_projects` and file operation tools).
-It has the following structure:
+Create `~/.config/code-assistant/projects.json` to define available projects:
 
 ```json
 {
   "code-assistant": {
     "path": "/Users/<username>/workspace/code-assistant"
   },
-  "asteroids": {
-    "path": "/Users/<username>/workspace/asteroids"
-  },
-  "zed": {
-    "path": "Users/<username>/workspace/zed"
+  "my-project": {
+    "path": "/Users/<username>/workspace/my-project"
   }
 }
 ```
 
-Notes:
-- The absolute paths are not provided by the tool, to avoid leaking such information to LLM cloud providers.
-- This file can be edited without restarting Claude Desktop, respectively the MCP server.
+**Important Notes:**
+- When launching from a folder not in this configuration, a temporary project is created automatically
+- The assistant has access to the current project (including temporary ones) plus all configured projects
+- Each chat session is permanently associated with its initial project and folder - this cannot be changed later
+- Tool syntax (native/xml/caret) is also fixed per session at creation time
+- The LLM provider selected at startup is used for the entire application session (UI switching planned for future releases)
 
-### Configure MCP Servers
+## Usage
 
-- Open the Claude Desktop application settings (**Claude** -> Settings)
-- Switch to the **Developer** tab.
-- Click the **Edit Config** button.
+### GUI Mode (Recommended)
 
-A Finder window opens highlighting the file `claude_desktop_config.json`.
-Open that file in your favorite text editor.
+```bash
+# Start with graphical interface
+code-assistant --ui
 
-An example configuration is given below:
+# Start GUI with initial task
+code-assistant --ui --task "Analyze the authentication system"
+```
+
+### Terminal Mode
+
+```bash
+# Basic usage
+code-assistant --task "Explain the purpose of this codebase"
+
+# With specific provider and model
+code-assistant --task "Add error handling" --provider openai --model gpt-5
+```
+
+### MCP Server Mode
+
+```bash
+code-assistant server
+```
+
+<details>
+<summary>Claude Desktop Integration</summary>
+
+Configure in Claude Desktop settings (**Developer** tab → **Edit Config**):
 
 ```jsonc
 {
   "mcpServers": {
     "code-assistant": {
-      "command": "/Users/<username>/workspace/code-assistant/target/release/code-assistant",
-      "args": [
-        "server"
-      ],
+      "command": "/path/to/code-assistant/target/release/code-assistant",
+      "args": ["server"],
       "env": {
         "PERPLEXITY_API_KEY": "pplx-...", // optional, enables perplexity_ask tool
         "SHELL": "/bin/zsh" // your login shell, required when configuring "env" here
@@ -85,108 +95,86 @@ An example configuration is given below:
   }
 }
 ```
+</details>
 
-## Usage
+## Configuration
 
-Code Assistant can run in two modes:
+<details>
+<summary>LLM Providers</summary>
 
-### Agent Mode (Default)
-
+**Anthropic** (default):
 ```bash
-code-assistant --task <TASK> [OPTIONS]
+export ANTHROPIC_API_KEY="sk-ant-..."
+code-assistant --provider anthropic --model claude-sonnet-4-20250514
 ```
 
-Available options:
-- `--path <PATH>`: Path to the code directory to analyze (default: current directory)
-- `-t, --task <TASK>`: Task to perform on the codebase (required in terminal mode, optional with `--ui`)
-- `--ui`: Start with GUI interface
-- `--continue-task`: Continue from previous state
-- `-v, --verbose`: Enable verbose logging
-- `-p, --provider <PROVIDER>`: LLM provider to use [ai-core, anthropic, open-ai, ollama, vertex, open-router] (default: anthropic)
-- `-m, --model <MODEL>`: Model name to use (provider-specific defaults: anthropic="claude-sonnet-4-20250514", open-ai="gpt-4o", vertex="gemini-2.5-pro-preview-06-05", open-router="anthropic/claude-3-7-sonnet", ollama=required)
-- `--base-url <BASE_URL>`: API base URL for the LLM provider to use
-- `--tool-syntax <TOOL_SYNTAX>`: Tool invocation syntax [native, xml, caret] (default: xml) - `native` = tools via API, `xml` = custom system message with XML tags, `caret` = custom system message with triple-caret blocks
-- `--num-ctx <NUM_CTX>`: Context window size in tokens (default: 8192, only relevant for Ollama)
-- `--record <RECORD>`: Record API responses to a file (only supported for Anthropic provider currently)
-- `--playback <PLAYBACK>`: Play back a recorded session from a file
-- `--fast-playback`: Fast playback mode - ignore chunk timing when playing recordings
+**OpenAI**:
+```bash
+export OPENAI_API_KEY="sk-..."
+code-assistant --provider openai --model gpt-4o
+```
 
-Environment variables:
-- `ANTHROPIC_API_KEY`: Required when using the Anthropic provider
-- `OPENAI_API_KEY`: Required when using the OpenAI provider
-- `GOOGLE_API_KEY`: Required when using the Vertex provider
-- `OPENROUTER_API_KEY`: Required when using the OpenRouter provider
-- `PERPLEXITY_API_KEY`: Required to use the Perplexity search API tools
-
-### AI Core Configuration
-
-When using the AI Core provider (`--provider ai-core`), you need to create a configuration file containing your service key credentials and model deployments.
-
-**Default config file location**: `~/.config/code-assistant/ai-core.json`
-
-**Sample configuration**:
+**AI Core**:
+Create `~/.config/code-assistant/ai-core.json`:
 ```json
 {
   "auth": {
-    "client_id": "<your service key client id>",
-    "client_secret": "<your service key client secret>",
-    "token_url": "https://<your service key url>/oauth/token",
-    "api_base_url": "https://<your service key api URL>/v2/inference"
+    "client_id": "<service-key-client-id>",
+    "client_secret": "<service-key-client-secret>",
+    "token_url": "https://<your-url>/oauth/token",
+    "api_base_url": "https://<your-url>/v2/inference"
   },
   "models": {
-    "claude-sonnet-4": "<your deployment id for the model>"
+    "claude-sonnet-4": "<deployment-id>"
   }
 }
 ```
 
-You can specify a custom config file path using the `--aicore-config` option:
+**Ollama**:
 ```bash
-code-assistant --provider ai-core --aicore-config /path/to/your/ai-core-config.json --task "Your task"
+code-assistant --provider ollama --model llama2 --num-ctx 4096
 ```
 
-**Configuration steps**:
-1. Create the directory: `mkdir -p ~/.config/code-assistant/`
-2. Create the config file: `~/.config/code-assistant/ai-core.json`
-3. Fill in your service key details and deployment IDs
-4. The tool will automatically use this configuration when `--provider ai-core` is specified
+**Other providers**: Vertex AI (Google), OpenRouter, Groq, MistralAI
+</details>
 
-Examples:
+<details>
+<summary>Advanced Options</summary>
+
+**Tool Syntax Modes**:
+- `--tool-syntax native`: Use the provider's built-in tool calling (most reliable, but streaming of parameters depends on provider)
+- `--tool-syntax xml`: XML-style tags for streaming of parameters
+- `--tool-syntax caret`: Triple-caret blocks for token-efficency and streaming of parameters
+
+**Session Recording**:
 ```bash
-# Analyze code in current directory using Anthropic's Claude
-code-assistant --task "Explain the purpose of this codebase"
+# Record session (Anthropic only)
+code-assistant --record session.json --task "Optimize database queries"
 
-# Use a different provider and model
-code-assistant --task "Review this code for security issues" --provider open-ai --model gpt-4o
-
-# Analyze a specific directory with verbose logging
-code-assistant --path /path/to/project --task "Add error handling" --verbose
-
-# Start with GUI interface
-code-assistant --ui
-
-# Start GUI with an initial task
-code-assistant --ui --task "Refactor the authentication module"
-
-# Use Ollama with a local model
-code-assistant --task "Document this API" --provider ollama --model llama2 --num-ctx 4096
-
-# Record a session for later playback (Anthropic only)
-code-assistant --task "Optimize database queries" --record ./recordings/db-optimization.json
-
-# Play back a recorded session with fast-forward (no timing delays)
-code-assistant --playback ./recordings/db-optimization.json --fast-playback
+# Playback session
+code-assistant --playback session.json --fast-playback
 ```
 
-### Server Mode
+**Other Options**:
+- `--continue-task`: Resume from previous session state
+- `--use-diff-format`: Enable alternative diff format for file editing
+- `--verbose`: Enable detailed logging
+- `--base-url`: Custom API endpoint
+</details>
 
-Runs as a Model Context Protocol server:
+## Architecture Highlights
 
-```bash
-code-assistant server [OPTIONS]
-```
+The code-assistant features several innovative architectural decisions:
 
-Available options:
-- `-v, --verbose`: Enable verbose logging
+**Adaptive Tool Syntax**: Automatically generates different system prompts and streaming processors based on the target LLM's capabilities, allowing the same core logic to work across providers with varying function calling support.
+
+**Smart Tool Filtering**: Real-time analysis of tool invocation patterns prevents logical errors like attempting to edit files before reading them, with the ability to truncate responses mid-stream when unsafe combinations are detected.
+
+**Multi-Threaded Streaming**: Sophisticated async architecture that handles real-time parsing of tool invocations while maintaining responsive UI updates and proper state management across multiple chat sessions.
+
+## Contributing
+
+Contributions are welcome! The codebase demonstrates advanced patterns in async Rust, AI agent architecture, and cross-platform UI development.
 
 ## Roadmap
 
@@ -206,7 +194,3 @@ Below are some topics that are likely the next focus.
   This increases the success rate of matching search blocks quite a bit, but certain ways of fuzzy matching might increase the success even more.
   Failed matches introduce quite a bit of inefficiency, since they almost always trigger the LLM to re-read a file.
   Even when the error output of the `replace_in_file` tool includes the complete file and tells the LLM *not* to re-read the file.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
