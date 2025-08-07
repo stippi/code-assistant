@@ -76,6 +76,8 @@ code-assistant --task "Add error handling" --provider openai --model gpt-5
 code-assistant server
 ```
 
+## Configuration
+
 <details>
 <summary>Claude Desktop Integration</summary>
 
@@ -96,8 +98,6 @@ Configure in Claude Desktop settings (**Developer** tab → **Edit Config**):
 }
 ```
 </details>
-
-## Configuration
 
 <details>
 <summary>LLM Providers</summary>
