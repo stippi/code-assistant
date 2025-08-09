@@ -107,7 +107,7 @@ fn setup_subscriptions(
     cx: &mut Context<SomeView>
 ) -> Vec<Subscription> {
     vec![
-        // Simple subscriber
+        // Simple subscriber with closure
         cx.subscribe(counter, |subscriber, _emitter, event, _cx| {
             subscriber.count += event.increment * 2;
         })
@@ -115,7 +115,102 @@ fn setup_subscriptions(
 }
 ```
 
-### 2. Subscriber with Context Access
+### 2. Method Reference Pattern
+
+When the subscriber type has a method with the correct signature, you can often use method references for cleaner code:
+
+```rust
+impl SomeView {
+    // Method with the right signature for subscription
+    fn handle_counter_change(&mut self, _emitter: Entity<Counter>, event: &Change, _cx: &mut Context<Self>) {
+        self.count += event.increment * 2;
+    }
+
+    // Alternative method names for different event handling
+    fn on_input_event(&mut self, _emitter: Entity<InputState>, event: &InputEvent, cx: &mut Context<Self>) {
+        match event {
+            InputEvent::Change(text) => {
+                self.current_text = text.clone();
+                cx.notify();
+            }
+            InputEvent::Focus => self.is_focused = true,
+            _ => {}
+        }
+    }
+}
+
+fn setup_subscriptions(
+    counter: &Entity<Counter>,
+    input: &Entity<InputState>,
+    cx: &mut Context<SomeView>
+) -> Vec<Subscription> {
+    vec![
+        // Elegant method reference - no closure needed!
+        cx.subscribe(counter, Self::handle_counter_change),
+        cx.subscribe(input, Self::on_input_event),
+
+        // Still use closures when you need to capture external variables
+        cx.subscribe(counter, {
+            let external_multiplier = 5;
+            move |subscriber, _emitter, event, _cx| {
+                subscriber.count += event.increment * external_multiplier;
+            }
+        })
+    ]
+}
+```
+
+### Real-World Example from gpui-component
+
+```rust
+// From InputStory - clean method reference usage
+struct InputStory {
+    input1: Entity<InputState>,
+    input2: Entity<InputState>,
+    phone_input: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl InputStory {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let input1 = cx.new(|cx| InputState::new(window, cx));
+        let input2 = cx.new(|cx| InputState::new(window, cx));
+        let phone_input = cx.new(|cx| InputState::new(window, cx));
+
+        let _subscriptions = vec![
+            // Clean method references - no closures needed!
+            cx.subscribe_in(&input1, window, Self::on_input_event),
+            cx.subscribe_in(&input2, window, Self::on_input_event),
+            cx.subscribe_in(&phone_input, window, Self::on_input_event),
+        ];
+
+        Self {
+            input1,
+            input2,
+            phone_input,
+            _subscriptions,
+        }
+    }
+
+    // Method with the exact signature expected by cx.subscribe_in
+    fn on_input_event(
+        &mut self,
+        _: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::Change(text) => println!("Change: {}", text),
+            InputEvent::PressEnter { secondary } => println!("PressEnter secondary: {}", secondary),
+            InputEvent::Focus => println!("Focus"),
+            InputEvent::Blur => println!("Blur"),
+        }
+    }
+}
+```
+
+### 3. Subscriber with Context Access
 
 ```rust
 fn setup_editor_subscriptions(
@@ -139,7 +234,7 @@ fn setup_editor_subscriptions(
 }
 ```
 
-### 3. Event Forwarding (Event Bubbling)
+### 4. Event Forwarding (Event Bubbling)
 
 ```rust
 // Forward events to parent view
@@ -155,7 +250,7 @@ cx.subscribe(&rename_editor, |_, _, event: &EditorEvent, cx| {
 })
 ```
 
-### 4. Subscriber with Closure and Move Semantics
+### 5. Subscriber with Closure and Move Semantics
 
 ```rust
 fn setup_complex_subscriptions(
@@ -381,6 +476,7 @@ impl NotificationManager {
 - **Store subscriptions** in `_subscriptions: Vec<Subscription>`
 - **Use detach()** only for fire-and-forget scenarios
 - **Cleanup on component destruction** happens automatically
+- **Prefer method references** over closures when no external capture is needed: `cx.subscribe(entity, Self::method_name)`
 
 ### 3. Context Usage
 - **Minimize context accesses** for better performance
@@ -400,3 +496,292 @@ impl NotificationManager {
 4. **Missing cx.notify()**: Required after state changes for re-rendering
 
 This pattern enables loosely coupled, reactive UI components with clear data flow architecture.
+
+## GPUI Entities and Views
+
+In GPUI, any type can be wrapped into an `Entity` using `cx.new()`, where `cx` is an instance of `gpui::App`. Entities are handles that can be freely cloned and passed around, providing a safe way to reference and manipulate data.
+
+### Creating Entities
+
+```rust
+use gpui::{App, Context, Entity, Render, Window};
+
+// Any struct can become an Entity
+struct Counter {
+    count: usize,
+}
+
+impl Counter {
+    fn new() -> Self {
+        Self { count: 0 }
+    }
+
+    fn increment(&mut self) {
+        self.count += 1;
+    }
+}
+
+// Create an entity using cx.new()
+fn create_counter(cx: &mut App) -> Entity<Counter> {
+    cx.new(|_cx| Counter::new())
+}
+
+// Entities can be cloned freely
+let counter1 = create_counter(cx);
+let counter2 = counter1.clone(); // Same entity, different handle
+```
+
+### Views: Entities with Render Trait
+
+When a type implements the `Render` trait, it becomes a "View" - an entity that can be rendered in the UI.
+
+```rust
+impl Render for Counter {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(format!("Count: {}", self.count))
+            .child(
+                button("Increment")
+                    .on_click(cx.listener(|this, _event, cx| {
+                        this.increment();
+                        cx.notify(); // Trigger UI update
+                    }))
+            )
+    }
+}
+```
+
+### RenderOnce Trait
+
+For simple, stateless components that don't need to be entities, you can implement `RenderOnce`:
+
+```rust
+struct SimpleIcon {
+    name: String,
+}
+
+impl RenderOnce for SimpleIcon {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        div().child(format!("Icon: {}", self.name))
+    }
+}
+
+// Usage in render method
+div().child(SimpleIcon { name: "star".to_string() })
+```
+
+### Using View Entities as Children
+
+View entities can be directly used as children in `div().child()` or `.children()`:
+
+```rust
+struct ParentView {
+    input: Entity<InputState>,
+    counter: Entity<Counter>,
+}
+
+impl Render for ParentView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(self.input.clone())  // Entity as child
+            .child(self.counter.clone()) // Another entity as child
+            .children([
+                self.input.clone(),      // Can also use in children()
+                self.counter.clone(),
+            ])
+    }
+}
+```
+
+### Updating Entities from Subscriptions
+
+A crucial pattern in EventEmitter systems is updating entities from within subscriptions using `entity.update(cx, closure)`:
+
+```rust
+struct FormView {
+    input_state: Entity<InputState>,
+    webview: Entity<WebView>,
+    current_url: String,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl FormView {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let input_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Enter URL...")
+        });
+
+        let webview = cx.new(|cx| WebView::new(window, cx));
+
+        let _subscriptions = vec![
+            // Subscribe to input events and update webview
+            cx.subscribe(&input_state, {
+                let webview = webview.clone();
+                move |this, input, event: &InputEvent, cx| {
+                    match event {
+                        InputEvent::PressEnter { .. } => {
+                            // Read input value
+                            let url = input.read(cx).value().clone();
+
+                            // Update webview entity
+                            webview.update(cx, |webview, _inner_cx| {
+                                webview.load_url(&url);
+                            });
+
+                            // Update subscriber state
+                            this.current_url = url;
+                            cx.notify(); // Trigger re-render of this view
+                        }
+                        InputEvent::Change(text) => {
+                            this.current_url = text.clone();
+                            cx.notify();
+                        }
+                        _ => {}
+                    }
+                }
+            })
+        ];
+
+        Self {
+            input_state,
+            webview,
+            current_url: String::new(),
+            _subscriptions,
+        }
+    }
+}
+```
+
+### Entity Update Pattern Details
+
+The `entity.update(cx, closure)` pattern provides safe access to the entity's inner data:
+
+```rust
+// The closure signature is: |inner_data: &mut T, inner_cx: &mut Context<T>|
+entity.update(cx, |inner_data, inner_cx| {
+    // inner_data: &mut ActualType - mutable reference to the wrapped data
+    // inner_cx: &mut Context<ActualType> - context for the inner entity
+
+    // Modify the inner data
+    inner_data.some_method();
+
+    // Trigger re-render of the entity if it's a View
+    inner_cx.notify();
+
+    // Can emit events from within the entity
+    inner_cx.emit(SomeEvent::StateChanged);
+});
+```
+
+### Complete Example: Input with Validation
+
+```rust
+struct ValidatedInput {
+    input: Entity<InputState>,
+    validator: Entity<Validator>,
+    is_valid: bool,
+    _subscriptions: Vec<Subscription>,
+}
+
+struct Validator {
+    pattern: regex::Regex,
+    last_result: bool,
+}
+
+impl EventEmitter<ValidationEvent> for Validator {}
+
+#[derive(Clone)]
+enum ValidationEvent {
+    ValidationChanged { is_valid: bool },
+}
+
+impl ValidatedInput {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Enter email...")
+        });
+
+        let validator = cx.new(|_cx| Validator {
+            pattern: regex::Regex::new(r"^[^@]+@[^@]+\.[^@]+$").unwrap(),
+            last_result: false,
+        });
+
+        let _subscriptions = vec![
+            // Input changes trigger validation
+            cx.subscribe(&input, {
+                let validator = validator.clone();
+                move |this, input, event: &InputEvent, cx| {
+                    match event {
+                        InputEvent::Change(text) => {
+                            // Update validator entity
+                            validator.update(cx, |validator, inner_cx| {
+                                let is_valid = validator.pattern.is_match(text);
+                                let changed = validator.last_result != is_valid;
+                                validator.last_result = is_valid;
+
+                                if changed {
+                                    inner_cx.emit(ValidationEvent::ValidationChanged { is_valid });
+                                }
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }),
+
+            // Validation results update UI state
+            cx.subscribe(&validator, |this, _validator, event: &ValidationEvent, cx| {
+                match event {
+                    ValidationEvent::ValidationChanged { is_valid } => {
+                        this.is_valid = *is_valid;
+                        cx.notify(); // Re-render to show validation state
+                    }
+                }
+            })
+        ];
+
+        Self {
+            input,
+            validator,
+            is_valid: false,
+            _subscriptions,
+        }
+    }
+}
+
+impl Render for ValidatedInput {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let border_color = if self.is_valid {
+            cx.theme().success
+        } else {
+            cx.theme().danger
+        };
+
+        div()
+            .border_1()
+            .border_color(border_color)
+            .child(self.input.clone())
+            .child(
+                div().child(if self.is_valid {
+                    "✓ Valid email"
+                } else {
+                    "✗ Invalid email format"
+                })
+            )
+    }
+}
+```
+
+### Key Entity Patterns
+
+1. **Entity Creation**: Use `cx.new(|cx| YourType::new())` to create entities
+2. **Entity Cloning**: Entities can be cloned freely - they're handles, not the data itself
+3. **View Entities**: Implement `Render` trait to make entities renderable
+4. **Direct Child Usage**: View entities can be used directly in `.child()` and `.children()`
+5. **Safe Updates**: Use `entity.update(cx, |data, inner_cx| { ... })` for safe mutation
+6. **Notification**: Call `cx.notify()` after state changes to trigger re-renders
+7. **Event Emission**: Use `inner_cx.emit(event)` from within update closures
+
+This entity system provides a robust foundation for building reactive UI components that can safely share state and communicate through events while maintaining clear ownership and lifecycle management.
