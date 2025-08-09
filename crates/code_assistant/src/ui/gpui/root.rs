@@ -176,6 +176,14 @@ impl RootView {
                 }
                 cx.notify();
             }
+            InputAreaEvent::ClearDraftRequested => {
+                // Clear draft immediately and synchronously
+                if let Some(session_id) = &self.current_session_id {
+                    if let Some(gpui) = cx.try_global::<Gpui>() {
+                        gpui.clear_draft_for_session(session_id);
+                    }
+                }
+            }
         }
     }
 
@@ -242,11 +250,6 @@ impl RootView {
                 });
             }
         }
-
-        // Clear draft when message is sent
-        if let Some(gpui) = cx.try_global::<Gpui>() {
-            gpui.clear_draft_for_session(session_id);
-        }
     }
 
     fn save_draft_for_session(
@@ -260,8 +263,6 @@ impl RootView {
             gpui.save_draft_for_session(session_id, content, attachments);
         }
     }
-
-
 
     fn on_cancel_agent(
         &mut self,
@@ -437,15 +438,16 @@ impl Focusable for RootView {
 impl Render for RootView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Get current chat state from global Gpui
-        let (chat_sessions, current_session_id, current_activity_state) = if let Some(gpui) = cx.try_global::<Gpui>() {
-            (
-                gpui.get_chat_sessions(),
-                gpui.get_current_session_id(),
-                gpui.current_session_activity_state.lock().unwrap().clone()
-            )
-        } else {
-            (Vec::new(), None, None)
-        };
+        let (chat_sessions, current_session_id, current_activity_state) =
+            if let Some(gpui) = cx.try_global::<Gpui>() {
+                (
+                    gpui.get_chat_sessions(),
+                    gpui.get_current_session_id(),
+                    gpui.current_session_activity_state.lock().unwrap().clone(),
+                )
+            } else {
+                (Vec::new(), None, None)
+            };
 
         // Update chat sidebar if needed
         if self.chat_sessions != chat_sessions || self.current_session_id != current_session_id {
@@ -478,7 +480,11 @@ impl Render for RootView {
 
         let cancel_enabled = if agent_is_running {
             if let (Some(gpui), Some(session_id)) = (cx.try_global::<Gpui>(), &current_session_id) {
-                !gpui.session_stop_requests.lock().unwrap().contains(session_id)
+                !gpui
+                    .session_stop_requests
+                    .lock()
+                    .unwrap()
+                    .contains(session_id)
             } else {
                 true
             }

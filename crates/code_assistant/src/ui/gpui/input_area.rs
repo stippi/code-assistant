@@ -27,6 +27,8 @@ pub enum InputAreaEvent {
     FocusRequested,
     /// Cancel/stop requested (for agent cancellation)
     CancelRequested,
+    /// Clear draft requested (before clearing input)
+    ClearDraftRequested,
 }
 
 /// Self-contained input area component that handles text input and attachments
@@ -218,6 +220,9 @@ impl InputArea {
                     // Remove trailing newline if present (from ENTER key press)
                     let cleaned_text = current_text.trim_end_matches('\n').to_string();
 
+                    // FIRST: Clear draft before doing anything else
+                    cx.emit(InputAreaEvent::ClearDraftRequested);
+
                     // For V1 mode compatibility - store input in shared value if requested
                     let is_input_requested = *self.input_requested.lock().unwrap();
                     if is_input_requested {
@@ -244,6 +249,9 @@ impl InputArea {
         let content = self.text_input.read(cx).value().to_string();
 
         if !content.trim().is_empty() || !self.attachments.is_empty() {
+            // FIRST: Clear draft before doing anything else
+            cx.emit(InputAreaEvent::ClearDraftRequested);
+
             // For V1 mode compatibility - store input in shared value if requested
             let is_input_requested = *self.input_requested.lock().unwrap();
             if is_input_requested {
@@ -354,9 +362,11 @@ impl InputArea {
                                 ));
 
                             if send_enabled {
-                                send_button = send_button
-                                    .hover(|s| s.bg(cx.theme().muted))
-                                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_submit_click));
+                                send_button =
+                                    send_button.hover(|s| s.bg(cx.theme().muted)).on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(Self::on_submit_click),
+                                    );
                             }
                             buttons.push(send_button);
                         } else {
@@ -386,44 +396,46 @@ impl InputArea {
                                 ));
 
                             if send_enabled {
-                                send_button = send_button
-                                    .hover(|s| s.bg(cx.theme().muted))
-                                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_submit_click));
+                                send_button =
+                                    send_button.hover(|s| s.bg(cx.theme().muted)).on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(Self::on_submit_click),
+                                    );
                             }
                             buttons.push(send_button);
 
-                            // Cancel button - only show when agent is running
-                            if self.agent_is_running {
-                                let mut cancel_button = div()
-                                    .size(px(40.))
-                                    .rounded_sm()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .cursor(if self.cancel_enabled {
-                                        CursorStyle::PointingHand
+                            // Cancel button - always visible, but enabled/disabled based on agent state
+                            let mut cancel_button = div()
+                                .size(px(40.))
+                                .rounded_sm()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor(if self.cancel_enabled {
+                                    CursorStyle::PointingHand
+                                } else {
+                                    CursorStyle::OperationNotAllowed
+                                })
+                                .child(file_icons::render_icon(
+                                    &file_icons::get().get_type_icon(file_icons::STOP),
+                                    22.0,
+                                    if self.cancel_enabled {
+                                        cx.theme().danger
                                     } else {
-                                        CursorStyle::OperationNotAllowed
-                                    })
-                                    .child(file_icons::render_icon(
-                                        &file_icons::get().get_type_icon(file_icons::STOP),
-                                        22.0,
-                                        if self.cancel_enabled {
-                                            cx.theme().danger
-                                        } else {
-                                            cx.theme().muted_foreground
-                                        },
-                                        "⬜",
-                                    ));
+                                        cx.theme().muted_foreground
+                                    },
+                                    "⬜",
+                                ));
 
-                                if self.cancel_enabled {
-                                    cancel_button = cancel_button
-                                        .hover(|s| s.bg(cx.theme().muted))
-                                        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_cancel_click));
-                                }
-
-                                buttons.push(cancel_button);
+                            if self.cancel_enabled {
+                                cancel_button =
+                                    cancel_button.hover(|s| s.bg(cx.theme().muted)).on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(Self::on_cancel_click),
+                                    );
                             }
+
+                            buttons.push(cancel_button);
                         }
 
                         buttons
