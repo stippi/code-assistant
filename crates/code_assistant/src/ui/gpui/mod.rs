@@ -7,6 +7,7 @@ pub mod diff_renderer;
 pub mod elements;
 pub mod file_icons;
 pub mod image;
+pub mod input_area;
 mod memory;
 mod messages;
 pub mod parameter_renderers;
@@ -31,7 +32,7 @@ use gpui::{
     actions, px, App, AppContext, AsyncApp, Entity, Global, KeyBinding, Menu, MenuItem, Point,
     SharedString,
 };
-use gpui_component::input::InputState;
+
 use gpui_component::Root;
 pub use memory::MemoryView;
 pub use messages::MessagesView;
@@ -405,14 +406,6 @@ impl Gpui {
                         ..Default::default()
                     },
                     |window, cx| {
-                        // Create TextInput with multi-line support
-                        let text_input = cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .multi_line()
-                                .auto_grow(1, 8)
-                                .placeholder("Type your message...")
-                        });
-
                         // Create MessagesView
                         let messages_view =
                             cx.new(|cx| MessagesView::new(message_queue.clone(), cx));
@@ -427,7 +420,6 @@ impl Gpui {
                         // Create RootView
                         let root_view = cx.new(|cx| {
                             RootView::new(
-                                text_input,
                                 memory_view.clone(),
                                 messages_view,
                                 chat_sidebar.clone(),

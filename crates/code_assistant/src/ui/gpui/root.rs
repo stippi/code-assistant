@@ -1,53 +1,43 @@
-use super::attachment::{AttachmentEvent, AttachmentView};
 use super::auto_scroll::AutoScrollContainer;
 use super::chat_sidebar::ChatSidebar;
 use super::file_icons;
+use super::input_area::{InputArea, InputAreaEvent};
 use super::memory::MemoryView;
 use super::messages::MessagesView;
 use super::theme;
 use super::{CloseWindow, Gpui, UiEventSender};
-use crate::persistence::{ChatMetadata, DraftAttachment};
+use crate::persistence::ChatMetadata;
 use crate::ui::ui_events::UiEvent;
 
-use base64::Engine;
 use gpui::{
     bounce, div, ease_in_out, percentage, prelude::*, px, rgba, svg, Animation, AnimationExt, App,
-    ClipboardEntry, Context, CursorStyle, Entity, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent, SharedString, Transformation,
+    Context, Entity, FocusHandle, Focusable, MouseButton, MouseUpEvent, SharedString, Subscription,
+    Transformation,
 };
-use gpui_component::input::TextInput;
-use gpui_component::input::{InputEvent, InputState, Paste};
 use gpui_component::ActiveTheme;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
 
 // Root View - handles overall layout and coordination
 pub struct RootView {
-    pub text_input: Entity<InputState>,
+    input_area: Entity<InputArea>,
     memory_view: Entity<MemoryView>,
     chat_sidebar: Entity<ChatSidebar>,
     auto_scroll_container: Entity<AutoScrollContainer<MessagesView>>,
     recent_keystrokes: Vec<gpui::Keystroke>,
     focus_handle: FocusHandle,
-    input_value: Arc<Mutex<Option<String>>>,
-    input_requested: Arc<Mutex<bool>>,
     // Memory view state
     memory_collapsed: bool,
     // Chat sidebar state
     chat_collapsed: bool,
     current_session_id: Option<String>,
     chat_sessions: Vec<ChatMetadata>,
-    // Subscription to text input events
-    _input_subscription: gpui::Subscription,
-    // Attachments for the current message being composed
-    attachments: Vec<DraftAttachment>,
-    // Attachment view entities
-    attachment_views: Vec<Entity<AttachmentView>>,
+    // Subscription to input area events
+    _input_area_subscription: Subscription,
 }
 
 impl RootView {
     pub fn new(
-        text_input: Entity<InputState>,
         memory_view: Entity<MemoryView>,
         messages_view: Entity<MessagesView>,
         chat_sidebar: Entity<ChatSidebar>,
@@ -60,25 +50,26 @@ impl RootView {
         let auto_scroll_container =
             cx.new(|_cx| AutoScrollContainer::new("messages", messages_view));
 
-        // Subscribe to text input events
-        let input_subscription = cx.subscribe_in(&text_input, window, Self::on_input_event);
+        // Create the input area
+        let input_area =
+            cx.new(|cx| InputArea::new(window, cx, input_value.clone(), input_requested.clone()));
+
+        // Subscribe to input area events
+        let input_area_subscription =
+            cx.subscribe_in(&input_area, window, Self::on_input_area_event);
 
         let mut root_view = Self {
-            text_input,
+            input_area,
             memory_view,
             chat_sidebar,
             auto_scroll_container,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
-            input_value,
-            input_requested,
             memory_collapsed: false,
             chat_collapsed: false, // Chat sidebar is visible by default
             current_session_id: None,
             chat_sessions: Vec::new(),
-            _input_subscription: input_subscription,
-            attachments: Vec::new(),
-            attachment_views: Vec::new(),
+            _input_area_subscription: input_area_subscription,
         };
 
         // Request initial chat session list
@@ -140,28 +131,72 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         self.recent_keystrokes.clear();
-        self.text_input
-            .update(cx, |text_input, cx| text_input.set_value("", window, cx));
+        self.input_area
+            .update(cx, |input_area, cx| input_area.clear(window, cx));
         cx.notify();
+    }
+
+    /// Handle InputArea events
+    fn on_input_area_event(
+        &mut self,
+        _input_area: &Entity<InputArea>,
+        event: &InputAreaEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputAreaEvent::MessageSubmitted {
+                content,
+                attachments,
+            } => {
+                if let Some(session_id) = self.current_session_id.clone() {
+                    self.send_message(&session_id, content.clone(), attachments.clone(), cx);
+                }
+            }
+            InputAreaEvent::ContentChanged {
+                content,
+                attachments,
+            } => {
+                if let Some(session_id) = &self.current_session_id {
+                    self.save_draft_for_session(session_id, content, attachments, cx);
+                }
+            }
+            InputAreaEvent::FocusRequested => {
+                // Handle focus request if needed
+            }
+            InputAreaEvent::CancelRequested => {
+                // Handle cancel/stop request
+                if let Some(session_id) = &self.current_session_id {
+                    if let Some(gpui) = cx.try_global::<Gpui>() {
+                        gpui.session_stop_requests
+                            .lock()
+                            .unwrap()
+                            .insert(session_id.clone());
+                    }
+                }
+                cx.notify();
+            }
+        }
     }
 
     fn send_message(
         &mut self,
         session_id: &str,
         content: String,
-        text_input: &Entity<InputState>,
-        window: &mut gpui::Window,
+        attachments: Vec<crate::persistence::DraftAttachment>,
         cx: &mut Context<Self>,
     ) {
-        if content.trim().is_empty() && self.attachments.is_empty() {
+        if content.trim().is_empty() && attachments.is_empty() {
             return;
         }
 
-        // V1 mode: Store input in the shared value if input is requested
-        let is_input_requested = *self.input_requested.lock().unwrap();
-        if is_input_requested {
-            let mut input_value = self.input_value.lock().unwrap();
-            *input_value = Some(content.clone());
+        // Check if input is requested for V1 mode compatibility
+        if let Some(gpui) = cx.try_global::<Gpui>() {
+            let is_input_requested = *gpui.input_requested.lock().unwrap();
+            if is_input_requested {
+                let mut input_value = gpui.input_value.lock().unwrap();
+                *input_value = Some(content.clone());
+            }
         }
 
         // V2 mode: Send user message event if we have an active session
@@ -185,12 +220,12 @@ impl RootView {
                     "RootView: Queuing user message for running agent in session {}: {} (with {} attachments)",
                     session_id,
                     content,
-                    self.attachments.len()
+                    attachments.len()
                 );
                 let _ = sender.0.try_send(UiEvent::QueueUserMessage {
                     message: content.clone(),
                     session_id: session_id.to_string(),
-                    attachments: self.attachments.clone(),
+                    attachments: attachments.clone(),
                 });
             } else {
                 // Send message normally (agent is idle)
@@ -198,61 +233,35 @@ impl RootView {
                     "RootView: Sending user message to session {}: {} (with {} attachments)",
                     session_id,
                     content,
-                    self.attachments.len()
+                    attachments.len()
                 );
                 let _ = sender.0.try_send(UiEvent::SendUserMessage {
                     message: content.clone(),
                     session_id: session_id.to_string(),
-                    attachments: self.attachments.clone(),
+                    attachments: attachments.clone(),
                 });
             }
         }
 
-        // Clear draft when message is sent (before clearing input to avoid race condition)
+        // Clear draft when message is sent
         if let Some(gpui) = cx.try_global::<Gpui>() {
             gpui.clear_draft_for_session(session_id);
         }
-
-        // Clear attachments
-        self.attachments.clear();
-
-        // Clear the input field
-        text_input.update(cx, |text_input, cx| {
-            text_input.set_value("", window, cx);
-        });
     }
 
-    fn on_submit_click(
-        &mut self,
-        _: &MouseUpEvent,
-        window: &mut gpui::Window,
+    fn save_draft_for_session(
+        &self,
+        session_id: &str,
+        content: &str,
+        attachments: &[crate::persistence::DraftAttachment],
         cx: &mut Context<Self>,
     ) {
-        if let Some(session_id) = self.current_session_id.clone() {
-            let content = self.text_input.read(cx).value().to_string();
-            let text_input = self.text_input.clone();
-            self.send_message(&session_id, content, &text_input, window, cx);
+        if let Some(gpui) = cx.try_global::<Gpui>() {
+            gpui.save_draft_for_session(session_id, content, attachments);
         }
-        cx.notify();
     }
 
-    fn on_stop_click(
-        &mut self,
-        _: &MouseUpEvent,
-        _window: &mut gpui::Window,
-        cx: &mut Context<Self>,
-    ) {
-        // Add current session to stop requests
-        if let Some(session_id) = &self.current_session_id {
-            if let Some(gpui) = cx.try_global::<Gpui>() {
-                gpui.session_stop_requests
-                    .lock()
-                    .unwrap()
-                    .insert(session_id.clone());
-            }
-        }
-        cx.notify();
-    }
+
 
     fn on_cancel_agent(
         &mut self,
@@ -270,119 +279,6 @@ impl RootView {
             }
         }
         cx.notify();
-    }
-
-    fn on_paste(&mut self, _: &Paste, _window: &mut gpui::Window, cx: &mut Context<Self>) {
-        if let Some(clipboard_item) = cx.read_from_clipboard() {
-            for entry in clipboard_item.into_entries() {
-                if let ClipboardEntry::Image(image) = entry {
-                    // Create a DraftAttachment from the image
-                    let attachment = DraftAttachment::Image {
-                        content: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
-                        mime_type: image.format.mime_type().to_string(),
-                    };
-
-                    self.attachments.push(attachment);
-
-                    // Rebuild attachment views
-                    self.rebuild_attachment_views(cx);
-
-                    // Save attachments to draft if we have a current session
-                    if let Some(session_id) = &self.current_session_id {
-                        self.save_draft_with_attachments(session_id, cx);
-                    }
-
-                    cx.notify();
-                }
-            }
-        }
-    }
-
-    fn remove_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index < self.attachments.len() {
-            self.attachments.remove(index);
-
-            // Rebuild attachment views with updated indices
-            self.rebuild_attachment_views(cx);
-
-            // Update draft
-            if let Some(session_id) = &self.current_session_id {
-                self.save_draft_with_attachments(session_id, cx);
-            }
-
-            cx.notify();
-        }
-    }
-
-    fn save_draft_with_attachments(&self, session_id: &str, cx: &mut Context<Self>) {
-        if let Some(gpui) = cx.try_global::<Gpui>() {
-            let text = self.text_input.read(cx).value().to_string();
-            gpui.save_draft_for_session(session_id, &text, &self.attachments);
-        }
-    }
-
-    /// Rebuild attachment views when attachments change
-    fn rebuild_attachment_views(&mut self, cx: &mut Context<Self>) {
-        self.attachment_views.clear();
-
-        for (index, attachment) in self.attachments.iter().enumerate() {
-            let attachment_view = cx.new(|cx| AttachmentView::new(attachment.clone(), index, cx));
-
-            // Subscribe to attachment events
-            cx.subscribe(
-                &attachment_view,
-                |view, _attachment_view, event: &AttachmentEvent, cx| match event {
-                    AttachmentEvent::Remove(index) => {
-                        view.remove_attachment(*index, cx);
-                    }
-                },
-            )
-            .detach();
-
-            self.attachment_views.push(attachment_view);
-        }
-    }
-
-    // Handle text input events for draft functionality
-    fn on_input_event(
-        &mut self,
-        _input: &Entity<InputState>,
-        event: &InputEvent,
-        window: &mut gpui::Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            InputEvent::Change(text) => {
-                if let Some(session_id) = &self.current_session_id {
-                    // Save draft with attachments immediately for now (no debouncing for simplicity)
-                    if let Some(gpui) = cx.try_global::<Gpui>() {
-                        gpui.save_draft_for_session(session_id, text, &self.attachments);
-                    }
-                }
-            }
-            InputEvent::Focus => {}
-            InputEvent::Blur => {}
-            InputEvent::PressEnter { secondary } => {
-                // Only send message on plain ENTER (not with modifiers)
-                if !secondary {
-                    if let Some(session_id) = self.current_session_id.clone() {
-                        // IMMEDIATELY clear any existing draft to prevent the newline from being saved
-                        if let Some(gpui) = cx.try_global::<Gpui>() {
-                            gpui.clear_draft_for_session(&session_id);
-                        }
-
-                        // Get current text (this might include the newline that was just added)
-                        let current_text = self.text_input.read(cx).value().to_string();
-                        // Remove trailing newline if present (from ENTER key press)
-                        let cleaned_text = current_text.trim_end_matches('\n').to_string();
-
-                        let text_input = self.text_input.clone();
-                        self.send_message(&session_id, cleaned_text, &text_input, window, cx);
-                    }
-                }
-                // If secondary is true, do nothing - modifiers will be handled by InsertLineBreak action
-            }
-        }
     }
 
     /// Render the floating status popover if needed
@@ -525,12 +421,9 @@ impl RootView {
             ("".to_string(), Vec::new())
         };
 
-        // Update attachments and rebuild views
-        self.attachments = attachments;
-        self.rebuild_attachment_views(cx);
-
-        self.text_input.update(cx, |text_input, cx| {
-            text_input.set_value(input_value, window, cx);
+        // Update the input area with the new content
+        self.input_area.update(cx, |input_area, cx| {
+            input_area.set_content(input_value, attachments, window, cx);
         });
     }
 }
@@ -543,14 +436,15 @@ impl Focusable for RootView {
 
 impl Render for RootView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Check if input is requested
-        let is_input_requested = *self.input_requested.lock().unwrap();
-
         // Get current chat state from global Gpui
-        let (chat_sessions, current_session_id) = if let Some(gpui) = cx.try_global::<Gpui>() {
-            (gpui.get_chat_sessions(), gpui.get_current_session_id())
+        let (chat_sessions, current_session_id, current_activity_state) = if let Some(gpui) = cx.try_global::<Gpui>() {
+            (
+                gpui.get_chat_sessions(),
+                gpui.get_current_session_id(),
+                gpui.current_session_activity_state.lock().unwrap().clone()
+            )
         } else {
-            (Vec::new(), None)
+            (Vec::new(), None, None)
         };
 
         // Update chat sidebar if needed
@@ -575,22 +469,33 @@ impl Render for RootView {
             }
         }
 
+        // Update InputArea with current agent state
+        let agent_is_running = if let Some(state) = &current_activity_state {
+            !matches!(state, crate::session::instance::SessionActivityState::Idle)
+        } else {
+            false
+        };
+
+        let cancel_enabled = if agent_is_running {
+            if let (Some(gpui), Some(session_id)) = (cx.try_global::<Gpui>(), &current_session_id) {
+                !gpui.session_stop_requests.lock().unwrap().contains(session_id)
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+
+        self.input_area.update(cx, |input_area, _cx| {
+            input_area.set_agent_state(agent_is_running, cancel_enabled);
+        });
+
         // Main container with titlebar and content
         div()
             .on_action(|_: &CloseWindow, window, _| {
                 window.remove_window();
             })
-            .on_action({
-                let text_input_handle = self.text_input.clone();
-                move |_: &crate::ui::gpui::InsertLineBreak, window, cx| {
-                    // Insert a line break at the current cursor position
-                    text_input_handle.update(cx, |input_state, cx| {
-                        input_state.insert("\n", window, cx);
-                    });
-                }
-            })
             .on_action(cx.listener(Self::on_cancel_agent))
-            .on_action(cx.listener(Self::on_paste))
             .bg(cx.theme().background)
             .track_focus(&self.focus_handle(cx))
             .flex()
@@ -728,169 +633,8 @@ impl Render for RootView {
                             )
                             // Status popover - positioned at bottom center
                             .children(self.render_status_popover(cx))
-                            // Input area at the bottom
-                            .child(
-                                div()
-                                    .id("input-area")
-                                    .flex_none() // Important: don't grow or shrink
-                                    .bg(cx.theme().card)
-                                    .border_t_1()
-                                    .border_color(cx.theme().border)
-                                    .flex()
-                                    .flex_col() // Changed to column to accommodate attachments area
-                                    .gap_2()
-                                    // Attachments area - show image previews when available
-                                    .when(!self.attachments.is_empty(), |parent| {
-                                        parent.child(
-                                            div()
-                                                .p_2()
-                                                .border_b_1()
-                                                .border_color(cx.theme().border)
-                                                .flex()
-                                                .flex_row()
-                                                .gap_2()
-                                                .flex_wrap()
-                                                .children(
-                                                    self.attachment_views.iter().cloned()
-                                                )
-                                        )
-                                    })
-
-                                    // Main input row
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .justify_between()
-                                            .items_center()
-                                            .p_2()
-                                            .gap_2()
-                                    .child({
-                                        let text_input_handle =
-                                            self.text_input.read(cx).focus_handle(cx);
-                                        let is_focused = text_input_handle.is_focused(window);
-
-                                        div()
-                                            .flex_1()
-                                            .border(if is_focused {
-                                                px(2.)
-                                            } else {
-                                                px(1.)
-                                            })
-                                            .p(if is_focused {
-                                                px(0.)
-                                            } else {
-                                                px(1.)
-                                            })
-                                            .border_color(if is_focused {
-                                                cx.theme().primary
-                                            } else {
-                                                cx.theme().sidebar_border
-                                            })
-                                            .rounded_md()
-                                            .track_focus(&text_input_handle)
-                                            .child(TextInput::new(&self.text_input).appearance(false))
-                                    })
-                                    .children({
-                                        // Get current session activity state from global Gpui
-                                        let current_activity_state = if let Some(gpui) = cx.try_global::<Gpui>() {
-                                            gpui.current_session_activity_state.lock().unwrap().clone()
-                                        } else {
-                                            None
-                                        };
-
-                                        // Determine if agent is running
-                                        let agent_is_running = if let Some(state) = current_activity_state {
-                                            !matches!(state, crate::session::instance::SessionActivityState::Idle)
-                                        } else {
-                                            false
-                                        };
-
-                                        // Check if text input has content
-                                        let has_input_content = !self.text_input.read(cx).value().trim().is_empty();
-
-                                        let mut buttons = Vec::new();
-
-                                        // Send button - enabled when input has content
-                                        let send_enabled = has_input_content && (is_input_requested || current_session_id.is_some());
-                                        let mut send_button = div()
-                                            .size(px(40.))
-                                            .rounded_sm()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .cursor(if send_enabled {
-                                                CursorStyle::PointingHand
-                                            } else {
-                                                CursorStyle::OperationNotAllowed
-                                            })
-                                            .child(file_icons::render_icon(
-                                                &file_icons::get().get_type_icon(file_icons::SEND),
-                                                22.0,
-                                                if send_enabled {
-                                                    cx.theme().primary
-                                                } else {
-                                                    cx.theme().muted_foreground
-                                                },
-                                                ">",
-                                            ));
-
-                                        if send_enabled {
-                                            send_button = send_button
-                                                .hover(|s| s.bg(cx.theme().muted))
-                                                .on_mouse_up(
-                                                    MouseButton::Left,
-                                                    cx.listener(Self::on_submit_click),
-                                                );
-                                        }
-                                        buttons.push(send_button);
-
-                                        // Cancel button - enabled only when current session's agent is running
-                                        let mut cancel_enabled = agent_is_running;
-
-                                        // Check if current session has requested a stop
-                                        if let (Some(gpui), Some(session_id)) = (cx.try_global::<Gpui>(), &current_session_id) {
-                                            if gpui.session_stop_requests.lock().unwrap().contains(session_id) {
-                                                cancel_enabled = false;
-                                            }
-                                        }
-
-                                        let mut cancel_button = div()
-                                            .size(px(40.))
-                                            .rounded_sm()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .cursor(if cancel_enabled {
-                                                CursorStyle::PointingHand
-                                            } else {
-                                                CursorStyle::OperationNotAllowed
-                                            })
-                                            .child(file_icons::render_icon(
-                                                &file_icons::get().get_type_icon(file_icons::STOP),
-                                                22.0,
-                                                if cancel_enabled {
-                                                    cx.theme().danger
-                                                } else {
-                                                    cx.theme().muted_foreground
-                                                },
-                                                "⬜",
-                                            ));
-
-                                        if cancel_enabled {
-                                            cancel_button = cancel_button
-                                                .hover(|s| s.bg(cx.theme().muted))
-                                                .on_mouse_up(
-                                                    MouseButton::Left,
-                                                    cx.listener(Self::on_stop_click),
-                                                );
-                                        }
-                                        buttons.push(cancel_button);
-
-                                        buttons
-                                    }),
-                                    ), // Close main input row
-                            ),
+                            // Input area at the bottom - now using the InputArea component
+                            .child(self.input_area.clone()),
                     )
                     // Right sidebar with memory view - only show if not collapsed
                     .when(!self.memory_collapsed, |s| {
