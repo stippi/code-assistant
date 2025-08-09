@@ -458,6 +458,7 @@ impl SessionManager {
 
     /// Check for completed agent tasks and handle their results
     /// This should be called periodically to catch agent failures
+    #[allow(dead_code)]
     pub async fn check_completed_tasks(&mut self) -> Result<()> {
         let mut completed_sessions = Vec::new();
 

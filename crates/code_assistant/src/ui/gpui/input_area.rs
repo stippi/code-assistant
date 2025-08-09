@@ -8,7 +8,6 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState, Paste, TextInput};
 use gpui_component::ActiveTheme;
-use std::sync::{Arc, Mutex};
 
 /// Events emitted by the InputArea component
 #[derive(Clone, Debug)]
@@ -37,8 +36,7 @@ pub struct InputArea {
     attachments: Vec<DraftAttachment>,
     attachment_views: Vec<Entity<AttachmentView>>,
     focus_handle: FocusHandle,
-    input_value: Arc<Mutex<Option<String>>>,
-    input_requested: Arc<Mutex<bool>>,
+
     // Agent state for button rendering
     agent_is_running: bool,
     cancel_enabled: bool,
@@ -47,12 +45,7 @@ pub struct InputArea {
 }
 
 impl InputArea {
-    pub fn new(
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        input_value: Arc<Mutex<Option<String>>>,
-        input_requested: Arc<Mutex<bool>>,
-    ) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Create the text input
         let text_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -69,17 +62,11 @@ impl InputArea {
             attachments: Vec::new(),
             attachment_views: Vec::new(),
             focus_handle: cx.focus_handle(),
-            input_value,
-            input_requested,
+
             agent_is_running: false,
             cancel_enabled: false,
             _input_subscription: input_subscription,
         }
-    }
-
-    /// Get the text input entity for external access
-    pub fn text_input(&self) -> &Entity<InputState> {
-        &self.text_input
     }
 
     /// Set the input value and attachments (for loading drafts)
@@ -113,6 +100,7 @@ impl InputArea {
     }
 
     /// Get current content (text and attachments)
+    #[allow(dead_code)]
     pub fn get_content(&self, cx: &Context<Self>) -> (String, Vec<DraftAttachment>) {
         let text = self.text_input.read(cx).value().to_string();
         (text, self.attachments.clone())
@@ -223,18 +211,11 @@ impl InputArea {
                     // FIRST: Clear draft before doing anything else
                     cx.emit(InputAreaEvent::ClearDraftRequested);
 
-                    // For V1 mode compatibility - store input in shared value if requested
-                    let is_input_requested = *self.input_requested.lock().unwrap();
-                    if is_input_requested {
-                        let mut input_value = self.input_value.lock().unwrap();
-                        *input_value = Some(cleaned_text);
-                    } else {
-                        // V2 mode - emit event for RootView to handle
-                        cx.emit(InputAreaEvent::MessageSubmitted {
-                            content: cleaned_text,
-                            attachments: self.attachments.clone(),
-                        });
-                    }
+                    // Emit event for RootView to handle
+                    cx.emit(InputAreaEvent::MessageSubmitted {
+                        content: cleaned_text,
+                        attachments: self.attachments.clone(),
+                    });
 
                     // Clear the input and attachments
                     self.clear(window, cx);
@@ -252,18 +233,11 @@ impl InputArea {
             // FIRST: Clear draft before doing anything else
             cx.emit(InputAreaEvent::ClearDraftRequested);
 
-            // For V1 mode compatibility - store input in shared value if requested
-            let is_input_requested = *self.input_requested.lock().unwrap();
-            if is_input_requested {
-                let mut input_value = self.input_value.lock().unwrap();
-                *input_value = Some(content.clone());
-            } else {
-                // V2 mode - emit event for RootView to handle
-                cx.emit(InputAreaEvent::MessageSubmitted {
-                    content: content.clone(),
-                    attachments: self.attachments.clone(),
-                });
-            }
+            // Emit event for RootView to handle
+            cx.emit(InputAreaEvent::MessageSubmitted {
+                content: content.clone(),
+                attachments: self.attachments.clone(),
+            });
 
             // Clear the input and attachments
             self.clear(window, cx);
@@ -281,7 +255,6 @@ impl InputArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let is_input_requested = *self.input_requested.lock().unwrap();
         let text_input_handle = self.text_input.read(cx).focus_handle(cx);
         let is_focused = text_input_handle.is_focused(window);
         let has_input_content = !self.text_input.read(cx).value().trim().is_empty();
@@ -335,108 +308,68 @@ impl InputArea {
                     .children({
                         let mut buttons = Vec::new();
 
-                        // For V1 mode, only show send button when input is requested
-                        if is_input_requested {
-                            // Send button - enabled when input has content in V1 mode
-                            let send_enabled = has_input_content;
-                            let mut send_button = div()
-                                .size(px(40.))
-                                .rounded_sm()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor(if send_enabled {
-                                    CursorStyle::PointingHand
+                        // Show both send and cancel buttons
+                        // Send button - enabled when input has content
+                        let send_enabled = has_input_content;
+                        let mut send_button = div()
+                            .size(px(40.))
+                            .rounded_sm()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor(if send_enabled {
+                                CursorStyle::PointingHand
+                            } else {
+                                CursorStyle::OperationNotAllowed
+                            })
+                            .child(file_icons::render_icon(
+                                &file_icons::get().get_type_icon(file_icons::SEND),
+                                22.0,
+                                if send_enabled {
+                                    cx.theme().primary
                                 } else {
-                                    CursorStyle::OperationNotAllowed
-                                })
-                                .child(file_icons::render_icon(
-                                    &file_icons::get().get_type_icon(file_icons::SEND),
-                                    22.0,
-                                    if send_enabled {
-                                        cx.theme().primary
-                                    } else {
-                                        cx.theme().muted_foreground
-                                    },
-                                    ">",
-                                ));
+                                    cx.theme().muted_foreground
+                                },
+                                ">",
+                            ));
 
-                            if send_enabled {
-                                send_button =
-                                    send_button.hover(|s| s.bg(cx.theme().muted)).on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::on_submit_click),
-                                    );
-                            }
-                            buttons.push(send_button);
-                        } else {
-                            // V2 mode - show both send and cancel buttons
-                            // Send button - enabled when input has content
-                            let send_enabled = has_input_content;
-                            let mut send_button = div()
-                                .size(px(40.))
-                                .rounded_sm()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor(if send_enabled {
-                                    CursorStyle::PointingHand
-                                } else {
-                                    CursorStyle::OperationNotAllowed
-                                })
-                                .child(file_icons::render_icon(
-                                    &file_icons::get().get_type_icon(file_icons::SEND),
-                                    22.0,
-                                    if send_enabled {
-                                        cx.theme().primary
-                                    } else {
-                                        cx.theme().muted_foreground
-                                    },
-                                    ">",
-                                ));
-
-                            if send_enabled {
-                                send_button =
-                                    send_button.hover(|s| s.bg(cx.theme().muted)).on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::on_submit_click),
-                                    );
-                            }
-                            buttons.push(send_button);
-
-                            // Cancel button - always visible, but enabled/disabled based on agent state
-                            let mut cancel_button = div()
-                                .size(px(40.))
-                                .rounded_sm()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor(if self.cancel_enabled {
-                                    CursorStyle::PointingHand
-                                } else {
-                                    CursorStyle::OperationNotAllowed
-                                })
-                                .child(file_icons::render_icon(
-                                    &file_icons::get().get_type_icon(file_icons::STOP),
-                                    22.0,
-                                    if self.cancel_enabled {
-                                        cx.theme().danger
-                                    } else {
-                                        cx.theme().muted_foreground
-                                    },
-                                    "⬜",
-                                ));
-
-                            if self.cancel_enabled {
-                                cancel_button =
-                                    cancel_button.hover(|s| s.bg(cx.theme().muted)).on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::on_cancel_click),
-                                    );
-                            }
-
-                            buttons.push(cancel_button);
+                        if send_enabled {
+                            send_button = send_button
+                                .hover(|s| s.bg(cx.theme().muted))
+                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_submit_click));
                         }
+                        buttons.push(send_button);
+
+                        // Cancel button - always visible, but enabled/disabled based on agent state
+                        let mut cancel_button = div()
+                            .size(px(40.))
+                            .rounded_sm()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor(if self.cancel_enabled {
+                                CursorStyle::PointingHand
+                            } else {
+                                CursorStyle::OperationNotAllowed
+                            })
+                            .child(file_icons::render_icon(
+                                &file_icons::get().get_type_icon(file_icons::STOP),
+                                22.0,
+                                if self.cancel_enabled {
+                                    cx.theme().danger
+                                } else {
+                                    cx.theme().muted_foreground
+                                },
+                                "⬜",
+                            ));
+
+                        if self.cancel_enabled {
+                            cancel_button = cancel_button
+                                .hover(|s| s.bg(cx.theme().muted))
+                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_cancel_click));
+                        }
+
+                        buttons.push(cancel_button);
 
                         buttons
                     }),

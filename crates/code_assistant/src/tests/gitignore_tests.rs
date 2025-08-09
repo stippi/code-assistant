@@ -56,7 +56,7 @@ fn test_list_files_respects_gitignore() -> Result<()> {
     let root_path = temp_dir.path();
 
     // List files in the root directory
-    let result = explorer.list_files(&root_path.to_path_buf(), None)?;
+    let result = explorer.list_files(root_path, None)?;
 
     // Convert the result to a string for easier inspection
     let listed_files = result.to_string();
@@ -137,7 +137,7 @@ fn test_write_file_respects_gitignore() -> Result<()> {
 
     // Writing to a visible file should succeed
     let new_content = "Updated visible content";
-    let write_visible = explorer.write_file(&visible_file, &new_content.to_string(), false)?;
+    let write_visible = explorer.write_file(&visible_file, new_content, false)?;
 
     // Prüfen, dass der Inhalt korrekt ist (ignoriere mögliche Zeilenumbrüche am Ende)
     assert_eq!(write_visible.trim_end(), new_content);
@@ -147,11 +147,7 @@ fn test_write_file_respects_gitignore() -> Result<()> {
     assert_eq!(file_content.trim_end(), new_content);
 
     // Writing to an ignored file should fail
-    let write_ignored = explorer.write_file(
-        &ignored_file,
-        &"Trying to update ignored file".to_string(),
-        false,
-    );
+    let write_ignored = explorer.write_file(&ignored_file, "Trying to update ignored file", false);
     assert!(write_ignored.is_err());
 
     // The error should indicate the file is hidden by .gitignore
@@ -162,11 +158,8 @@ fn test_write_file_respects_gitignore() -> Result<()> {
     );
 
     // Appending to an ignored file should also fail
-    let append_ignored = explorer.write_file(
-        &ignored_file,
-        &"Trying to append to ignored file".to_string(),
-        true,
-    );
+    let append_ignored =
+        explorer.write_file(&ignored_file, "Trying to append to ignored file", true);
     assert!(append_ignored.is_err());
 
     Ok(())

@@ -28,22 +28,18 @@ use crate::ui::gpui::{
 use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
 use assets::Assets;
 use async_channel;
+use elements::MessageContainer;
 use gpui::{
     actions, px, App, AppContext, AsyncApp, Entity, Global, KeyBinding, Menu, MenuItem, Point,
     SharedString,
 };
-
 use gpui_component::Root;
 pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tracing::{debug, error, trace, warn};
-
-use elements::MessageContainer;
 
 actions!(
     code_assistant,
@@ -118,8 +114,6 @@ pub enum BackendResponse {
 #[derive(Clone)]
 pub struct Gpui {
     message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
-    input_value: Arc<Mutex<Option<String>>>,
-    input_requested: Arc<Mutex<bool>>,
     working_memory: Arc<Mutex<Option<WorkingMemory>>>,
     event_sender: Arc<Mutex<async_channel::Sender<UiEvent>>>,
     event_receiver: Arc<Mutex<async_channel::Receiver<UiEvent>>>,
@@ -197,8 +191,6 @@ impl Global for Gpui {}
 impl Gpui {
     pub fn new() -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
-        let input_value = Arc::new(Mutex::new(None));
-        let input_requested = Arc::new(Mutex::new(false));
         let working_memory = Arc::new(Mutex::new(None));
         let event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let session_event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
@@ -252,8 +244,6 @@ impl Gpui {
 
         Self {
             message_queue,
-            input_value,
-            input_requested,
             working_memory,
             event_sender,
             event_receiver,
@@ -281,8 +271,6 @@ impl Gpui {
     // Run the application
     pub fn run_app(&self) {
         let message_queue = self.message_queue.clone();
-        let input_value = self.input_value.clone();
-        let input_requested = self.input_requested.clone();
         let working_memory = self.working_memory.clone();
         let gpui_clone = self.clone();
 
@@ -425,8 +413,6 @@ impl Gpui {
                                 chat_sidebar.clone(),
                                 window,
                                 cx,
-                                input_value.clone(),
-                                input_requested.clone(),
                             )
                         });
 
@@ -1264,30 +1250,6 @@ impl UserInterface for Gpui {
         // Forward all events to the event processing
         self.push_event(event);
         Ok(())
-    }
-
-    async fn get_input(&self) -> Result<String, UIError> {
-        // Request input
-        {
-            let mut requested = self.input_requested.lock().unwrap();
-            *requested = true;
-        }
-
-        // Wait for input or commands
-        loop {
-            // Check for user input
-            {
-                let mut input = self.input_value.lock().unwrap();
-                if let Some(value) = input.take() {
-                    // Reset input request
-                    let mut requested = self.input_requested.lock().unwrap();
-                    *requested = false;
-                    return Ok(value);
-                }
-            }
-
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
     }
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {

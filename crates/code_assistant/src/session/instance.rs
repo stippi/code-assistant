@@ -266,9 +266,7 @@ impl SessionInstance {
             ) -> Result<(), crate::ui::UIError> {
                 Ok(())
             }
-            async fn get_input(&self) -> Result<String, crate::ui::UIError> {
-                Ok("".to_string())
-            }
+
             fn display_fragment(
                 &self,
                 _fragment: &crate::ui::DisplayFragment,
@@ -493,13 +491,7 @@ impl UserInterface for ProxyUI {
         }
     }
 
-    async fn get_input(&self) -> Result<String, UIError> {
-        if self.is_connected() {
-            self.real_ui.get_input().await
-        } else {
-            Ok(String::new()) // Return empty string if session not connected
-        }
-    }
+
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
         // Always buffer fragments

@@ -241,35 +241,9 @@ impl Agent {
         Ok(())
     }
 
-    /// Run the agent loop until task completion
-    /// Get user input whenever there is no tool use by the LLM
-    pub async fn run_agent_loop(&mut self) -> Result<()> {
-        loop {
-            // Run a single iteration and check if user input is needed
-            let needs_user_input = self.run_single_iteration_internal().await?;
-
-            if needs_user_input {
-                // LLM explicitly requested user input (no tools requested)
-                self.solicit_user_input().await?;
-            } else {
-                // Task completed or loop should break
-                return Ok(());
-            }
-        }
-    }
-
     /// Run a single iteration of the agent loop without waiting for user input
     /// This is used in the new on-demand agent architecture
     pub async fn run_single_iteration(&mut self) -> Result<()> {
-        let _needs_user_input = self.run_single_iteration_internal().await?;
-        // In on-demand mode, we don't handle user input - that's done externally
-        // Just ignore the needs_user_input flag and return
-        Ok(())
-    }
-
-    /// Internal helper for running a single iteration of the agent calling tools in a loop
-    /// Returns whether user input is needed before the next iteration
-    async fn run_single_iteration_internal(&mut self) -> Result<bool> {
         loop {
             // Check for pending user message and add it to history at start of each iteration
             if let Some(pending_message) = self.get_and_clear_pending_message() {
@@ -332,7 +306,7 @@ impl Agent {
                     // In on-demand mode, we don't wait for user input
                     // Instead, we complete this iteration
                     debug!("Agent iteration complete - waiting for next user message");
-                    return Ok(true); // User input needed
+                    return Ok(());
                 }
                 LoopFlow::Continue => {
                     if !tool_requests.is_empty() {
@@ -353,12 +327,12 @@ impl Agent {
                             LoopFlow::GetUserInput => {
                                 // Complete iteration instead of waiting for input
                                 debug!("Tool execution complete - waiting for next user message");
-                                return Ok(true); // User input needed
+                                return Ok(());
                             }
                             LoopFlow::Break => {
                                 // Task completed (e.g., via complete_task tool)
                                 debug!("Task completed");
-                                return Ok(false); // No user input needed, task complete
+                                return Ok(());
                             }
                         }
                     }
@@ -370,7 +344,7 @@ impl Agent {
                     debug!("Agent loop break requested");
                     // Save state before returning
                     self.save_state()?;
-                    return Ok(false); // No user input needed, task complete
+                    return Ok(());
                 }
             }
         }
@@ -528,26 +502,6 @@ impl Agent {
         }
     }
 
-    /// Handles the case where no tool requests are made by the LLM.
-    /// Prompts the user for input and adds it to the message history.
-    async fn solicit_user_input(&mut self) -> Result<()> {
-        let user_input = self.ui.get_input().await?;
-        self.ui
-            .send_event(UiEvent::DisplayUserInput {
-                content: user_input.clone(),
-                attachments: Vec::new(),
-            })
-            .await?;
-        let user_msg = Message {
-            role: MessageRole::User,
-            content: MessageContent::Text(user_input.clone()),
-            request_id: None,
-            usage: None,
-        };
-        self.append_message(user_msg)?;
-        Ok(())
-    }
-
     /// Executes a list of tool requests.
     /// Handles the "complete_task" action and appends tool results to message history.
     async fn manage_tool_execution(&mut self, tool_requests: &[ToolRequest]) -> Result<LoopFlow> {
@@ -622,7 +576,7 @@ impl Agent {
             })
             .await;
 
-        self.run_agent_loop().await
+        self.run_single_iteration().await
     }
 
     /// Get the appropriate system prompt based on tool mode

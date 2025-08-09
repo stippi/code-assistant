@@ -8,14 +8,12 @@ use super::theme;
 use super::{CloseWindow, Gpui, UiEventSender};
 use crate::persistence::ChatMetadata;
 use crate::ui::ui_events::UiEvent;
-
 use gpui::{
     bounce, div, ease_in_out, percentage, prelude::*, px, rgba, svg, Animation, AnimationExt, App,
     Context, Entity, FocusHandle, Focusable, MouseButton, MouseUpEvent, SharedString, Subscription,
     Transformation,
 };
 use gpui_component::ActiveTheme;
-use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
 
 // Root View - handles overall layout and coordination
@@ -43,16 +41,13 @@ impl RootView {
         chat_sidebar: Entity<ChatSidebar>,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
-        input_value: Arc<Mutex<Option<String>>>,
-        input_requested: Arc<Mutex<bool>>,
     ) -> Self {
         // Create the auto-scroll container that wraps the messages view
         let auto_scroll_container =
             cx.new(|_cx| AutoScrollContainer::new("messages", messages_view));
 
         // Create the input area
-        let input_area =
-            cx.new(|cx| InputArea::new(window, cx, input_value.clone(), input_requested.clone()));
+        let input_area = cx.new(|cx| InputArea::new(window, cx));
 
         // Subscribe to input area events
         let input_area_subscription =
@@ -198,16 +193,7 @@ impl RootView {
             return;
         }
 
-        // Check if input is requested for V1 mode compatibility
-        if let Some(gpui) = cx.try_global::<Gpui>() {
-            let is_input_requested = *gpui.input_requested.lock().unwrap();
-            if is_input_requested {
-                let mut input_value = gpui.input_value.lock().unwrap();
-                *input_value = Some(content.clone());
-            }
-        }
-
-        // V2 mode: Send user message event if we have an active session
+        // Send user message event if we have an active session
         if let Some(sender) = cx.try_global::<UiEventSender>() {
             // Check if agent is running by looking at activity state
             let current_activity_state = if let Some(gpui) = cx.try_global::<Gpui>() {
