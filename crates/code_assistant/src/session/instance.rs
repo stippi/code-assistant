@@ -491,8 +491,6 @@ impl UserInterface for ProxyUI {
         }
     }
 
-
-
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
         // Always buffer fragments
         if let Ok(mut buffer) = self.fragment_buffer.lock() {

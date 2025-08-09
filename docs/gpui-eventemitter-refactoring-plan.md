@@ -417,11 +417,11 @@ impl From<TextInputEvent> for ComponentInteractionEvent {
 - Fixed draft clearing bug by emitting clear event before input clearing
 - Implemented proper button state management with always-visible cancel button
 
-### Week 2: Phase 1.2 - Chat Sidebar Events
-- [ ] Create `ChatSidebarEvent` enum
-- [ ] Update `ChatSidebar` to emit events instead of direct calls
-- [ ] Update `RootView` to subscribe to chat events
-- [ ] Test session selection and management
+### Week 2: Phase 1.2 - Chat Sidebar Events ✓ COMPLETED
+- [x] Create `ChatSidebarEvent` enum
+- [x] Update `ChatSidebar` to emit events instead of direct calls
+- [x] Update `RootView` to subscribe to chat events
+- [x] Test session selection and management
 
 ### Week 3: Phase 1.3 - Messages View Events
 - [ ] Create `MessagesViewEvent` enum
@@ -541,5 +541,49 @@ impl From<TextInputEvent> for ComponentInteractionEvent {
 5. **Type Safety**: ✓ Compile-time event type guarantees for input communication
 
 **Next Phase Ready**: The successful completion of InputArea extraction demonstrates the viability of the EventEmitter pattern and provides a template for extracting other components like ChatSidebar and MessagesView.
+
+### Completed: Phase 1.2 - ChatSidebar Component Events
+
+**Status**: ✓ Successfully completed and tested
+
+**Achievements**:
+- Created comprehensive `ChatSidebarEvent` enum with 4 distinct event types for user interactions
+- Implemented hierarchical EventEmitter pattern: `ChatListItem` → `ChatSidebar` → `RootView`
+- Replaced direct `UiEventSender` usage with clean EventEmitter communication
+- Eliminated direct method calls from `RootView` to `ChatSidebar` for user interactions
+- Created `ChatListItemEvent` enum for granular item-level events
+- Implemented automatic subscription management for dynamic chat list items
+- Maintained backward compatibility with external session updates from backend
+- Added proper event forwarding from backend communication to maintain functionality
+
+**Technical Implementation**:
+- `ChatListItem` implements `EventEmitter<ChatListItemEvent>` for session clicks and deletion
+- `ChatSidebar` subscribes to all `ChatListItem` events and forwards them as `ChatSidebarEvent`
+- `RootView` subscribes to `ChatSidebarEvent` and handles them by forwarding to backend
+- Clean separation: user interactions → events, external updates → direct method calls
+- Proper subscription lifecycle management with automatic cleanup
+
+**Event Flow Architecture**:
+```
+User Click → ChatListItem::emit(ChatListItemEvent)
+          → ChatSidebar::on_chat_list_item_event()
+          → ChatSidebar::emit(ChatSidebarEvent)
+          → RootView::on_chat_sidebar_event()
+          → RootView::handle_*()
+          → BackendEvent sent to backend
+```
+
+**Files Modified**:
+- ✓ Created `crates/code_assistant/src/ui/gpui/chat_events.rs` - Event type definitions
+- ✓ Updated `crates/code_assistant/src/ui/gpui/chat_sidebar.rs` - EventEmitter implementation
+- ✓ Updated `crates/code_assistant/src/ui/gpui/root.rs` - Event subscription and handling
+- ✓ Updated `crates/code_assistant/src/ui/gpui/mod.rs` - Module exports
+
+**Key Technical Patterns Established**:
+- Hierarchical EventEmitter architecture for nested components
+- Automatic subscription management for dynamic component lists
+- Clean separation between user-initiated events and external data updates
+- Type-safe event communication with compile-time guarantees
+- Proper subscription lifecycle management
 
 This refactoring has begun the transformation from a tightly-coupled, shared-state architecture to a loosely-coupled, event-driven architecture that is more maintainable, testable, and scalable.

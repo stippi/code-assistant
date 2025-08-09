@@ -758,25 +758,6 @@ impl Gpui {
                     }
                 }
             }
-            // Chat management events - forward to backend thread
-            UiEvent::LoadChatSession { session_id } => {
-                debug!("UI: LoadChatSession event for session_id: {}", session_id);
-                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(BackendEvent::LoadSession { session_id });
-                }
-            }
-            UiEvent::CreateNewChatSession { name } => {
-                debug!("UI: CreateNewChatSession event with name: {:?}", name);
-                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(BackendEvent::CreateNewSession { name });
-                }
-            }
-            UiEvent::DeleteChatSession { session_id } => {
-                debug!("UI: DeleteChatSession event for session_id: {}", session_id);
-                if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
-                    let _ = sender.try_send(BackendEvent::DeleteSession { session_id });
-                }
-            }
             UiEvent::RefreshChatList => {
                 debug!("UI: RefreshChatList event received");
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {

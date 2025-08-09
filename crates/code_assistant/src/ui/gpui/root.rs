@@ -1,10 +1,11 @@
 use super::auto_scroll::AutoScrollContainer;
-use super::chat_sidebar::ChatSidebar;
+use super::chat_sidebar::{ChatSidebar, ChatSidebarEvent};
 use super::file_icons;
 use super::input_area::{InputArea, InputAreaEvent};
 use super::memory::MemoryView;
 use super::messages::MessagesView;
 use super::theme;
+use super::BackendEvent;
 use super::{CloseWindow, Gpui, UiEventSender};
 use crate::persistence::ChatMetadata;
 use crate::ui::ui_events::UiEvent;
@@ -14,7 +15,7 @@ use gpui::{
     Transformation,
 };
 use gpui_component::ActiveTheme;
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 // Root View - handles overall layout and coordination
 pub struct RootView {
@@ -32,6 +33,7 @@ pub struct RootView {
     chat_sessions: Vec<ChatMetadata>,
     // Subscription to input area events
     _input_area_subscription: Subscription,
+    _chat_sidebar_subscription: Subscription,
 }
 
 impl RootView {
@@ -53,6 +55,10 @@ impl RootView {
         let input_area_subscription =
             cx.subscribe_in(&input_area, window, Self::on_input_area_event);
 
+        // Subscribe to chat sidebar events
+        let chat_sidebar_subscription =
+            cx.subscribe_in(&chat_sidebar, window, Self::on_chat_sidebar_event);
+
         let mut root_view = Self {
             input_area,
             memory_view,
@@ -65,6 +71,7 @@ impl RootView {
             current_session_id: None,
             chat_sessions: Vec::new(),
             _input_area_subscription: input_area_subscription,
+            _chat_sidebar_subscription: chat_sidebar_subscription,
         };
 
         // Request initial chat session list
@@ -179,6 +186,38 @@ impl RootView {
                     }
                 }
             }
+        }
+    }
+
+    /// Handle ChatSidebar events
+    fn on_chat_sidebar_event(
+        &mut self,
+        _chat_sidebar: &Entity<ChatSidebar>,
+        event: &ChatSidebarEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let gpui = cx
+            .try_global::<Gpui>()
+            .expect("Failed to obtain Gpui global");
+        if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+            match event {
+                ChatSidebarEvent::SessionSelected { session_id } => {
+                    let _ = sender.try_send(BackendEvent::LoadSession {
+                        session_id: session_id.clone(),
+                    });
+                }
+                ChatSidebarEvent::SessionDeleteRequested { session_id } => {
+                    let _ = sender.try_send(BackendEvent::DeleteSession {
+                        session_id: session_id.clone(),
+                    });
+                }
+                ChatSidebarEvent::NewSessionRequested { name } => {
+                    let _ = sender.try_send(BackendEvent::CreateNewSession { name: name.clone() });
+                }
+            }
+        } else {
+            error!("Failed to lock backend event sender");
         }
     }
 
