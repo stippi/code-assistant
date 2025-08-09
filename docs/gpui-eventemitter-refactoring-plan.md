@@ -25,7 +25,7 @@ After analyzing the UI code in `crates/code_assistant/src/ui/gpui/`, the current
 ### Phase 1: Component-Level EventEmitters (Low Risk)
 Focus on internal component communication that doesn't affect UI ↔ Backend communication.
 
-### Phase 2: UI Component Communication (Medium Risk)  
+### Phase 2: UI Component Communication (Medium Risk)
 Replace direct method calls between UI components with EventEmitter patterns.
 
 ### Phase 3: Unified Event Architecture (High Risk)
@@ -35,68 +35,80 @@ Consolidate the global event system with component-level events.
 
 ## Phase 1: Component-Level EventEmitters
 
-### 1.1 Text Input Component Events
+### 1.1 Text Input Component Events ✓ COMPLETED
 
-**Current**: Direct subscription to `InputEvent` from `gpui_component`
-**Target**: Custom events for our specific use cases
+**Previous**: Direct subscription to `InputEvent` from `gpui_component`
+**Current**: Custom `InputArea` component with `InputAreaEvent` enum
 
-#### Implementation Steps:
+#### Completed Implementation:
 
-1. **Define Custom Input Events**
+1. **Custom Input Events Implemented**
 ```rust
-// In crates/code_assistant/src/ui/gpui/input_events.rs
+// In crates/code_assistant/src/ui/gpui/input_area.rs
 #[derive(Clone, Debug)]
-pub enum TextInputEvent {
+pub enum InputAreaEvent {
     MessageSubmitted {
         content: String,
         attachments: Vec<DraftAttachment>,
     },
     ContentChanged {
         content: String,
-    },
-    AttachmentAdded {
-        attachment: DraftAttachment,
-    },
-    AttachmentRemoved {
-        index: usize,
+        attachments: Vec<DraftAttachment>,
     },
     FocusRequested,
-    ClearRequested,
+    CancelRequested,
+    ClearDraftRequested,
 }
 ```
 
-2. **Create TextInput Wrapper Component**
+2. **InputArea Component Created**
 ```rust
-// In crates/code_assistant/src/ui/gpui/text_input.rs
-pub struct TextInputWrapper {
-    input_state: Entity<InputState>,
+pub struct InputArea {
+    text_input: Entity<InputState>,
     attachments: Vec<DraftAttachment>,
-    _subscriptions: Vec<Subscription>,
+    attachment_views: Vec<Entity<AttachmentView>>,
+    agent_is_running: bool,
+    cancel_enabled: bool,
+    _input_subscription: Subscription,
 }
 
-impl EventEmitter<TextInputEvent> for TextInputWrapper {}
+impl EventEmitter<InputAreaEvent> for InputArea {}
 ```
 
-3. **Update RootView to use EventEmitter pattern**
+3. **RootView Updated to EventEmitter Pattern**
 ```rust
-// Replace direct subscription with EventEmitter pattern
-let input_subscription = cx.subscribe(&text_input_wrapper, |this, _, event: &TextInputEvent, cx| {
+// Clean event subscription in RootView
+let input_area_subscription = cx.subscribe_in(&input_area, window, Self::on_input_area_event);
+
+fn on_input_area_event(&mut self, event: &InputAreaEvent, cx: &mut Context<Self>) {
     match event {
-        TextInputEvent::MessageSubmitted { content, attachments } => {
-            this.handle_message_submission(content.clone(), attachments.clone(), cx);
+        InputAreaEvent::MessageSubmitted { content, attachments } => {
+            // Handle message submission
         }
-        TextInputEvent::ContentChanged { content } => {
-            this.handle_content_change(content.clone(), cx);
+        InputAreaEvent::ContentChanged { content, attachments } => {
+            // Handle draft saving
         }
-        // ... other events
+        InputAreaEvent::CancelRequested => {
+            // Handle agent cancellation
+        }
+        InputAreaEvent::ClearDraftRequested => {
+            // Clear draft synchronously before input clearing
+        }
     }
-});
+}
 ```
 
-**Files to modify:**
-- `crates/code_assistant/src/ui/gpui/root.rs` (lines 62-67, input subscription)
-- Create `crates/code_assistant/src/ui/gpui/input_events.rs`
-- Create `crates/code_assistant/src/ui/gpui/text_input.rs`
+**Files Modified:**
+- ✓ `crates/code_assistant/src/ui/gpui/root.rs` - Updated to use InputArea component
+- ✓ `crates/code_assistant/src/ui/gpui/mod.rs` - Added input_area module, updated RootView constructor
+- ✓ Created `crates/code_assistant/src/ui/gpui/input_area.rs` - Complete self-contained component
+
+**Key Achievements:**
+- Complete separation of input/attachment logic from RootView
+- Event-driven communication with clear boundaries
+- Maintained backward compatibility with V1 mode
+- Fixed draft clearing race condition
+- Improved button layout and state management
 
 ### 1.2 Chat Sidebar Component Events
 
@@ -383,13 +395,29 @@ impl From<TextInputEvent> for ComponentInteractionEvent {
 
 ## Implementation Timeline
 
-### Week 1: Phase 1.1 - Text Input Events
-- [ ] Create `TextInputEvent` enum and wrapper component
-- [ ] Update `RootView` to use EventEmitter pattern for text input
-- [ ] Test input functionality works correctly
-- [ ] Update attachment handling to use events
+### Week 1: Phase 1.1 - Text Input Events ✓ COMPLETED
+- [x] Create `InputAreaEvent` enum and `InputArea` component
+- [x] Update `RootView` to use EventEmitter pattern for text input
+- [x] Test input functionality works correctly
+- [x] Update attachment handling to use events
+- [x] Fix draft clearing race condition with `ClearDraftRequested` event
+- [x] Implement always-visible cancel button with proper state management
 
-### Week 2: Phase 1.2 - Chat Sidebar Events  
+**Completed Implementation:**
+- Created `crates/code_assistant/src/ui/gpui/input_area.rs` with `InputArea` component
+- Implemented `EventEmitter<InputAreaEvent>` with events:
+  - `MessageSubmitted` - when user submits message with content and attachments
+  - `ContentChanged` - for draft saving functionality
+  - `FocusRequested` - when input requests focus
+  - `CancelRequested` - for agent cancellation
+  - `ClearDraftRequested` - for synchronous draft clearing before input clear
+- Updated `RootView` to subscribe to `InputAreaEvent` instead of direct input manipulation
+- Removed coupling between `RootView` and input/attachment management
+- Maintained V1 mode compatibility for `UserInterface::get_input()`
+- Fixed draft clearing bug by emitting clear event before input clearing
+- Implemented proper button state management with always-visible cancel button
+
+### Week 2: Phase 1.2 - Chat Sidebar Events
 - [ ] Create `ChatSidebarEvent` enum
 - [ ] Update `ChatSidebar` to emit events instead of direct calls
 - [ ] Update `RootView` to subscribe to chat events
@@ -438,7 +466,7 @@ impl From<TextInputEvent> for ComponentInteractionEvent {
 - Creating wrapper components that delegate to existing components
 - Adding new event types without removing old ones
 
-### Medium Risk Changes  
+### Medium Risk Changes
 - Replacing direct method calls with event subscriptions
 - Removing shared state `Arc<Mutex<T>>` patterns
 - Modifying component initialization order
@@ -463,7 +491,7 @@ impl From<TextInputEvent> for ComponentInteractionEvent {
 - **Testability**: Components can be easily mocked and unit tested
 - **Maintainability**: Clear separation of concerns and event contracts
 
-### Performance  
+### Performance
 - **Reduced Lock Contention**: Less `Arc<Mutex<T>>` usage reduces lock contention
 - **Event Batching**: Multiple events can be processed in batches
 - **Selective Updates**: Components only update when relevant events occur
@@ -480,12 +508,38 @@ impl From<TextInputEvent> for ComponentInteractionEvent {
 
 ---
 
+## Progress Summary
+
+### Completed: Phase 1.1 - InputArea Component Extraction
+
+**Status**: ✓ Successfully completed and tested
+
+**Achievements**:
+- Created self-contained `InputArea` component with `EventEmitter<InputAreaEvent>`
+- Removed tight coupling between `RootView` and input/attachment management
+- Implemented robust event-driven communication with 5 distinct event types
+- Fixed draft clearing race condition using synchronous `ClearDraftRequested` event
+- Maintained V1 mode compatibility for legacy `get_input()` functionality
+- Improved UI consistency with always-visible cancel button
+- Reduced code complexity in `RootView` by ~200 lines
+- Achieved clean separation of concerns with clear event boundaries
+
+**Technical Impact**:
+- Eliminated direct field access to input state from RootView
+- Removed complex input/attachment handling logic from RootView
+- Created reusable InputArea component for potential future use
+- Established pattern for other component extractions
+
+---
+
 ## Success Metrics
 
-1. **Reduced Complexity**: Fewer `Arc<Mutex<T>>` instances in the codebase
-2. **Improved Test Coverage**: Ability to unit test components in isolation
-3. **Better Performance**: Reduced lock contention and more efficient updates
-4. **Code Maintainability**: Easier to add new features and modify existing ones
-5. **Type Safety**: Compile-time guarantees for all component communication
+1. **Reduced Complexity**: ✓ Removed input/attachment fields and methods from RootView
+2. **Improved Test Coverage**: ✓ InputArea can now be unit tested in isolation
+3. **Better Performance**: ✓ Eliminated some direct state access patterns
+4. **Code Maintainability**: ✓ Clear event boundaries make input functionality easier to modify
+5. **Type Safety**: ✓ Compile-time event type guarantees for input communication
 
-This refactoring will transform the codebase from a tightly-coupled, shared-state architecture to a loosely-coupled, event-driven architecture that is more maintainable, testable, and scalable.
+**Next Phase Ready**: The successful completion of InputArea extraction demonstrates the viability of the EventEmitter pattern and provides a template for extracting other components like ChatSidebar and MessagesView.
+
+This refactoring has begun the transformation from a tightly-coupled, shared-state architecture to a loosely-coupled, event-driven architecture that is more maintainable, testable, and scalable.
