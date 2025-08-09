@@ -119,7 +119,7 @@ fn on_input_area_event(&mut self, event: &InputAreaEvent, cx: &mut Context<Self>
 
 1. **Define Chat Sidebar Events**
 ```rust
-// In crates/code_assistant/src/ui/gpui/chat_events.rs
+// In crates/code_assistant/src/ui/gpui/chat_sidebar.rs
 #[derive(Clone, Debug)]
 pub enum ChatSidebarEvent {
     SessionSelected {
@@ -131,7 +131,6 @@ pub enum ChatSidebarEvent {
     NewSessionRequested {
         name: Option<String>,
     },
-    SessionsRefreshRequested,
 }
 ```
 
@@ -161,7 +160,6 @@ let chat_subscription = cx.subscribe(&chat_sidebar, |this, _, event: &ChatSideba
 **Files to modify:**
 - `crates/code_assistant/src/ui/gpui/chat_sidebar.rs` (add EventEmitter implementation)
 - `crates/code_assistant/src/ui/gpui/root.rs` (add chat sidebar subscription)
-- Create `crates/code_assistant/src/ui/gpui/chat_events.rs`
 
 ### 1.3 Messages View Component Events
 
@@ -172,7 +170,7 @@ let chat_subscription = cx.subscribe(&chat_sidebar, |this, _, event: &ChatSideba
 
 1. **Define Messages View Events**
 ```rust
-// In crates/code_assistant/src/ui/gpui/message_events.rs
+// In crates/code_assistant/src/ui/gpui/messages.rs
 #[derive(Clone, Debug)]
 pub enum MessagesViewEvent {
     ScrolledToBottom,
@@ -201,7 +199,6 @@ impl EventEmitter<MessagesViewEvent> for MessagesView {}
 
 **Files to modify:**
 - `crates/code_assistant/src/ui/gpui/messages.rs` (add EventEmitter implementation)
-- Create `crates/code_assistant/src/ui/gpui/message_events.rs`
 
 ---
 
