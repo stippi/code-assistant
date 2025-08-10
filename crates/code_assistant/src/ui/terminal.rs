@@ -5,6 +5,7 @@ use rustyline::{error::ReadlineError, history::DefaultHistory, Config, Editor};
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone)]
 pub struct TerminalUI {
     // For line editor - using just the default implementation without custom helper
     line_editor: Arc<Mutex<Editor<(), DefaultHistory>>>,
@@ -132,40 +133,6 @@ impl UserInterface for TerminalUI {
         Ok(())
     }
 
-    async fn get_input(&self) -> Result<String, UIError> {
-        // Access the editor
-        let mut editor = self.line_editor.lock().unwrap();
-
-        // Set a prompt with color
-        let colored_prompt = format!("{}{} ", ">".with(Color::Green), style::ResetColor);
-
-        // Read a line
-        match editor.readline(&colored_prompt) {
-            Ok(line) => {
-                // Add to history
-                let _ = editor.add_history_entry(line.as_str());
-                Ok(line.trim().to_string())
-            }
-            Err(ReadlineError::Interrupted) => {
-                // Ctrl-C
-                Err(UIError::IOError(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Input interrupted",
-                )))
-            }
-            Err(ReadlineError::Eof) => {
-                // Ctrl-D
-                Err(UIError::IOError(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "Input EOF",
-                )))
-            }
-            Err(e) => Err(UIError::IOError(io::Error::other(format!(
-                "Input error: {e}"
-            )))),
-        }
-    }
-
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
         // Get the appropriate writer (stdout or test writer)
         let mut stdout = io::stdout().lock();
@@ -223,5 +190,42 @@ impl UserInterface for TerminalUI {
 
     fn clear_rate_limit(&self) {
         // No action needed for terminal UI
+    }
+}
+
+impl TerminalUI {
+    /// Get input from the user (terminal-specific method)
+    pub async fn get_input(&self) -> Result<String, UIError> {
+        // Access the editor
+        let mut editor = self.line_editor.lock().unwrap();
+
+        // Set a prompt with color
+        let colored_prompt = format!("{}{} ", ">".with(Color::Green), style::ResetColor);
+
+        // Read a line
+        match editor.readline(&colored_prompt) {
+            Ok(line) => {
+                // Add to history
+                let _ = editor.add_history_entry(line.as_str());
+                Ok(line.trim().to_string())
+            }
+            Err(ReadlineError::Interrupted) => {
+                // Ctrl-C
+                Err(UIError::IOError(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Input interrupted",
+                )))
+            }
+            Err(ReadlineError::Eof) => {
+                // Ctrl-D
+                Err(UIError::IOError(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Input EOF",
+                )))
+            }
+            Err(e) => Err(UIError::IOError(io::Error::other(format!(
+                "Input error: {e}"
+            )))),
+        }
     }
 }

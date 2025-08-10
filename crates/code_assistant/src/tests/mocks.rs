@@ -191,7 +191,6 @@ pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
 pub struct MockUI {
     events: Arc<Mutex<Vec<UiEvent>>>,
     streaming: Arc<Mutex<Vec<String>>>,
-    responses: Arc<Mutex<Vec<Result<String, UIError>>>>,
 }
 
 #[async_trait]
@@ -199,16 +198,6 @@ impl UserInterface for MockUI {
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError> {
         self.events.lock().unwrap().push(event);
         Ok(())
-    }
-
-    async fn get_input(&self) -> Result<String, UIError> {
-        self.responses
-            .lock()
-            .unwrap()
-            .pop()
-            .unwrap_or(Err(UIError::IOError(std::io::Error::other(
-                "No more mock responses",
-            ))))
     }
 
     fn display_fragment(&self, fragment: &crate::ui::DisplayFragment) -> Result<(), UIError> {
@@ -404,7 +393,7 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("No file tree configured"))?;
 
         // Handle request for root
-        if path == &PathBuf::from("./root") {
+        if path == PathBuf::from("./root") {
             return Ok(root.clone());
         }
 

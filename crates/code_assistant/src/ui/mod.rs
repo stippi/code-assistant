@@ -26,9 +26,6 @@ pub trait UserInterface: Send + Sync {
     /// Send an event to the UI
     async fn send_event(&self, event: UiEvent) -> Result<(), UIError>;
 
-    /// Get input from the user
-    async fn get_input(&self) -> Result<String, UIError>;
-
     /// Display a streaming fragment with specific type information
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError>;
 

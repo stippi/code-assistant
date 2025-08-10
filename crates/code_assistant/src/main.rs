@@ -16,7 +16,7 @@ use crate::agent::{Agent, FileStatePersistence};
 use crate::mcp::MCPServer;
 use crate::types::ToolSyntax;
 use crate::ui::terminal::TerminalUI;
-use crate::ui::UserInterface;
+use crate::ui::{UIError, UiEvent, UserInterface};
 use crate::utils::DefaultCommandExecutor;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -399,7 +399,8 @@ async fn run_agent_terminal(
 
     // Setup dynamic types
     let project_manager = Box::new(DefaultProjectManager::new());
-    let user_interface = Arc::new(Box::new(TerminalUI::new()) as Box<dyn UserInterface>);
+    let terminal_ui = TerminalUI::new();
+    let user_interface = Arc::new(Box::new(terminal_ui.clone()) as Box<dyn UserInterface>);
     let command_executor = Box::new(DefaultCommandExecutor);
 
     // Setup LLM client with the specified provider
@@ -423,7 +424,7 @@ async fn run_agent_terminal(
         tool_syntax,
         project_manager,
         command_executor,
-        user_interface,
+        user_interface.clone(),
         state_storage,
         Some(root_path.clone()),
     );
@@ -471,14 +472,69 @@ async fn run_agent_terminal(
         println!("Adding new task: {new_task}");
         let user_msg = llm::Message {
             role: llm::MessageRole::User,
-            content: llm::MessageContent::Text(new_task),
+            content: llm::MessageContent::Text(new_task.clone()),
             request_id: None,
             usage: None,
         };
         agent.append_message(user_msg)?;
+
+        // Display the user input in the terminal
+        user_interface
+            .send_event(UiEvent::DisplayUserInput {
+                content: new_task,
+                attachments: Vec::new(),
+            })
+            .await?;
     }
 
-    agent.run_agent_loop().await
+    // Run the agent using single iterations and handle user input externally
+    loop {
+        // Run a single iteration
+        agent.run_single_iteration().await?;
+
+        // Check if we need user input by trying to get it
+        // The terminal UI will block until user provides input
+        match terminal_ui.get_input().await {
+            Ok(user_input) => {
+                if user_input.trim().is_empty() {
+                    continue; // Skip empty input
+                }
+
+                // Display the user input
+                user_interface
+                    .send_event(UiEvent::DisplayUserInput {
+                        content: user_input.clone(),
+                        attachments: Vec::new(),
+                    })
+                    .await?;
+
+                // Add user message to agent
+                let user_msg = llm::Message {
+                    role: llm::MessageRole::User,
+                    content: llm::MessageContent::Text(user_input),
+                    request_id: None,
+                    usage: None,
+                };
+                agent.append_message(user_msg)?;
+            }
+            Err(UIError::IOError(e)) if e.kind() == std::io::ErrorKind::Interrupted => {
+                // Ctrl-C
+                println!("\nExiting...");
+                break;
+            }
+            Err(UIError::IOError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                // Ctrl-D
+                println!("\nExiting...");
+                break;
+            }
+            Err(e) => {
+                eprintln!("Error getting user input: {e}");
+                break;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn run_agent_gpui(

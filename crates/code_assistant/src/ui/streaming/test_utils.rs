@@ -81,10 +81,6 @@ impl UserInterface for TestUI {
         Ok(())
     }
 
-    async fn get_input(&self) -> Result<String, UIError> {
-        Ok(String::new())
-    }
-
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
         // Record the raw fragment before any merging
         self.raw_fragments.lock().unwrap().push(fragment.clone());

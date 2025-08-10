@@ -1,16 +1,35 @@
 use super::file_icons;
-use super::UiEventSender;
 use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
-use crate::ui::ui_events::UiEvent;
 use gpui::{
-    div, prelude::*, px, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement,
-    MouseButton, MouseUpEvent, SharedString, StatefulInteractiveElement, Styled, Window,
+    div, prelude::*, px, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, MouseButton, MouseUpEvent, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, Window,
 };
 use gpui_component::scroll::ScrollbarAxis;
 use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, StyledExt};
 use std::time::SystemTime;
-use tracing::{debug, trace, warn};
+use tracing::debug;
+
+/// Events emitted by individual ChatListItem components
+#[derive(Clone, Debug)]
+pub enum ChatListItemEvent {
+    /// User clicked to select this chat session
+    SessionClicked { session_id: String },
+    /// User clicked to delete this chat session
+    DeleteClicked { session_id: String },
+}
+
+/// Events emitted by the ChatSidebar component
+#[derive(Clone, Debug)]
+pub enum ChatSidebarEvent {
+    /// User selected a specific chat session
+    SessionSelected { session_id: String },
+    /// User requested deletion of a chat session
+    SessionDeleteRequested { session_id: String },
+    /// User requested creation of a new chat session
+    NewSessionRequested { name: Option<String> },
+}
 
 /// Individual chat list item component
 pub struct ChatListItem {
@@ -84,7 +103,23 @@ impl ChatListItem {
             cx.notify();
         }
     }
+
+    /// Handle session selection click - emits event to parent
+    fn on_session_click(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(ChatListItemEvent::SessionClicked {
+            session_id: self.metadata.id.clone(),
+        });
+    }
+
+    /// Handle session deletion click - emits event to parent
+    fn on_session_delete(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(ChatListItemEvent::DeleteClicked {
+            session_id: self.metadata.id.clone(),
+        });
+    }
 }
+
+impl EventEmitter<ChatListItemEvent> for ChatListItem {}
 
 impl Focusable for ChatListItem {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
@@ -94,7 +129,6 @@ impl Focusable for ChatListItem {
 
 impl Render for ChatListItem {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let session_id = self.metadata.id.clone();
         let name = if self.metadata.name.is_empty() {
             "Unnamed chat".to_string()
         } else {
@@ -134,17 +168,7 @@ impl Render for ChatListItem {
                     s
                 }
             })
-            .on_mouse_up(MouseButton::Left, {
-                let session_id = session_id.clone();
-                move |_, _window, cx| {
-                    // Emit event to load this chat session
-                    if let Some(sender) = cx.try_global::<UiEventSender>() {
-                        let _ = sender.0.try_send(UiEvent::LoadChatSession {
-                            session_id: session_id.clone(),
-                        });
-                    }
-                }
-            })
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_session_click))
             .child(
                 div()
                     .flex()
@@ -155,6 +179,10 @@ impl Render for ChatListItem {
                             .text_sm()
                             .font_medium()
                             .text_color(cx.theme().foreground)
+                            .flex_grow()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
                             .child(SharedString::from(name)),
                     )
                     .child(
@@ -195,22 +223,10 @@ impl Render for ChatListItem {
                                             cx.theme().danger,
                                             "🗑",
                                         ))
-                                        .on_mouse_up(MouseButton::Left, {
-                                            let session_id_for_delete = session_id.clone();
-                                            move |_, _window, cx| {
-                                                // Emit delete event
-                                                if let Some(sender) =
-                                                    cx.try_global::<UiEventSender>()
-                                                {
-                                                    let _ = sender.0.try_send(
-                                                        UiEvent::DeleteChatSession {
-                                                            session_id: session_id_for_delete
-                                                                .clone(),
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                        }),
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(Self::on_session_delete),
+                                        ),
                                 )
                             }),
                     ),
@@ -326,6 +342,7 @@ pub struct ChatSidebar {
     focus_handle: FocusHandle,
     is_collapsed: bool,
     activity_states: std::collections::HashMap<String, SessionActivityState>,
+    _item_subscriptions: Vec<Subscription>,
 }
 
 impl ChatSidebar {
@@ -336,10 +353,14 @@ impl ChatSidebar {
             focus_handle: cx.focus_handle(),
             is_collapsed: false,
             activity_states: std::collections::HashMap::new(),
+            _item_subscriptions: Vec::new(),
         }
     }
 
     pub fn update_sessions(&mut self, sessions: Vec<ChatMetadata>, cx: &mut Context<Self>) {
+        // Clear existing subscriptions
+        self._item_subscriptions.clear();
+
         // Create a map of existing items by their metadata ID for quick lookup
         let mut existing_items: std::collections::HashMap<String, Entity<ChatListItem>> =
             std::collections::HashMap::new();
@@ -354,7 +375,7 @@ impl ChatSidebar {
         self.items = sessions
             .into_iter()
             .map(|session| {
-                if let Some(existing_item) = existing_items.remove(&session.id) {
+                let item = if let Some(existing_item) = existing_items.remove(&session.id) {
                     // Reuse existing item but update its metadata and activity state
                     cx.update_entity(&existing_item, |item, cx| {
                         item.update_metadata(session.clone(), cx);
@@ -374,7 +395,13 @@ impl ChatSidebar {
                         });
                     }
                     new_item
-                }
+                };
+
+                // Subscribe to item events
+                self._item_subscriptions
+                    .push(cx.subscribe(&item, Self::on_chat_list_item_event));
+
+                item
             })
             .collect();
 
@@ -431,17 +458,33 @@ impl ChatSidebar {
         cx: &mut Context<Self>,
     ) {
         debug!("New chat button clicked");
-        // Emit event to create a new chat session
-        if let Some(sender) = cx.try_global::<UiEventSender>() {
-            trace!("ChatSidebar: Sending CreateNewChatSession event");
-            let _ = sender
-                .0
-                .try_send(UiEvent::CreateNewChatSession { name: None });
-        } else {
-            warn!("ChatSidebar: No UiEventSender global available");
+        // Emit event to parent to create a new chat session
+        cx.emit(ChatSidebarEvent::NewSessionRequested { name: None });
+    }
+
+    /// Handle events from ChatListItem components
+    fn on_chat_list_item_event(
+        &mut self,
+        _item: Entity<ChatListItem>,
+        event: &ChatListItemEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ChatListItemEvent::SessionClicked { session_id } => {
+                cx.emit(ChatSidebarEvent::SessionSelected {
+                    session_id: session_id.clone(),
+                });
+            }
+            ChatListItemEvent::DeleteClicked { session_id } => {
+                cx.emit(ChatSidebarEvent::SessionDeleteRequested {
+                    session_id: session_id.clone(),
+                });
+            }
         }
     }
 }
+
+impl EventEmitter<ChatSidebarEvent> for ChatSidebar {}
 
 impl Focusable for ChatSidebar {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
