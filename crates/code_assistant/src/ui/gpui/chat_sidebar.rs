@@ -179,6 +179,10 @@ impl Render for ChatListItem {
                             .text_sm()
                             .font_medium()
                             .text_color(cx.theme().foreground)
+                            .flex_grow()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
                             .child(SharedString::from(name)),
                     )
                     .child(
