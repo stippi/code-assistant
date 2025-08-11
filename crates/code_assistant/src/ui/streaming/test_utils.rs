@@ -112,6 +112,10 @@ impl UserInterface for TestUI {
     fn clear_rate_limit(&self) {
         // Test implementation does nothing with rate limit clearing
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Helper function to split text into small chunks for testing tag handling

@@ -160,7 +160,7 @@ impl UserInterface for TerminalUI {
                 // Update the parameter value
                 {
                     let mut params = self.tool_parameters.lock().unwrap();
-                    let tool_params = params.entry(tool_id.clone()).or_insert_with(HashMap::new);
+                    let tool_params = params.entry(tool_id.clone()).or_default();
                     tool_params.insert(name.clone(), value.clone());
                 }
 
@@ -168,7 +168,7 @@ impl UserInterface for TerminalUI {
                 let mut displayed = self.displayed_parameters.lock().unwrap();
                 let tool_displayed = displayed
                     .entry(tool_id.clone())
-                    .or_insert_with(HashSet::new);
+                    .or_default();
 
                 let mut stdout = io::stdout().lock();
                 let writer: &mut dyn Write = if let Some(w) = &self.writer {
@@ -304,7 +304,7 @@ impl UserInterface for TerminalUI {
                 // Update the parameter value in our tracking
                 {
                     let mut params = self.tool_parameters.lock().unwrap();
-                    let tool_params = params.entry(tool_id.clone()).or_insert_with(HashMap::new);
+                    let tool_params = params.entry(tool_id.clone()).or_default();
                     tool_params.insert(name.clone(), value.clone());
                 }
 
@@ -312,7 +312,7 @@ impl UserInterface for TerminalUI {
                 let mut displayed = self.displayed_parameters.lock().unwrap();
                 let tool_displayed = displayed
                     .entry(tool_id.clone())
-                    .or_insert_with(HashSet::new);
+                    .or_default();
 
                 if !tool_displayed.contains(name) {
                     // First time seeing this parameter, display the name
@@ -368,6 +368,10 @@ impl UserInterface for TerminalUI {
     fn clear_rate_limit(&self) {
         // Stop the rate limit spinner
         self.stop_spinner();
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

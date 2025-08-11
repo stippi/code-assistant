@@ -214,7 +214,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 backend_response_tx,
                 multi_session_manager,
                 cfg,
-                gui_for_thread,
+                Arc::new(gui_for_thread) as Arc<dyn crate::ui::UserInterface>,
             )
             .await;
         });

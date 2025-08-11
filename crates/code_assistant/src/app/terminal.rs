@@ -10,6 +10,11 @@ use llm::factory::{create_llm_client, LLMClientConfig};
 use std::sync::Arc;
 
 pub async fn run(config: AgentRunConfig) -> Result<()> {
+    // Check for experimental TUI mode
+    if std::env::var("EXPERIMENTAL_TUI").is_ok() {
+        let terminal_tui_app = crate::ui::terminal_tui::TerminalTuiApp::new();
+        return terminal_tui_app.run(&config);
+    }
     let root_path = config.path.canonicalize()?;
 
     // Create session persistence
@@ -346,8 +351,8 @@ async fn handle_session_command(
             match session_manager.create_session(session_name.clone()) {
                 Ok(session_id) => {
                     match session_name {
-                        Some(name) => println!("📝 Created new session '{}': {}", name, session_id),
-                        None => println!("📝 Created new session: {}", session_id),
+                        Some(name) => println!("📝 Created new session '{name}': {session_id}"),
+                        None => println!("📝 Created new session: {session_id}"),
                     }
 
                     // Automatically switch to the new session
@@ -399,8 +404,7 @@ async fn handle_session_command(
 
                                 // Confirm deletion
                                 println!(
-                                    "⚠️  Are you sure you want to delete session {} - {}? (y/N)",
-                                    session_id, session_name
+                                    "⚠️  Are you sure you want to delete session {session_id} - {session_name}? (y/N)"
                                 );
                                 match terminal_ui.get_input().await {
                                     Ok(confirmation)
@@ -408,12 +412,11 @@ async fn handle_session_command(
                                     {
                                         match session_manager.delete_session(session_id) {
                                             Ok(()) => {
-                                                println!("🗑️  Deleted session: {}", session_id);
+                                                println!("🗑️  Deleted session: {session_id}");
                                             }
                                             Err(e) => {
                                                 eprintln!(
-                                                    "❌ Error deleting session {}: {}",
-                                                    session_id, e
+                                                    "❌ Error deleting session {session_id}: {e}"
                                                 );
                                             }
                                         }
