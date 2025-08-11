@@ -1,9 +1,7 @@
 use crate::ui::{ui_events::MessageData, gpui::elements::MessageRole};
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
-    text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
+    widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
 };
 
@@ -19,16 +17,6 @@ impl MessagesComponent {
             scroll_position: 0,
         }
     }
-
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, messages: &[MessageData]) {
-        // Create the main block
-        let block = Block::default()
-            .title("Messages")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Gray));
-
-        let inner_area = block.inner(area);
-
         // Convert messages to text
         let mut text_lines = Vec::new();
 
@@ -51,10 +39,10 @@ impl MessagesComponent {
             // Process fragments
             for fragment in &message.fragments {
                 match fragment {
-                    crate::ui::DisplayFragment::PlainText(text) => {
-                        // Split text into lines and add them
-                        for line in text.lines() {
-                            text_lines.push(Line::from(line.to_string()));
+                        if !text.is_empty() {
+                            for line in text.lines() {
+                                text_lines.push(Line::from(line.to_string()));
+                            }
                         }
                     }
                     crate::ui::DisplayFragment::ThinkingText(text) => {
@@ -103,36 +91,27 @@ impl MessagesComponent {
 
             // Add separator between messages
             text_lines.push(Line::from(""));
-        }
-
-        // Create paragraph widget
+        // Create paragraph widget without border
         let text = Text::from(text_lines);
         let paragraph = Paragraph::new(text)
-            .block(block)
             .wrap(Wrap { trim: true })
             .scroll((self.scroll_position as u16, 0));
 
         frame.render_widget(paragraph, area);
 
-        // Update scrollbar state
-        let content_height = messages.len() * 3; // Rough estimate
-        let visible_height = inner_area.height as usize;
+        let visible_height = area.height as usize;
 
         self.scroll_state = self.scroll_state
             .content_length(content_height)
             .viewport_content_length(visible_height)
-            .position(self.scroll_position);
-
-        // Render scrollbar if needed
+        // Render scrollbar if needed (only if we have a lot of content)
         if content_height > visible_height {
             let scrollbar = Scrollbar::default()
                 .orientation(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("↑"))
                 .end_symbol(Some("↓"));
 
-            frame.render_stateful_widget(
-                scrollbar,
-                area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 }),
+                area,
                 &mut self.scroll_state,
             );
         }

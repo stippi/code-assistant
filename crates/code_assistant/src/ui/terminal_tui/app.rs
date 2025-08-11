@@ -12,7 +12,7 @@ use crate::ui::{ui_events::MessageData, UserInterface};
 use anyhow::Result;
 use llm::factory::LLMClientConfig;
 use ratatui::{
-    crossterm::{event::{KeyCode, KeyModifiers}, execute, terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen}, event::{DisableMouseCapture, EnableMouseCapture}},
+    crossterm::{event::{KeyCode, KeyModifiers}, execute, terminal::{disable_raw_mode, enable_raw_mode}, event::{DisableMouseCapture, EnableMouseCapture}},
     layout::{Constraint, Direction, Layout},
     Frame,
 };
@@ -172,19 +172,23 @@ impl TerminalTuiApp {
 
         debug!("Terminal TUI connected to session: {}", session_id);
 
-        // Initialize terminal
+        // Initialize terminal with inline viewport for natural scrolling
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
         execute!(
             stdout,
-            EnterAlternateScreen,
             EnableMouseCapture
         )?;
         let backend = ratatui::backend::CrosstermBackend::new(stdout);
-        let mut terminal = ratatui::Terminal::new(backend)?;
+        let mut terminal = ratatui::Terminal::with_options(
+            backend,
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Inline(3), // 3 lines for input area
+            },
+        )?;
 
         // Set up the UI components
-        let mut messages_component = crate::ui::terminal_tui::components::messages::MessagesComponent::new();
+        let _messages_component = crate::ui::terminal_tui::components::messages::MessagesComponent::new();
         let mut input_component = crate::ui::terminal_tui::components::input::InputComponent::new();
         let mut sidebar_component = crate::ui::terminal_tui::components::sidebar::SidebarComponent::new();
 
@@ -317,21 +321,11 @@ impl TerminalTuiApp {
                 // Redraw requested
             }
 
-            // Render if enough time has passed
+            // Render the input area in the inline viewport
             if last_tick.elapsed() >= tick_rate {
-                // Get state snapshot for rendering
-                let state_snapshot = {
-                    let state = self.app_state.lock().await;
-                    StateSnapshot {
-                        messages: state.messages.clone(),
-                        sessions: state.sessions.clone(),
-                        current_session_id: state.current_session_id.clone(),
-                        session_activity_states: state.session_activity_states.clone(),
-                    }
-                };
-
                 terminal.draw(|frame| {
-                    self.render(frame, &mut messages_component, &mut input_component, &mut sidebar_component, &state_snapshot);
+                    // The entire frame area is our input area (3 lines as specified in viewport)
+                    input_component.render(frame, frame.area());
                 })?;
                 last_tick = tokio::time::Instant::now();
             }
@@ -344,7 +338,6 @@ impl TerminalTuiApp {
         disable_raw_mode()?;
         execute!(
             terminal.backend_mut(),
-            LeaveAlternateScreen,
             DisableMouseCapture
         )?;
         terminal.show_cursor()?;

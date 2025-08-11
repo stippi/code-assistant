@@ -48,8 +48,20 @@ impl UserInterface for TerminalTuiUI {
         match event {
             UiEvent::SetMessages { messages, session_id, tool_results } => {
                 debug!("Setting {} messages for session {:?}", messages.len(), session_id);
-                state.clear_messages();
-                for message in messages {
+                    debug!("Adding message with role {:?} and {} fragments", message.role, message.fragments.len());
+                    for (i, fragment) in message.fragments.iter().enumerate() {
+                        match fragment {
+                            crate::ui::DisplayFragment::PlainText(text) => {
+                                debug!("  Fragment {}: PlainText({} chars)", i, text.len());
+                            }
+                            crate::ui::DisplayFragment::ThinkingText(text) => {
+                                debug!("  Fragment {}: ThinkingText({} chars)", i, text.len());
+                            }
+                            _ => {
+                                debug!("  Fragment {}: {:?}", i, fragment);
+                            }
+                        }
+                    }
                     state.add_message(message);
                 }
                 if let Some(session_id) = session_id {
@@ -88,11 +100,127 @@ impl UserInterface for TerminalTuiUI {
             }
             UiEvent::ClearMessages => {
                 debug!("Clearing messages");
-                state.clear_messages();
+            UiEvent::DisplayUserInput { content, attachments } => {
+                debug!("Displaying user input: {}", content);
+                // Add user message to state
+                let user_message = crate::ui::ui_events::MessageData {
+                    role: crate::ui::gpui::elements::MessageRole::User,
+                    fragments: {
+                        let mut fragments = vec![crate::ui::DisplayFragment::PlainText(content)];
+                        // Add attachment fragments
+                        for attachment in attachments {
+                            match attachment {
+                                crate::persistence::DraftAttachment::Text { content } => {
+                                    fragments.push(crate::ui::DisplayFragment::PlainText(content));
+                                }
+                                crate::persistence::DraftAttachment::Image { mime_type, content } => {
+                                    fragments.push(crate::ui::DisplayFragment::Image {
+                                        media_type: mime_type,
+                                        data: content
+                                    });
+                                }
+                                crate::persistence::DraftAttachment::File { content, filename, .. } => {
+                                    fragments.push(crate::ui::DisplayFragment::PlainText(
+                                        format!("File: {filename}\n{content}")
+                                    ));
+                                }
+                            }
+                        }
+                        fragments
+                    },
+                };
+                state.add_message(user_message);
+            }
+            UiEvent::StreamingStarted(_request_id) => {
+                debug!("Streaming started");
+                // Ensure we have an assistant message to append to
+                if state.messages.is_empty() ||
+                   matches!(state.messages.last(), Some(msg) if msg.role == crate::ui::gpui::elements::MessageRole::User) {
+                    let assistant_message = crate::ui::ui_events::MessageData {
+                        role: crate::ui::gpui::elements::MessageRole::Assistant,
+                        fragments: Vec::new(),
+                    };
+                    state.add_message(assistant_message);
+                }
+            }
+            UiEvent::AppendToTextBlock { content } => {
+                debug!("Appending to text block: {}", content.trim());
+                // Append to the last assistant message
+                if let Some(last_message) = state.messages.last_mut() {
+                    if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
+                        // Try to append to existing PlainText fragment or create new one
+                        if let Some(last_fragment) = last_message.fragments.last_mut() {
+                            if let crate::ui::DisplayFragment::PlainText(ref mut text) = last_fragment {
+                                text.push_str(&content);
+                            } else {
+                                last_message.fragments.push(crate::ui::DisplayFragment::PlainText(content));
+                            }
+                        } else {
+                            last_message.fragments.push(crate::ui::DisplayFragment::PlainText(content));
+                        }
+
+                    }
+                }
+            }
+            UiEvent::AppendToThinkingBlock { content } => {
+                debug!("Appending to thinking block: {}", content.trim());
+                // Append to the last assistant message
+                if let Some(last_message) = state.messages.last_mut() {
+                    if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
+                        // Try to append to existing ThinkingText fragment or create new one
+                        if let Some(last_fragment) = last_message.fragments.last_mut() {
+                            if let crate::ui::DisplayFragment::ThinkingText(ref mut text) = last_fragment {
+                                text.push_str(&content);
+                            } else {
+                                last_message.fragments.push(crate::ui::DisplayFragment::ThinkingText(content));
+                            }
+                        } else {
+                            last_message.fragments.push(crate::ui::DisplayFragment::ThinkingText(content));
+                        }
+                    }
+                }
+            }
+            UiEvent::StartTool { name, id } => {
+                debug!("Starting tool: {} ({})", name, id);
+                // Add tool start to the last assistant message
+                if let Some(last_message) = state.messages.last_mut() {
+                    if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
+                        last_message.fragments.push(crate::ui::DisplayFragment::ToolName { name, id });
+                    }
+                }
+            }
+            UiEvent::UpdateToolParameter { tool_id, name, value } => {
+                debug!("Updating tool parameter: {} = {}", name, value.trim());
+                // Add/update tool parameter in the last assistant message
+                if let Some(last_message) = state.messages.last_mut() {
+                    if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
+                        last_message.fragments.push(crate::ui::DisplayFragment::ToolParameter {
+                            name,
+                            value,
+                            tool_id
+                        });
+                    }
+                }
+            }
+            UiEvent::EndTool { id } => {
+                debug!("Ending tool: {}", id);
+                // Add tool end to the last assistant message
+                if let Some(last_message) = state.messages.last_mut() {
+                    if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
+                        last_message.fragments.push(crate::ui::DisplayFragment::ToolEnd { id });
+                    }
+                }
+            }
+            UiEvent::AddImage { media_type, data } => {
+                debug!("Adding image: {}", media_type);
+                // Add image to the last message
+                if let Some(last_message) = state.messages.last_mut() {
+                    last_message.fragments.push(crate::ui::DisplayFragment::Image { media_type, data });
+                }
             }
             _ => {
-                // For other events, we'll handle them in Phase 4 when we implement rendering
-                debug!("Ignoring event for now: {:?}", event);
+                // For other events, just log them
+                debug!("Unhandled event: {:?}", event);
             }
         }
 
@@ -101,29 +229,88 @@ impl UserInterface for TerminalTuiUI {
         self.trigger_redraw().await;
         Ok(())
     }
+        // Handle streaming fragments directly by updating the state
+        let app_state = self.app_state.clone();
+        let redraw_tx = self.redraw_tx.clone();
+        let fragment = fragment.clone();
 
-    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
-        // For now, just log the fragment - we'll implement actual display in Phase 4
-        match fragment {
-            DisplayFragment::PlainText(text) => {
-                debug!("Fragment: PlainText({})", text.trim());
+        let rt = tokio::runtime::Handle::current();
+        rt.spawn(async move {
+            let mut state = app_state.lock().await;
+
+            match &fragment {
+                DisplayFragment::PlainText(text) => {
+                    debug!("Fragment: PlainText({})", text.trim());
+                    // Append to last assistant message
+                    if let Some(last_message) = state.messages.last_mut() {
+                        if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
+                            if let Some(last_fragment) = last_message.fragments.last_mut() {
+                                if let crate::ui::DisplayFragment::PlainText(ref mut existing_text) = last_fragment {
+                                    existing_text.push_str(text);
+                                } else {
+                                    last_message.fragments.push(crate::ui::DisplayFragment::PlainText(text.clone()));
+                                }
+                            } else {
+                                last_message.fragments.push(crate::ui::DisplayFragment::PlainText(text.clone()));
+                            }
+                        }
+                    }
+                }
+                DisplayFragment::ThinkingText(text) => {
+                    debug!("Fragment: ThinkingText({})", text.trim());
+                    // Append to last assistant message
+                    if let Some(last_message) = state.messages.last_mut() {
+                        if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
+                            if let Some(last_fragment) = last_message.fragments.last_mut() {
+                                if let crate::ui::DisplayFragment::ThinkingText(ref mut existing_text) = last_fragment {
+                                    existing_text.push_str(text);
+                                } else {
+                                    last_message.fragments.push(crate::ui::DisplayFragment::ThinkingText(text.clone()));
+                                }
+                            } else {
+                                last_message.fragments.push(crate::ui::DisplayFragment::ThinkingText(text.clone()));
+                            }
+                        }
+                    }
+                }
+                DisplayFragment::ToolName { name, id } => {
+                    debug!("Fragment: ToolName({}, {})", name, id);
+                    if let Some(last_message) = state.messages.last_mut() {
+                        if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
+                            last_message.fragments.push(fragment.clone());
+                        }
+                    }
+                }
+                DisplayFragment::ToolParameter { name, value, tool_id } => {
+                    debug!("Fragment: ToolParameter({}, {}, {})", name, value.trim(), tool_id);
+                    if let Some(last_message) = state.messages.last_mut() {
+                        if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
+                            last_message.fragments.push(fragment.clone());
+                        }
+                    }
+                }
+                DisplayFragment::ToolEnd { id } => {
+                    debug!("Fragment: ToolEnd({})", id);
+                    if let Some(last_message) = state.messages.last_mut() {
+                        if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
+                            last_message.fragments.push(fragment.clone());
+                        }
+                    }
+                }
+                DisplayFragment::Image { media_type, data: _ } => {
+                    debug!("Fragment: Image({})", media_type);
+                    if let Some(last_message) = state.messages.last_mut() {
+                        last_message.fragments.push(fragment.clone());
+                    }
+                }
             }
-            DisplayFragment::ThinkingText(text) => {
-                debug!("Fragment: ThinkingText({})", text.trim());
+
+            // Trigger redraw
+            if let Some(tx) = redraw_tx.lock().await.as_ref() {
+                let _ = tx.send(());
             }
-            DisplayFragment::ToolName { name, id } => {
-                debug!("Fragment: ToolName({}, {})", name, id);
-            }
-            DisplayFragment::ToolParameter { name, value, tool_id } => {
-                debug!("Fragment: ToolParameter({}, {}, {})", name, value.trim(), tool_id);
-            }
-            DisplayFragment::ToolEnd { id } => {
-                debug!("Fragment: ToolEnd({})", id);
-            }
-            DisplayFragment::Image { media_type, data: _ } => {
-                debug!("Fragment: Image({})", media_type);
-            }
-        }
+        });
+
         Ok(())
     }
 
