@@ -88,3 +88,48 @@ impl Args {
         <Args as Parser>::parse()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_default_args_parsing() {
+        // Test that defaults parse correctly
+        let args = Args::try_parse_from(&["test"]).expect("Failed to parse default args");
+
+        assert_eq!(args.path, std::path::PathBuf::from("."));
+        assert_eq!(args.verbose, 0);
+        assert_eq!(args.num_ctx, 8192);
+        assert!(!args.ui);
+        assert!(!args.continue_task);
+        assert!(!args.fast_playback);
+        assert!(!args.use_diff_format);
+
+        // Check provider default
+        matches!(args.provider, LLMProviderType::Anthropic);
+
+        // Check tool syntax default
+        matches!(args.tool_syntax, ToolSyntax::Native);
+    }
+
+    #[test]
+    fn test_verbose_flag_counting() {
+        let args = Args::try_parse_from(&["test", "-vv"]).expect("Failed to parse verbose args");
+        assert_eq!(args.verbose, 2);
+
+        let args = Args::try_parse_from(&["test", "-v", "-v", "-v"]).expect("Failed to parse verbose args");
+        assert_eq!(args.verbose, 3);
+    }
+
+    #[test]
+    fn test_server_mode() {
+        let args = Args::try_parse_from(&["test", "server", "--verbose"]).expect("Failed to parse server args");
+
+        match args.mode {
+            Some(Mode::Server { verbose }) => assert!(verbose),
+            _ => panic!("Expected server mode"),
+        }
+    }
+}

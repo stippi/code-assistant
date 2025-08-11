@@ -89,6 +89,7 @@ pub async fn run(
                 init_path: saved_session.init_path,
                 initial_project: saved_session.initial_project,
                 next_request_id: Some(saved_session.next_request_id),
+                llm_config: saved_session.llm_config,
             };
 
             agent.load_from_session_state(session_state).await?;
@@ -132,6 +133,14 @@ pub async fn run(
                     continue; // Skip empty input
                 }
 
+                // Check for session commands (starting with :)
+                if user_input.starts_with(':') {
+                    if handle_session_command(&user_input).await {
+                        continue; // Command was handled, continue the loop
+                    }
+                    // If command wasn't recognized, fall through to treat as regular input
+                }
+
                 // Display the user input
                 user_interface
                     .send_event(UiEvent::DisplayUserInput {
@@ -167,4 +176,52 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Handle session management commands in terminal mode
+/// Returns true if the command was handled, false if it should be treated as regular input
+async fn handle_session_command(command: &str) -> bool {
+    let parts: Vec<&str> = command[1..].split_whitespace().collect(); // Remove the ':'
+
+    match parts.get(0) {
+        Some(&"sessions") => {
+            println!("📋 Session Management Commands:");
+            println!("  :sessions       - List all sessions");
+            println!("  :switch <id>    - Switch to a different session");
+            println!("  :new [name]     - Create a new session");
+            println!("  :help           - Show this help");
+            println!("\n🚧 Note: Session management is currently scaffolded for future implementation");
+            true
+        }
+        Some(&"switch") => {
+            if let Some(&session_id) = parts.get(1) {
+                println!("🔄 Would switch to session: {}", session_id);
+                println!("🚧 Session switching not yet implemented");
+            } else {
+                println!("❌ Usage: :switch <session_id>");
+            }
+            true
+        }
+        Some(&"new") => {
+            let session_name = parts.get(1).map(|&s| s.to_string());
+            match session_name {
+                Some(name) => println!("📝 Would create new session: '{}'", name),
+                None => println!("📝 Would create new unnamed session"),
+            }
+            println!("🚧 Session creation not yet implemented");
+            true
+        }
+        Some(&"help") => {
+            println!("📋 Session Management Commands:");
+            println!("  :sessions       - List all sessions");
+            println!("  :switch <id>    - Switch to a different session");
+            println!("  :new [name]     - Create a new session");
+            println!("  :help           - Show this help");
+            true
+        }
+        _ => {
+            // Unknown command, let it be treated as regular input
+            false
+        }
+    }
 }

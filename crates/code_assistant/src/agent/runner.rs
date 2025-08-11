@@ -214,6 +214,7 @@ impl Agent {
                 init_path: self.init_path.clone(),
                 initial_project: self.initial_project.clone(),
                 next_request_id: Some(self.next_request_id),
+                llm_config: None, // Agent runner doesn't track LLM config currently
             };
             self.state_persistence.save_agent_state(session_state)?;
         }

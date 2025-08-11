@@ -220,7 +220,26 @@ async fn handle_send_user_message(
         let command_executor = Box::new(DefaultCommandExecutor);
         let user_interface: Arc<dyn UserInterface> = Arc::new(gui.clone());
 
-        let llm_client = create_llm_client(cfg.as_ref().clone()).await;
+        // Check if session has stored LLM config, otherwise use global config
+        let llm_config = {
+            let manager = multi_session_manager.lock().await;
+            manager.get_session_llm_config(session_id).unwrap_or(None)
+        };
+
+        let effective_config = llm_config.map(|session_config| {
+            llm::factory::LLMClientConfig {
+                provider: session_config.provider,
+                model: session_config.model,
+                base_url: session_config.base_url,
+                aicore_config: session_config.aicore_config,
+                num_ctx: session_config.num_ctx,
+                record_path: session_config.record_path,
+                playback_path: None, // Always None for session config
+                fast_playback: false, // Always false for session config
+            }
+        }).unwrap_or_else(|| cfg.as_ref().clone());
+
+        let llm_client = create_llm_client(effective_config).await;
 
         match llm_client {
             Ok(client) => {

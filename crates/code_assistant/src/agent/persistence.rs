@@ -161,6 +161,7 @@ impl AgentStatePersistence for FileStatePersistence {
             tool_syntax: self.tool_syntax,
             use_diff_blocks: self.use_diff_blocks,
             next_request_id: state.next_request_id.unwrap_or(0),
+            llm_config: state.llm_config,
         };
 
         // Save to file

@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use std::path::PathBuf;
 
-#[derive(ValueEnum, Debug, Clone)]
+#[derive(ValueEnum, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum LLMProviderType {
     AiCore,
     Anthropic,

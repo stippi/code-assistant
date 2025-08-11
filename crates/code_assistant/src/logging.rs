@@ -8,9 +8,9 @@ pub fn setup_logging(verbose_level: u8, to_stdout: bool) {
     } else {
         // Map verbosity count to filters
         let filter_str = match verbose_level {
-            0 => "code_assistant=info,llm=info,web=info,warn",
-            1 => "code_assistant=debug,llm=debug,web=debug,info",
-            _ => "code_assistant=trace,llm=trace,web=trace,debug",
+            0 => "warn,code_assistant=info,llm=info,web=info",
+            1 => "info,code_assistant=debug,llm=debug,web=debug",
+            _ => "debug,code_assistant=trace,llm=trace,web=trace",
         };
         tracing_subscriber::EnvFilter::new(filter_str)
     };

@@ -59,8 +59,17 @@ pub fn run(
                 debug!("Creating initial session with task: {}", initial_task);
 
                 let session_id = {
+                    let llm_config = crate::persistence::LlmSessionConfig {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        base_url: base_url.clone(),
+                        aicore_config: aicore_config.clone(),
+                        num_ctx,
+                        record_path: record.clone(),
+                    };
+
                     let mut manager = multi_session_manager.lock().await;
-                    manager.create_session(None).unwrap()
+                    manager.create_session_with_config(None, Some(llm_config)).unwrap()
                 };
 
                 debug!("Created initial session: {}", session_id);
@@ -149,8 +158,17 @@ pub fn run(
 
                     // Create a new session automatically
                     let new_session_id = {
+                        let llm_config = crate::persistence::LlmSessionConfig {
+                            provider: provider.clone(),
+                            model: model.clone(),
+                            base_url: base_url.clone(),
+                            aicore_config: aicore_config.clone(),
+                            num_ctx,
+                            record_path: record.clone(),
+                        };
+
                         let mut manager = multi_session_manager.lock().await;
-                        manager.create_session(None).unwrap_or_else(|e| {
+                        manager.create_session_with_config(None, Some(llm_config)).unwrap_or_else(|e| {
                             error!("Failed to create new session: {}", e);
                             // Return a fallback session ID if creation fails
                             "fallback".to_string()
