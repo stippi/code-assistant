@@ -178,10 +178,7 @@ impl SessionInstance {
     }
 
     /// Create a ProxyUI for this session that handles fragment buffering
-    pub fn create_proxy_ui(
-        &self,
-        real_ui: Arc<dyn UserInterface>,
-    ) -> Arc<dyn UserInterface> {
+    pub fn create_proxy_ui(&self, real_ui: Arc<dyn UserInterface>) -> Arc<dyn UserInterface> {
         Arc::new(ProxyUI::new(
             real_ui,
             self.fragment_buffer.clone(),

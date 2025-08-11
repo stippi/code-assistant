@@ -7,7 +7,9 @@ use std::time::SystemTime;
 use tokio::sync::Mutex;
 
 use crate::config::ProjectManager;
-use crate::persistence::{generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, LlmSessionConfig};
+use crate::persistence::{
+    generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, LlmSessionConfig,
+};
 use crate::session::instance::SessionInstance;
 use crate::session::SessionState;
 use crate::types::{ToolSyntax, WorkingMemory};
@@ -58,7 +60,11 @@ impl SessionManager {
     }
 
     /// Create a new session with optional LLM config and return its ID
-    pub fn create_session_with_config(&mut self, name: Option<String>, llm_config: Option<LlmSessionConfig>) -> Result<String> {
+    pub fn create_session_with_config(
+        &mut self,
+        name: Option<String>,
+        llm_config: Option<LlmSessionConfig>,
+    ) -> Result<String> {
         let session_id = generate_session_id();
         let session_name = name.unwrap_or_default(); // Empty string if no name provided
 

@@ -1,18 +1,19 @@
+use super::AgentRunConfig;
 use crate::agent::{Agent, FileStatePersistence};
 use crate::config::DefaultProjectManager;
 use crate::ui::terminal::TerminalUI;
 use crate::ui::{UIError, UiEvent, UserInterface};
 use crate::utils::DefaultCommandExecutor;
 use anyhow::{Context, Result};
-use llm::factory::{LLMClientConfig, create_llm_client};
+use llm::factory::{create_llm_client, LLMClientConfig};
 use std::sync::Arc;
-use super::AgentRunConfig;
 
 pub async fn run(config: AgentRunConfig) -> Result<()> {
     let root_path = config.path.canonicalize()?;
 
     // Create file persistence for simple state management
-    let file_persistence = FileStatePersistence::new(&root_path, config.tool_syntax, config.use_diff_format);
+    let file_persistence =
+        FileStatePersistence::new(&root_path, config.tool_syntax, config.use_diff_format);
 
     // Setup dynamic types
     let project_manager = Box::new(DefaultProjectManager::new());
@@ -119,9 +120,8 @@ pub async fn run(config: AgentRunConfig) -> Result<()> {
                 }
 
                 // Check for session commands (starting with :)
-                if user_input.starts_with(':')
-                    && handle_session_command(&user_input).await {
-                        continue; // Command was handled, continue the loop
+                if user_input.starts_with(':') && handle_session_command(&user_input).await {
+                    continue; // Command was handled, continue the loop
                 }
                 // If command wasn't recognized, fall through to treat as regular input
 
@@ -174,7 +174,9 @@ async fn handle_session_command(command: &str) -> bool {
             println!("  :switch <id>    - Switch to a different session");
             println!("  :new [name]     - Create a new session");
             println!("  :help           - Show this help");
-            println!("\n🚧 Note: Session management is currently scaffolded for future implementation");
+            println!(
+                "\n🚧 Note: Session management is currently scaffolded for future implementation"
+            );
             true
         }
         Some(&"switch") => {

@@ -2,7 +2,7 @@ use crate::config::DefaultProjectManager;
 use crate::persistence::DraftAttachment;
 use crate::ui::{gpui::Gpui, UserInterface};
 use crate::utils::{content::content_blocks_from, DefaultCommandExecutor};
-use llm::factory::{LLMClientConfig, create_llm_client};
+use llm::factory::{create_llm_client, LLMClientConfig};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace};
@@ -48,7 +48,8 @@ pub async fn handle_backend_events(
                     &attachments,
                     &cfg,
                     &gui,
-                ).await
+                )
+                .await
             }
 
             crate::ui::gpui::BackendEvent::QueueUserMessage {
@@ -61,7 +62,8 @@ pub async fn handle_backend_events(
                     &session_id,
                     &message,
                     &attachments,
-                ).await
+                )
+                .await
             }
 
             crate::ui::gpui::BackendEvent::RequestPendingMessageEdit { session_id } => {
@@ -147,7 +149,8 @@ async fn handle_load_session(
             }
 
             // Don't return a response - UI events already handled the update
-            crate::ui::gpui::BackendResponse::SessionsListed { sessions: vec![] } // Dummy response
+            crate::ui::gpui::BackendResponse::SessionsListed { sessions: vec![] }
+            // Dummy response
         }
         Err(e) => {
             error!("Failed to connect to session {}: {}", session_id, e);
@@ -226,18 +229,20 @@ async fn handle_send_user_message(
             manager.get_session_llm_config(session_id).unwrap_or(None)
         };
 
-        let effective_config = llm_config.map(|session_config| {
-            llm::factory::LLMClientConfig {
-                provider: session_config.provider,
-                model: session_config.model,
-                base_url: session_config.base_url,
-                aicore_config: session_config.aicore_config,
-                num_ctx: session_config.num_ctx,
-                record_path: session_config.record_path,
-                playback_path: None, // Always None for session config
-                fast_playback: false, // Always false for session config
-            }
-        }).unwrap_or_else(|| cfg.as_ref().clone());
+        let effective_config = llm_config
+            .map(|session_config| {
+                llm::factory::LLMClientConfig {
+                    provider: session_config.provider,
+                    model: session_config.model,
+                    base_url: session_config.base_url,
+                    aicore_config: session_config.aicore_config,
+                    num_ctx: session_config.num_ctx,
+                    record_path: session_config.record_path,
+                    playback_path: None,  // Always None for session config
+                    fast_playback: false, // Always false for session config
+                }
+            })
+            .unwrap_or_else(|| cfg.as_ref().clone());
 
         let llm_client = create_llm_client(effective_config).await;
 
@@ -266,7 +271,8 @@ async fn handle_send_user_message(
         Ok(_) => {
             debug!("Agent started for session {}", session_id);
             // Continue without returning a response since agent is running
-            crate::ui::gpui::BackendResponse::SessionsListed { sessions: vec![] } // Dummy response
+            crate::ui::gpui::BackendResponse::SessionsListed { sessions: vec![] }
+            // Dummy response
         }
         Err(e) => {
             error!("Failed to start agent for session {}: {}", session_id, e);

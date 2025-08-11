@@ -1,13 +1,13 @@
+use super::AgentRunConfig;
 use crate::config::DefaultProjectManager;
 use crate::session::{AgentConfig, SessionManager};
 use crate::ui::{self, UserInterface};
 use crate::utils::DefaultCommandExecutor;
 use anyhow::Result;
-use llm::factory::{LLMClientConfig, create_llm_client};
+use llm::factory::{create_llm_client, LLMClientConfig};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
-use super::AgentRunConfig;
 
 pub fn run(config: AgentRunConfig) -> Result<()> {
     // Create shared state between GUI and backend
@@ -63,7 +63,9 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                     };
 
                     let mut manager = multi_session_manager.lock().await;
-                    manager.create_session_with_config(None, Some(llm_config)).unwrap()
+                    manager
+                        .create_session_with_config(None, Some(llm_config))
+                        .unwrap()
                 };
 
                 debug!("Created initial session: {}", session_id);
@@ -88,7 +90,8 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
 
                 let project_manager = Box::new(DefaultProjectManager::new());
                 let command_executor = Box::new(DefaultCommandExecutor);
-                let user_interface: Arc<dyn crate::ui::UserInterface> = Arc::new(gui_for_thread.clone());
+                let user_interface: Arc<dyn crate::ui::UserInterface> =
+                    Arc::new(gui_for_thread.clone());
 
                 let llm_client = create_llm_client(LLMClientConfig {
                     provider: provider.clone(),
@@ -162,11 +165,13 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                         };
 
                         let mut manager = multi_session_manager.lock().await;
-                        manager.create_session_with_config(None, Some(llm_config)).unwrap_or_else(|e| {
-                            error!("Failed to create new session: {}", e);
-                            // Return a fallback session ID if creation fails
-                            "fallback".to_string()
-                        })
+                        manager
+                            .create_session_with_config(None, Some(llm_config))
+                            .unwrap_or_else(|e| {
+                                error!("Failed to create new session: {}", e);
+                                // Return a fallback session ID if creation fails
+                                "fallback".to_string()
+                            })
                     };
 
                     if new_session_id != "fallback" {
