@@ -20,6 +20,14 @@ enum SpinnerState {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LastFragmentType {
+    None,
+    Text,
+    Thinking,
+    Tool,
+}
+
 #[derive(Clone)]
 pub struct TerminalUI {
     // For line editor - using just the default implementation without custom helper
@@ -32,6 +40,8 @@ pub struct TerminalUI {
     displayed_parameters: Arc<Mutex<HashMap<String, HashSet<String>>>>, // tool_id -> set of param names
     // Spinner state for loading and rate limiting
     spinner_state: Arc<Mutex<SpinnerState>>,
+    // Track last fragment type for spacing
+    last_fragment_type: Arc<Mutex<LastFragmentType>>,
 }
 
 impl TerminalUI {
@@ -50,6 +60,7 @@ impl TerminalUI {
             tool_parameters: Arc::new(Mutex::new(HashMap::new())),
             displayed_parameters: Arc::new(Mutex::new(HashMap::new())),
             spinner_state: Arc::new(Mutex::new(SpinnerState::None)),
+            last_fragment_type: Arc::new(Mutex::new(LastFragmentType::None)),
         }
     }
 
@@ -69,6 +80,7 @@ impl TerminalUI {
             tool_parameters: Arc::new(Mutex::new(HashMap::new())),
             displayed_parameters: Arc::new(Mutex::new(HashMap::new())),
             spinner_state: Arc::new(Mutex::new(SpinnerState::None)),
+            last_fragment_type: Arc::new(Mutex::new(LastFragmentType::None)),
         }
     }
 
@@ -87,12 +99,18 @@ impl UserInterface for TerminalUI {
                 content,
                 attachments,
             } => {
-                // Display user input with attachments
-                let mut formatted = format!("{} {}", ">".with(Color::Green), content);
+                // Add spacing before user input
+                self.write_line("").await?;
+
+                // Display user input with "You: " prefix and different styling
+                let mut formatted = format!("{} {}", "You:".with(Color::Blue).bold(), content.with(Color::Blue));
                 if !attachments.is_empty() {
                     formatted.push_str(&format!(" [with {} attachment(s)]", attachments.len()));
                 }
-                self.write_line(&formatted).await?
+                self.write_line(&formatted).await?;
+
+                // Add spacing after user input
+                self.write_line("").await?;
             }
             UiEvent::UpdateToolStatus {
                 tool_id: _,
@@ -243,6 +261,26 @@ impl UserInterface for TerminalUI {
             &mut stdout
         };
 
+        // Handle spacing between different block types
+        let current_type = match fragment {
+            DisplayFragment::PlainText(_) => LastFragmentType::Text,
+            DisplayFragment::ThinkingText(_) => LastFragmentType::Thinking,
+            DisplayFragment::ToolName { .. } | DisplayFragment::ToolParameter { .. } => LastFragmentType::Tool,
+            _ => {
+                // Don't change last type for other fragments
+                *self.last_fragment_type.lock().unwrap()
+            }
+        };
+
+        let should_add_spacing = {
+            let last_type = *self.last_fragment_type.lock().unwrap();
+            last_type != LastFragmentType::None && last_type != current_type
+        };
+
+        if should_add_spacing && !matches!(fragment, DisplayFragment::ToolParameter { .. }) {
+            writeln!(writer)?;
+        }
+
         match fragment {
             DisplayFragment::PlainText(text) => {
                 // Normal text, output as-is
@@ -255,7 +293,7 @@ impl UserInterface for TerminalUI {
             }
             DisplayFragment::ToolName { name, .. } => {
                 // Format tool name in bold blue with bullet point
-                write!(writer, "\n• {}", name.to_string().bold().blue())?;
+                write!(writer, "• {}", name.to_string().bold().blue())?;
             }
             DisplayFragment::ToolParameter {
                 name,
@@ -292,6 +330,12 @@ impl UserInterface for TerminalUI {
                 // Display image placeholder in terminal (can't show actual images)
                 write!(writer, "[Image: {}]", media_type.clone().yellow())?;
             }
+        }
+
+        // Update last fragment type
+        let last_type = *self.last_fragment_type.lock().unwrap();
+        if current_type != last_type {
+            *self.last_fragment_type.lock().unwrap() = current_type;
         }
 
         writer.flush()?;
@@ -424,12 +468,7 @@ impl TerminalUI {
         match state {
             SpinnerState::Loading { frame, .. } => {
                 let spinner_char = Self::SPINNER_CHARS[*frame];
-                write!(
-                    writer_ref,
-                    "\r{} Thinking...",
-                    spinner_char.to_string().cyan()
-                )
-                .unwrap();
+                write!(writer_ref, "\r{}", spinner_char.to_string().cyan()).unwrap();
             }
             SpinnerState::RateLimit {
                 seconds_remaining,
