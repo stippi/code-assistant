@@ -147,7 +147,7 @@ async fn handle_load_session(
             }
 
             // Don't return a response - UI events already handled the update
-            return crate::ui::gpui::BackendResponse::SessionsListed { sessions: vec![] }; // Dummy response
+            crate::ui::gpui::BackendResponse::SessionsListed { sessions: vec![] } // Dummy response
         }
         Err(e) => {
             error!("Failed to connect to session {}: {}", session_id, e);
@@ -266,7 +266,7 @@ async fn handle_send_user_message(
         Ok(_) => {
             debug!("Agent started for session {}", session_id);
             // Continue without returning a response since agent is running
-            return crate::ui::gpui::BackendResponse::SessionsListed { sessions: vec![] }; // Dummy response
+            crate::ui::gpui::BackendResponse::SessionsListed { sessions: vec![] } // Dummy response
         }
         Err(e) => {
             error!("Failed to start agent for session {}: {}", session_id, e);

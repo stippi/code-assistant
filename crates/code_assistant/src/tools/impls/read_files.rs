@@ -245,8 +245,7 @@ mod tests {
         let mut loaded_files = HashMap::new();
         loaded_files.insert(PathBuf::from("test.txt"), "Test file content".to_string());
 
-        let mut failed_files = Vec::new();
-        failed_files.push((PathBuf::from("missing.txt"), "File not found".to_string()));
+        let failed_files = vec![(PathBuf::from("missing.txt"), "File not found".to_string())];
 
         let output = ReadFilesOutput {
             project: "test-project".to_string(),

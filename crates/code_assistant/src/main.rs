@@ -56,37 +56,26 @@ async fn main() -> Result<()> {
                 anyhow::bail!("Path '{}' is not a directory", args.path.display());
             }
 
+            let config = app::AgentRunConfig {
+                path: args.path,
+                task: args.task,
+                continue_task: args.continue_task,
+                provider: args.provider,
+                model: args.model,
+                base_url: args.base_url,
+                aicore_config: args.aicore_config,
+                num_ctx: args.num_ctx,
+                tool_syntax: args.tool_syntax,
+                use_diff_format: args.use_diff_format,
+                record: args.record,
+                playback: args.playback,
+                fast_playback: args.fast_playback,
+            };
+
             if args.ui {
-                app::gpui::run(
-                    args.path,
-                    args.task,
-                    args.provider,
-                    args.model,
-                    args.base_url,
-                    args.aicore_config,
-                    args.num_ctx,
-                    args.tool_syntax,
-                    args.use_diff_format,
-                    args.record,
-                    args.playback,
-                    args.fast_playback,
-                )
+                app::gpui::run(config)
             } else {
-                app::terminal::run(
-                    args.path,
-                    args.task,
-                    args.continue_task,
-                    args.provider,
-                    args.model,
-                    args.base_url,
-                    args.aicore_config,
-                    args.num_ctx,
-                    args.tool_syntax,
-                    args.use_diff_format,
-                    args.record,
-                    args.playback,
-                    args.fast_playback,
-                ).await
+                app::terminal::run(config).await
             }
         }
     }

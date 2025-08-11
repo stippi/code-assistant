@@ -1,33 +1,18 @@
 use crate::agent::{Agent, FileStatePersistence};
-use crate::types::ToolSyntax;
+use crate::config::DefaultProjectManager;
 use crate::ui::terminal::TerminalUI;
 use crate::ui::{UIError, UiEvent, UserInterface};
 use crate::utils::DefaultCommandExecutor;
 use anyhow::{Context, Result};
-use crate::config::DefaultProjectManager;
-use llm::factory::{LLMClientConfig, LLMProviderType, create_llm_client};
-use std::path::PathBuf;
+use llm::factory::{LLMClientConfig, create_llm_client};
 use std::sync::Arc;
+use super::AgentRunConfig;
 
-pub async fn run(
-    path: PathBuf,
-    task: Option<String>,
-    continue_task: bool,
-    provider: LLMProviderType,
-    model: Option<String>,
-    base_url: Option<String>,
-    aicore_config: Option<PathBuf>,
-    num_ctx: usize,
-    tool_syntax: ToolSyntax,
-    use_diff_format: bool,
-    record: Option<PathBuf>,
-    playback: Option<PathBuf>,
-    fast_playback: bool,
-) -> Result<()> {
-    let root_path = path.canonicalize()?;
+pub async fn run(config: AgentRunConfig) -> Result<()> {
+    let root_path = config.path.canonicalize()?;
 
     // Create file persistence for simple state management
-    let file_persistence = FileStatePersistence::new(&root_path, tool_syntax, use_diff_format);
+    let file_persistence = FileStatePersistence::new(&root_path, config.tool_syntax, config.use_diff_format);
 
     // Setup dynamic types
     let project_manager = Box::new(DefaultProjectManager::new());
@@ -37,14 +22,14 @@ pub async fn run(
 
     // Setup LLM client with the specified provider
     let llm_client = create_llm_client(LLMClientConfig {
-        provider,
-        model,
-        base_url,
-        aicore_config,
-        num_ctx,
-        record_path: record,
-        playback_path: playback,
-        fast_playback,
+        provider: config.provider,
+        model: config.model,
+        base_url: config.base_url,
+        aicore_config: config.aicore_config,
+        num_ctx: config.num_ctx,
+        record_path: config.record,
+        playback_path: config.playback,
+        fast_playback: config.fast_playback,
     })
     .await
     .context("Failed to initialize LLM client")?;
@@ -53,7 +38,7 @@ pub async fn run(
     let state_storage = Box::new(file_persistence.clone());
     let mut agent = Agent::new(
         llm_client,
-        tool_syntax,
+        config.tool_syntax,
         project_manager,
         command_executor,
         user_interface.clone(),
@@ -62,12 +47,12 @@ pub async fn run(
     );
 
     // Configure diff blocks format if requested
-    if use_diff_format {
+    if config.use_diff_format {
         agent.enable_diff_blocks();
     }
 
     // Check if we should continue from previous state or start new
-    if continue_task && file_persistence.has_saved_state() {
+    if config.continue_task && file_persistence.has_saved_state() {
         // Load from saved state
         if let Some(saved_session) = file_persistence.load_agent_state()? {
             println!(
@@ -101,7 +86,7 @@ pub async fn run(
     }
 
     // If a new task was provided, add it and continue
-    if let Some(new_task) = task {
+    if let Some(new_task) = config.task {
         println!("Adding new task: {new_task}");
         let user_msg = llm::Message {
             role: llm::MessageRole::User,
@@ -134,12 +119,11 @@ pub async fn run(
                 }
 
                 // Check for session commands (starting with :)
-                if user_input.starts_with(':') {
-                    if handle_session_command(&user_input).await {
+                if user_input.starts_with(':')
+                    && handle_session_command(&user_input).await {
                         continue; // Command was handled, continue the loop
-                    }
-                    // If command wasn't recognized, fall through to treat as regular input
                 }
+                // If command wasn't recognized, fall through to treat as regular input
 
                 // Display the user input
                 user_interface
@@ -183,7 +167,7 @@ pub async fn run(
 async fn handle_session_command(command: &str) -> bool {
     let parts: Vec<&str> = command[1..].split_whitespace().collect(); // Remove the ':'
 
-    match parts.get(0) {
+    match parts.first() {
         Some(&"sessions") => {
             println!("📋 Session Management Commands:");
             println!("  :sessions       - List all sessions");
@@ -195,7 +179,7 @@ async fn handle_session_command(command: &str) -> bool {
         }
         Some(&"switch") => {
             if let Some(&session_id) = parts.get(1) {
-                println!("🔄 Would switch to session: {}", session_id);
+                println!("🔄 Would switch to session: {session_id}");
                 println!("🚧 Session switching not yet implemented");
             } else {
                 println!("❌ Usage: :switch <session_id>");
@@ -205,7 +189,7 @@ async fn handle_session_command(command: &str) -> bool {
         Some(&"new") => {
             let session_name = parts.get(1).map(|&s| s.to_string());
             match session_name {
-                Some(name) => println!("📝 Would create new session: '{}'", name),
+                Some(name) => println!("📝 Would create new session: '{name}'"),
                 None => println!("📝 Would create new unnamed session"),
             }
             println!("🚧 Session creation not yet implemented");

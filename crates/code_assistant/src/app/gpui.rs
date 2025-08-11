@@ -1,29 +1,15 @@
 use crate::config::DefaultProjectManager;
 use crate::session::{AgentConfig, SessionManager};
-use crate::types::ToolSyntax;
 use crate::ui::{self, UserInterface};
 use crate::utils::DefaultCommandExecutor;
 use anyhow::Result;
-use llm::factory::{LLMClientConfig, LLMProviderType, create_llm_client};
-use std::path::PathBuf;
+use llm::factory::{LLMClientConfig, create_llm_client};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
+use super::AgentRunConfig;
 
-pub fn run(
-    path: PathBuf,
-    task: Option<String>,
-    provider: LLMProviderType,
-    model: Option<String>,
-    base_url: Option<String>,
-    aicore_config: Option<PathBuf>,
-    num_ctx: usize,
-    tool_syntax: ToolSyntax,
-    use_diff_format: bool,
-    record: Option<PathBuf>,
-    playback: Option<PathBuf>,
-    fast_playback: bool,
-) -> Result<()> {
+pub fn run(config: AgentRunConfig) -> Result<()> {
     // Create shared state between GUI and backend
     let gui = ui::gpui::Gpui::new();
 
@@ -31,14 +17,14 @@ pub fn run(
     let (backend_event_rx, backend_response_tx) = gui.setup_backend_communication();
 
     // Setup dynamic types for MultiSessionManager
-    let root_path = path.canonicalize()?;
+    let root_path = config.path.canonicalize()?;
     let persistence = crate::persistence::FileSessionPersistence::new();
 
     let agent_config = AgentConfig {
-        tool_syntax,
+        tool_syntax: config.tool_syntax,
         init_path: Some(root_path.clone()),
         initial_project: String::new(),
-        use_diff_blocks: use_diff_format,
+        use_diff_blocks: config.use_diff_format,
     };
 
     // Create the new SessionManager
@@ -47,7 +33,15 @@ pub fn run(
 
     // Clone GUI before moving it into thread
     let gui_for_thread = gui.clone();
-    let task_clone = task.clone();
+    let task_clone = config.task.clone();
+    let provider = config.provider.clone();
+    let model = config.model.clone();
+    let base_url = config.base_url.clone();
+    let aicore_config = config.aicore_config.clone();
+    let num_ctx = config.num_ctx;
+    let record = config.record.clone();
+    let playback = config.playback.clone();
+    let fast_playback = config.fast_playback;
 
     // Start the simplified backend thread
     std::thread::spawn(move || {
