@@ -1,6 +1,8 @@
-use crate::ui::{ui_events::MessageData, gpui::elements::MessageRole};
+use crate::ui::{gpui::elements::MessageRole, ui_events::MessageData};
 use ratatui::{
     layout::Rect,
+    style::{Color, Style},
+    text::{Line, Span, Text},
     widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Frame,
 };
@@ -17,6 +19,8 @@ impl MessagesComponent {
             scroll_position: 0,
         }
     }
+
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, messages: &[MessageData]) {
         // Convert messages to text
         let mut text_lines = Vec::new();
 
@@ -32,13 +36,16 @@ impl MessagesComponent {
                 MessageRole::Assistant => "Assistant",
             };
 
-            text_lines.push(Line::from(vec![
-                Span::styled(format!("▌{role_name}: "), role_style),
-            ]));
+            text_lines.push(Line::from(vec![Span::styled(
+                format!("▌{role_name}: "),
+                role_style,
+            )]));
 
             // Process fragments
             for fragment in &message.fragments {
                 match fragment {
+                    crate::ui::DisplayFragment::PlainText(text) => {
+                        // Split text into lines and add them
                         if !text.is_empty() {
                             for line in text.lines() {
                                 text_lines.push(Line::from(line.to_string()));
@@ -48,49 +55,50 @@ impl MessagesComponent {
                     crate::ui::DisplayFragment::ThinkingText(text) => {
                         // Render thinking text in italic/dim style
                         for line in text.lines() {
-                            text_lines.push(Line::from(vec![
-                                Span::styled(
-                                    format!("💭 {line}"),
-                                    Style::default().fg(Color::DarkGray),
-                                ),
-                            ]));
+                            text_lines.push(Line::from(vec![Span::styled(
+                                format!("💭 {line}"),
+                                Style::default().fg(Color::DarkGray),
+                            )]));
                         }
                     }
                     crate::ui::DisplayFragment::ToolName { name, id } => {
-                        text_lines.push(Line::from(vec![
-                            Span::styled(
-                                format!("🔧 {name} ({id})"),
-                                Style::default().fg(Color::Yellow),
-                            ),
-                        ]));
+                        text_lines.push(Line::from(vec![Span::styled(
+                            format!("🔧 {name} ({id})"),
+                            Style::default().fg(Color::Yellow),
+                        )]));
                     }
-                    crate::ui::DisplayFragment::ToolParameter { name, value, tool_id: _ } => {
+                    crate::ui::DisplayFragment::ToolParameter {
+                        name,
+                        value,
+                        tool_id: _,
+                    } => {
                         text_lines.push(Line::from(vec![
-                            Span::styled(
-                                format!("  {name}: "),
-                                Style::default().fg(Color::Cyan),
-                            ),
+                            Span::styled(format!("  {name}: "), Style::default().fg(Color::Cyan)),
                             Span::raw(value),
                         ]));
                     }
                     crate::ui::DisplayFragment::ToolEnd { id: _ } => {
-                        text_lines.push(Line::from(vec![
-                            Span::styled("  ✓ Tool completed", Style::default().fg(Color::Green)),
-                        ]));
+                        text_lines.push(Line::from(vec![Span::styled(
+                            "  ✓ Tool completed",
+                            Style::default().fg(Color::Green),
+                        )]));
                     }
-                    crate::ui::DisplayFragment::Image { media_type, data: _ } => {
-                        text_lines.push(Line::from(vec![
-                            Span::styled(
-                                format!("🖼️  Image ({media_type})"),
-                                Style::default().fg(Color::Magenta),
-                            ),
-                        ]));
+                    crate::ui::DisplayFragment::Image {
+                        media_type,
+                        data: _,
+                    } => {
+                        text_lines.push(Line::from(vec![Span::styled(
+                            format!("🖼️  Image ({media_type})"),
+                            Style::default().fg(Color::Magenta),
+                        )]));
                     }
                 }
             }
 
             // Add separator between messages
             text_lines.push(Line::from(""));
+        }
+
         // Create paragraph widget without border
         let text = Text::from(text_lines);
         let paragraph = Paragraph::new(text)
@@ -99,11 +107,16 @@ impl MessagesComponent {
 
         frame.render_widget(paragraph, area);
 
+        // Update scrollbar state
+        let content_height = messages.len() * 3; // Rough estimate
         let visible_height = area.height as usize;
 
-        self.scroll_state = self.scroll_state
+        self.scroll_state = self
+            .scroll_state
             .content_length(content_height)
             .viewport_content_length(visible_height)
+            .position(self.scroll_position);
+
         // Render scrollbar if needed (only if we have a lot of content)
         if content_height > visible_height {
             let scrollbar = Scrollbar::default()
@@ -111,9 +124,7 @@ impl MessagesComponent {
                 .begin_symbol(Some("↑"))
                 .end_symbol(Some("↓"));
 
-                area,
-                &mut self.scroll_state,
-            );
+            frame.render_stateful_widget(scrollbar, area, &mut self.scroll_state);
         }
     }
 

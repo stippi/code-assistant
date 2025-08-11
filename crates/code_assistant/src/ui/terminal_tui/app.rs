@@ -62,7 +62,7 @@ impl TerminalTuiApp {
         let multi_session_manager = Arc::new(Mutex::new(session_manager));
 
         // Create terminal UI
-        let terminal_ui = TerminalTuiUI::new(self.app_state.clone());
+        let terminal_ui = TerminalTuiUI::new();
         let ui: Arc<dyn UserInterface> = Arc::new(terminal_ui);
 
         // Setup backend communication channels
@@ -193,13 +193,13 @@ impl TerminalTuiApp {
         let mut sidebar_component = crate::ui::terminal_tui::components::sidebar::SidebarComponent::new();
 
         // Create redraw notification channel
-        let (redraw_tx, mut redraw_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (redraw_tx, mut redraw_rx) = tokio::sync::watch::channel::<()>(());
 
         // Update the UI to use the redraw channel
         {
             let terminal_ui = ui.clone();
             if let Some(terminal_tui_ui) = terminal_ui.as_any().downcast_ref::<TerminalTuiUI>() {
-                terminal_tui_ui.set_redraw_channel(redraw_tx.clone()).await;
+                terminal_tui_ui.set_redraw_sender(redraw_tx.clone());
             }
         }
 
@@ -299,7 +299,10 @@ impl TerminalTuiApp {
                                             };
                                             if let Some(_session_id) = current_session_id {
                                                 if let Some(terminal_tui_ui) = ui.as_any().downcast_ref::<TerminalTuiUI>() {
-                                                    terminal_tui_ui.set_cancel_flag(true).await;
+                                                    // Set cancel flag
+                                                    if let Ok(mut cancel_flag) = terminal_tui_ui.cancel_flag.try_lock() {
+                                                        *cancel_flag = true;
+                                                    }
                                                 }
                                             }
                                         }
@@ -317,11 +320,12 @@ impl TerminalTuiApp {
             }
 
             // Check for redraw notifications
-            if redraw_rx.try_recv().is_ok() {
+            if redraw_rx.has_changed().unwrap_or(false) {
                 // Redraw requested
+                let _ = redraw_rx.borrow_and_update(); // Mark as seen
             }
 
-            // Render the input area in the inline viewport
+            // Render only the input area in the inline viewport
             if last_tick.elapsed() >= tick_rate {
                 terminal.draw(|frame| {
                     // The entire frame area is our input area (3 lines as specified in viewport)
