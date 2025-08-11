@@ -13,7 +13,7 @@ pub async fn run(config: AgentRunConfig) -> Result<()> {
     // Check for experimental TUI mode
     if std::env::var("EXPERIMENTAL_TUI").is_ok() {
         let terminal_tui_app = crate::ui::terminal_tui::TerminalTuiApp::new();
-        return terminal_tui_app.run(&config);
+        return terminal_tui_app.run(&config).await;
     }
     let root_path = config.path.canonicalize()?;
 

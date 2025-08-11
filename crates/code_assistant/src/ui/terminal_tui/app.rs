@@ -1,5 +1,5 @@
 use crate::app::AgentRunConfig;
-use crate::persistence::FileSessionPersistence;
+use crate::persistence::{ChatMetadata, FileSessionPersistence};
 use crate::session::instance::SessionActivityState;
 use crate::session::manager::{AgentConfig, SessionManager};
 use crate::ui::backend::{BackendEvent, BackendResponse, handle_backend_events};
@@ -8,7 +8,7 @@ use crate::ui::terminal_tui::{
     ui::TerminalTuiUI,
     components::{input::InputComponent, messages::MessagesComponent, sidebar::SidebarComponent},
 };
-use crate::ui::UserInterface;
+use crate::ui::{ui_events::MessageData, UserInterface};
 use anyhow::Result;
 use llm::factory::LLMClientConfig;
 use ratatui::{
@@ -16,9 +16,17 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     Frame,
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 use tracing::debug;
+
+#[derive(Clone)]
+struct StateSnapshot {
+    messages: Vec<MessageData>,
+    sessions: Vec<ChatMetadata>,
+    current_session_id: Option<String>,
+    session_activity_states: HashMap<String, SessionActivityState>,
+}
 
 pub struct TerminalTuiApp {
     app_state: Arc<Mutex<AppState>>,
@@ -31,13 +39,7 @@ impl TerminalTuiApp {
         }
     }
 
-    pub fn run(&self, config: &AgentRunConfig) -> Result<()> {
-        // Create the async runtime
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(self.run_async(config))
-    }
-
-    async fn run_async(&self, config: &AgentRunConfig) -> Result<()> {
+    pub async fn run(&self, config: &AgentRunConfig) -> Result<()> {
         let root_path = config.path.canonicalize()?;
 
         // Create session persistence
@@ -317,8 +319,19 @@ impl TerminalTuiApp {
 
             // Render if enough time has passed
             if last_tick.elapsed() >= tick_rate {
+                // Get state snapshot for rendering
+                let state_snapshot = {
+                    let state = self.app_state.lock().await;
+                    StateSnapshot {
+                        messages: state.messages.clone(),
+                        sessions: state.sessions.clone(),
+                        current_session_id: state.current_session_id.clone(),
+                        session_activity_states: state.session_activity_states.clone(),
+                    }
+                };
+
                 terminal.draw(|frame| {
-                    self.render(frame, &mut messages_component, &mut input_component, &mut sidebar_component);
+                    self.render(frame, &mut messages_component, &mut input_component, &mut sidebar_component, &state_snapshot);
                 })?;
                 last_tick = tokio::time::Instant::now();
             }
@@ -350,10 +363,8 @@ impl TerminalTuiApp {
         messages_component: &mut MessagesComponent,
         input_component: &mut InputComponent,
         sidebar_component: &mut SidebarComponent,
+        state: &StateSnapshot,
     ) {
-        let rt = tokio::runtime::Handle::current();
-        let state = rt.block_on(self.app_state.lock());
-
         if sidebar_component.is_visible() {
             // Split screen for sidebar
             let chunks = Layout::default()
