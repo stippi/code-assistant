@@ -43,7 +43,7 @@ pub enum DisplayFragment {
 /// Common trait for stream processors
 pub trait StreamProcessorTrait: Send + Sync {
     /// Create a new stream processor with the given UI and request context
-    fn new(ui: Arc<Box<dyn UserInterface>>, request_id: u64) -> Self
+    fn new(ui: Arc<dyn UserInterface>, request_id: u64) -> Self
     where
         Self: Sized;
 

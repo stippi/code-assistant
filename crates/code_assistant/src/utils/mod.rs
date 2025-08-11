@@ -1,4 +1,5 @@
 mod command;
+pub mod content;
 mod file_updater;
 mod writer;
 

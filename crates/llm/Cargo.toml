@@ -20,6 +20,7 @@ tempfile = "3.18"
 thiserror = "1.0"
 regex = "1.11"
 dirs = "5.0"
+clap = { version = "4.0", features = ["derive"] }
 
 [dev-dependencies]
 axum = "0.7"

@@ -180,9 +180,9 @@ impl SessionInstance {
     /// Create a ProxyUI for this session that handles fragment buffering
     pub fn create_proxy_ui(
         &self,
-        real_ui: Arc<Box<dyn UserInterface>>,
-    ) -> Arc<Box<dyn UserInterface>> {
-        Arc::new(Box::new(ProxyUI::new(
+        real_ui: Arc<dyn UserInterface>,
+    ) -> Arc<dyn UserInterface> {
+        Arc::new(ProxyUI::new(
             real_ui,
             self.fragment_buffer.clone(),
             self.is_ui_connected.clone(),
@@ -378,7 +378,7 @@ impl SessionInstance {
 
 /// ProxyUI that buffers fragments and conditionally forwards to real UI
 struct ProxyUI {
-    real_ui: Arc<Box<dyn UserInterface>>,
+    real_ui: Arc<dyn UserInterface>,
     fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
     is_session_connected: Arc<Mutex<bool>>,
     session_activity_state: Arc<Mutex<SessionActivityState>>,
@@ -387,7 +387,7 @@ struct ProxyUI {
 
 impl ProxyUI {
     pub fn new(
-        real_ui: Arc<Box<dyn UserInterface>>,
+        real_ui: Arc<dyn UserInterface>,
         fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
         is_session_connected: Arc<Mutex<bool>>,
         session_activity_state: Arc<Mutex<SessionActivityState>>,

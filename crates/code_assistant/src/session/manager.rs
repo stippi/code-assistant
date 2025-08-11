@@ -152,7 +152,7 @@ impl SessionManager {
         llm_provider: Box<dyn LLMProvider>,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
-        ui: Arc<Box<dyn UserInterface>>,
+        ui: Arc<dyn UserInterface>,
     ) -> Result<()> {
         // Prepare session - need to scope the mutable borrow carefully
         let (
