@@ -93,7 +93,6 @@
 
 use super::test_utils::{assert_fragments_match, chunk_str, TestUI};
 use crate::ui::streaming::{CaretStreamProcessor, DisplayFragment, StreamProcessorTrait};
-use crate::ui::UserInterface;
 use llm::{Message, MessageContent, MessageRole, StreamingChunk};
 use std::sync::Arc;
 
@@ -122,7 +121,7 @@ use std::sync::Arc;
 /// TestUI containing all emitted fragments, both raw and merged
 fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
     let test_ui = TestUI::new();
-    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let ui_arc = Arc::new(test_ui.clone());
 
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
 
@@ -142,8 +141,8 @@ fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
 #[tokio::test]
 async fn test_caret_simple_tool() {
     let test_ui = TestUI::new();
-    let ui = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
-    let mut processor = CaretStreamProcessor::new(ui, 123);
+    let ui_arc = Arc::new(test_ui.clone());
+    let mut processor = CaretStreamProcessor::new(ui_arc, 123);
 
     // Simulate streaming chunks of a simple caret tool
     processor
@@ -169,8 +168,8 @@ async fn test_caret_simple_tool() {
 #[tokio::test]
 async fn test_caret_multiline_tool() {
     let test_ui = TestUI::new();
-    let ui = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
-    let mut processor = CaretStreamProcessor::new(ui, 123);
+    let ui_arc = Arc::new(test_ui.clone());
+    let mut processor = CaretStreamProcessor::new(ui_arc, 123);
 
     // Simulate streaming chunks with multiline content
     let content = "^^^read_files\nproject: test\ncontent ---\nThis is multiline content\nwith several lines\n--- content\n^^^";
@@ -205,8 +204,8 @@ async fn test_caret_multiline_tool() {
 #[tokio::test]
 async fn test_extract_fragments_from_complete_message() {
     let test_ui = TestUI::new();
-    let ui = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
-    let mut processor = CaretStreamProcessor::new(ui, 123);
+    let ui_arc = Arc::new(test_ui.clone());
+    let mut processor = CaretStreamProcessor::new(ui_arc, 123);
 
     let message = Message {
         role: MessageRole::Assistant,
@@ -541,7 +540,7 @@ fn test_caret_false_positive_prevention() {
 fn test_caret_incomplete_tool_at_buffer_end() {
     // Test that incomplete tool syntax at the end of a buffer is not processed prematurely
     let test_ui = TestUI::new();
-    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let ui_arc = Arc::new(test_ui.clone());
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
 
     // Send partial tool syntax
@@ -631,7 +630,7 @@ fn test_streaming_vs_buffering_behavior() {
     println!("\n=== Testing Streaming vs Buffering Behavior ===");
 
     let test_ui = TestUI::new();
-    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let ui_arc = Arc::new(test_ui.clone());
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
 
     // Send regular text that cannot be tool syntax
@@ -769,7 +768,7 @@ fn test_newline_boundary_trimming() {
 #[test]
 fn test_caret_tool_blocking_with_whitespace() {
     let test_ui = TestUI::new();
-    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let ui_arc = Arc::new(test_ui.clone());
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
 
     // Process a complete tool block followed by whitespace
@@ -797,7 +796,7 @@ fn test_caret_tool_blocking_with_whitespace() {
 #[test]
 fn test_caret_tool_blocking_with_non_whitespace() {
     let test_ui = TestUI::new();
-    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let ui_arc = Arc::new(test_ui.clone());
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
 
     // Process a complete write tool block followed by non-whitespace text
@@ -850,7 +849,7 @@ fn test_caret_tool_blocking_with_non_whitespace() {
 #[test]
 fn test_smart_filter_allows_content_after_read_tools() {
     let test_ui = TestUI::new();
-    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let ui_arc = Arc::new(test_ui.clone());
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
 
     // Process a complete read tool block followed by text
@@ -895,7 +894,7 @@ fn test_smart_filter_allows_content_after_read_tools() {
 #[test]
 fn test_smart_filter_allows_chaining_read_tools() {
     let test_ui = TestUI::new();
-    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let ui_arc = Arc::new(test_ui.clone());
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
 
     // Process first read tool
@@ -944,7 +943,7 @@ fn test_smart_filter_allows_chaining_read_tools() {
 #[test]
 fn test_smart_filter_blocks_write_tool_after_read_tool() {
     let test_ui = TestUI::new();
-    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+    let ui_arc = Arc::new(test_ui.clone());
     let mut processor = CaretStreamProcessor::new(ui_arc, 42);
 
     // Process first read tool
