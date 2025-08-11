@@ -21,11 +21,11 @@ pub async fn handle_backend_events(
 
         let response = match event {
             crate::ui::gpui::BackendEvent::ListSessions => {
-                handle_list_sessions(&multi_session_manager).await
+                Some(handle_list_sessions(&multi_session_manager).await)
             }
 
             crate::ui::gpui::BackendEvent::CreateNewSession { name } => {
-                handle_create_session(&multi_session_manager, name).await
+                Some(handle_create_session(&multi_session_manager, name).await)
             }
 
             crate::ui::gpui::BackendEvent::LoadSession { session_id } => {
@@ -33,7 +33,7 @@ pub async fn handle_backend_events(
             }
 
             crate::ui::gpui::BackendEvent::DeleteSession { session_id } => {
-                handle_delete_session(&multi_session_manager, &session_id).await
+                Some(handle_delete_session(&multi_session_manager, &session_id).await)
             }
 
             crate::ui::gpui::BackendEvent::SendUserMessage {
@@ -56,25 +56,27 @@ pub async fn handle_backend_events(
                 session_id,
                 message,
                 attachments,
-            } => {
+            } => Some(
                 handle_queue_user_message(
                     &multi_session_manager,
                     &session_id,
                     &message,
                     &attachments,
                 )
-                .await
-            }
+                .await,
+            ),
 
             crate::ui::gpui::BackendEvent::RequestPendingMessageEdit { session_id } => {
-                handle_request_pending_message_edit(&multi_session_manager, &session_id).await
+                Some(handle_request_pending_message_edit(&multi_session_manager, &session_id).await)
             }
         };
 
-        // Send response back to UI
-        if let Err(e) = backend_response_tx.send(response).await {
-            error!("Failed to send response: {}", e);
-            break;
+        // Send response back to UI only if there is one
+        if let Some(response) = response {
+            if let Err(e) = backend_response_tx.send(response).await {
+                error!("Failed to send response: {}", e);
+                break;
+            }
         }
     }
 
@@ -129,7 +131,7 @@ async fn handle_load_session(
     multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
     session_id: &str,
     gui: &Gpui,
-) -> crate::ui::gpui::BackendResponse {
+) -> Option<crate::ui::gpui::BackendResponse> {
     debug!("LoadSession requested: {}", session_id);
 
     let ui_events_result = {
@@ -147,16 +149,14 @@ async fn handle_load_session(
                     error!("Failed to send UI event: {}", e);
                 }
             }
-
-            // Don't return a response - UI events already handled the update
-            crate::ui::gpui::BackendResponse::SessionsListed { sessions: vec![] }
-            // Dummy response
+            // No response needed - UI events already handled the update
+            None
         }
         Err(e) => {
             error!("Failed to connect to session {}: {}", session_id, e);
-            crate::ui::gpui::BackendResponse::Error {
+            Some(crate::ui::gpui::BackendResponse::Error {
                 message: e.to_string(),
-            }
+            })
         }
     }
 }
@@ -195,7 +195,7 @@ async fn handle_send_user_message(
     attachments: &[DraftAttachment],
     cfg: &Arc<LLMClientConfig>,
     gui: &Gpui,
-) -> crate::ui::gpui::BackendResponse {
+) -> Option<crate::ui::gpui::BackendResponse> {
     debug!(
         "User message for session {}: {} (with {} attachments)",
         session_id,
@@ -270,15 +270,14 @@ async fn handle_send_user_message(
     match result {
         Ok(_) => {
             debug!("Agent started for session {}", session_id);
-            // Continue without returning a response since agent is running
-            crate::ui::gpui::BackendResponse::SessionsListed { sessions: vec![] }
-            // Dummy response
+            // No response needed - agent is running
+            None
         }
         Err(e) => {
             error!("Failed to start agent for session {}: {}", session_id, e);
-            crate::ui::gpui::BackendResponse::Error {
+            Some(crate::ui::gpui::BackendResponse::Error {
                 message: format!("Failed to start agent: {e}"),
-            }
+            })
         }
     }
 }
