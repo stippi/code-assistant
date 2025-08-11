@@ -188,7 +188,7 @@ impl SessionInstance {
             self.is_ui_connected.clone(),
             self.activity_state.clone(),
             self.session.id.clone(),
-        )))
+        ))
     }
 
     /// Generate UI events for connecting to this session
@@ -284,7 +284,7 @@ impl SessionInstance {
             }
         }
 
-        let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
+        let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
         let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0);
 
         let mut messages_data = Vec::new();

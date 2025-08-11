@@ -50,7 +50,7 @@ enum StreamingState {
 /// Manages the conversion of LLM streaming chunks to display fragments using XML-style tags
 pub struct XmlStreamProcessor {
     state: ProcessorState,
-    ui: Arc<Box<dyn UserInterface>>,
+    ui: Arc<dyn UserInterface>,
     request_id: u64,
     filter: Box<dyn ToolUseFilter>,
     streaming_state: StreamingState,
@@ -69,7 +69,7 @@ enum TagType {
 
 // Implement the common StreamProcessorTrait
 impl StreamProcessorTrait for XmlStreamProcessor {
-    fn new(ui: Arc<Box<dyn UserInterface>>, request_id: u64) -> Self {
+    fn new(ui: Arc<dyn UserInterface>, request_id: u64) -> Self {
         Self {
             state: ProcessorState::default(),
             ui,

@@ -54,7 +54,7 @@ enum StreamingState {
 }
 
 pub struct CaretStreamProcessor {
-    ui: Arc<Box<dyn UserInterface>>,
+    ui: Arc<dyn UserInterface>,
     request_id: u64,
     tool_counter: u64,
     buffer: String,
@@ -70,7 +70,7 @@ pub struct CaretStreamProcessor {
 }
 
 impl StreamProcessorTrait for CaretStreamProcessor {
-    fn new(ui: Arc<Box<dyn UserInterface>>, request_id: u64) -> Self {
+    fn new(ui: Arc<dyn UserInterface>, request_id: u64) -> Self {
         Self {
             ui,
             request_id,

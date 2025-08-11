@@ -26,7 +26,7 @@ pub trait ToolInvocationParser: Send + Sync {
     /// A stream-processor that renders *this syntax* for the UI.
     fn stream_processor(
         &self,
-        ui: Arc<Box<dyn UserInterface>>,
+        ui: Arc<dyn UserInterface>,
         request_id: u64,
     ) -> Box<dyn StreamProcessorTrait>;
 
@@ -165,7 +165,7 @@ impl ToolInvocationParser for XmlParser {
 
     fn stream_processor(
         &self,
-        ui: Arc<Box<dyn UserInterface>>,
+        ui: Arc<dyn UserInterface>,
         request_id: u64,
     ) -> Box<dyn StreamProcessorTrait> {
         use crate::ui::streaming::StreamProcessorTrait;
@@ -406,7 +406,7 @@ impl ToolInvocationParser for CaretParser {
 
     fn stream_processor(
         &self,
-        ui: Arc<Box<dyn UserInterface>>,
+        ui: Arc<dyn UserInterface>,
         request_id: u64,
     ) -> Box<dyn StreamProcessorTrait> {
         use crate::ui::streaming::CaretStreamProcessor;
@@ -649,7 +649,7 @@ impl ToolInvocationParser for JsonParser {
 
     fn stream_processor(
         &self,
-        ui: Arc<Box<dyn UserInterface>>,
+        ui: Arc<dyn UserInterface>,
         request_id: u64,
     ) -> Box<dyn StreamProcessorTrait> {
         use crate::ui::streaming::JsonStreamProcessor;

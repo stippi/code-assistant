@@ -66,7 +66,7 @@ pub use xml_processor::XmlStreamProcessor;
 /// Factory function to create the appropriate processor based on tool syntax
 pub fn create_stream_processor(
     tool_syntax: ToolSyntax,
-    ui: Arc<Box<dyn UserInterface>>,
+    ui: Arc<dyn UserInterface>,
     request_id: u64,
 ) -> Box<dyn StreamProcessorTrait> {
     match tool_syntax {
