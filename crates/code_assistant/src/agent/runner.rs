@@ -37,7 +37,7 @@ pub struct Agent {
     tool_scope: ToolScope,
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
-    ui: Arc<Box<dyn UserInterface>>,
+    ui: Arc<dyn UserInterface>,
     state_persistence: Box<dyn AgentStatePersistence>,
     // Store all messages exchanged
     message_history: Vec<Message>,
@@ -84,7 +84,7 @@ impl Agent {
         tool_syntax: ToolSyntax,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
-        ui: Arc<Box<dyn UserInterface>>,
+        ui: Arc<dyn UserInterface>,
         state_persistence: Box<dyn AgentStatePersistence>,
         init_path: Option<PathBuf>,
     ) -> Self {
@@ -214,6 +214,7 @@ impl Agent {
                 init_path: self.init_path.clone(),
                 initial_project: self.initial_project.clone(),
                 next_request_id: Some(self.next_request_id),
+                llm_config: None, // Agent runner doesn't track LLM config currently
             };
             self.state_persistence.save_agent_state(session_state)?;
         }

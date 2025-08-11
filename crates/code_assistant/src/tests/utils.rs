@@ -1,5 +1,5 @@
 use crate::tools::{ParserRegistry, ToolRequest};
-use crate::ToolSyntax;
+use crate::types::ToolSyntax;
 use anyhow::Result;
 
 /// Parse tool requests from LLM response and return both requests and truncated response after first tool

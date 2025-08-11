@@ -1,4 +1,5 @@
 use anyhow::Result;
+use llm::factory::LLMProviderType;
 use llm::Message;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -7,6 +8,18 @@ use tracing::{debug, info, warn};
 
 use crate::tools::ToolRequest;
 use crate::types::{ToolSyntax, WorkingMemory};
+
+/// Configuration for LLM provider per session
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LlmSessionConfig {
+    pub provider: LLMProviderType,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub aicore_config: Option<PathBuf>,
+    pub num_ctx: usize,
+    pub record_path: Option<PathBuf>,
+    // Note: playback and fast_playback are runtime toggles, not persisted
+}
 
 /// A complete chat session with all its data
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -38,6 +51,9 @@ pub struct ChatSession {
     /// Counter for generating unique request IDs within this session
     #[serde(default)]
     pub next_request_id: u64,
+    /// LLM configuration for this session
+    #[serde(default)]
+    pub llm_config: Option<LlmSessionConfig>,
 }
 
 /// Serialized representation of a tool execution

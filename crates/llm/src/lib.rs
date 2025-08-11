@@ -20,6 +20,7 @@ pub mod anthropic_playback;
 pub mod auth;
 pub mod config;
 pub mod display;
+pub mod factory;
 pub mod groq;
 pub mod mistralai;
 pub mod ollama;

@@ -9,7 +9,7 @@ use std::sync::Arc;
 // Helper function to process regular text chunks using the JSON processor
 fn process_text_chunks(text: &str, chunk_size: usize) -> Vec<DisplayFragment> {
     let test_ui = TestUI::new();
-    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+    let ui_arc = Arc::new(test_ui.clone());
     let mut processor = JsonStreamProcessor::new(ui_arc, 42);
 
     // Split text into small chunks and process each one
@@ -23,7 +23,7 @@ fn process_text_chunks(text: &str, chunk_size: usize) -> Vec<DisplayFragment> {
 // Test helper to process JSON chunks with the JSON processor
 fn process_json_chunks(chunks: &[String], tool_name: &str, tool_id: &str) -> Vec<DisplayFragment> {
     let test_ui = TestUI::new();
-    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+    let ui_arc = Arc::new(test_ui.clone());
     let mut processor = JsonStreamProcessor::new(ui_arc, 42);
 
     // Process each chunk
@@ -314,7 +314,7 @@ mod tests {
     fn test_incomplete_thinking_tag_at_chunk_boundary() {
         // This test ensures proper handling of partially complete tags
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
 
         // First chunk ends with incomplete tag
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn test_realistic_anthropic_chunks() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
 
         // Realistic chunks from Anthropic API - simplified
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn test_parameter_name_parsing() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
 
         // Test the specific pattern that was causing "::" parameter names
@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn test_empty_string_value() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
         let tool_id_str = "test-empty-string-123";
 
@@ -719,7 +719,7 @@ mod tests {
     #[test]
     fn test_string_value_with_only_escaped_chars() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
         let tool_id_str = "test-escaped-only-123";
 
@@ -869,7 +869,7 @@ mod tests {
     #[test]
     fn test_multiple_top_level_key_value_types_chunked() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
         let tool_id_str = "multi-type-003";
 
@@ -979,7 +979,7 @@ mod tests {
     #[test]
     fn test_thinking_to_tool_transition() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
 
         let chunks = vec![
@@ -1053,7 +1053,7 @@ mod tests {
     #[test]
     fn test_extract_fragments_from_text_message_with_thinking() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
 
         // Create a message with text content containing thinking tags
@@ -1082,7 +1082,7 @@ mod tests {
     #[test]
     fn test_extract_fragments_from_structured_message_with_tool_use() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
 
         // Create a message with structured content including tool use
@@ -1137,7 +1137,7 @@ mod tests {
     #[test]
     fn test_extract_fragments_from_mixed_structured_message() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn crate::ui::UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
 
         // Create a message with mixed content blocks

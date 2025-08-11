@@ -7,7 +7,6 @@ use crate::tests::mocks::{
 };
 use crate::tests::utils::parse_and_truncate_llm_response;
 use crate::types::*;
-use crate::UserInterface;
 use anyhow::Result;
 use llm::types::*;
 use std::path::PathBuf;
@@ -387,7 +386,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         ToolSyntax::Native,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
-        Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
+        Arc::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
         Some(PathBuf::from("./test_path")),
     );
@@ -495,7 +494,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         ToolSyntax::Xml,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
-        Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
+        Arc::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
         Some(PathBuf::from("./test_path")),
     );
@@ -616,7 +615,7 @@ async fn test_parse_error_handling() -> Result<()> {
         ToolSyntax::Native,
         Box::new(MockProjectManager::new()),
         Box::new(create_command_executor_mock()),
-        Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>),
+        Arc::new(MockUI::default()),
         Box::new(MockStatePersistence::new()),
         Some(PathBuf::from("./test_path")),
     );
@@ -780,6 +779,7 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
         tool_syntax: ToolSyntax::Xml,
         use_diff_blocks: false,
         next_request_id: 1,
+        llm_config: None,
     };
 
     let session_instance = SessionInstance::new(session);
@@ -1115,7 +1115,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     let llm_provider = Box::new(MockLLMProvider::new(vec![]));
     let project_manager = Box::new(MockProjectManager::default());
     let command_executor = Box::new(create_command_executor_mock());
-    let ui = Arc::new(Box::new(MockUI::default()) as Box<dyn UserInterface>);
+    let ui = Arc::new(MockUI::default());
     let state_persistence = Box::new(MockStatePersistence::new());
 
     let mut agent = Agent::new(

@@ -7,7 +7,9 @@ use std::time::SystemTime;
 use tokio::sync::Mutex;
 
 use crate::config::ProjectManager;
-use crate::persistence::{generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence};
+use crate::persistence::{
+    generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, LlmSessionConfig,
+};
 use crate::session::instance::SessionInstance;
 use crate::session::SessionState;
 use crate::types::{ToolSyntax, WorkingMemory};
@@ -54,6 +56,15 @@ impl SessionManager {
 
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
+        self.create_session_with_config(name, None)
+    }
+
+    /// Create a new session with optional LLM config and return its ID
+    pub fn create_session_with_config(
+        &mut self,
+        name: Option<String>,
+        llm_config: Option<LlmSessionConfig>,
+    ) -> Result<String> {
         let session_id = generate_session_id();
         let session_name = name.unwrap_or_default(); // Empty string if no name provided
 
@@ -70,6 +81,7 @@ impl SessionManager {
             tool_syntax: self.agent_config.tool_syntax,
             use_diff_blocks: self.agent_config.use_diff_blocks,
             next_request_id: 1,
+            llm_config,
         };
 
         // Save to persistence
@@ -152,7 +164,7 @@ impl SessionManager {
         llm_provider: Box<dyn LLMProvider>,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
-        ui: Arc<Box<dyn UserInterface>>,
+        ui: Arc<dyn UserInterface>,
     ) -> Result<()> {
         // Prepare session - need to scope the mutable borrow carefully
         let (
@@ -204,6 +216,7 @@ impl SessionManager {
                 init_path: session_instance.session.init_path.clone(),
                 initial_project: session_instance.session.initial_project.clone(),
                 next_request_id: Some(session_instance.session.next_request_id),
+                llm_config: session_instance.session.llm_config.clone(),
             };
 
             // Set activity state
@@ -350,6 +363,19 @@ impl SessionManager {
         self.persistence.delete_chat_session(session_id)?;
 
         Ok(())
+    }
+
+    /// Get the LLM config for a session, if any
+    pub fn get_session_llm_config(&self, session_id: &str) -> Result<Option<LlmSessionConfig>> {
+        if let Some(instance) = self.active_sessions.get(session_id) {
+            Ok(instance.session.llm_config.clone())
+        } else {
+            // Load from persistence
+            match self.persistence.load_chat_session(session_id)? {
+                Some(session) => Ok(session.llm_config),
+                None => Ok(None),
+            }
+        }
     }
 
     /// Get the latest session ID for auto-resuming

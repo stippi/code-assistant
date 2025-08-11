@@ -178,17 +178,14 @@ impl SessionInstance {
     }
 
     /// Create a ProxyUI for this session that handles fragment buffering
-    pub fn create_proxy_ui(
-        &self,
-        real_ui: Arc<Box<dyn UserInterface>>,
-    ) -> Arc<Box<dyn UserInterface>> {
-        Arc::new(Box::new(ProxyUI::new(
+    pub fn create_proxy_ui(&self, real_ui: Arc<dyn UserInterface>) -> Arc<dyn UserInterface> {
+        Arc::new(ProxyUI::new(
             real_ui,
             self.fragment_buffer.clone(),
             self.is_ui_connected.clone(),
             self.activity_state.clone(),
             self.session.id.clone(),
-        )))
+        ))
     }
 
     /// Generate UI events for connecting to this session
@@ -284,7 +281,7 @@ impl SessionInstance {
             }
         }
 
-        let dummy_ui = std::sync::Arc::new(Box::new(DummyUI) as Box<dyn crate::ui::UserInterface>);
+        let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
         let mut processor = create_stream_processor(tool_syntax, dummy_ui, 0);
 
         let mut messages_data = Vec::new();
@@ -378,7 +375,7 @@ impl SessionInstance {
 
 /// ProxyUI that buffers fragments and conditionally forwards to real UI
 struct ProxyUI {
-    real_ui: Arc<Box<dyn UserInterface>>,
+    real_ui: Arc<dyn UserInterface>,
     fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
     is_session_connected: Arc<Mutex<bool>>,
     session_activity_state: Arc<Mutex<SessionActivityState>>,
@@ -387,7 +384,7 @@ struct ProxyUI {
 
 impl ProxyUI {
     pub fn new(
-        real_ui: Arc<Box<dyn UserInterface>>,
+        real_ui: Arc<dyn UserInterface>,
         fragment_buffer: Arc<Mutex<VecDeque<DisplayFragment>>>,
         is_session_connected: Arc<Mutex<bool>>,
         session_activity_state: Arc<Mutex<SessionActivityState>>,

@@ -77,7 +77,7 @@ impl Default for JsonProcessorState {
 /// Process JSON chunks from LLM providers
 pub struct JsonStreamProcessor {
     state: JsonProcessorState,
-    ui: Arc<Box<dyn UserInterface>>,
+    ui: Arc<dyn UserInterface>,
 }
 
 impl JsonStreamProcessor {
@@ -103,7 +103,7 @@ impl JsonStreamProcessor {
 }
 
 impl StreamProcessorTrait for JsonStreamProcessor {
-    fn new(ui: Arc<Box<dyn UserInterface>>, _request_id: u64) -> Self {
+    fn new(ui: Arc<dyn UserInterface>, _request_id: u64) -> Self {
         Self {
             state: JsonProcessorState::default(),
             ui,

@@ -1,14 +1,12 @@
 use super::test_utils::{assert_fragments_match, chunk_str, TestUI};
 use super::{DisplayFragment, StreamProcessorTrait, XmlStreamProcessor};
-use crate::ui::UserInterface;
 use llm::StreamingChunk;
 use std::sync::Arc;
 
 // Process input text with a stream processor, breaking it into chunks
 fn process_chunked_text(text: &str, chunk_size: usize) -> TestUI {
     let test_ui = TestUI::new();
-    let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
-
+    let ui_arc = Arc::new(test_ui.clone());
     let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
     // Split text into small chunks and process each one
@@ -114,8 +112,7 @@ mod tests {
         );
 
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
-
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Process the input and expect an error
@@ -264,7 +261,7 @@ mod tests {
     #[test]
     fn test_extract_fragments_from_text_message_with_xml_tags() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Create a message with text content containing XML-style tags
@@ -303,7 +300,7 @@ mod tests {
     #[test]
     fn test_extract_fragments_from_structured_message_converted_to_xml_style() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Create a message with structured content including tool use
@@ -358,7 +355,7 @@ mod tests {
     #[test]
     fn test_extract_fragments_from_mixed_structured_message() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Create a message with mixed content blocks
@@ -462,7 +459,7 @@ mod tests {
         use llm::{Message, MessageContent, MessageRole};
 
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Create a user message with XML-like content
@@ -621,8 +618,7 @@ mod tests {
         );
 
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
-
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Process the input and expect an error
@@ -720,8 +716,7 @@ mod tests {
         );
 
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
-
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Process the input and expect an error
@@ -789,8 +784,7 @@ mod tests {
         ];
 
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
-
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Split text into small chunks and process each one
@@ -835,7 +829,7 @@ mod tests {
     #[test]
     fn test_smart_filter_allows_content_after_read_tools() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Process a complete read tool block followed by text
@@ -880,7 +874,7 @@ mod tests {
     #[test]
     fn test_smart_filter_allows_chaining_read_tools() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Process first read tool
@@ -929,7 +923,7 @@ mod tests {
     #[test]
     fn test_smart_filter_blocks_write_tool_after_read_tool() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Process first read tool
@@ -974,7 +968,7 @@ mod tests {
     #[test]
     fn test_smart_filter_blocks_write_tool_immediately() {
         let test_ui = TestUI::new();
-        let ui_arc = Arc::new(Box::new(test_ui.clone()) as Box<dyn UserInterface>);
+        let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Process a complete write tool block followed by text

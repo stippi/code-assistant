@@ -1,3 +1,4 @@
+use crate::persistence::LlmSessionConfig;
 use llm::Message;
 use std::path::PathBuf;
 
@@ -21,4 +22,5 @@ pub struct SessionState {
     pub init_path: Option<PathBuf>,
     pub initial_project: String,
     pub next_request_id: Option<u64>,
+    pub llm_config: Option<LlmSessionConfig>,
 }
