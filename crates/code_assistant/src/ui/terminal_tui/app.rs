@@ -3,7 +3,7 @@ use crate::persistence::FileSessionPersistence;
 use crate::session::instance::SessionActivityState;
 use crate::session::manager::{AgentConfig, SessionManager};
 use crate::ui::backend::{handle_backend_events, BackendEvent, BackendResponse};
-use crate::ui::terminal_tui::{state::AppState, ui::TerminalTuiUI, renderer::TerminalRenderer};
+use crate::ui::terminal_tui::{renderer::TerminalRenderer, state::AppState, ui::TerminalTuiUI};
 use crate::ui::UserInterface;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -51,7 +51,8 @@ impl TerminalTuiApp {
 
         // Setup backend communication channels
         let (backend_event_tx, backend_event_rx) = async_channel::unbounded::<BackendEvent>();
-        let (backend_response_tx, backend_response_rx) = async_channel::unbounded::<BackendResponse>();
+        let (backend_response_tx, backend_response_rx) =
+            async_channel::unbounded::<BackendResponse>();
 
         // Create LLM client config
         let llm_config = Arc::new(LLMClientConfig {
@@ -110,7 +111,9 @@ impl TerminalTuiApp {
                         BackendResponse::SessionCreated { session_id } => {
                             debug!("Created new session: {}", session_id);
                             backend_event_tx
-                                .send(BackendEvent::LoadSession { session_id: session_id.clone() })
+                                .send(BackendEvent::LoadSession {
+                                    session_id: session_id.clone(),
+                                })
                                 .await?;
                             session_id
                         }
@@ -118,7 +121,9 @@ impl TerminalTuiApp {
                             return Err(anyhow::anyhow!("Failed to create session: {}", message));
                         }
                         _ => {
-                            return Err(anyhow::anyhow!("Unexpected response when creating session"));
+                            return Err(anyhow::anyhow!(
+                                "Unexpected response when creating session"
+                            ));
                         }
                     }
                 }
@@ -133,7 +138,9 @@ impl TerminalTuiApp {
                 BackendResponse::SessionCreated { session_id } => {
                     debug!("Created new session: {}", session_id);
                     backend_event_tx
-                        .send(BackendEvent::LoadSession { session_id: session_id.clone() })
+                        .send(BackendEvent::LoadSession {
+                            session_id: session_id.clone(),
+                        })
                         .await?;
                     session_id
                 }
@@ -147,6 +154,62 @@ impl TerminalTuiApp {
         };
 
         debug!("Terminal TUI connected to session: {}", session_id);
+
+        // Immediately set current_session_id so first Enter can send
+        {
+            let mut state = self.app_state.lock().await;
+            state.current_session_id = Some(session_id.clone());
+        }
+
+        // Kick off a session list refresh (optional but useful)
+        let _ = backend_event_tx.try_send(BackendEvent::ListSessions);
+
+        // Spawn a background task to translate backend responses into UiEvents
+        {
+            let ui_clone = ui.clone();
+            tokio::spawn(async move {
+                while let Ok(resp) = backend_response_rx.recv().await {
+                    match resp {
+                        BackendResponse::SessionsListed { sessions } => {
+                            let _ = ui_clone
+                                .send_event(crate::ui::UiEvent::UpdateChatList { sessions })
+                                .await;
+                        }
+                        BackendResponse::PendingMessageUpdated {
+                            session_id: _,
+                            message,
+                        } => {
+                            let _ = ui_clone
+                                .send_event(crate::ui::UiEvent::UpdatePendingMessage { message })
+                                .await;
+                        }
+                        BackendResponse::PendingMessageForEdit {
+                            session_id: _,
+                            message: _,
+                        } => {
+                            // For now, just clear pending in UI
+                            let _ = ui_clone
+                                .send_event(crate::ui::UiEvent::UpdatePendingMessage {
+                                    message: None,
+                                })
+                                .await;
+                        }
+                        BackendResponse::Error { message } => {
+                            // Print an inline error line minimally; do not break the UI
+                            if let Some(tui_err) = ui_clone.as_any().downcast_ref::<TerminalTuiUI>()
+                            {
+                                if let Some(renderer) = tui_err.renderer.lock().await.as_ref() {
+                                    let _ =
+                                        renderer.write_message(&format!("\n[error] {message}\n"));
+                                }
+                            }
+                        }
+                        BackendResponse::SessionCreated { .. } => {}
+                        BackendResponse::SessionDeleted { .. } => {}
+                    }
+                }
+            });
+        }
 
         // Initialize terminal renderer with scroll region and raw mode
         let renderer = TerminalRenderer::new(3)?;
@@ -170,13 +233,17 @@ impl TerminalTuiApp {
         let mut input_buffer = String::new();
         let mut cursor_col: u16 = 0;
         let mut spinner_idx: usize = 0;
-        const SPINNER: &[char] = &['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+        const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
         // Helper to compute prompt with optional spinner/status
         let make_prompt = |state: &AppState, tick: usize| -> String {
             match state.activity_state {
-                Some(SessionActivityState::WaitingForResponse) => format!("{} ", SPINNER[tick % SPINNER.len()]),
-                Some(SessionActivityState::RateLimited { seconds_remaining }) => format!("{} {}s ", SPINNER[tick % SPINNER.len()], seconds_remaining),
+                Some(SessionActivityState::WaitingForResponse) => {
+                    format!("{} ", SPINNER[tick % SPINNER.len()])
+                }
+                Some(SessionActivityState::RateLimited { seconds_remaining }) => {
+                    format!("{} {}s ", SPINNER[tick % SPINNER.len()], seconds_remaining)
+                }
                 _ => "> ".to_string(),
             }
         };
@@ -210,8 +277,18 @@ impl TerminalTuiApp {
                                             state.activity_state.clone()
                                         };
                                         let event = match activity_state {
-                                            Some(SessionActivityState::Idle) | None => BackendEvent::SendUserMessage { session_id, message: content, attachments: Vec::new() },
-                                            _ => BackendEvent::QueueUserMessage { session_id, message: content, attachments: Vec::new() },
+                                            Some(SessionActivityState::Idle) | None => {
+                                                BackendEvent::SendUserMessage {
+                                                    session_id,
+                                                    message: content,
+                                                    attachments: Vec::new(),
+                                                }
+                                            }
+                                            _ => BackendEvent::QueueUserMessage {
+                                                session_id,
+                                                message: content,
+                                                attachments: Vec::new(),
+                                            },
                                         };
                                         let _ = backend_event_tx.try_send(event);
                                     }
@@ -235,8 +312,16 @@ impl TerminalTuiApp {
                                     cursor_col -= 1;
                                 }
                             }
-                            KeyCode::Left => { if cursor_col > 0 { cursor_col -= 1; } }
-                            KeyCode::Right => { if (cursor_col as usize) < input_buffer.len() { cursor_col += 1; } }
+                            KeyCode::Left => {
+                                if cursor_col > 0 {
+                                    cursor_col -= 1;
+                                }
+                            }
+                            KeyCode::Right => {
+                                if (cursor_col as usize) < input_buffer.len() {
+                                    cursor_col += 1;
+                                }
+                            }
                             KeyCode::Char(ch) => {
                                 let idx = cursor_col as usize;
                                 input_buffer.insert(idx, ch);
@@ -250,7 +335,8 @@ impl TerminalTuiApp {
                             let state = self.app_state.lock().await;
                             make_prompt(&state, spinner_idx)
                         };
-                        let _ = renderer.handle_resize(cols, rows, &prompt, &input_buffer, cursor_col);
+                        let _ =
+                            renderer.handle_resize(cols, rows, &prompt, &input_buffer, cursor_col);
                     }
                     _ => {}
                 }

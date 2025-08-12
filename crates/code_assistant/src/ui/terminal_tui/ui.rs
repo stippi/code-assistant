@@ -4,14 +4,14 @@ use std::sync::Arc;
 use tokio::sync::{watch, Mutex};
 use tracing::debug;
 
-use super::state::AppState;
 use super::renderer::TerminalRenderer;
+use super::state::AppState;
 
 pub struct TerminalTuiUI {
     app_state: Arc<Mutex<AppState>>,
     redraw_tx: Arc<Mutex<Option<watch::Sender<()>>>>,
     pub cancel_flag: Arc<Mutex<bool>>,
-    renderer: Arc<Mutex<Option<Arc<TerminalRenderer>>>>,
+    pub renderer: Arc<Mutex<Option<Arc<TerminalRenderer>>>>,
 }
 
 impl TerminalTuiUI {
@@ -142,13 +142,20 @@ impl UserInterface for TerminalTuiUI {
                     for attachment in &attachments {
                         match attachment {
                             crate::persistence::DraftAttachment::Text { content } => {
-                                let _ = renderer.write_message(&format!("  [attachment: text]\n{}\n", content));
+                                let _ = renderer
+                                    .write_message(&format!("  [attachment: text]\n{}\n", content));
                             }
                             crate::persistence::DraftAttachment::Image { mime_type, .. } => {
-                                let _ = renderer.write_message(&format!("  [attachment: image ({})]\n", mime_type));
+                                let _ = renderer.write_message(&format!(
+                                    "  [attachment: image ({})]\n",
+                                    mime_type
+                                ));
                             }
                             crate::persistence::DraftAttachment::File { filename, .. } => {
-                                let _ = renderer.write_message(&format!("  [attachment: file ({}))]\n", filename));
+                                let _ = renderer.write_message(&format!(
+                                    "  [attachment: file ({}))]\n",
+                                    filename
+                                ));
                             }
                         }
                     }
@@ -334,7 +341,11 @@ impl UserInterface for TerminalTuiUI {
                     debug!("Fragment: ToolName({})", name);
                     let _ = renderer.write_message(&format!("\n• {}\n", name));
                 }
-                DisplayFragment::ToolParameter { name, value, tool_id: _ } => {
+                DisplayFragment::ToolParameter {
+                    name,
+                    value,
+                    tool_id: _,
+                } => {
                     debug!("Fragment: ToolParameter({}, ..)", name);
                     let _ = renderer.write_message(&format!("  {}: {}\n", name, value.trim()));
                 }
@@ -342,7 +353,10 @@ impl UserInterface for TerminalTuiUI {
                     debug!("Fragment: ToolEnd");
                     let _ = renderer.write_message("\n");
                 }
-                DisplayFragment::Image { media_type, data: _ } => {
+                DisplayFragment::Image {
+                    media_type,
+                    data: _,
+                } => {
                     debug!("Fragment: Image({})", media_type);
                     let _ = renderer.write_message(&format!("[image: {}]\n", media_type));
                 }
