@@ -1,7 +1,7 @@
 pub mod app;
-pub mod components;
+pub mod input_area;
+pub mod renderer;
 pub mod state;
 pub mod ui;
-pub mod renderer;
 
 pub use app::TerminalTuiApp;

@@ -138,23 +138,21 @@ impl UserInterface for TerminalTuiUI {
 
                 // Print user input directly to the scrollable region via renderer
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.write_message(&format!("\n> {}\n", content));
+                    let _ = renderer.write_message(&format!("\n> {content}\n"));
                     for attachment in &attachments {
                         match attachment {
                             crate::persistence::DraftAttachment::Text { content } => {
                                 let _ = renderer
-                                    .write_message(&format!("  [attachment: text]\n{}\n", content));
+                                    .write_message(&format!("  [attachment: text]\n{content}\n"));
                             }
                             crate::persistence::DraftAttachment::Image { mime_type, .. } => {
                                 let _ = renderer.write_message(&format!(
-                                    "  [attachment: image ({})]\n",
-                                    mime_type
+                                    "  [attachment: image ({mime_type})]\n"
                                 ));
                             }
                             crate::persistence::DraftAttachment::File { filename, .. } => {
                                 let _ = renderer.write_message(&format!(
-                                    "  [attachment: file ({}))]\n",
-                                    filename
+                                    "  [attachment: file ({filename}))]\n",
                                 ));
                             }
                         }
@@ -324,7 +322,9 @@ impl UserInterface for TerminalTuiUI {
     }
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
-        // Print fragments via the renderer to the scrollable region
+        // Print fragments via the renderer to the scrollable region using append_content_chunk
+        // We need a dummy InputArea for the API, but we can't easily get it here
+        // For now, fall back to write_message for compatibility
         if let Some(renderer) = self.renderer.blocking_lock().as_ref() {
             match fragment {
                 DisplayFragment::PlainText(text) => {
@@ -339,7 +339,7 @@ impl UserInterface for TerminalTuiUI {
                 }
                 DisplayFragment::ToolName { name, id: _ } => {
                     debug!("Fragment: ToolName({})", name);
-                    let _ = renderer.write_message(&format!("\n• {}\n", name));
+                    let _ = renderer.write_message(&format!("\n• {name}\n"));
                 }
                 DisplayFragment::ToolParameter {
                     name,
@@ -358,7 +358,7 @@ impl UserInterface for TerminalTuiUI {
                     data: _,
                 } => {
                     debug!("Fragment: Image({})", media_type);
-                    let _ = renderer.write_message(&format!("[image: {}]\n", media_type));
+                    let _ = renderer.write_message(&format!("[image: {media_type}]\n"));
                 }
             }
         }

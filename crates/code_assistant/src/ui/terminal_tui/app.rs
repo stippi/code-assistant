@@ -3,7 +3,9 @@ use crate::persistence::FileSessionPersistence;
 use crate::session::instance::SessionActivityState;
 use crate::session::manager::{AgentConfig, SessionManager};
 use crate::ui::backend::{handle_backend_events, BackendEvent, BackendResponse};
-use crate::ui::terminal_tui::{renderer::TerminalRenderer, state::AppState, ui::TerminalTuiUI};
+use crate::ui::terminal_tui::{
+    input_area::InputArea, renderer::TerminalRenderer, state::AppState, ui::TerminalTuiUI,
+};
 use crate::ui::UserInterface;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -212,11 +214,17 @@ impl TerminalTuiApp {
         }
 
         // Initialize terminal renderer with scroll region and raw mode
-        let renderer = TerminalRenderer::new(3)?;
+        let renderer = TerminalRenderer::new()?;
         // Bind renderer to UI for message printing and input redraws
         if let Some(tui) = ui.as_any().downcast_ref::<TerminalTuiUI>() {
             tui.set_renderer_async(renderer.clone()).await;
         }
+
+        // Print welcome message to content area
+        let _ = renderer.write_message("🤖 Code Assistant Terminal UI (Experimental)\n");
+        let _ = renderer.write_message("Type your message and press Enter to send.\n");
+        let _ = renderer.write_message("Use Shift+Enter for multi-line input.\n");
+        let _ = renderer.write_message("Press Ctrl+C to quit.\n\n");
 
         // Create redraw notification channel
         let (redraw_tx, mut redraw_rx) = tokio::sync::watch::channel::<()>(());
@@ -229,9 +237,9 @@ impl TerminalTuiApp {
         let mut last_tick = tokio::time::Instant::now();
         let tick_rate = tokio::time::Duration::from_millis(100); // 10 FPS
 
-        // Basic input state
-        let mut input_buffer = String::new();
-        let mut cursor_col: u16 = 0;
+        // Initialize input area
+        let (terminal_width, _) = crossterm::terminal::size()?;
+        let mut input_area = InputArea::new(terminal_width);
         let mut spinner_idx: usize = 0;
         const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -248,12 +256,23 @@ impl TerminalTuiApp {
             }
         };
 
-        // Initial draw of input
+        // Set initial scroll region and draw input
+        let _ = renderer.set_input_height(input_area.get_display_height());
         let prompt = {
             let state = self.app_state.lock().await;
             make_prompt(&state, spinner_idx)
         };
-        let _ = renderer.redraw_input(&prompt, &input_buffer, cursor_col);
+        let _ = renderer.redraw_input(&prompt, &input_area);
+
+        // Send initial task if provided
+        if let Some(task) = &config.task {
+            let _ = renderer.write_message(&format!("Starting with task: {task}\n\n"));
+            let _ = backend_event_tx.try_send(BackendEvent::SendUserMessage {
+                session_id: session_id.clone(),
+                message: task.clone(),
+                attachments: Vec::new(),
+            });
+        }
 
         while !should_quit {
             // Handle input events
@@ -264,8 +283,18 @@ impl TerminalTuiApp {
                             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 should_quit = true;
                             }
+                            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                                input_area.insert_newline();
+                                // Update input height and redraw
+                                let _ = renderer.set_input_height(input_area.get_display_height());
+                                let prompt = {
+                                    let state = self.app_state.lock().await;
+                                    make_prompt(&state, spinner_idx)
+                                };
+                                let _ = renderer.redraw_input(&prompt, &input_area);
+                            }
                             KeyCode::Enter => {
-                                let content = input_buffer.clone();
+                                let content = input_area.content().to_string();
                                 if !content.trim().is_empty() {
                                     let current_session_id = {
                                         let state = self.app_state.lock().await;
@@ -293,50 +322,104 @@ impl TerminalTuiApp {
                                         let _ = backend_event_tx.try_send(event);
                                     }
                                 }
-                                input_buffer.clear();
-                                cursor_col = 0;
-                                // Update prompt immediately (start spinner if waiting)
-                                let _ = renderer.redraw_input(
-                                    &{
-                                        let state = self.app_state.lock().await;
-                                        make_prompt(&state, spinner_idx)
-                                    },
-                                    &input_buffer,
-                                    cursor_col,
-                                );
+                                input_area.clear();
+                                // Update input height and redraw
+                                let _ = renderer.set_input_height(input_area.get_display_height());
+                                let prompt = {
+                                    let state = self.app_state.lock().await;
+                                    make_prompt(&state, spinner_idx)
+                                };
+                                let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Backspace => {
-                                if cursor_col > 0 {
-                                    let idx = cursor_col as usize - 1;
-                                    input_buffer.remove(idx);
-                                    cursor_col -= 1;
-                                }
+                                input_area.backspace();
+                                // Update input height and redraw
+                                let _ = renderer.set_input_height(input_area.get_display_height());
+                                let prompt = {
+                                    let state = self.app_state.lock().await;
+                                    make_prompt(&state, spinner_idx)
+                                };
+                                let _ = renderer.redraw_input(&prompt, &input_area);
+                            }
+                            KeyCode::Delete => {
+                                input_area.delete_char();
+                                // Update input height and redraw
+                                let _ = renderer.set_input_height(input_area.get_display_height());
+                                let prompt = {
+                                    let state = self.app_state.lock().await;
+                                    make_prompt(&state, spinner_idx)
+                                };
+                                let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Left => {
-                                if cursor_col > 0 {
-                                    cursor_col -= 1;
-                                }
+                                input_area.move_cursor_left();
+                                let prompt = {
+                                    let state = self.app_state.lock().await;
+                                    make_prompt(&state, spinner_idx)
+                                };
+                                let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Right => {
-                                if (cursor_col as usize) < input_buffer.len() {
-                                    cursor_col += 1;
-                                }
+                                input_area.move_cursor_right();
+                                let prompt = {
+                                    let state = self.app_state.lock().await;
+                                    make_prompt(&state, spinner_idx)
+                                };
+                                let _ = renderer.redraw_input(&prompt, &input_area);
+                            }
+                            KeyCode::Up => {
+                                input_area.move_cursor_up();
+                                let prompt = {
+                                    let state = self.app_state.lock().await;
+                                    make_prompt(&state, spinner_idx)
+                                };
+                                let _ = renderer.redraw_input(&prompt, &input_area);
+                            }
+                            KeyCode::Down => {
+                                input_area.move_cursor_down();
+                                let prompt = {
+                                    let state = self.app_state.lock().await;
+                                    make_prompt(&state, spinner_idx)
+                                };
+                                let _ = renderer.redraw_input(&prompt, &input_area);
+                            }
+                            KeyCode::Home => {
+                                input_area.move_cursor_to_start();
+                                let prompt = {
+                                    let state = self.app_state.lock().await;
+                                    make_prompt(&state, spinner_idx)
+                                };
+                                let _ = renderer.redraw_input(&prompt, &input_area);
+                            }
+                            KeyCode::End => {
+                                input_area.move_cursor_to_end();
+                                let prompt = {
+                                    let state = self.app_state.lock().await;
+                                    make_prompt(&state, spinner_idx)
+                                };
+                                let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Char(ch) => {
-                                let idx = cursor_col as usize;
-                                input_buffer.insert(idx, ch);
-                                cursor_col += 1;
+                                input_area.insert_char(ch);
+                                // Update input height and redraw
+                                let _ = renderer.set_input_height(input_area.get_display_height());
+                                let prompt = {
+                                    let state = self.app_state.lock().await;
+                                    make_prompt(&state, spinner_idx)
+                                };
+                                let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             _ => {}
                         }
                     }
                     Event::Resize(cols, rows) => {
+                        input_area.update_terminal_width(cols);
+                        let _ = renderer.handle_resize(cols, rows, &input_area);
                         let prompt = {
                             let state = self.app_state.lock().await;
                             make_prompt(&state, spinner_idx)
                         };
-                        let _ =
-                            renderer.handle_resize(cols, rows, &prompt, &input_buffer, cursor_col);
+                        let _ = renderer.redraw_input(&prompt, &input_area);
                     }
                     _ => {}
                 }
@@ -354,7 +437,7 @@ impl TerminalTuiApp {
                     let state = self.app_state.lock().await;
                     make_prompt(&state, spinner_idx)
                 };
-                let _ = renderer.redraw_input(&prompt, &input_buffer, cursor_col);
+                let _ = renderer.redraw_input(&prompt, &input_area);
                 last_tick = tokio::time::Instant::now();
             }
 
