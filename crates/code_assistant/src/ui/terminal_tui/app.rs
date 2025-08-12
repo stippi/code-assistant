@@ -172,20 +172,13 @@ impl TerminalTuiApp {
 
         debug!("Terminal TUI connected to session: {}", session_id);
 
-        // Initialize terminal with inline viewport for natural scrolling
+        // Initialize terminal without alternate screen but with raw mode
+        // This allows us to control input but still have some scrolling capability
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
-        execute!(
-            stdout,
-            EnableMouseCapture
-        )?;
+        // Don't use alternate screen - let content flow naturally
         let backend = ratatui::backend::CrosstermBackend::new(stdout);
-        let mut terminal = ratatui::Terminal::with_options(
-            backend,
-            ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(3), // 3 lines for input area
-            },
-        )?;
+        let mut terminal = ratatui::Terminal::new(backend)?;
 
         // Set up the UI components
         let _messages_component = crate::ui::terminal_tui::components::messages::MessagesComponent::new();
@@ -219,6 +212,19 @@ impl TerminalTuiApp {
                             }
                             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 sidebar_component.toggle_visibility();
+                            }
+                            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                // Temporarily disable raw mode for scrolling
+                                disable_raw_mode()?;
+                                println!("\n[Scroll mode - use terminal scrolling, press any key to return to input mode]");
+                                use std::io::Write;
+                                std::io::stdout().flush().unwrap_or(());
+
+                                // Wait for any key press
+                                let _ = std::io::stdin().read_line(&mut String::new());
+
+                                // Re-enable raw mode
+                                enable_raw_mode()?;
                             }
                             _ => {
                                 if sidebar_component.is_visible() {
@@ -287,7 +293,9 @@ impl TerminalTuiApp {
                                                             }
                                                         }
                                                     };
-                                                    backend_event_tx.send(event).await?;
+                                                    if let Err(e) = backend_event_tx.try_send(event) {
+                                                        debug!("Failed to send backend event: {}", e);
+                                                    }
                                                 }
                                             }
                                         }
@@ -325,11 +333,25 @@ impl TerminalTuiApp {
                 let _ = redraw_rx.borrow_and_update(); // Mark as seen
             }
 
-            // Render only the input area in the inline viewport
+            // Render input area at the bottom of the screen
             if last_tick.elapsed() >= tick_rate {
                 terminal.draw(|frame| {
-                    // The entire frame area is our input area (3 lines as specified in viewport)
-                    input_component.render(frame, frame.area());
+                    // Create input area at bottom of screen
+                    let area = frame.area();
+                    let input_height = 3;
+                    let input_area = ratatui::layout::Rect {
+                        x: 0,
+                        y: area.height.saturating_sub(input_height),
+                        width: area.width,
+                        height: input_height,
+                    };
+
+                    // Clear the input area and render input
+                    frame.render_widget(
+                        ratatui::widgets::Clear,
+                        input_area
+                    );
+                    input_component.render(frame, input_area);
                 })?;
                 last_tick = tokio::time::Instant::now();
             }
@@ -340,10 +362,6 @@ impl TerminalTuiApp {
 
         // Cleanup terminal
         disable_raw_mode()?;
-        execute!(
-            terminal.backend_mut(),
-            DisableMouseCapture
-        )?;
         terminal.show_cursor()?;
 
         debug!("Terminal TUI shutting down");
