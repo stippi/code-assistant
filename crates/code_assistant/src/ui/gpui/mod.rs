@@ -1,7 +1,6 @@
 pub mod assets;
 pub mod attachment;
 pub mod auto_scroll;
-pub mod backend;
 pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_renderer;

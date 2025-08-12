@@ -1,32 +1,16 @@
 use crate::app::AgentRunConfig;
-use crate::persistence::{ChatMetadata, FileSessionPersistence};
+use crate::persistence::FileSessionPersistence;
 use crate::session::instance::SessionActivityState;
 use crate::session::manager::{AgentConfig, SessionManager};
-use crate::ui::backend::{BackendEvent, BackendResponse, handle_backend_events};
-use crate::ui::terminal_tui::{
-    state::AppState,
-    ui::TerminalTuiUI,
-    components::{input::InputComponent, messages::MessagesComponent, sidebar::SidebarComponent},
-};
-use crate::ui::{ui_events::MessageData, UserInterface};
+use crate::ui::backend::{handle_backend_events, BackendEvent, BackendResponse};
+use crate::ui::terminal_tui::{state::AppState, ui::TerminalTuiUI, renderer::TerminalRenderer};
+use crate::ui::UserInterface;
 use anyhow::Result;
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use llm::factory::LLMClientConfig;
-use ratatui::{
-    crossterm::{event::{KeyCode, KeyModifiers}, execute, terminal::{disable_raw_mode, enable_raw_mode}, event::{DisableMouseCapture, EnableMouseCapture}},
-    layout::{Constraint, Direction, Layout},
-    Frame,
-};
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
-
-#[derive(Clone)]
-struct StateSnapshot {
-    messages: Vec<MessageData>,
-    sessions: Vec<ChatMetadata>,
-    current_session_id: Option<String>,
-    session_activity_states: HashMap<String, SessionActivityState>,
-}
 
 pub struct TerminalTuiApp {
     app_state: Arc<Mutex<AppState>>,
@@ -61,7 +45,7 @@ impl TerminalTuiApp {
         let session_manager = SessionManager::new(session_persistence, agent_config);
         let multi_session_manager = Arc::new(Mutex::new(session_manager));
 
-        // Create terminal UI
+        // Create terminal UI and wrap as UserInterface
         let terminal_ui = TerminalTuiUI::new();
         let ui: Arc<dyn UserInterface> = Arc::new(terminal_ui);
 
@@ -101,7 +85,6 @@ impl TerminalTuiApp {
 
         // Determine which session to use and load it
         let session_id = if config.continue_task {
-            // Try to get the latest session
             let latest_session_id = {
                 let manager = multi_session_manager.lock().await;
                 manager.get_latest_session_id().unwrap_or(None)
@@ -110,7 +93,6 @@ impl TerminalTuiApp {
             match latest_session_id {
                 Some(session_id) => {
                     debug!("Continuing from latest session: {}", session_id);
-                    // Load the existing session
                     backend_event_tx
                         .send(BackendEvent::LoadSession {
                             session_id: session_id.clone(),
@@ -120,16 +102,13 @@ impl TerminalTuiApp {
                 }
                 None => {
                     debug!("No previous session found, creating new session");
-                    // Create new session
                     backend_event_tx
                         .send(BackendEvent::CreateNewSession { name: None })
                         .await?;
 
-                    // Wait for session creation response
                     match backend_response_rx.recv().await? {
                         BackendResponse::SessionCreated { session_id } => {
                             debug!("Created new session: {}", session_id);
-                            // Load the new session
                             backend_event_tx
                                 .send(BackendEvent::LoadSession { session_id: session_id.clone() })
                                 .await?;
@@ -146,16 +125,13 @@ impl TerminalTuiApp {
             }
         } else {
             debug!("Creating new session");
-            // Create new session
             backend_event_tx
                 .send(BackendEvent::CreateNewSession { name: None })
                 .await?;
 
-            // Wait for session creation response
             match backend_response_rx.recv().await? {
                 BackendResponse::SessionCreated { session_id } => {
                     debug!("Created new session: {}", session_id);
-                    // Load the new session
                     backend_event_tx
                         .send(BackendEvent::LoadSession { session_id: session_id.clone() })
                         .await?;
@@ -172,156 +148,109 @@ impl TerminalTuiApp {
 
         debug!("Terminal TUI connected to session: {}", session_id);
 
-        // Initialize terminal without alternate screen but with raw mode
-        // This allows us to control input but still have some scrolling capability
-        enable_raw_mode()?;
-        let mut stdout = std::io::stdout();
-        // Don't use alternate screen - let content flow naturally
-        let backend = ratatui::backend::CrosstermBackend::new(stdout);
-        let mut terminal = ratatui::Terminal::new(backend)?;
-
-        // Set up the UI components
-        let _messages_component = crate::ui::terminal_tui::components::messages::MessagesComponent::new();
-        let mut input_component = crate::ui::terminal_tui::components::input::InputComponent::new();
-        let mut sidebar_component = crate::ui::terminal_tui::components::sidebar::SidebarComponent::new();
+        // Initialize terminal renderer with scroll region and raw mode
+        let renderer = TerminalRenderer::new(3)?;
+        // Bind renderer to UI for message printing and input redraws
+        if let Some(tui) = ui.as_any().downcast_ref::<TerminalTuiUI>() {
+            tui.set_renderer_async(renderer.clone()).await;
+        }
 
         // Create redraw notification channel
         let (redraw_tx, mut redraw_rx) = tokio::sync::watch::channel::<()>(());
-
-        // Update the UI to use the redraw channel
-        {
-            let terminal_ui = ui.clone();
-            if let Some(terminal_tui_ui) = terminal_ui.as_any().downcast_ref::<TerminalTuiUI>() {
-                terminal_tui_ui.set_redraw_sender(redraw_tx.clone());
-            }
+        if let Some(terminal_tui_ui) = ui.as_any().downcast_ref::<TerminalTuiUI>() {
+            terminal_tui_ui.set_redraw_sender(redraw_tx.clone());
         }
 
         // Main event loop
         let mut should_quit = false;
         let mut last_tick = tokio::time::Instant::now();
-        let tick_rate = tokio::time::Duration::from_millis(50); // 20 FPS
+        let tick_rate = tokio::time::Duration::from_millis(100); // 10 FPS
+
+        // Basic input state
+        let mut input_buffer = String::new();
+        let mut cursor_col: u16 = 0;
+        let mut spinner_idx: usize = 0;
+        const SPINNER: &[char] = &['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+
+        // Helper to compute prompt with optional spinner/status
+        let make_prompt = |state: &AppState, tick: usize| -> String {
+            match state.activity_state {
+                Some(SessionActivityState::WaitingForResponse) => format!("{} ", SPINNER[tick % SPINNER.len()]),
+                Some(SessionActivityState::RateLimited { seconds_remaining }) => format!("{} {}s ", SPINNER[tick % SPINNER.len()], seconds_remaining),
+                _ => "> ".to_string(),
+            }
+        };
+
+        // Initial draw of input
+        let prompt = {
+            let state = self.app_state.lock().await;
+            make_prompt(&state, spinner_idx)
+        };
+        let _ = renderer.redraw_input(&prompt, &input_buffer, cursor_col);
 
         while !should_quit {
             // Handle input events
-            if ratatui::crossterm::event::poll(std::time::Duration::from_millis(0))? {
-                match ratatui::crossterm::event::read()? {
-                    ratatui::crossterm::event::Event::Key(key) => {
+            if event::poll(std::time::Duration::from_millis(10))? {
+                match event::read()? {
+                    Event::Key(key) => {
                         match key.code {
                             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 should_quit = true;
                             }
-                            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                sidebar_component.toggle_visibility();
-                            }
-                            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                // Temporarily disable raw mode for scrolling
-                                disable_raw_mode()?;
-                                println!("\n[Scroll mode - use terminal scrolling, press any key to return to input mode]");
-                                use std::io::Write;
-                                std::io::stdout().flush().unwrap_or(());
-
-                                // Wait for any key press
-                                let _ = std::io::stdin().read_line(&mut String::new());
-
-                                // Re-enable raw mode
-                                enable_raw_mode()?;
-                            }
-                            _ => {
-                                if sidebar_component.is_visible() {
-                                    // Handle sidebar navigation
-                                    match key.code {
-                                        KeyCode::Up => {
-                                            let sessions_len = {
-                                                let state = self.app_state.lock().await;
-                                                state.sessions.len()
-                                            };
-                                            sidebar_component.previous(sessions_len);
-                                        }
-                                        KeyCode::Down => {
-                                            let sessions_len = {
-                                                let state = self.app_state.lock().await;
-                                                state.sessions.len()
-                                            };
-                                            sidebar_component.next(sessions_len);
-                                        }
-                                        KeyCode::Enter => {
-                                            let (_sessions, selected_session_id) = {
-                                                let state = self.app_state.lock().await;
-                                                (state.sessions.clone(), sidebar_component.get_selected_session_id(&state.sessions))
-                                            };
-                                            if let Some(session_id) = selected_session_id {
-                                                // Load the selected session
-                                                backend_event_tx.send(BackendEvent::LoadSession { session_id }).await?;
-                                                sidebar_component.toggle_visibility();
-                                            }
-                                        }
-                                        KeyCode::Esc => {
-                                            sidebar_component.toggle_visibility();
-                                        }
-                                        _ => {}
-                                    }
-                                } else {
-                                    // Handle input component events
-                                    use crate::ui::terminal_tui::components::input::InputResult;
-                                    match input_component.handle_input(ratatui::crossterm::event::Event::Key(key)) {
-                                        InputResult::SendMessage(content) => {
-                                            if !content.trim().is_empty() {
-                                                let current_session_id = {
-                                                    let state = self.app_state.lock().await;
-                                                    state.current_session_id.clone()
-                                                };
-                                                if let Some(session_id) = current_session_id {
-                                                    // Check if we should send or queue based on activity state
-                                                    let activity_state = {
-                                                        let state = self.app_state.lock().await;
-                                                        state.activity_state.clone()
-                                                    };
-
-                                                    let event = match activity_state {
-                                                        Some(SessionActivityState::Idle) | None => {
-                                                            BackendEvent::SendUserMessage {
-                                                                session_id,
-                                                                message: content,
-                                                                attachments: Vec::new(),
-                                                            }
-                                                        }
-                                                        _ => {
-                                                            BackendEvent::QueueUserMessage {
-                                                                session_id,
-                                                                message: content,
-                                                                attachments: Vec::new(),
-                                                            }
-                                                        }
-                                                    };
-                                                    if let Err(e) = backend_event_tx.try_send(event) {
-                                                        debug!("Failed to send backend event: {}", e);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        InputResult::Cancel => {
-                                            // Cancel current operation
-                                            let current_session_id = {
-                                                let state = self.app_state.lock().await;
-                                                state.current_session_id.clone()
-                                            };
-                                            if let Some(_session_id) = current_session_id {
-                                                if let Some(terminal_tui_ui) = ui.as_any().downcast_ref::<TerminalTuiUI>() {
-                                                    // Set cancel flag
-                                                    if let Ok(mut cancel_flag) = terminal_tui_ui.cancel_flag.try_lock() {
-                                                        *cancel_flag = true;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        InputResult::None => {}
+                            KeyCode::Enter => {
+                                let content = input_buffer.clone();
+                                if !content.trim().is_empty() {
+                                    let current_session_id = {
+                                        let state = self.app_state.lock().await;
+                                        state.current_session_id.clone()
+                                    };
+                                    if let Some(session_id) = current_session_id {
+                                        let activity_state = {
+                                            let state = self.app_state.lock().await;
+                                            state.activity_state.clone()
+                                        };
+                                        let event = match activity_state {
+                                            Some(SessionActivityState::Idle) | None => BackendEvent::SendUserMessage { session_id, message: content, attachments: Vec::new() },
+                                            _ => BackendEvent::QueueUserMessage { session_id, message: content, attachments: Vec::new() },
+                                        };
+                                        let _ = backend_event_tx.try_send(event);
                                     }
                                 }
+                                input_buffer.clear();
+                                cursor_col = 0;
+                                // Update prompt immediately (start spinner if waiting)
+                                let _ = renderer.redraw_input(
+                                    &{
+                                        let state = self.app_state.lock().await;
+                                        make_prompt(&state, spinner_idx)
+                                    },
+                                    &input_buffer,
+                                    cursor_col,
+                                );
                             }
+                            KeyCode::Backspace => {
+                                if cursor_col > 0 {
+                                    let idx = cursor_col as usize - 1;
+                                    input_buffer.remove(idx);
+                                    cursor_col -= 1;
+                                }
+                            }
+                            KeyCode::Left => { if cursor_col > 0 { cursor_col -= 1; } }
+                            KeyCode::Right => { if (cursor_col as usize) < input_buffer.len() { cursor_col += 1; } }
+                            KeyCode::Char(ch) => {
+                                let idx = cursor_col as usize;
+                                input_buffer.insert(idx, ch);
+                                cursor_col += 1;
+                            }
+                            _ => {}
                         }
                     }
-                    ratatui::crossterm::event::Event::Resize(_, _) => {
-                        // Terminal was resized, will be handled in render
+                    Event::Resize(cols, rows) => {
+                        let prompt = {
+                            let state = self.app_state.lock().await;
+                            make_prompt(&state, spinner_idx)
+                        };
+                        let _ = renderer.handle_resize(cols, rows, &prompt, &input_buffer, cursor_col);
                     }
                     _ => {}
                 }
@@ -329,30 +258,17 @@ impl TerminalTuiApp {
 
             // Check for redraw notifications
             if redraw_rx.has_changed().unwrap_or(false) {
-                // Redraw requested
-                let _ = redraw_rx.borrow_and_update(); // Mark as seen
+                let _ = redraw_rx.borrow_and_update();
             }
 
-            // Render input area at the bottom of the screen
+            // Periodically redraw the input to reflect cursor, buffer, and spinner/status
             if last_tick.elapsed() >= tick_rate {
-                terminal.draw(|frame| {
-                    // Create input area at bottom of screen
-                    let area = frame.area();
-                    let input_height = 3;
-                    let input_area = ratatui::layout::Rect {
-                        x: 0,
-                        y: area.height.saturating_sub(input_height),
-                        width: area.width,
-                        height: input_height,
-                    };
-
-                    // Clear the input area and render input
-                    frame.render_widget(
-                        ratatui::widgets::Clear,
-                        input_area
-                    );
-                    input_component.render(frame, input_area);
-                })?;
+                spinner_idx = spinner_idx.wrapping_add(1);
+                let prompt = {
+                    let state = self.app_state.lock().await;
+                    make_prompt(&state, spinner_idx)
+                };
+                let _ = renderer.redraw_input(&prompt, &input_buffer, cursor_col);
                 last_tick = tokio::time::Instant::now();
             }
 
@@ -361,8 +277,7 @@ impl TerminalTuiApp {
         }
 
         // Cleanup terminal
-        disable_raw_mode()?;
-        terminal.show_cursor()?;
+        let _ = renderer.teardown();
 
         debug!("Terminal TUI shutting down");
 
@@ -370,49 +285,5 @@ impl TerminalTuiApp {
         backend_task.abort();
 
         Ok(())
-    }
-
-    fn render(
-        &self,
-        frame: &mut Frame,
-        messages_component: &mut MessagesComponent,
-        input_component: &mut InputComponent,
-        sidebar_component: &mut SidebarComponent,
-        state: &StateSnapshot,
-    ) {
-        if sidebar_component.is_visible() {
-            // Split screen for sidebar
-            let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-                .split(frame.area());
-
-            // Render sidebar
-            sidebar_component.render(
-                frame,
-                chunks[0],
-                &state.sessions,
-                state.current_session_id.as_deref(),
-                &state.session_activity_states,
-            );
-
-            // Render main area
-            let main_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(3)])
-                .split(chunks[1]);
-
-            messages_component.render(frame, main_chunks[0], &state.messages);
-            input_component.render(frame, main_chunks[1]);
-        } else {
-            // Full screen layout
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(3)])
-                .split(frame.area());
-
-            messages_component.render(frame, chunks[0], &state.messages);
-            input_component.render(frame, chunks[1]);
-        }
     }
 }

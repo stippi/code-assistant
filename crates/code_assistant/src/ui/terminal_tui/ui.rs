@@ -5,11 +5,13 @@ use tokio::sync::{watch, Mutex};
 use tracing::debug;
 
 use super::state::AppState;
+use super::renderer::TerminalRenderer;
 
 pub struct TerminalTuiUI {
     app_state: Arc<Mutex<AppState>>,
     redraw_tx: Arc<Mutex<Option<watch::Sender<()>>>>,
     pub cancel_flag: Arc<Mutex<bool>>,
+    renderer: Arc<Mutex<Option<Arc<TerminalRenderer>>>>,
 }
 
 impl TerminalTuiUI {
@@ -18,6 +20,7 @@ impl TerminalTuiUI {
             app_state: Arc::new(Mutex::new(AppState::new())),
             redraw_tx: Arc::new(Mutex::new(None)),
             cancel_flag: Arc::new(Mutex::new(false)),
+            renderer: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -31,6 +34,10 @@ impl TerminalTuiUI {
         rt.spawn(async move {
             *redraw_tx.lock().await = Some(tx);
         });
+    }
+
+    pub async fn set_renderer_async(&self, renderer: Arc<TerminalRenderer>) {
+        *self.renderer.lock().await = Some(renderer);
     }
 }
 
@@ -129,26 +136,24 @@ impl UserInterface for TerminalTuiUI {
             } => {
                 debug!("Displaying user input: {}", content);
 
-                // Print user input directly to stdout so it appears above the inline viewport
-                use std::io::{self, Write};
-                println!("\n> {content}");
-
-                // Print attachments if any
-                for attachment in &attachments {
-                    match attachment {
-                        crate::persistence::DraftAttachment::Text { content } => {
-                            println!("  [Attachment: Text]\n{content}");
-                        }
-                        crate::persistence::DraftAttachment::Image { mime_type, .. } => {
-                            println!("  [Attachment: Image ({mime_type})]");
-                        }
-                        crate::persistence::DraftAttachment::File { filename, .. } => {
-                            println!("  [Attachment: File ({filename})]");
+                // Print user input directly to the scrollable region via renderer
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let _ = renderer.write_message(&format!("\n> {}\n", content));
+                    for attachment in &attachments {
+                        match attachment {
+                            crate::persistence::DraftAttachment::Text { content } => {
+                                let _ = renderer.write_message(&format!("  [attachment: text]\n{}\n", content));
+                            }
+                            crate::persistence::DraftAttachment::Image { mime_type, .. } => {
+                                let _ = renderer.write_message(&format!("  [attachment: image ({})]\n", mime_type));
+                            }
+                            crate::persistence::DraftAttachment::File { filename, .. } => {
+                                let _ = renderer.write_message(&format!("  [attachment: file ({}))]\n", filename));
+                            }
                         }
                     }
+                    let _ = renderer.write_message("\n");
                 }
-                println!(); // Empty line after user input
-                io::stdout().flush().unwrap_or(());
 
                 // Add user message to state
                 let user_message = crate::ui::ui_events::MessageData {
@@ -312,58 +317,37 @@ impl UserInterface for TerminalTuiUI {
     }
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
-        // Print fragments directly to stdout for natural terminal scrolling
-        use std::io::{self, Write};
-
-        match fragment {
-            DisplayFragment::PlainText(text) => {
-                debug!("Fragment: PlainText({})", text.trim());
-                print!("{}", text);
-                io::stdout().flush().unwrap_or(());
-            }
-            DisplayFragment::ThinkingText(text) => {
-                debug!("Fragment: ThinkingText({})", text.trim());
-                // For thinking text, we could style it differently or skip it
-                // For now, let's show it in a subtle way
-                if !text.trim().is_empty() {
-                    print!("{}", text);
-                    io::stdout().flush().unwrap_or(());
+        // Print fragments via the renderer to the scrollable region
+        if let Some(renderer) = self.renderer.blocking_lock().as_ref() {
+            match fragment {
+                DisplayFragment::PlainText(text) => {
+                    debug!("Fragment: PlainText({})", text.trim());
+                    let _ = renderer.write_message(text);
+                }
+                DisplayFragment::ThinkingText(text) => {
+                    debug!("Fragment: ThinkingText({})", text.trim());
+                    if !text.trim().is_empty() {
+                        let _ = renderer.write_message(text);
+                    }
+                }
+                DisplayFragment::ToolName { name, id: _ } => {
+                    debug!("Fragment: ToolName({})", name);
+                    let _ = renderer.write_message(&format!("\n• {}\n", name));
+                }
+                DisplayFragment::ToolParameter { name, value, tool_id: _ } => {
+                    debug!("Fragment: ToolParameter({}, ..)", name);
+                    let _ = renderer.write_message(&format!("  {}: {}\n", name, value.trim()));
+                }
+                DisplayFragment::ToolEnd { id: _ } => {
+                    debug!("Fragment: ToolEnd");
+                    let _ = renderer.write_message("\n");
+                }
+                DisplayFragment::Image { media_type, data: _ } => {
+                    debug!("Fragment: Image({})", media_type);
+                    let _ = renderer.write_message(&format!("[image: {}]\n", media_type));
                 }
             }
-            DisplayFragment::ToolName { name, id } => {
-                debug!("Fragment: ToolName({}, {})", name, id);
-                println!("\n[Tool: {}]", name);
-                io::stdout().flush().unwrap_or(());
-            }
-            DisplayFragment::ToolParameter {
-                name,
-                value,
-                tool_id,
-            } => {
-                debug!(
-                    "Fragment: ToolParameter({}, {}, {})",
-                    name,
-                    value.trim(),
-                    tool_id
-                );
-                println!("  {}: {}", name, value.trim());
-                io::stdout().flush().unwrap_or(());
-            }
-            DisplayFragment::ToolEnd { id } => {
-                debug!("Fragment: ToolEnd({})", id);
-                println!("  [Tool completed]\n");
-                io::stdout().flush().unwrap_or(());
-            }
-            DisplayFragment::Image {
-                media_type,
-                data: _,
-            } => {
-                debug!("Fragment: Image({})", media_type);
-                println!("[Image: {}]", media_type);
-                io::stdout().flush().unwrap_or(());
-            }
         }
-
         Ok(())
     }
 
