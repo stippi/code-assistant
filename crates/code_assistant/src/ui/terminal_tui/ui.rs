@@ -7,6 +7,7 @@ use tracing::debug;
 use super::renderer::TerminalRenderer;
 use super::state::AppState;
 
+#[derive(Clone)]
 pub struct TerminalTuiUI {
     app_state: Arc<Mutex<AppState>>,
     redraw_tx: Arc<Mutex<Option<watch::Sender<()>>>>,
@@ -48,37 +49,12 @@ impl UserInterface for TerminalTuiUI {
 
         match event {
             UiEvent::SetMessages {
-                messages,
+                messages: _,
                 session_id,
                 tool_results,
             } => {
-                debug!(
-                    "Setting {} messages for session {:?}",
-                    messages.len(),
-                    session_id
-                );
-                state.clear_messages();
-                for message in messages {
-                    debug!(
-                        "Adding message with role {:?} and {} fragments",
-                        message.role,
-                        message.fragments.len()
-                    );
-                    for (i, fragment) in message.fragments.iter().enumerate() {
-                        match fragment {
-                            crate::ui::DisplayFragment::PlainText(text) => {
-                                debug!("  Fragment {}: PlainText({} chars)", i, text.len());
-                            }
-                            crate::ui::DisplayFragment::ThinkingText(text) => {
-                                debug!("  Fragment {}: ThinkingText({} chars)", i, text.len());
-                            }
-                            _ => {
-                                debug!("  Fragment {}: {:?}", i, fragment);
-                            }
-                        }
-                    }
-                    state.add_message(message);
-                }
+                debug!("Setting messages for session {:?}", session_id);
+
                 if let Some(session_id) = session_id {
                     state.current_session_id = Some(session_id);
                 }
@@ -128,7 +104,7 @@ impl UserInterface for TerminalTuiUI {
             }
             UiEvent::ClearMessages => {
                 debug!("Clearing messages");
-                state.clear_messages();
+                // No message state to clear in Terminal UI
             }
             UiEvent::DisplayUserInput {
                 content,
@@ -159,152 +135,68 @@ impl UserInterface for TerminalTuiUI {
                     }
                     let _ = renderer.write_message("\n");
                 }
-
-                // Add user message to state
-                let user_message = crate::ui::ui_events::MessageData {
-                    role: crate::ui::gpui::elements::MessageRole::User,
-                    fragments: {
-                        let mut fragments = vec![crate::ui::DisplayFragment::PlainText(content)];
-                        // Add attachment fragments
-                        for attachment in attachments {
-                            match attachment {
-                                crate::persistence::DraftAttachment::Text { content } => {
-                                    fragments.push(crate::ui::DisplayFragment::PlainText(content));
-                                }
-                                crate::persistence::DraftAttachment::Image {
-                                    mime_type,
-                                    content,
-                                } => {
-                                    fragments.push(crate::ui::DisplayFragment::Image {
-                                        media_type: mime_type,
-                                        data: content,
-                                    });
-                                }
-                                crate::persistence::DraftAttachment::File {
-                                    content,
-                                    filename,
-                                    ..
-                                } => {
-                                    fragments.push(crate::ui::DisplayFragment::PlainText(format!(
-                                        "File: {filename}\n{content}"
-                                    )));
-                                }
-                            }
-                        }
-                        fragments
-                    },
-                };
-                state.add_message(user_message);
             }
             UiEvent::StreamingStarted(_request_id) => {
                 debug!("Streaming started");
-                // Ensure we have an assistant message to append to
-                if state.messages.is_empty()
-                    || matches!(state.messages.last(), Some(msg) if msg.role == crate::ui::gpui::elements::MessageRole::User)
-                {
-                    let assistant_message = crate::ui::ui_events::MessageData {
-                        role: crate::ui::gpui::elements::MessageRole::Assistant,
-                        fragments: Vec::new(),
-                    };
-                    state.add_message(assistant_message);
-                }
+                // No state management needed for Terminal UI - just stream to terminal
             }
             UiEvent::AppendToTextBlock { content } => {
                 debug!("Appending to text block: {}", content.trim());
-                // Append to the last assistant message
-                if let Some(last_message) = state.messages.last_mut() {
-                    if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
-                        // Try to append to existing PlainText fragment or create new one
-                        if let Some(last_fragment) = last_message.fragments.last_mut() {
-                            if let crate::ui::DisplayFragment::PlainText(ref mut text) =
-                                last_fragment
-                            {
-                                text.push_str(&content);
-                            } else {
-                                last_message
-                                    .fragments
-                                    .push(crate::ui::DisplayFragment::PlainText(content));
-                            }
-                        } else {
-                            last_message
-                                .fragments
-                                .push(crate::ui::DisplayFragment::PlainText(content));
-                        }
-                    }
+
+                // Print to terminal using append_content_chunk for proper streaming
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    // Create a dummy InputArea to satisfy the API - we need the current terminal width
+                    let (width, _) = renderer.get_size();
+                    let dummy_input = crate::ui::terminal_tui::input_area::InputArea::new(width);
+                    let _ = renderer.append_content_chunk(&content, &dummy_input);
                 }
             }
             UiEvent::AppendToThinkingBlock { content } => {
                 debug!("Appending to thinking block: {}", content.trim());
-                // Append to the last assistant message
-                if let Some(last_message) = state.messages.last_mut() {
-                    if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
-                        // Try to append to existing ThinkingText fragment or create new one
-                        if let Some(last_fragment) = last_message.fragments.last_mut() {
-                            if let crate::ui::DisplayFragment::ThinkingText(ref mut text) =
-                                last_fragment
-                            {
-                                text.push_str(&content);
-                            } else {
-                                last_message
-                                    .fragments
-                                    .push(crate::ui::DisplayFragment::ThinkingText(content));
-                            }
-                        } else {
-                            last_message
-                                .fragments
-                                .push(crate::ui::DisplayFragment::ThinkingText(content));
-                        }
+
+                // Print to terminal using append_content_chunk for proper streaming
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    if !content.trim().is_empty() {
+                        let (width, _) = renderer.get_size();
+                        let dummy_input = crate::ui::terminal_tui::input_area::InputArea::new(width);
+                        let _ = renderer.append_content_chunk(&content, &dummy_input);
                     }
                 }
             }
             UiEvent::StartTool { name, id } => {
                 debug!("Starting tool: {} ({})", name, id);
-                // Add tool start to the last assistant message
-                if let Some(last_message) = state.messages.last_mut() {
-                    if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
-                        last_message
-                            .fragments
-                            .push(crate::ui::DisplayFragment::ToolName { name, id });
-                    }
+
+                // Print to terminal using write_message for tool headers
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let _ = renderer.write_message(&format!("\n• {name}\n"));
                 }
             }
             UiEvent::UpdateToolParameter {
-                tool_id,
+                tool_id: _,
                 name,
                 value,
             } => {
                 debug!("Updating tool parameter: {} = {}", name, value.trim());
-                // Add/update tool parameter in the last assistant message
-                if let Some(last_message) = state.messages.last_mut() {
-                    if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
-                        last_message
-                            .fragments
-                            .push(crate::ui::DisplayFragment::ToolParameter {
-                                name,
-                                value,
-                                tool_id,
-                            });
-                    }
+
+                // Print to terminal using write_message for tool parameters
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let _ = renderer.write_message(&format!("  {}: {}\n", name, value.trim()));
                 }
             }
             UiEvent::EndTool { id } => {
                 debug!("Ending tool: {}", id);
-                // Add tool end to the last assistant message
-                if let Some(last_message) = state.messages.last_mut() {
-                    if last_message.role == crate::ui::gpui::elements::MessageRole::Assistant {
-                        last_message
-                            .fragments
-                            .push(crate::ui::DisplayFragment::ToolEnd { id });
-                    }
+
+                // Print to terminal for tool end
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let _ = renderer.write_message("\n");
                 }
             }
-            UiEvent::AddImage { media_type, data } => {
+            UiEvent::AddImage { media_type, data: _ } => {
                 debug!("Adding image: {}", media_type);
-                // Add image to the last message
-                if let Some(last_message) = state.messages.last_mut() {
-                    last_message
-                        .fragments
-                        .push(crate::ui::DisplayFragment::Image { media_type, data });
+
+                // Print to terminal for image placeholder
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let _ = renderer.write_message(&format!("[image: {media_type}]\n"));
                 }
             }
             _ => {
@@ -322,44 +214,67 @@ impl UserInterface for TerminalTuiUI {
     }
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
-        // Print fragments via the renderer to the scrollable region using append_content_chunk
-        // We need a dummy InputArea for the API, but we can't easily get it here
-        // For now, fall back to write_message for compatibility
-        if let Some(renderer) = self.renderer.blocking_lock().as_ref() {
-            match fragment {
-                DisplayFragment::PlainText(text) => {
-                    debug!("Fragment: PlainText({})", text.trim());
-                    let _ = renderer.write_message(text);
-                }
-                DisplayFragment::ThinkingText(text) => {
-                    debug!("Fragment: ThinkingText({})", text.trim());
-                    if !text.trim().is_empty() {
-                        let _ = renderer.write_message(text);
-                    }
-                }
-                DisplayFragment::ToolName { name, id: _ } => {
-                    debug!("Fragment: ToolName({})", name);
-                    let _ = renderer.write_message(&format!("\n• {name}\n"));
-                }
-                DisplayFragment::ToolParameter {
-                    name,
-                    value,
-                    tool_id: _,
-                } => {
-                    debug!("Fragment: ToolParameter({}, ..)", name);
-                    let _ = renderer.write_message(&format!("  {}: {}\n", name, value.trim()));
-                }
-                DisplayFragment::ToolEnd { id: _ } => {
-                    debug!("Fragment: ToolEnd");
-                    let _ = renderer.write_message("\n");
-                }
-                DisplayFragment::Image {
-                    media_type,
-                    data: _,
-                } => {
-                    debug!("Fragment: Image({})", media_type);
-                    let _ = renderer.write_message(&format!("[image: {media_type}]\n"));
-                }
+        // Convert display fragments to UI events that can be processed asynchronously
+        // This avoids blocking in the sync display_fragment method
+        let rt = tokio::runtime::Handle::current();
+        let self_clone = self.clone();
+
+        match fragment {
+            DisplayFragment::PlainText(text) => {
+                let text_clone = text.clone();
+                rt.spawn(async move {
+                    let _ = self_clone.send_event(UiEvent::AppendToTextBlock {
+                        content: text_clone
+                    }).await;
+                });
+            }
+            DisplayFragment::ThinkingText(text) => {
+                let text_clone = text.clone();
+                rt.spawn(async move {
+                    let _ = self_clone.send_event(UiEvent::AppendToThinkingBlock {
+                        content: text_clone
+                    }).await;
+                });
+            }
+            DisplayFragment::ToolName { name, id } => {
+                let name_clone = name.clone();
+                let id_clone = id.clone();
+                rt.spawn(async move {
+                    let _ = self_clone.send_event(UiEvent::StartTool {
+                        name: name_clone,
+                        id: id_clone
+                    }).await;
+                });
+            }
+            DisplayFragment::ToolParameter { name, value, tool_id } => {
+                let name_clone = name.clone();
+                let value_clone = value.clone();
+                let tool_id_clone = tool_id.clone();
+                rt.spawn(async move {
+                    let _ = self_clone.send_event(UiEvent::UpdateToolParameter {
+                        tool_id: tool_id_clone,
+                        name: name_clone,
+                        value: value_clone
+                    }).await;
+                });
+            }
+            DisplayFragment::ToolEnd { id } => {
+                let id_clone = id.clone();
+                rt.spawn(async move {
+                    let _ = self_clone.send_event(UiEvent::EndTool {
+                        id: id_clone
+                    }).await;
+                });
+            }
+            DisplayFragment::Image { media_type, data } => {
+                let media_type_clone = media_type.clone();
+                let data_clone = data.clone();
+                rt.spawn(async move {
+                    let _ = self_clone.send_event(UiEvent::AddImage {
+                        media_type: media_type_clone,
+                        data: data_clone
+                    }).await;
+                });
             }
         }
         Ok(())
