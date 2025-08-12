@@ -1,3 +1,5 @@
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 /// Manages the input area at the bottom of the terminal
 pub struct InputArea {
     content: String,
@@ -5,6 +7,7 @@ pub struct InputArea {
     terminal_width: u16,
     max_lines: usize,
     scroll_offset: usize, // For virtual scrolling when content exceeds max_lines
+    prompt_width: usize,  // Display width of the prompt (e.g., "> " = 2)
 }
 
 impl InputArea {
@@ -15,7 +18,14 @@ impl InputArea {
             terminal_width,
             max_lines: 5,
             scroll_offset: 0,
+            prompt_width: 2,
         }
+    }
+
+    /// Update the display width of the prompt. Call this whenever the prompt changes.
+    pub fn set_prompt_width(&mut self, width: usize) {
+        self.prompt_width = width;
+        self.adjust_scroll_offset();
     }
 
     pub fn update_terminal_width(&mut self, width: u16) {
@@ -74,7 +84,7 @@ impl InputArea {
 
         if current_line > 0 {
             let target_line = current_line - 1;
-            let target_col = current_col.min(lines[target_line].chars().count());
+            let target_col = current_col.min(UnicodeWidthStr::width(lines[target_line].as_str()));
             self.cursor_pos = self.line_col_to_cursor_pos(&lines, target_line, target_col);
             self.adjust_scroll_offset();
         }
@@ -86,7 +96,7 @@ impl InputArea {
 
         if current_line < lines.len() - 1 {
             let target_line = current_line + 1;
-            let target_col = current_col.min(lines[target_line].chars().count());
+            let target_col = current_col.min(UnicodeWidthStr::width(lines[target_line].as_str()));
             self.cursor_pos = self.line_col_to_cursor_pos(&lines, target_line, target_col);
             self.adjust_scroll_offset();
         }
@@ -159,14 +169,14 @@ impl InputArea {
             .unwrap_or(self.content.len())
     }
 
-    /// Break content into wrapped lines based on terminal width
+    /// Break content into wrapped lines based on terminal width, using Unicode display width
     fn get_wrapped_lines(&self) -> Vec<String> {
         if self.content.is_empty() {
             return vec![String::new()];
         }
 
         let mut lines = Vec::new();
-        let content_width = (self.terminal_width as usize).saturating_sub(2); // Account for "> "
+        let content_width = (self.terminal_width as usize).saturating_sub(self.prompt_width);
 
         for paragraph in self.content.split('\n') {
             if paragraph.is_empty() {
@@ -175,12 +185,16 @@ impl InputArea {
             }
 
             let mut current_line = String::new();
+            let mut current_width = 0;
             for ch in paragraph.chars() {
-                if current_line.chars().count() >= content_width {
+                let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if current_width + w > content_width && !current_line.is_empty() {
                     lines.push(current_line);
                     current_line = String::new();
+                    current_width = 0;
                 }
                 current_line.push(ch);
+                current_width += w;
             }
             lines.push(current_line);
         }
@@ -192,44 +206,50 @@ impl InputArea {
         lines
     }
 
-    /// Get which line and column the cursor is on
+    /// Get which line and column the cursor is on using Unicode display width
     fn get_cursor_line_col(&self, _lines: &[String]) -> (usize, usize) {
         // Convert cursor position to line/col by walking through the original content
         let chars: Vec<char> = self.content.chars().collect();
         let mut current_line = 0;
-        let mut current_col = 0;
+        let mut current_display_col = 0;
+        let content_width = (self.terminal_width as usize).saturating_sub(self.prompt_width);
 
         for (i, &ch) in chars.iter().enumerate() {
             if i == self.cursor_pos {
-                return (current_line, current_col);
+                return (current_line, current_display_col);
             }
 
             if ch == '\n' {
                 current_line += 1;
-                current_col = 0;
+                current_display_col = 0;
             } else {
-                current_col += 1;
-                // Handle line wrapping
-                let content_width = (self.terminal_width as usize).saturating_sub(2);
-                if current_col >= content_width {
+                let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if current_display_col + w > content_width && current_display_col > 0 {
                     current_line += 1;
-                    current_col = 0;
+                    current_display_col = 0;
                 }
+                current_display_col += w;
             }
         }
 
         // Cursor is at the end
-        (current_line, current_col)
+        (current_line, current_display_col)
     }
 
-    /// Convert line and column position back to cursor position
-    fn line_col_to_cursor_pos(&self, _lines: &[String], target_line: usize, target_col: usize) -> usize {
+    /// Convert line and column position back to cursor position using Unicode display width
+    fn line_col_to_cursor_pos(
+        &self,
+        _lines: &[String],
+        target_line: usize,
+        target_col: usize,
+    ) -> usize {
         let chars: Vec<char> = self.content.chars().collect();
         let mut current_line = 0;
-        let mut current_col = 0;
+        let mut current_display_col = 0;
+        let content_width = (self.terminal_width as usize).saturating_sub(self.prompt_width);
 
         for (i, &ch) in chars.iter().enumerate() {
-            if current_line == target_line && current_col == target_col {
+            if current_line == target_line && current_display_col >= target_col {
                 return i;
             }
 
@@ -239,15 +259,14 @@ impl InputArea {
 
             if ch == '\n' {
                 current_line += 1;
-                current_col = 0;
+                current_display_col = 0;
             } else {
-                current_col += 1;
-                // Handle line wrapping
-                let content_width = (self.terminal_width as usize).saturating_sub(2);
-                if current_col >= content_width {
+                let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if current_display_col + w > content_width && current_display_col > 0 {
                     current_line += 1;
-                    current_col = 0;
+                    current_display_col = 0;
                 }
+                current_display_col += w;
             }
         }
 
@@ -277,7 +296,9 @@ impl InputArea {
         }
 
         // Ensure scroll offset doesn't go beyond bounds
-        self.scroll_offset = self.scroll_offset.min(total_lines.saturating_sub(self.max_lines));
+        self.scroll_offset = self
+            .scroll_offset
+            .min(total_lines.saturating_sub(self.max_lines));
     }
 }
 

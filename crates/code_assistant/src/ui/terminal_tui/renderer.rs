@@ -6,7 +6,7 @@ use crossterm::{
 };
 use std::io::{stdout, Stdout, Write};
 use std::sync::{Arc, Mutex};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::input_area::InputArea;
 
@@ -88,7 +88,7 @@ impl TerminalRenderer {
                 col = 0; // newline moves to next line at column 0
             } else {
                 // Handle unicode display width (e.g., CJK or emoji width 2)
-                let w = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
+                let w = UnicodeWidthChar::width(ch).unwrap_or(1);
                 col += w;
                 if col >= width {
                     col = 0; // terminal wraps to next line
@@ -151,7 +151,7 @@ impl TerminalRenderer {
 
         // Position cursor correctly (physical cursor stays in input area)
         let cursor_terminal_row = start_row + cursor_row as u16;
-        let cursor_terminal_col = prompt.len() as u16 + cursor_col as u16;
+        let cursor_terminal_col = UnicodeWidthStr::width(prompt) as u16 + cursor_col as u16;
         execute!(
             &mut inner.stdout,
             MoveTo(cursor_terminal_col, cursor_terminal_row),
