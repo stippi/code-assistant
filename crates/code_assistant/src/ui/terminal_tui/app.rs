@@ -201,8 +201,7 @@ impl TerminalTuiApp {
                             if let Some(tui_err) = ui_clone.as_any().downcast_ref::<TerminalTuiUI>()
                             {
                                 if let Some(renderer) = tui_err.renderer.lock().await.as_ref() {
-                                    let _ =
-                                        renderer.write_message(&format!("\n[error] {message}\n"));
+                                    let _ = renderer.append_content_chunk(&format!("\n[error] {message}\n"));
                                 }
                             }
                         }
@@ -214,17 +213,22 @@ impl TerminalTuiApp {
         }
 
         // Initialize terminal renderer with scroll region and raw mode
-        let renderer = TerminalRenderer::new()?;
+        let renderer = TerminalRenderer::new()?; // input_height initialized to 1
         // Bind renderer to UI for message printing and input redraws
         if let Some(tui) = ui.as_any().downcast_ref::<TerminalTuiUI>() {
             tui.set_renderer_async(renderer.clone()).await;
         }
 
-        // Print welcome message to content area
-        let _ = renderer.write_message("🤖 Code Assistant Terminal UI (Experimental)\n");
-        let _ = renderer.write_message("Type your message and press Enter to send.\n");
-        let _ = renderer.write_message("Use Shift+Enter for multi-line input.\n");
-        let _ = renderer.write_message("Press Ctrl+C to quit.\n\n");
+        // Initialize scroll region to current input height before printing any content
+        let (terminal_width, _) = crossterm::terminal::size()?;
+        let mut input_area = InputArea::new(terminal_width);
+        let _ = renderer.set_input_height(input_area.get_display_height());
+
+        // Print welcome message to content area using consistent API
+        let _ = renderer.append_content_chunk("Code Assistant Terminal UI (Experimental)\n");
+        let _ = renderer.append_content_chunk("Type your message and press Enter to send.\n");
+        let _ = renderer.append_content_chunk("Use Shift+Enter for multi-line input.\n");
+        let _ = renderer.append_content_chunk("Press Ctrl+C to quit.\n\n");
 
         // Create redraw notification channel
         let (redraw_tx, mut redraw_rx) = tokio::sync::watch::channel::<()>(());
@@ -267,7 +271,7 @@ impl TerminalTuiApp {
 
         // Send initial task if provided
         if let Some(task) = &config.task {
-            let _ = renderer.write_message(&format!("Starting with task: {task}\n\n"));
+            let _ = renderer.append_content_chunk(&format!("Starting with task: {task}\n\n"));
             let _ = backend_event_tx.try_send(BackendEvent::SendUserMessage {
                 session_id: session_id.clone(),
                 message: task.clone(),
@@ -426,7 +430,7 @@ impl TerminalTuiApp {
                     }
                     Event::Resize(cols, rows) => {
                         input_area.update_terminal_width(cols);
-                        let _ = renderer.handle_resize(cols, rows, &input_area);
+                        let _ = renderer.handle_resize(cols, rows);
                         let prompt = {
                             let state = self.app_state.lock().await;
                             make_prompt(&state, spinner_idx)
@@ -437,9 +441,14 @@ impl TerminalTuiApp {
                 }
             }
 
-            // Check for redraw notifications
+            // Check for redraw notifications (immediate redraw to keep cursor stable)
             if redraw_rx.has_changed().unwrap_or(false) {
                 let _ = redraw_rx.borrow_and_update();
+                let prompt = {
+                    let state = self.app_state.lock().await;
+                    make_prompt(&state, spinner_idx)
+                };
+                let _ = renderer.redraw_input(&prompt, &input_area);
             }
 
             // Periodically redraw the input to reflect cursor, buffer, and spinner/status

@@ -114,26 +114,26 @@ impl UserInterface for TerminalTuiUI {
 
                 // Print user input directly to the scrollable region via renderer
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.write_message(&format!("\n> {content}\n"));
+                    let _ = renderer.append_content_chunk(&format!("\n> {content}\n"));
                     for attachment in &attachments {
                         match attachment {
                             crate::persistence::DraftAttachment::Text { content } => {
                                 let _ = renderer
-                                    .write_message(&format!("  [attachment: text]\n{content}\n"));
+                                    .append_content_chunk(&format!("  [attachment: text]\n{content}\n"));
                             }
                             crate::persistence::DraftAttachment::Image { mime_type, .. } => {
-                                let _ = renderer.write_message(&format!(
+                                let _ = renderer.append_content_chunk(&format!(
                                     "  [attachment: image ({mime_type})]\n"
                                 ));
                             }
                             crate::persistence::DraftAttachment::File { filename, .. } => {
-                                let _ = renderer.write_message(&format!(
+                                let _ = renderer.append_content_chunk(&format!(
                                     "  [attachment: file ({filename}))]\n",
                                 ));
                             }
                         }
                     }
-                    let _ = renderer.write_message("\n");
+                    let _ = renderer.append_content_chunk("\n");
                 }
             }
             UiEvent::StreamingStarted(_request_id) => {
@@ -145,10 +145,7 @@ impl UserInterface for TerminalTuiUI {
 
                 // Print to terminal using append_content_chunk for proper streaming
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    // Create a dummy InputArea to satisfy the API - we need the current terminal width
-                    let (width, _) = renderer.get_size();
-                    let dummy_input = crate::ui::terminal_tui::input_area::InputArea::new(width);
-                    let _ = renderer.append_content_chunk(&content, &dummy_input);
+                    let _ = renderer.append_content_chunk(&content);
                 }
             }
             UiEvent::AppendToThinkingBlock { content } => {
@@ -157,9 +154,7 @@ impl UserInterface for TerminalTuiUI {
                 // Print to terminal using append_content_chunk for proper streaming
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     if !content.trim().is_empty() {
-                        let (width, _) = renderer.get_size();
-                        let dummy_input = crate::ui::terminal_tui::input_area::InputArea::new(width);
-                        let _ = renderer.append_content_chunk(&content, &dummy_input);
+                        let _ = renderer.append_content_chunk(&content);
                     }
                 }
             }
@@ -168,7 +163,7 @@ impl UserInterface for TerminalTuiUI {
 
                 // Print to terminal using write_message for tool headers
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.write_message(&format!("\n• {name}\n"));
+                    let _ = renderer.append_content_chunk(&format!("\n• {name}\n"));
                 }
             }
             UiEvent::UpdateToolParameter {
@@ -180,7 +175,7 @@ impl UserInterface for TerminalTuiUI {
 
                 // Print to terminal using write_message for tool parameters
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.write_message(&format!("  {}: {}\n", name, value.trim()));
+                    let _ = renderer.append_content_chunk(&format!("  {}: {}\n", name, value.trim()));
                 }
             }
             UiEvent::EndTool { id } => {
@@ -188,7 +183,7 @@ impl UserInterface for TerminalTuiUI {
 
                 // Print to terminal for tool end
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.write_message("\n");
+                    let _ = renderer.append_content_chunk("\n");
                 }
             }
             UiEvent::AddImage { media_type, data: _ } => {
@@ -196,7 +191,7 @@ impl UserInterface for TerminalTuiUI {
 
                 // Print to terminal for image placeholder
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.write_message(&format!("[image: {media_type}]\n"));
+                    let _ = renderer.append_content_chunk(&format!("[image: {media_type}]\n"));
                 }
             }
             _ => {
