@@ -118,8 +118,9 @@ impl UserInterface for TerminalTuiUI {
                     for attachment in &attachments {
                         match attachment {
                             crate::persistence::DraftAttachment::Text { content } => {
-                                let _ = renderer
-                                    .append_content_chunk(&format!("  [attachment: text]\n{content}\n"));
+                                let _ = renderer.append_content_chunk(&format!(
+                                    "  [attachment: text]\n{content}\n"
+                                ));
                             }
                             crate::persistence::DraftAttachment::Image { mime_type, .. } => {
                                 let _ = renderer.append_content_chunk(&format!(
@@ -138,7 +139,10 @@ impl UserInterface for TerminalTuiUI {
             }
             UiEvent::StreamingStarted(_request_id) => {
                 debug!("Streaming started");
-                // No state management needed for Terminal UI - just stream to terminal
+                // Ensure new stream starts at the beginning of a fresh line
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let _ = renderer.append_content_chunk("\n");
+                }
             }
             UiEvent::AppendToTextBlock { content } => {
                 debug!("Appending to text block: {}", content.trim());
@@ -175,7 +179,8 @@ impl UserInterface for TerminalTuiUI {
 
                 // Print to terminal using write_message for tool parameters
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.append_content_chunk(&format!("  {}: {}\n", name, value.trim()));
+                    let _ =
+                        renderer.append_content_chunk(&format!("  {}: {}\n", name, value.trim()));
                 }
             }
             UiEvent::EndTool { id } => {
@@ -186,7 +191,10 @@ impl UserInterface for TerminalTuiUI {
                     let _ = renderer.append_content_chunk("\n");
                 }
             }
-            UiEvent::AddImage { media_type, data: _ } => {
+            UiEvent::AddImage {
+                media_type,
+                data: _,
+            } => {
                 debug!("Adding image: {}", media_type);
 
                 // Print to terminal for image placeholder
@@ -218,57 +226,71 @@ impl UserInterface for TerminalTuiUI {
             DisplayFragment::PlainText(text) => {
                 let text_clone = text.clone();
                 rt.spawn(async move {
-                    let _ = self_clone.send_event(UiEvent::AppendToTextBlock {
-                        content: text_clone
-                    }).await;
+                    let _ = self_clone
+                        .send_event(UiEvent::AppendToTextBlock {
+                            content: text_clone,
+                        })
+                        .await;
                 });
             }
             DisplayFragment::ThinkingText(text) => {
                 let text_clone = text.clone();
                 rt.spawn(async move {
-                    let _ = self_clone.send_event(UiEvent::AppendToThinkingBlock {
-                        content: text_clone
-                    }).await;
+                    let _ = self_clone
+                        .send_event(UiEvent::AppendToThinkingBlock {
+                            content: text_clone,
+                        })
+                        .await;
                 });
             }
             DisplayFragment::ToolName { name, id } => {
                 let name_clone = name.clone();
                 let id_clone = id.clone();
                 rt.spawn(async move {
-                    let _ = self_clone.send_event(UiEvent::StartTool {
-                        name: name_clone,
-                        id: id_clone
-                    }).await;
+                    let _ = self_clone
+                        .send_event(UiEvent::StartTool {
+                            name: name_clone,
+                            id: id_clone,
+                        })
+                        .await;
                 });
             }
-            DisplayFragment::ToolParameter { name, value, tool_id } => {
+            DisplayFragment::ToolParameter {
+                name,
+                value,
+                tool_id,
+            } => {
                 let name_clone = name.clone();
                 let value_clone = value.clone();
                 let tool_id_clone = tool_id.clone();
                 rt.spawn(async move {
-                    let _ = self_clone.send_event(UiEvent::UpdateToolParameter {
-                        tool_id: tool_id_clone,
-                        name: name_clone,
-                        value: value_clone
-                    }).await;
+                    let _ = self_clone
+                        .send_event(UiEvent::UpdateToolParameter {
+                            tool_id: tool_id_clone,
+                            name: name_clone,
+                            value: value_clone,
+                        })
+                        .await;
                 });
             }
             DisplayFragment::ToolEnd { id } => {
                 let id_clone = id.clone();
                 rt.spawn(async move {
-                    let _ = self_clone.send_event(UiEvent::EndTool {
-                        id: id_clone
-                    }).await;
+                    let _ = self_clone
+                        .send_event(UiEvent::EndTool { id: id_clone })
+                        .await;
                 });
             }
             DisplayFragment::Image { media_type, data } => {
                 let media_type_clone = media_type.clone();
                 let data_clone = data.clone();
                 rt.spawn(async move {
-                    let _ = self_clone.send_event(UiEvent::AddImage {
-                        media_type: media_type_clone,
-                        data: data_clone
-                    }).await;
+                    let _ = self_clone
+                        .send_event(UiEvent::AddImage {
+                            media_type: media_type_clone,
+                            data: data_clone,
+                        })
+                        .await;
                 });
             }
         }

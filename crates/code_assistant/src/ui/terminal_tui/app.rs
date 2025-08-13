@@ -201,7 +201,8 @@ impl TerminalTuiApp {
                             if let Some(tui_err) = ui_clone.as_any().downcast_ref::<TerminalTuiUI>()
                             {
                                 if let Some(renderer) = tui_err.renderer.lock().await.as_ref() {
-                                    let _ = renderer.append_content_chunk(&format!("\n[error] {message}\n"));
+                                    let _ = renderer
+                                        .append_content_chunk(&format!("\n[error] {message}\n"));
                                 }
                             }
                         }
@@ -214,14 +215,14 @@ impl TerminalTuiApp {
 
         // Initialize terminal renderer with scroll region and raw mode
         let renderer = TerminalRenderer::new()?; // input_height initialized to 1
-        // Bind renderer to UI for message printing and input redraws
+                                                 // Bind renderer to UI for message printing and input redraws
         if let Some(tui) = ui.as_any().downcast_ref::<TerminalTuiUI>() {
             tui.set_renderer_async(renderer.clone()).await;
         }
 
         // Initialize scroll region to current input height before printing any content
         let (terminal_width, _) = crossterm::terminal::size()?;
-        let mut input_area = InputArea::new(terminal_width);
+        let input_area = InputArea::new(terminal_width);
         let _ = renderer.set_input_height(input_area.get_display_height());
 
         // Print welcome message to content area using consistent API
@@ -296,7 +297,9 @@ impl TerminalTuiApp {
                                     let state = self.app_state.lock().await;
                                     make_prompt(&state, spinner_idx)
                                 };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(prompt.as_str()));
+                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
+                                    prompt.as_str(),
+                                ));
                                 let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Enter => {
@@ -335,7 +338,9 @@ impl TerminalTuiApp {
                                     let state = self.app_state.lock().await;
                                     make_prompt(&state, spinner_idx)
                                 };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(prompt.as_str()));
+                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
+                                    prompt.as_str(),
+                                ));
                                 let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Backspace => {
@@ -346,7 +351,9 @@ impl TerminalTuiApp {
                                     let state = self.app_state.lock().await;
                                     make_prompt(&state, spinner_idx)
                                 };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(prompt.as_str()));
+                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
+                                    prompt.as_str(),
+                                ));
                                 let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Delete => {
@@ -357,7 +364,9 @@ impl TerminalTuiApp {
                                     let state = self.app_state.lock().await;
                                     make_prompt(&state, spinner_idx)
                                 };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(prompt.as_str()));
+                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
+                                    prompt.as_str(),
+                                ));
                                 let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Left => {
@@ -366,7 +375,9 @@ impl TerminalTuiApp {
                                     let state = self.app_state.lock().await;
                                     make_prompt(&state, spinner_idx)
                                 };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(prompt.as_str()));
+                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
+                                    prompt.as_str(),
+                                ));
                                 let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Right => {
@@ -375,7 +386,9 @@ impl TerminalTuiApp {
                                     let state = self.app_state.lock().await;
                                     make_prompt(&state, spinner_idx)
                                 };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(prompt.as_str()));
+                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
+                                    prompt.as_str(),
+                                ));
                                 let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Up => {
@@ -384,7 +397,9 @@ impl TerminalTuiApp {
                                     let state = self.app_state.lock().await;
                                     make_prompt(&state, spinner_idx)
                                 };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(prompt.as_str()));
+                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
+                                    prompt.as_str(),
+                                ));
                                 let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Down => {
@@ -393,7 +408,9 @@ impl TerminalTuiApp {
                                     let state = self.app_state.lock().await;
                                     make_prompt(&state, spinner_idx)
                                 };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(prompt.as_str()));
+                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
+                                    prompt.as_str(),
+                                ));
                                 let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Home => {
@@ -402,7 +419,9 @@ impl TerminalTuiApp {
                                     let state = self.app_state.lock().await;
                                     make_prompt(&state, spinner_idx)
                                 };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(prompt.as_str()));
+                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
+                                    prompt.as_str(),
+                                ));
                                 let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::End => {
@@ -411,7 +430,9 @@ impl TerminalTuiApp {
                                     let state = self.app_state.lock().await;
                                     make_prompt(&state, spinner_idx)
                                 };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(prompt.as_str()));
+                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
+                                    prompt.as_str(),
+                                ));
                                 let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             KeyCode::Char(ch) => {
@@ -422,7 +443,9 @@ impl TerminalTuiApp {
                                     let state = self.app_state.lock().await;
                                     make_prompt(&state, spinner_idx)
                                 };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(prompt.as_str()));
+                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
+                                    prompt.as_str(),
+                                ));
                                 let _ = renderer.redraw_input(&prompt, &input_area);
                             }
                             _ => {}

@@ -46,7 +46,11 @@ impl TerminalRenderer {
         let mut inner = self.inner.lock().unwrap();
         inner.input_height = input_height as u16;
         let content_bottom = inner.rows.saturating_sub(inner.input_height);
-        let bottom = if content_bottom >= 1 { content_bottom } else { 1 };
+        let bottom = if content_bottom >= 1 {
+            content_bottom
+        } else {
+            1
+        };
         // ESC[{top};{bottom}r  -> set top/bottom margins (scroll region)
         write!(&mut inner.stdout, "\x1b[1;{bottom}r")?;
         inner.stdout.flush()
@@ -88,10 +92,16 @@ impl TerminalRenderer {
                 }
                 _ => {
                     // Handle unicode display width (e.g., CJK or emoji width 2)
-                    let w = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
-                    col += w;
-                    if col >= width {
-                        col = 0; // terminal wraps to next line
+                    let w = UnicodeWidthChar::width(ch).unwrap_or(1);
+                    if col + w > width {
+                        // Does not fit: terminal wraps first, then prints starting at col 0
+                        col = w.min(width);
+                    } else {
+                        col += w;
+                        if col == width {
+                            // Exactly filled the line; cursor at col 0 on next line
+                            col = 0;
+                        }
                     }
                 }
             }
@@ -103,20 +113,6 @@ impl TerminalRenderer {
         inner.content_cursor_col = col as u16;
 
         inner.stdout.flush()
-    }
-
-    /// Write a message to the scrollable region (legacy method for compatibility).
-    /// This will move the cursor to the last line of the scroll region then print the text.
-    pub fn write_message(&self, text: &str) -> std::io::Result<()> {
-        // Legacy path: delegate to append_content_chunk so state stays consistent
-        self.append_content_chunk(text)?;
-        // If the message ends with a newline, ensure the virtual cursor resets to column 0
-        if text.ends_with('\n') || text.ends_with("\r\n") || text.ends_with('\r') {
-            let mut inner = self.inner.lock().unwrap();
-            inner.content_cursor_col = 0;
-            inner.stdout.flush()?;
-        }
-        Ok(())
     }
 
     /// Redraw the input area with multi-line support
@@ -162,11 +158,7 @@ impl TerminalRenderer {
     }
 
     /// Handle terminal resize: update dimensions and reset scroll region
-    pub fn handle_resize(
-        &self,
-        new_cols: u16,
-        new_rows: u16,
-    ) -> std::io::Result<()> {
+    pub fn handle_resize(&self, new_cols: u16, new_rows: u16) -> std::io::Result<()> {
         let mut inner = self.inner.lock().unwrap();
         inner.cols = new_cols;
         inner.rows = new_rows;
@@ -176,12 +168,17 @@ impl TerminalRenderer {
         }
         // Reapply scroll region for new dimensions using stored input height
         let content_bottom = inner.rows.saturating_sub(inner.input_height);
-        let bottom = if content_bottom >= 1 { content_bottom } else { 1 };
+        let bottom = if content_bottom >= 1 {
+            content_bottom
+        } else {
+            1
+        };
         write!(&mut inner.stdout, "\x1b[1;{bottom}r")?;
         inner.stdout.flush()
     }
 
     /// Apply overlay: temporarily reduce content region and render overlay lines
+    #[allow(dead_code)]
     pub fn apply_overlay(
         &self,
         overlay_height: u16,
@@ -216,6 +213,7 @@ impl TerminalRenderer {
     }
 
     /// Clear overlay: restore full content region
+    #[allow(dead_code)]
     pub fn clear_overlay(
         &self,
         overlay_height: u16,

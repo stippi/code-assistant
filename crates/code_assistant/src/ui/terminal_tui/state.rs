@@ -38,7 +38,12 @@ impl AppState {
         self.pending_message = message;
     }
 
-    pub fn update_session_activity_state(&mut self, session_id: String, activity_state: SessionActivityState) {
-        self.session_activity_states.insert(session_id, activity_state);
+    pub fn update_session_activity_state(
+        &mut self,
+        session_id: String,
+        activity_state: SessionActivityState,
+    ) {
+        self.session_activity_states
+            .insert(session_id, activity_state);
     }
 }

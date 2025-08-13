@@ -78,9 +78,7 @@ pub async fn handle_backend_events(
         debug!("Backend event: {:?}", event);
 
         let response = match event {
-            BackendEvent::ListSessions => {
-                Some(handle_list_sessions(&multi_session_manager).await)
-            }
+            BackendEvent::ListSessions => Some(handle_list_sessions(&multi_session_manager).await),
 
             BackendEvent::CreateNewSession { name } => {
                 Some(handle_create_session(&multi_session_manager, name).await)

@@ -103,7 +103,11 @@ impl UserInterface for TerminalUI {
                 self.write_line("").await?;
 
                 // Display user input with "You: " prefix and different styling
-                let mut formatted = format!("{} {}", "You:".with(Color::Blue).bold(), content.with(Color::Blue));
+                let mut formatted = format!(
+                    "{} {}",
+                    "You:".with(Color::Blue).bold(),
+                    content.with(Color::Blue)
+                );
                 if !attachments.is_empty() {
                     formatted.push_str(&format!(" [with {} attachment(s)]", attachments.len()));
                 }
@@ -166,9 +170,7 @@ impl UserInterface for TerminalUI {
 
                 // Check if we need to display the parameter name (first time for this parameter)
                 let mut displayed = self.displayed_parameters.lock().unwrap();
-                let tool_displayed = displayed
-                    .entry(tool_id.clone())
-                    .or_default();
+                let tool_displayed = displayed.entry(tool_id.clone()).or_default();
 
                 let mut stdout = io::stdout().lock();
                 let writer: &mut dyn Write = if let Some(w) = &self.writer {
@@ -265,7 +267,9 @@ impl UserInterface for TerminalUI {
         let current_type = match fragment {
             DisplayFragment::PlainText(_) => LastFragmentType::Text,
             DisplayFragment::ThinkingText(_) => LastFragmentType::Thinking,
-            DisplayFragment::ToolName { .. } | DisplayFragment::ToolParameter { .. } => LastFragmentType::Tool,
+            DisplayFragment::ToolName { .. } | DisplayFragment::ToolParameter { .. } => {
+                LastFragmentType::Tool
+            }
             _ => {
                 // Don't change last type for other fragments
                 *self.last_fragment_type.lock().unwrap()
@@ -310,9 +314,7 @@ impl UserInterface for TerminalUI {
 
                 // Check if we need to display the parameter name (first time for this parameter)
                 let mut displayed = self.displayed_parameters.lock().unwrap();
-                let tool_displayed = displayed
-                    .entry(tool_id.clone())
-                    .or_default();
+                let tool_displayed = displayed.entry(tool_id.clone()).or_default();
 
                 if !tool_displayed.contains(name) {
                     // First time seeing this parameter, display the name
