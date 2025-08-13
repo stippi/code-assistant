@@ -279,6 +279,10 @@ impl SessionInstance {
             fn clear_rate_limit(&self) {
                 // No-op for dummy UI
             }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
         }
 
         let dummy_ui: std::sync::Arc<dyn crate::ui::UserInterface> = std::sync::Arc::new(DummyUI);
@@ -540,5 +544,9 @@ impl UserInterface for ProxyUI {
             self.real_ui.clear_rate_limit();
         }
         // No-op if session not connected
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

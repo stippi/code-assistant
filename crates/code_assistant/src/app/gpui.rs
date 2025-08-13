@@ -209,12 +209,12 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 fast_playback,
             });
 
-            crate::ui::gpui::backend::handle_backend_events(
+            crate::ui::backend::handle_backend_events(
                 backend_event_rx,
                 backend_response_tx,
                 multi_session_manager,
                 cfg,
-                gui_for_thread,
+                Arc::new(gui_for_thread) as Arc<dyn crate::ui::UserInterface>,
             )
             .await;
         });

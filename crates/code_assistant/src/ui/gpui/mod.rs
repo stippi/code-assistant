@@ -1,7 +1,6 @@
 pub mod assets;
 pub mod attachment;
 pub mod auto_scroll;
-pub mod backend;
 pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_renderer;
@@ -53,63 +52,8 @@ pub struct UiEventSender(pub async_channel::Sender<UiEvent>);
 
 impl Global for UiEventSender {}
 
-// Unified event type for all UI→Backend communication
-#[derive(Debug, Clone)]
-pub enum BackendEvent {
-    // Session management
-    LoadSession {
-        session_id: String,
-    },
-    CreateNewSession {
-        name: Option<String>,
-    },
-    DeleteSession {
-        session_id: String,
-    },
-    ListSessions,
-
-    // Agent operations
-    SendUserMessage {
-        session_id: String,
-        message: String,
-        attachments: Vec<crate::persistence::DraftAttachment>,
-    },
-    QueueUserMessage {
-        session_id: String,
-        message: String,
-        attachments: Vec<crate::persistence::DraftAttachment>,
-    },
-    RequestPendingMessageEdit {
-        session_id: String,
-    },
-}
-
-// Response from backend to UI
-#[derive(Debug, Clone)]
-pub enum BackendResponse {
-    SessionCreated {
-        session_id: String,
-    },
-    #[allow(dead_code)]
-    SessionDeleted {
-        session_id: String,
-    },
-    SessionsListed {
-        sessions: Vec<ChatMetadata>,
-    },
-    Error {
-        message: String,
-    },
-    PendingMessageForEdit {
-        session_id: String,
-        #[allow(dead_code)]
-        message: String,
-    },
-    PendingMessageUpdated {
-        session_id: String,
-        message: Option<String>,
-    },
-}
+// Re-export backend types for compatibility
+pub use crate::ui::backend::{BackendEvent, BackendResponse};
 
 // Our main UI struct that implements the UserInterface trait
 #[derive(Clone)]
@@ -1324,5 +1268,9 @@ impl UserInterface for Gpui {
 
     fn clear_rate_limit(&self) {
         // See notify_rate_limit()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

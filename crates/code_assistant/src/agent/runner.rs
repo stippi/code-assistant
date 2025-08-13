@@ -359,7 +359,7 @@ impl Agent {
         // Restore all state components
         self.session_id = Some(session_state.session_id);
         self.message_history = session_state.messages;
-        warn!(
+        debug!(
             "loaded {} messages from session",
             self.message_history.len()
         );
@@ -391,6 +391,7 @@ impl Agent {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn init_working_memory(&mut self) -> Result<()> {
         // Initialize empty structures for multi-project support
         self.working_memory.file_trees = HashMap::new();

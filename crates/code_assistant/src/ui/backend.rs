@@ -1,18 +1,76 @@
 use crate::config::DefaultProjectManager;
-use crate::persistence::DraftAttachment;
-use crate::ui::{gpui::Gpui, UserInterface};
+use crate::persistence::{ChatMetadata, DraftAttachment};
+use crate::ui::UserInterface;
 use crate::utils::{content::content_blocks_from, DefaultCommandExecutor};
 use llm::factory::{create_llm_client, LLMClientConfig};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace};
 
+// Unified event type for all UI→Backend communication
+#[derive(Debug, Clone)]
+pub enum BackendEvent {
+    // Session management
+    LoadSession {
+        session_id: String,
+    },
+    CreateNewSession {
+        name: Option<String>,
+    },
+    DeleteSession {
+        session_id: String,
+    },
+    ListSessions,
+
+    // Agent operations
+    SendUserMessage {
+        session_id: String,
+        message: String,
+        attachments: Vec<DraftAttachment>,
+    },
+    QueueUserMessage {
+        session_id: String,
+        message: String,
+        attachments: Vec<DraftAttachment>,
+    },
+    RequestPendingMessageEdit {
+        session_id: String,
+    },
+}
+
+// Response from backend to UI
+#[derive(Debug, Clone)]
+pub enum BackendResponse {
+    SessionCreated {
+        session_id: String,
+    },
+    #[allow(dead_code)]
+    SessionDeleted {
+        session_id: String,
+    },
+    SessionsListed {
+        sessions: Vec<ChatMetadata>,
+    },
+    Error {
+        message: String,
+    },
+    PendingMessageForEdit {
+        session_id: String,
+        #[allow(dead_code)]
+        message: String,
+    },
+    PendingMessageUpdated {
+        session_id: String,
+        message: Option<String>,
+    },
+}
+
 pub async fn handle_backend_events(
-    backend_event_rx: async_channel::Receiver<crate::ui::gpui::BackendEvent>,
-    backend_response_tx: async_channel::Sender<crate::ui::gpui::BackendResponse>,
+    backend_event_rx: async_channel::Receiver<BackendEvent>,
+    backend_response_tx: async_channel::Sender<BackendResponse>,
     multi_session_manager: Arc<Mutex<crate::session::SessionManager>>,
     cfg: Arc<LLMClientConfig>,
-    gui: Gpui,
+    ui: Arc<dyn UserInterface>,
 ) {
     debug!("Backend event handler started");
 
@@ -20,23 +78,21 @@ pub async fn handle_backend_events(
         debug!("Backend event: {:?}", event);
 
         let response = match event {
-            crate::ui::gpui::BackendEvent::ListSessions => {
-                Some(handle_list_sessions(&multi_session_manager).await)
-            }
+            BackendEvent::ListSessions => Some(handle_list_sessions(&multi_session_manager).await),
 
-            crate::ui::gpui::BackendEvent::CreateNewSession { name } => {
+            BackendEvent::CreateNewSession { name } => {
                 Some(handle_create_session(&multi_session_manager, name).await)
             }
 
-            crate::ui::gpui::BackendEvent::LoadSession { session_id } => {
-                handle_load_session(&multi_session_manager, &session_id, &gui).await
+            BackendEvent::LoadSession { session_id } => {
+                handle_load_session(&multi_session_manager, &session_id, &ui).await
             }
 
-            crate::ui::gpui::BackendEvent::DeleteSession { session_id } => {
+            BackendEvent::DeleteSession { session_id } => {
                 Some(handle_delete_session(&multi_session_manager, &session_id).await)
             }
 
-            crate::ui::gpui::BackendEvent::SendUserMessage {
+            BackendEvent::SendUserMessage {
                 session_id,
                 message,
                 attachments,
@@ -47,12 +103,12 @@ pub async fn handle_backend_events(
                     &message,
                     &attachments,
                     &cfg,
-                    &gui,
+                    &ui,
                 )
                 .await
             }
 
-            crate::ui::gpui::BackendEvent::QueueUserMessage {
+            BackendEvent::QueueUserMessage {
                 session_id,
                 message,
                 attachments,
@@ -66,7 +122,7 @@ pub async fn handle_backend_events(
                 .await,
             ),
 
-            crate::ui::gpui::BackendEvent::RequestPendingMessageEdit { session_id } => {
+            BackendEvent::RequestPendingMessageEdit { session_id } => {
                 Some(handle_request_pending_message_edit(&multi_session_manager, &session_id).await)
             }
         };
@@ -85,7 +141,7 @@ pub async fn handle_backend_events(
 
 async fn handle_list_sessions(
     multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
-) -> crate::ui::gpui::BackendResponse {
+) -> BackendResponse {
     let sessions = {
         let manager = multi_session_manager.lock().await;
         manager.list_all_sessions()
@@ -93,11 +149,11 @@ async fn handle_list_sessions(
     match sessions {
         Ok(sessions) => {
             trace!("Found {} sessions", sessions.len());
-            crate::ui::gpui::BackendResponse::SessionsListed { sessions }
+            BackendResponse::SessionsListed { sessions }
         }
         Err(e) => {
             error!("Failed to list sessions: {}", e);
-            crate::ui::gpui::BackendResponse::Error {
+            BackendResponse::Error {
                 message: e.to_string(),
             }
         }
@@ -107,7 +163,7 @@ async fn handle_list_sessions(
 async fn handle_create_session(
     multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
     name: Option<String>,
-) -> crate::ui::gpui::BackendResponse {
+) -> BackendResponse {
     let create_result = {
         let mut manager = multi_session_manager.lock().await;
         manager.create_session(name.clone())
@@ -116,11 +172,11 @@ async fn handle_create_session(
     match create_result {
         Ok(session_id) => {
             info!("Created session {}", session_id);
-            crate::ui::gpui::BackendResponse::SessionCreated { session_id }
+            BackendResponse::SessionCreated { session_id }
         }
         Err(e) => {
             error!("Failed to create session: {}", e);
-            crate::ui::gpui::BackendResponse::Error {
+            BackendResponse::Error {
                 message: e.to_string(),
             }
         }
@@ -130,8 +186,8 @@ async fn handle_create_session(
 async fn handle_load_session(
     multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
     session_id: &str,
-    gui: &Gpui,
-) -> Option<crate::ui::gpui::BackendResponse> {
+    ui: &Arc<dyn UserInterface>,
+) -> Option<BackendResponse> {
     debug!("LoadSession requested: {}", session_id);
 
     let ui_events_result = {
@@ -145,7 +201,7 @@ async fn handle_load_session(
 
             // Send all UI events to update the interface
             for event in ui_events {
-                if let Err(e) = gui.send_event(event).await {
+                if let Err(e) = ui.send_event(event).await {
                     error!("Failed to send UI event: {}", e);
                 }
             }
@@ -154,7 +210,7 @@ async fn handle_load_session(
         }
         Err(e) => {
             error!("Failed to connect to session {}: {}", session_id, e);
-            Some(crate::ui::gpui::BackendResponse::Error {
+            Some(BackendResponse::Error {
                 message: e.to_string(),
             })
         }
@@ -164,7 +220,7 @@ async fn handle_load_session(
 async fn handle_delete_session(
     multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
     session_id: &str,
-) -> crate::ui::gpui::BackendResponse {
+) -> BackendResponse {
     debug!("DeleteSession requested: {}", session_id);
 
     let delete_result = {
@@ -175,13 +231,13 @@ async fn handle_delete_session(
     match delete_result {
         Ok(_) => {
             debug!("Session deleted: {}", session_id);
-            crate::ui::gpui::BackendResponse::SessionDeleted {
+            BackendResponse::SessionDeleted {
                 session_id: session_id.to_string(),
             }
         }
         Err(e) => {
             error!("Failed to delete session {}: {}", session_id, e);
-            crate::ui::gpui::BackendResponse::Error {
+            BackendResponse::Error {
                 message: e.to_string(),
             }
         }
@@ -194,8 +250,8 @@ async fn handle_send_user_message(
     message: &str,
     attachments: &[DraftAttachment],
     cfg: &Arc<LLMClientConfig>,
-    gui: &Gpui,
-) -> Option<crate::ui::gpui::BackendResponse> {
+    ui: &Arc<dyn UserInterface>,
+) -> Option<BackendResponse> {
     debug!(
         "User message for session {}: {} (with {} attachments)",
         session_id,
@@ -207,7 +263,7 @@ async fn handle_send_user_message(
     let content_blocks = content_blocks_from(message, attachments);
 
     // Display the user message with attachments in the UI
-    if let Err(e) = gui
+    if let Err(e) = ui
         .send_event(crate::ui::UiEvent::DisplayUserInput {
             content: message.to_string(),
             attachments: attachments.to_vec(),
@@ -221,7 +277,7 @@ async fn handle_send_user_message(
     let result = {
         let project_manager = Box::new(DefaultProjectManager::new());
         let command_executor = Box::new(DefaultCommandExecutor);
-        let user_interface: Arc<dyn UserInterface> = Arc::new(gui.clone());
+        let user_interface = ui.clone();
 
         // Check if session has stored LLM config, otherwise use global config
         let llm_config = {
@@ -275,7 +331,7 @@ async fn handle_send_user_message(
         }
         Err(e) => {
             error!("Failed to start agent for session {}: {}", session_id, e);
-            Some(crate::ui::gpui::BackendResponse::Error {
+            Some(BackendResponse::Error {
                 message: format!("Failed to start agent: {e}"),
             })
         }
@@ -287,7 +343,7 @@ async fn handle_queue_user_message(
     session_id: &str,
     message: &str,
     attachments: &[DraftAttachment],
-) -> crate::ui::gpui::BackendResponse {
+) -> BackendResponse {
     debug!(
         "Queue user message with attachments for session {}: {} (with {} attachments)",
         session_id,
@@ -310,7 +366,7 @@ async fn handle_queue_user_message(
                 let manager = multi_session_manager.lock().await;
                 manager.get_pending_message(session_id).unwrap_or(None)
             };
-            crate::ui::gpui::BackendResponse::PendingMessageUpdated {
+            BackendResponse::PendingMessageUpdated {
                 session_id: session_id.to_string(),
                 message: pending_message,
             }
@@ -320,7 +376,7 @@ async fn handle_queue_user_message(
                 "Failed to queue message with attachments for session {}: {}",
                 session_id, e
             );
-            crate::ui::gpui::BackendResponse::Error {
+            BackendResponse::Error {
                 message: format!("Failed to queue message: {e}"),
             }
         }
@@ -330,7 +386,7 @@ async fn handle_queue_user_message(
 async fn handle_request_pending_message_edit(
     multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
     session_id: &str,
-) -> crate::ui::gpui::BackendResponse {
+) -> BackendResponse {
     debug!("Request pending message edit for session {}", session_id);
 
     let result = {
@@ -341,14 +397,14 @@ async fn handle_request_pending_message_edit(
     match result {
         Ok(Some(message)) => {
             debug!("Retrieved pending message for editing: {}", message);
-            crate::ui::gpui::BackendResponse::PendingMessageForEdit {
+            BackendResponse::PendingMessageForEdit {
                 session_id: session_id.to_string(),
                 message,
             }
         }
         Ok(None) => {
             debug!("No pending message found for session {}", session_id);
-            crate::ui::gpui::BackendResponse::PendingMessageUpdated {
+            BackendResponse::PendingMessageUpdated {
                 session_id: session_id.to_string(),
                 message: None,
             }
@@ -358,7 +414,7 @@ async fn handle_request_pending_message_edit(
                 "Failed to get pending message for session {}: {}",
                 session_id, e
             );
-            crate::ui::gpui::BackendResponse::Error {
+            BackendResponse::Error {
                 message: format!("Failed to get pending message: {e}"),
             }
         }

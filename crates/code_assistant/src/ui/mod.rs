@@ -1,6 +1,8 @@
+pub mod backend;
 pub mod gpui;
 pub mod streaming;
 pub mod terminal;
+pub mod terminal_tui;
 pub mod ui_events;
 use async_trait::async_trait;
 pub use streaming::DisplayFragment;
@@ -37,6 +39,9 @@ pub trait UserInterface: Send + Sync {
 
     /// Clear rate limit notification
     fn clear_rate_limit(&self);
+
+    /// Downcast to Any for accessing concrete type methods
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 #[cfg(test)]
