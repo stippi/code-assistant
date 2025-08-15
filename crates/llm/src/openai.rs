@@ -73,6 +73,10 @@ struct OpenAIRequest {
     tool_choice: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -177,11 +181,17 @@ struct OpenAIToolCallDelta {
 }
 
 #[derive(Debug, Deserialize)]
+struct OpenAIPromptTokensDetails {
+    cached_tokens: u32,
+}
+
+#[derive(Debug, Deserialize)]
 struct OpenAIUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
     #[allow(dead_code)]
     total_tokens: u32,
+    prompt_tokens_details: Option<OpenAIPromptTokensDetails>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -689,9 +699,12 @@ impl OpenAIClient {
                 usage: Usage {
                     input_tokens: openai_response.usage.prompt_tokens,
                     output_tokens: openai_response.usage.completion_tokens,
-                    // OpenAI doesn't support our caching markers, so these fields are 0
                     cache_creation_input_tokens: 0,
-                    cache_read_input_tokens: 0,
+                    cache_read_input_tokens: openai_response
+                        .usage
+                        .prompt_tokens_details
+                        .map(|details| details.cached_tokens)
+                        .unwrap_or(0),
                 },
                 rate_limit_info: None,
             },
@@ -945,9 +958,11 @@ impl OpenAIClient {
                     .map(|u| Usage {
                         input_tokens: u.prompt_tokens,
                         output_tokens: u.completion_tokens,
-                        // OpenAI doesn't support our caching markers, so these fields are 0
                         cache_creation_input_tokens: 0,
-                        cache_read_input_tokens: 0,
+                        cache_read_input_tokens: u
+                            .prompt_tokens_details
+                            .map(|details| details.cached_tokens)
+                            .unwrap_or(0),
                     })
                     .unwrap_or(Usage {
                         input_tokens: 0,
@@ -1007,6 +1022,8 @@ impl LLMProvider for OpenAIClient {
             temperature: self.get_temperature(),
             stream: None,
             stream_options: None,
+            prompt_cache_key: Some(request.session_id.clone()),
+            reasoning_effort: Some("low".to_string()),
             tool_choice: Some(serde_json::json!("auto")),
             tools: request.tools.map(|tools| {
                 tools
@@ -1240,5 +1257,73 @@ mod tests {
             }
             _ => panic!("Expected InputJson chunk, got: {:?}", chunks[0]),
         }
+    }
+
+    #[test]
+    fn test_cached_tokens_parsing() {
+        // Test JSON response with prompt_tokens_details containing cached_tokens
+        let json_response = r#"
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello there!"
+                    }
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+                "prompt_tokens_details": {
+                    "cached_tokens": 25
+                }
+            }
+        }"#;
+
+        let openai_response: OpenAIResponse = serde_json::from_str(json_response).unwrap();
+
+        assert_eq!(openai_response.usage.prompt_tokens, 100);
+        assert_eq!(openai_response.usage.completion_tokens, 50);
+        assert_eq!(openai_response.usage.total_tokens, 150);
+        assert!(openai_response.usage.prompt_tokens_details.is_some());
+        assert_eq!(
+            openai_response
+                .usage
+                .prompt_tokens_details
+                .unwrap()
+                .cached_tokens,
+            25
+        );
+
+        // Test JSON response without prompt_tokens_details (backward compatibility)
+        let json_response_no_details = r#"
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello there!"
+                    }
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150
+            }
+        }"#;
+
+        let openai_response_no_details: OpenAIResponse =
+            serde_json::from_str(json_response_no_details).unwrap();
+
+        assert_eq!(openai_response_no_details.usage.prompt_tokens, 100);
+        assert_eq!(openai_response_no_details.usage.completion_tokens, 50);
+        assert_eq!(openai_response_no_details.usage.total_tokens, 150);
+        assert!(openai_response_no_details
+            .usage
+            .prompt_tokens_details
+            .is_none());
     }
 }

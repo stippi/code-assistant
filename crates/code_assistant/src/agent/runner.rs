@@ -802,6 +802,7 @@ impl Agent {
             },
             stop_sequences: None,
             request_id,
+            session_id: self.session_id.clone().unwrap_or_default(),
         };
 
         // Log messages for debugging
