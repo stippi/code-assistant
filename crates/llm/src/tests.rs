@@ -35,9 +35,7 @@ impl TestCase {
                     usage: None,
                 }],
                 system_prompt: "You are a helpful assistant.".to_string(),
-                tools: None,
-                stop_sequences: None,
-                request_id: 1,
+                ..Default::default()
             },
             expected_text_chunks: vec!["Hi!".to_string(), " How can I help you today?".to_string()],
             expected_tool_json: None,
@@ -86,8 +84,7 @@ impl TestCase {
                         "required": ["location"]
                     }),
                 }]),
-                stop_sequences: None,
-                request_id: 1,
+                ..Default::default()
             },
             expected_text_chunks: vec![],
             expected_tool_json: Some(r#"{"location":"current"}"#.to_string()),
@@ -831,9 +828,7 @@ async fn test_anthropic_rate_limit_retry() -> Result<()> {
             usage: None,
         }],
         system_prompt: "You are a helpful assistant.".to_string(),
-        tools: None,
-        stop_sequences: None,
-        request_id: 0,
+        ..Default::default()
     };
 
     // The request should eventually succeed after retries

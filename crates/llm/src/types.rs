@@ -45,6 +45,8 @@ pub struct LLMRequest {
     pub stop_sequences: Option<Vec<String>>,
     /// Request ID for consistent tool ID generation across providers
     pub request_id: u64,
+    /// Session ID, for example used by OpenAI provider to optimize caching
+    pub session_id: String,
 }
 
 impl Default for LLMRequest {
@@ -55,6 +57,7 @@ impl Default for LLMRequest {
             tools: None,
             stop_sequences: None,
             request_id: 1,
+            session_id: "".to_string(),
         }
     }
 }
