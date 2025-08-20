@@ -1,5 +1,5 @@
 pub mod app;
-pub mod input_area;
+pub mod input;
 pub mod renderer;
 pub mod state;
 pub mod ui;

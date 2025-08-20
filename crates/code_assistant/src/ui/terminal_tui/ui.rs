@@ -12,7 +12,7 @@ pub struct TerminalTuiUI {
     app_state: Arc<Mutex<AppState>>,
     redraw_tx: Arc<Mutex<Option<watch::Sender<()>>>>,
     pub cancel_flag: Arc<Mutex<bool>>,
-    pub renderer: Arc<Mutex<Option<Arc<TerminalRenderer>>>>,
+    pub renderer: Arc<Mutex<Option<Arc<Mutex<TerminalRenderer>>>>>,
 }
 
 impl TerminalTuiUI {
@@ -37,8 +37,15 @@ impl TerminalTuiUI {
         });
     }
 
-    pub async fn set_renderer_async(&self, renderer: Arc<TerminalRenderer>) {
+    pub async fn set_renderer_async(&self, renderer: Arc<Mutex<TerminalRenderer>>) {
         *self.renderer.lock().await = Some(renderer);
+    }
+
+    /// Trigger a redraw
+    async fn trigger_redraw(&self) {
+        if let Some(tx) = self.redraw_tx.lock().await.as_ref() {
+            let _ = tx.send(());
+        }
     }
 }
 
@@ -91,7 +98,18 @@ impl UserInterface for TerminalTuiUI {
             }
             UiEvent::UpdatePendingMessage { message } => {
                 debug!("Updating pending message: {:?}", message);
-                state.update_pending_message(message);
+                state.update_pending_message(message.clone());
+
+                // Set pending message in renderer if available
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    if let Some(msg) = message {
+                        let formatted = format!("\n\n**User:** {msg}\n");
+                        renderer_guard.set_pending_user_message(formatted);
+                    } else {
+                        renderer_guard.set_pending_user_message("".to_string());
+                    }
+                }
             }
             UiEvent::UpdateToolStatus {
                 tool_id,
@@ -104,7 +122,13 @@ impl UserInterface for TerminalTuiUI {
             }
             UiEvent::ClearMessages => {
                 debug!("Clearing messages");
-                // No message state to clear in Terminal UI
+                // Clear live and finalized blocks in renderer
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.start_live_block(); // This clears live text
+                    renderer_guard.finalized_blocks.clear();
+                    renderer_guard.last_overflow = 0;
+                }
             }
             UiEvent::DisplayUserInput {
                 content,
@@ -112,62 +136,68 @@ impl UserInterface for TerminalTuiUI {
             } => {
                 debug!("Displaying user input: {}", content);
 
-                // Print user input directly to the scrollable region via renderer
+                // Add user message as finalized block
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.append_content_chunk(&format!("\n> {content}\n"));
+                    let mut renderer_guard = renderer.lock().await;
+                    let formatted = format!("\n\n**User:** {content}\n");
+                    let _ = renderer_guard.add_user_message(&formatted);
+
                     for attachment in &attachments {
                         match attachment {
                             crate::persistence::DraftAttachment::Text { content } => {
-                                let _ = renderer.append_content_chunk(&format!(
-                                    "  [attachment: text]\n{content}\n"
-                                ));
+                                let attachment_text = format!("  [attachment: text]\n{content}\n");
+                                let _ = renderer_guard.add_user_message(&attachment_text);
                             }
                             crate::persistence::DraftAttachment::Image { mime_type, .. } => {
-                                let _ = renderer.append_content_chunk(&format!(
-                                    "  [attachment: image ({mime_type})]\n"
-                                ));
+                                let attachment_text = format!("  [attachment: image ({mime_type})]\n");
+                                let _ = renderer_guard.add_user_message(&attachment_text);
                             }
                             crate::persistence::DraftAttachment::File { filename, .. } => {
-                                let _ = renderer.append_content_chunk(&format!(
-                                    "  [attachment: file ({filename}))]\n",
-                                ));
+                                let attachment_text = format!("  [attachment: file ({filename})]\n");
+                                let _ = renderer_guard.add_user_message(&attachment_text);
                             }
                         }
                     }
-                    let _ = renderer.append_content_chunk("\n");
                 }
             }
             UiEvent::StreamingStarted(_request_id) => {
                 debug!("Streaming started");
-                // Ensure new stream starts at the beginning of a fresh line
+                // Start a new live block for streaming content
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.append_content_chunk("\n");
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.start_live_block();
+                    // Add a small header to indicate AI response
+                    let header = format!("\n**Assistant:** ({})\n\n", chrono::Utc::now().format("%H:%M:%S"));
+                    renderer_guard.append_to_live_block(&header);
                 }
             }
             UiEvent::AppendToTextBlock { content } => {
                 debug!("Appending to text block: {}", content.trim());
 
-                // Print to terminal using append_content_chunk for proper streaming
+                // Append to current live block
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.append_content_chunk(&content);
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.append_to_live_block(&content);
                 }
             }
             UiEvent::AppendToThinkingBlock { content } => {
                 debug!("Appending to thinking block: {}", content.trim());
 
-                // Print to terminal using append_content_chunk for proper streaming
+                // Append to current live block (thinking content)
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
                     if !content.trim().is_empty() {
-                        let _ = renderer.append_content_chunk(&content);
+                        renderer_guard.append_to_live_block(&content);
                     }
                 }
             }
             UiEvent::StartTool { name, id } => {
                 debug!("Starting tool: {} ({})", name, id);
 
-                // Print to terminal using write_message for tool headers
+                // Append tool start to live block
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.append_content_chunk(&format!("\n• {name}\n"));
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.append_to_live_block(&format!("\n• {name}\n"));
                 }
             }
             UiEvent::UpdateToolParameter {
@@ -177,18 +207,19 @@ impl UserInterface for TerminalTuiUI {
             } => {
                 debug!("Updating tool parameter: {} = {}", name, value.trim());
 
-                // Print to terminal using write_message for tool parameters
+                // Append parameter to live block
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ =
-                        renderer.append_content_chunk(&format!("  {}: {}\n", name, value.trim()));
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.append_to_live_block(&format!("  {}: {}\n", name, value.trim()));
                 }
             }
             UiEvent::EndTool { id } => {
                 debug!("Ending tool: {}", id);
 
-                // Print to terminal for tool end
+                // Add spacing after tool
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.append_content_chunk("\n");
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.append_to_live_block("\n");
                 }
             }
             UiEvent::AddImage {
@@ -197,9 +228,19 @@ impl UserInterface for TerminalTuiUI {
             } => {
                 debug!("Adding image: {}", media_type);
 
-                // Print to terminal for image placeholder
+                // Add image placeholder to live block
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let _ = renderer.append_content_chunk(&format!("[image: {media_type}]\n"));
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.append_to_live_block(&format!("[image: {media_type}]\n"));
+                }
+            }
+            UiEvent::StreamingStopped { id, cancelled } => {
+                debug!("Streaming stopped (id: {}, cancelled: {})", id, cancelled);
+
+                // Finalize the current live block
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    let _ = renderer_guard.finalize_live_block();
                 }
             }
             _ => {
@@ -208,10 +249,8 @@ impl UserInterface for TerminalTuiUI {
             }
         }
 
-        // Trigger redraw
-        if let Some(tx) = self.redraw_tx.lock().await.as_ref() {
-            let _ = tx.send(());
-        }
+        // Trigger redraw after processing event
+        self.trigger_redraw().await;
 
         Ok(())
     }
@@ -308,20 +347,12 @@ impl UserInterface for TerminalTuiUI {
 
     fn notify_rate_limit(&self, seconds_remaining: u64) {
         debug!("Rate limited for {} seconds", seconds_remaining);
-        let rt = tokio::runtime::Handle::current();
-        rt.spawn(async move {
-            // Update state with rate limit info - we can't await here since this is not async
-            // This will be handled via UiEvent in the backend
-        });
+        // Could add rate limit notification to renderer here
     }
 
     fn clear_rate_limit(&self) {
         debug!("Rate limit cleared");
-        let rt = tokio::runtime::Handle::current();
-        rt.spawn(async move {
-            // Clear rate limit info from state - we can't await here since this is not async
-            // This will be handled via UiEvent in the backend
-        });
+        // Could clear rate limit notification from renderer here
     }
 
     fn as_any(&self) -> &dyn Any {

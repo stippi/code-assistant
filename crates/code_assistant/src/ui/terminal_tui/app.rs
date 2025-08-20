@@ -1,18 +1,92 @@
 use crate::app::AgentRunConfig;
 use crate::persistence::FileSessionPersistence;
-use crate::session::instance::SessionActivityState;
 use crate::session::manager::{AgentConfig, SessionManager};
 use crate::ui::backend::{handle_backend_events, BackendEvent, BackendResponse};
 use crate::ui::terminal_tui::{
-    input_area::InputArea, renderer::TerminalRenderer, state::AppState, ui::TerminalTuiUI,
+    input::InputManager,
+    renderer::TerminalRenderer,
+    state::AppState,
+    ui::TerminalTuiUI,
 };
 use crate::ui::UserInterface;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use ratatui::crossterm::event::{self, Event};
 use llm::factory::LLMClientConfig;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
+
+/// Main event loop for handling terminal events
+async fn event_loop(
+    mut input_manager: InputManager,
+    renderer: Arc<Mutex<TerminalRenderer>>,
+    app_state: Arc<Mutex<AppState>>,
+    backend_event_tx: async_channel::Sender<BackendEvent>,
+) -> Result<()> {
+    loop {
+        // Render the UI
+        {
+            let mut renderer_guard = renderer.lock().await;
+            renderer_guard.render(&input_manager.textarea)?;
+        }
+
+        // Check for events with a timeout
+        if event::poll(tokio::time::Duration::from_millis(100))? {
+            match event::read()? {
+                Event::Key(key_event) => {
+                    let (should_quit, user_message) = input_manager.handle_key_event(key_event);
+
+                    if should_quit {
+                        break;
+                    }
+
+                    if let Some(message) = user_message {
+                        let current_session_id = {
+                            let state = app_state.lock().await;
+                            state.current_session_id.clone()
+                        };
+
+                        if let Some(session_id) = current_session_id {
+                            let activity_state = {
+                                let state = app_state.lock().await;
+                                state.activity_state.clone()
+                            };
+
+                            let event = match activity_state {
+                                Some(crate::session::instance::SessionActivityState::Idle) | None => {
+                                    BackendEvent::SendUserMessage {
+                                        session_id,
+                                        message,
+                                        attachments: Vec::new(),
+                                    }
+                                }
+                                _ => BackendEvent::QueueUserMessage {
+                                    session_id,
+                                    message,
+                                    attachments: Vec::new(),
+                                },
+                            };
+
+                            let _ = backend_event_tx.send(event).await;
+                        }
+                    }
+                }
+                Event::Resize(_, _) => {
+                    // Ratatui handles resize automatically, but we might need to update viewport
+                    let mut renderer_guard = renderer.lock().await;
+                    let input_height =
+                        renderer_guard.calculate_input_height(&input_manager.textarea);
+                    renderer_guard.update_size(input_height)?;
+                }
+                _ => {
+                    // Ignore other events
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
 
 pub struct TerminalTuiApp {
     app_state: Arc<Mutex<AppState>>,
@@ -49,7 +123,7 @@ impl TerminalTuiApp {
 
         // Create terminal UI and wrap as UserInterface
         let terminal_ui = TerminalTuiUI::new();
-        let ui: Arc<dyn UserInterface> = Arc::new(terminal_ui);
+        let ui: Arc<dyn UserInterface> = Arc::new(terminal_ui.clone());
 
         // Setup backend communication channels
         let (backend_event_tx, backend_event_rx) = async_channel::unbounded::<BackendEvent>();
@@ -197,14 +271,12 @@ impl TerminalTuiApp {
                                 .await;
                         }
                         BackendResponse::Error { message } => {
-                            // Print an inline error line minimally; do not break the UI
-                            if let Some(tui_err) = ui_clone.as_any().downcast_ref::<TerminalTuiUI>()
-                            {
-                                if let Some(renderer) = tui_err.renderer.lock().await.as_ref() {
-                                    let _ = renderer
-                                        .append_content_chunk(&format!("\n[error] {message}\n"));
-                                }
-                            }
+                            // Handle error via UI event
+                            let _ = ui_clone
+                                .send_event(crate::ui::UiEvent::AppendToTextBlock {
+                                    content: format!("\n[error] {message}\n"),
+                                })
+                                .await;
                         }
                         BackendResponse::SessionCreated { .. } => {}
                         BackendResponse::SessionDeleted { .. } => {}
@@ -213,66 +285,54 @@ impl TerminalTuiApp {
             });
         }
 
-        // Initialize terminal renderer with scroll region and raw mode
-        let renderer = TerminalRenderer::new()?; // input_height initialized to 1
-                                                 // Bind renderer to UI for message printing and input redraws
-        if let Some(tui) = ui.as_any().downcast_ref::<TerminalTuiUI>() {
-            tui.set_renderer_async(renderer.clone()).await;
-        }
+        // Print initial instructions BEFORE entering raw mode
+        println!("Code Assistant Terminal UI (Experimental)");
+        println!("- Type in the input area at the bottom");
+        println!("- Use arrow keys to move cursor, backspace/delete to edit");
+        println!("- Press Enter to submit input, Shift+Enter for newline");
+        println!("- Press Ctrl+C to quit");
+        println!("- Background messages will appear above the input area");
+        println!("- Supports Markdown formatting in messages");
+        println!("---");
 
-        // Initialize scroll region to current input height before printing any content
-        let (terminal_width, _) = crossterm::terminal::size()?;
-        let input_area = InputArea::new(terminal_width);
-        let _ = renderer.set_input_height(input_area.get_display_height());
+        // Flush stdout to ensure instructions are displayed
+        std::io::Write::flush(&mut std::io::stdout())?;
 
-        // Print welcome message to content area using consistent API
-        let _ = renderer.append_content_chunk("Code Assistant Terminal UI (Experimental)\n");
-        let _ = renderer.append_content_chunk("Type your message and press Enter to send.\n");
-        let _ = renderer.append_content_chunk("Use Shift+Enter for multi-line input.\n");
-        let _ = renderer.append_content_chunk("Press Ctrl+C to quit.\n\n");
+        // Initialize components
+        let input_manager = InputManager::new();
+        let mut renderer = TerminalRenderer::new()?;
+
+        // Setup terminal AFTER printing instructions
+        renderer.setup_terminal()?;
+
+        let renderer = Arc::new(Mutex::new(renderer));
+
+        // Bind renderer to UI for message printing and input redraws
+        terminal_ui.set_renderer_async(renderer.clone()).await;
 
         // Create redraw notification channel
         let (redraw_tx, mut redraw_rx) = tokio::sync::watch::channel::<()>(());
-        if let Some(terminal_tui_ui) = ui.as_any().downcast_ref::<TerminalTuiUI>() {
-            terminal_tui_ui.set_redraw_sender(redraw_tx.clone());
+        terminal_ui.set_redraw_sender(redraw_tx.clone());
+
+        // Print welcome message to content area using consistent API
+        {
+            let mut renderer_guard = renderer.lock().await;
+            renderer_guard.start_live_block();
+            renderer_guard.append_to_live_block("Welcome to Code Assistant Terminal UI!\n");
+            renderer_guard.append_to_live_block("Type your message and press Enter to send.\n");
+            renderer_guard.append_to_live_block("Use Shift+Enter for multi-line input.\n");
+            renderer_guard.append_to_live_block("Press Ctrl+C to quit.\n\n");
+            renderer_guard.finalize_live_block()?;
         }
-
-        // Main event loop
-        let mut should_quit = false;
-        let mut last_tick = tokio::time::Instant::now();
-        let tick_rate = tokio::time::Duration::from_millis(100); // 10 FPS
-
-        // Initialize input area
-        let (terminal_width, _) = crossterm::terminal::size()?;
-        let mut input_area = InputArea::new(terminal_width);
-        let mut spinner_idx: usize = 0;
-        const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-        // Helper to compute prompt with optional spinner/status
-        let make_prompt = |state: &AppState, tick: usize| -> String {
-            match state.activity_state {
-                Some(SessionActivityState::WaitingForResponse) => {
-                    format!("{} ", SPINNER[tick % SPINNER.len()])
-                }
-                Some(SessionActivityState::RateLimited { seconds_remaining }) => {
-                    format!("{} {}s ", SPINNER[tick % SPINNER.len()], seconds_remaining)
-                }
-                _ => "> ".to_string(),
-            }
-        };
-
-        // Set initial scroll region and draw input
-        let _ = renderer.set_input_height(input_area.get_display_height());
-        let prompt = {
-            let state = self.app_state.lock().await;
-            make_prompt(&state, spinner_idx)
-        };
-        input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(prompt.as_str()));
-        let _ = renderer.redraw_input(&prompt, &input_area);
 
         // Send initial task if provided
         if let Some(task) = &config.task {
-            let _ = renderer.append_content_chunk(&format!("Starting with task: {task}\n\n"));
+            {
+                let mut renderer_guard = renderer.lock().await;
+                renderer_guard.start_live_block();
+                renderer_guard.append_to_live_block(&format!("Starting with task: {task}\n\n"));
+                renderer_guard.finalize_live_block()?;
+            }
             let _ = backend_event_tx.try_send(BackendEvent::SendUserMessage {
                 session_id: session_id.clone(),
                 message: task.clone(),
@@ -280,223 +340,43 @@ impl TerminalTuiApp {
             });
         }
 
-        while !should_quit {
-            // Handle input events
-            if event::poll(std::time::Duration::from_millis(10))? {
-                match event::read()? {
-                    Event::Key(key) => {
-                        match key.code {
-                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                should_quit = true;
-                            }
-                            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                                input_area.insert_newline();
-                                // Update input height and redraw
-                                let _ = renderer.set_input_height(input_area.get_display_height());
-                                let prompt = {
-                                    let state = self.app_state.lock().await;
-                                    make_prompt(&state, spinner_idx)
-                                };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
-                                    prompt.as_str(),
-                                ));
-                                let _ = renderer.redraw_input(&prompt, &input_area);
-                            }
-                            KeyCode::Enter => {
-                                let content = input_area.content().to_string();
-                                if !content.trim().is_empty() {
-                                    let current_session_id = {
-                                        let state = self.app_state.lock().await;
-                                        state.current_session_id.clone()
-                                    };
-                                    if let Some(session_id) = current_session_id {
-                                        let activity_state = {
-                                            let state = self.app_state.lock().await;
-                                            state.activity_state.clone()
-                                        };
-                                        let event = match activity_state {
-                                            Some(SessionActivityState::Idle) | None => {
-                                                BackendEvent::SendUserMessage {
-                                                    session_id,
-                                                    message: content,
-                                                    attachments: Vec::new(),
-                                                }
-                                            }
-                                            _ => BackendEvent::QueueUserMessage {
-                                                session_id,
-                                                message: content,
-                                                attachments: Vec::new(),
-                                            },
-                                        };
-                                        let _ = backend_event_tx.try_send(event);
-                                    }
-                                }
-                                input_area.clear();
-                                // Update input height and redraw
-                                let _ = renderer.set_input_height(input_area.get_display_height());
-                                let prompt = {
-                                    let state = self.app_state.lock().await;
-                                    make_prompt(&state, spinner_idx)
-                                };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
-                                    prompt.as_str(),
-                                ));
-                                let _ = renderer.redraw_input(&prompt, &input_area);
-                            }
-                            KeyCode::Backspace => {
-                                input_area.backspace();
-                                // Update input height and redraw
-                                let _ = renderer.set_input_height(input_area.get_display_height());
-                                let prompt = {
-                                    let state = self.app_state.lock().await;
-                                    make_prompt(&state, spinner_idx)
-                                };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
-                                    prompt.as_str(),
-                                ));
-                                let _ = renderer.redraw_input(&prompt, &input_area);
-                            }
-                            KeyCode::Delete => {
-                                input_area.delete_char();
-                                // Update input height and redraw
-                                let _ = renderer.set_input_height(input_area.get_display_height());
-                                let prompt = {
-                                    let state = self.app_state.lock().await;
-                                    make_prompt(&state, spinner_idx)
-                                };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
-                                    prompt.as_str(),
-                                ));
-                                let _ = renderer.redraw_input(&prompt, &input_area);
-                            }
-                            KeyCode::Left => {
-                                input_area.move_cursor_left();
-                                let prompt = {
-                                    let state = self.app_state.lock().await;
-                                    make_prompt(&state, spinner_idx)
-                                };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
-                                    prompt.as_str(),
-                                ));
-                                let _ = renderer.redraw_input(&prompt, &input_area);
-                            }
-                            KeyCode::Right => {
-                                input_area.move_cursor_right();
-                                let prompt = {
-                                    let state = self.app_state.lock().await;
-                                    make_prompt(&state, spinner_idx)
-                                };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
-                                    prompt.as_str(),
-                                ));
-                                let _ = renderer.redraw_input(&prompt, &input_area);
-                            }
-                            KeyCode::Up => {
-                                input_area.move_cursor_up();
-                                let prompt = {
-                                    let state = self.app_state.lock().await;
-                                    make_prompt(&state, spinner_idx)
-                                };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
-                                    prompt.as_str(),
-                                ));
-                                let _ = renderer.redraw_input(&prompt, &input_area);
-                            }
-                            KeyCode::Down => {
-                                input_area.move_cursor_down();
-                                let prompt = {
-                                    let state = self.app_state.lock().await;
-                                    make_prompt(&state, spinner_idx)
-                                };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
-                                    prompt.as_str(),
-                                ));
-                                let _ = renderer.redraw_input(&prompt, &input_area);
-                            }
-                            KeyCode::Home => {
-                                input_area.move_cursor_to_start();
-                                let prompt = {
-                                    let state = self.app_state.lock().await;
-                                    make_prompt(&state, spinner_idx)
-                                };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
-                                    prompt.as_str(),
-                                ));
-                                let _ = renderer.redraw_input(&prompt, &input_area);
-                            }
-                            KeyCode::End => {
-                                input_area.move_cursor_to_end();
-                                let prompt = {
-                                    let state = self.app_state.lock().await;
-                                    make_prompt(&state, spinner_idx)
-                                };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
-                                    prompt.as_str(),
-                                ));
-                                let _ = renderer.redraw_input(&prompt, &input_area);
-                            }
-                            KeyCode::Char(ch) => {
-                                input_area.insert_char(ch);
-                                // Update input height and redraw
-                                let _ = renderer.set_input_height(input_area.get_display_height());
-                                let prompt = {
-                                    let state = self.app_state.lock().await;
-                                    make_prompt(&state, spinner_idx)
-                                };
-                                input_area.set_prompt_width(unicode_width::UnicodeWidthStr::width(
-                                    prompt.as_str(),
-                                ));
-                                let _ = renderer.redraw_input(&prompt, &input_area);
-                            }
-                            _ => {}
-                        }
+        // Start main event loop in a separate task
+        let mut event_loop_handle = tokio::spawn(event_loop(
+            input_manager,
+            renderer.clone(),
+            self.app_state.clone(),
+            backend_event_tx,
+        ));
+
+        // Handle redraw notifications in main loop
+        loop {
+            tokio::select! {
+                // Handle redraw notifications
+                _ = redraw_rx.changed() => {
+                    // Redraw is handled automatically by the renderer during the next render cycle
+                }
+
+                // Check if event loop finished (on Ctrl+C)
+                result = &mut event_loop_handle => {
+                    match result {
+                        Ok(Ok(())) => break,
+                        Ok(Err(e)) => return Err(e),
+                        Err(e) => return Err(e.into()),
                     }
-                    Event::Resize(cols, rows) => {
-                        input_area.update_terminal_width(cols);
-                        let _ = renderer.handle_resize(cols, rows);
-                        let prompt = {
-                            let state = self.app_state.lock().await;
-                            make_prompt(&state, spinner_idx)
-                        };
-                        let _ = renderer.redraw_input(&prompt, &input_area);
-                    }
-                    _ => {}
                 }
             }
-
-            // Check for redraw notifications (immediate redraw to keep cursor stable)
-            if redraw_rx.has_changed().unwrap_or(false) {
-                let _ = redraw_rx.borrow_and_update();
-                let prompt = {
-                    let state = self.app_state.lock().await;
-                    make_prompt(&state, spinner_idx)
-                };
-                let _ = renderer.redraw_input(&prompt, &input_area);
-            }
-
-            // Periodically redraw the input to reflect cursor, buffer, and spinner/status
-            if last_tick.elapsed() >= tick_rate {
-                spinner_idx = spinner_idx.wrapping_add(1);
-                let prompt = {
-                    let state = self.app_state.lock().await;
-                    make_prompt(&state, spinner_idx)
-                };
-                let _ = renderer.redraw_input(&prompt, &input_area);
-                last_tick = tokio::time::Instant::now();
-            }
-
-            // Small sleep to prevent busy waiting
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
 
         // Cleanup terminal
-        let _ = renderer.teardown();
-
-        debug!("Terminal TUI shutting down");
+        {
+            let mut renderer_guard = renderer.lock().await;
+            renderer_guard.cleanup_terminal()?;
+        }
 
         // Cancel the backend task
         backend_task.abort();
 
+        println!("\nGoodbye!");
         Ok(())
     }
 }

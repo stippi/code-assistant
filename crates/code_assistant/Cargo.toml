@@ -18,6 +18,9 @@ tempfile = "3.18"
 rustyline = "12.0.0"
 crossterm = "0.27.0"
 unicode-width = "0.1"
+ratatui = "0.29"
+tui-textarea = "0.7"
+tui-markdown = "0.3.5"
 
 # GPUI related
 gpui = { git = "https://github.com/zed-industries/zed.git" }

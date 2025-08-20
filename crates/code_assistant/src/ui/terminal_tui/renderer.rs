@@ -1,259 +1,314 @@
-use crossterm::{
-    cursor::{MoveTo, Show},
-    execute,
-    style::{Color, Print, ResetColor, SetForegroundColor},
-    terminal::{disable_raw_mode, enable_raw_mode, size, Clear, ClearType},
+use anyhow::Result;
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::Position,
+    prelude::*,
+    widgets::{Block, Borders, Paragraph, Wrap},
+    Terminal, TerminalOptions, Viewport,
 };
-use std::io::{stdout, Stdout, Write};
-use std::sync::{Arc, Mutex};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use std::io;
+use tui_markdown as md;
+use tui_textarea::TextArea;
 
-use super::input_area::InputArea;
-
-struct Inner {
-    stdout: Stdout,
-    cols: u16,
-    rows: u16,
-    input_height: u16,
-    content_cursor_col: u16, // Track cursor position within content region
-}
-
-/// Enhanced terminal renderer with scroll region management and content streaming
-#[derive(Clone)]
+/// Handles the terminal display and rendering using ratatui
 pub struct TerminalRenderer {
-    inner: Arc<Mutex<Inner>>,
+    pub terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    /// Finalized markdown blocks (as source strings)
+    pub finalized_blocks: Vec<String>,
+    /// Current live/streaming markdown source (appended over time)
+    live_text: String,
+    /// Optional pending user message (displayed between input and live content while streaming)
+    pending_user_message: Option<String>,
+    /// Last computed overflow (how many rows have been promoted so far); used to promote only deltas
+    pub last_overflow: u16,
+    /// Maximum rows for input area (including 1 for content min + border)
+    pub max_input_rows: u16,
 }
 
 impl TerminalRenderer {
-    /// Create a new renderer, enabling raw mode
-    pub fn new() -> std::io::Result<Arc<Self>> {
-        enable_raw_mode()?;
-        let (cols, rows) = size()?;
-        Ok(Arc::new(Self {
-            inner: Arc::new(Mutex::new(Inner {
-                stdout: stdout(),
-                cols,
-                rows,
-                input_height: 1,
-                content_cursor_col: 0,
-            })),
-        }))
+    pub fn new() -> Result<Self> {
+        let terminal = Self::create_terminal()?;
+
+        Ok(Self {
+            terminal,
+            finalized_blocks: Vec::new(),
+            live_text: String::new(),
+            pending_user_message: None,
+            last_overflow: 0,
+            max_input_rows: 5, // max input height (content lines + border line)
+        })
     }
 
-    /// Apply a scroll region so that only the content area scrolls.
-    /// The input area at the bottom remains fixed.
-    pub fn set_input_height(&self, input_height: usize) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
-        inner.input_height = input_height as u16;
-        let content_bottom = inner.rows.saturating_sub(inner.input_height);
-        let bottom = if content_bottom >= 1 {
-            content_bottom
-        } else {
-            1
+    // Create a terminal with inline viewport height equal to current terminal height
+    fn create_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
+        let (_w, h) = ratatui::crossterm::terminal::size()?;
+        let backend = CrosstermBackend::new(io::stdout());
+        let options = TerminalOptions {
+            viewport: Viewport::Inline(h),
         };
-        // ESC[{top};{bottom}r  -> set top/bottom margins (scroll region)
-        write!(&mut inner.stdout, "\x1b[1;{bottom}r")?;
-        inner.stdout.flush()
+        Terminal::with_options(backend, options).map_err(Into::into)
     }
 
-    /// Reset scroll region to the full screen
-    fn reset_scroll_region(&self) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
-        write!(&mut inner.stdout, "\x1b[r")?;
-        inner.stdout.flush()
+    /// Setup terminal for ratatui usage
+    pub fn setup_terminal(&mut self) -> Result<()> {
+        ratatui::crossterm::terminal::enable_raw_mode()?;
+        Ok(())
     }
 
-    /// Append a chunk of content at the virtual content cursor inside the scroll region.
-    pub fn append_content_chunk(&self, chunk: &str) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
+    /// Cleanup terminal when exiting
+    pub fn cleanup_terminal(&mut self) -> Result<()> {
+        ratatui::crossterm::terminal::disable_raw_mode()?;
+        Ok(())
+    }
 
-        // Compute bottom row from stored input height
-        let content_bottom = inner.rows.saturating_sub(inner.input_height);
-        let content_bottom_y = content_bottom.max(1) - 1; // convert 1-based to 0-based
+    /// Update terminal size and adjust viewport (recreate Terminal with new Inline height)
+    pub fn update_size(&mut self, _input_height: u16) -> Result<()> {
+        self.terminal = Self::create_terminal()?;
+        Ok(())
+    }
 
-        // Store values to avoid borrowing issues
-        let cursor_col = inner.content_cursor_col;
-        let width = inner.cols as usize;
+    /// Start a new live block (reset live_text)
+    pub fn start_live_block(&mut self) {
+        self.live_text.clear();
+        self.last_overflow = 0;
+    }
 
-        // Move to current content cursor position on the bottom line of the content region
-        execute!(
-            &mut inner.stdout,
-            MoveTo(cursor_col, content_bottom_y),
-            Print(chunk)
-        )?;
+    /// Set a pending user message (displayed while streaming)
+    pub fn set_pending_user_message(&mut self, message: String) {
+        self.pending_user_message = Some(message);
+    }
 
-        // Update virtual content cursor column by simulating wrapping and newlines
-        let mut col = cursor_col as usize;
-        for ch in chunk.chars() {
-            match ch {
-                '\n' | '\r' => {
-                    // newline or carriage return: move to column 0
-                    col = 0;
+    /// Append text to the current live block
+    pub fn append_to_live_block(&mut self, text: &str) {
+        self.live_text.push_str(text);
+    }
+
+    /// Finalize the current live block: move remaining visible content into finalized_blocks
+    /// We do NOT insert into scrollback immediately; overflow logic will promote rows as needed.
+    pub fn finalize_live_block(&mut self) -> Result<()> {
+        if !self.live_text.is_empty() {
+            self.finalized_blocks
+                .push(std::mem::take(&mut self.live_text));
+        }
+        // Keep a 1-line gap: implemented implicitly by always reserving one empty line at bottom
+        self.last_overflow = 0;
+        Ok(())
+    }
+
+    /// Add a user message as finalized block and clear any pending user message
+    pub fn add_user_message(&mut self, content: &str) -> Result<()> {
+        self.finalized_blocks.push(content.to_string());
+        self.pending_user_message = None; // Clear pending message when it becomes finalized
+        Ok(())
+    }
+
+    /// Render the complete UI: composed finalized content + live content + 1-line gap + input
+    pub fn render(&mut self, textarea: &TextArea) -> Result<()> {
+        // Phase 1: compute layout and promotion outside of draw
+        let term_size = self.terminal.size()?;
+        let input_height = self.calculate_input_height(textarea);
+        let available = term_size.height.saturating_sub(input_height);
+        let width = term_size.width;
+
+        // Compose scratch buffer: render 1 blank line (gap), then live_text, then finalized tail above
+        let headroom: u16 = 200; // keep small to reduce work per frame
+        let scratch_height = available.saturating_add(headroom).max(available);
+        let mut scratch = Buffer::empty(Rect::new(0, 0, width, scratch_height));
+
+        // We pack from bottom up: bottom = gap, above it pending user msg (if any), above it live, above that finalized tail
+        let mut cursor_y = scratch_height; // one past last line
+
+        // Reserve one blank line as gap above input (at the very bottom)
+        cursor_y = cursor_y.saturating_sub(1);
+
+        // Helper: render a markdown string into temp buffer to measure height (limited to remaining space)
+        let measure_and_render = |md_src: &str, dst: &mut Buffer, bottom_y: &mut u16| {
+            let text = md::from_str(md_src);
+            let para_for_measure = Paragraph::new(text.clone()).wrap(Wrap { trim: false });
+            // Only allocate tmp up to remaining space to keep it cheap
+            let max_h = (*bottom_y).clamp(1, 500); // cap to 500 to avoid huge temps
+            let mut tmp = Buffer::empty(Rect::new(0, 0, width, max_h));
+            para_for_measure.render(Rect::new(0, 0, width, max_h), &mut tmp);
+            let mut used = 0u16;
+            'scan: for y in (0..max_h).rev() {
+                let mut row_empty = true;
+                for x in 0..width {
+                    let c = tmp.cell((x, y)).expect("cell in tmp buffer");
+                    if !c.symbol().is_empty() && c.symbol() != " " {
+                        row_empty = false;
+                        break;
+                    }
                 }
-                _ => {
-                    // Handle unicode display width (e.g., CJK or emoji width 2)
-                    let w = UnicodeWidthChar::width(ch).unwrap_or(1);
-                    if col + w > width {
-                        // Does not fit: terminal wraps first, then prints starting at col 0
-                        col = w.min(width);
-                    } else {
-                        col += w;
-                        if col == width {
-                            // Exactly filled the line; cursor at col 0 on next line
-                            col = 0;
+                if !row_empty {
+                    used = y + 1;
+                    break 'scan;
+                }
+            }
+            if used == 0 {
+                return 0u16;
+            }
+            let h = used.min(*bottom_y);
+            if h == 0 {
+                return 0u16;
+            }
+            // render into destination aligned at bottom
+            let area = Rect::new(0, bottom_y.saturating_sub(h), width, h);
+            let para_for_draw = Paragraph::new(text).wrap(Wrap { trim: false });
+            para_for_draw.render(area, dst);
+            *bottom_y = bottom_y.saturating_sub(h);
+            h
+        };
+
+        // Reserve space for pending user message if present
+        let pending_height = if let Some(ref pending_msg) = self.pending_user_message {
+            let _ = measure_and_render(pending_msg, &mut scratch, &mut cursor_y);
+            // Add a small gap above pending message
+            cursor_y = cursor_y.saturating_sub(1);
+            2 // approximate height including gap
+        } else {
+            0
+        };
+
+        // 1) Render live_text (so it is closest to the input)
+        if !self.live_text.is_empty() && cursor_y > 0 {
+            let _ = measure_and_render(&self.live_text, &mut scratch, &mut cursor_y);
+        }
+
+        // 2) Render finalized blocks from newest to oldest above live until we filled enough
+        for md_src in self.finalized_blocks.iter().rev() {
+            if cursor_y == 0 {
+                break;
+            }
+            // stop if we already filled enough (available + headroom)
+            let filled = scratch_height - cursor_y;
+            if filled >= available + headroom {
+                break;
+            }
+            let _ = measure_and_render(md_src, &mut scratch, &mut cursor_y);
+        }
+
+        // Now composed content occupies rows [cursor_y .. scratch_height)
+        let total_height = scratch_height.saturating_sub(cursor_y);
+        let overflow = total_height.saturating_sub(available);
+
+        // Promote only the delta that has not yet been promoted
+        if overflow > self.last_overflow {
+            let new_to_promote = overflow - self.last_overflow;
+            let promote_start = cursor_y + self.last_overflow;
+            let term_width = width;
+            self.terminal
+                .insert_before(new_to_promote, |buf: &mut Buffer| {
+                    for y in 0..new_to_promote {
+                        for x in 0..term_width {
+                            let row = promote_start + y;
+                            let src = scratch
+                                .cell((x, row))
+                                .cloned()
+                                .unwrap_or_else(ratatui::buffer::Cell::default);
+                            if let Some(dst) = buf.cell_mut((x, y)) {
+                                *dst = src;
+                            }
                         }
+                    }
+                })?;
+            self.last_overflow = overflow;
+        }
+
+        // Phase 2: draw bottom `available` rows, pending message, and input
+        self.terminal.draw(|f| {
+            let full = f.area();
+
+            let [content_area, pending_area, input_area] = Layout::vertical([
+                Constraint::Min(1),
+                Constraint::Length(pending_height),
+                Constraint::Length(input_height),
+            ])
+            .areas(full);
+
+            let visible_total = total_height.min(content_area.height);
+            let top_blank = content_area.height - visible_total; // rows to leave blank at top
+            let visible_start = cursor_y.saturating_add(overflow);
+            let dst = f.buffer_mut();
+
+            // Top blank area (if any)
+            for y in 0..top_blank {
+                // clear line
+                for x in 0..content_area.width {
+                    if let Some(cell) = dst.cell_mut((content_area.x + x, content_area.y + y)) {
+                        *cell = ratatui::buffer::Cell::default();
                     }
                 }
             }
-        }
-        // Clamp to available width to avoid out-of-bounds MoveTo
-        if col >= width {
-            col = width.saturating_sub(1);
-        }
-        inner.content_cursor_col = col as u16;
 
-        inner.stdout.flush()
+            // Copy visible content aligned at the bottom of content_area
+            for y in 0..visible_total {
+                for x in 0..content_area.width {
+                    let src_row = visible_start + y;
+                    let src = scratch
+                        .cell((x, src_row))
+                        .cloned()
+                        .unwrap_or_else(ratatui::buffer::Cell::default);
+                    if let Some(dst_cell) =
+                        dst.cell_mut((content_area.x + x, content_area.y + top_blank + y))
+                    {
+                        *dst_cell = src;
+                    }
+                }
+            }
+
+            // Render pending user message if present
+            if let Some(ref pending_msg) = self.pending_user_message {
+                Self::render_pending_message(f, pending_area, pending_msg);
+            }
+
+            // Render input area (block + textarea)
+            Self::render_input_area_static(f, input_area, textarea);
+        })?;
+
+        Ok(())
     }
 
-    /// Redraw the input area with multi-line support
-    pub fn redraw_input(&self, prompt: &str, input_area: &InputArea) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
-
-        let display_height = input_area.get_display_height();
-        let start_row = inner.rows.saturating_sub(display_height as u16);
-        let display_lines = input_area.get_display_lines();
-        let (cursor_row, cursor_col) = input_area.get_display_cursor_pos();
-
-        // Clear all input area lines
-        for i in 0..display_height {
-            execute!(
-                &mut inner.stdout,
-                MoveTo(0, start_row + i as u16),
-                Clear(ClearType::CurrentLine)
-            )?;
-        }
-
-        // Render each line with prompt
-        for (i, line) in display_lines.iter().enumerate() {
-            execute!(
-                &mut inner.stdout,
-                MoveTo(0, start_row + i as u16),
-                SetForegroundColor(Color::Green),
-                Print(prompt),
-                ResetColor,
-                Print(line)
-            )?;
-        }
-
-        // Position cursor correctly (physical cursor stays in input area)
-        let cursor_terminal_row = start_row + cursor_row as u16;
-        let cursor_terminal_col = UnicodeWidthStr::width(prompt) as u16 + cursor_col as u16;
-        execute!(
-            &mut inner.stdout,
-            MoveTo(cursor_terminal_col, cursor_terminal_row),
-            Show
-        )?;
-
-        inner.stdout.flush()
+    /// Calculate the height needed for the input area based on textarea content
+    pub fn calculate_input_height(&self, textarea: &TextArea) -> u16 {
+        let lines = textarea.lines().len() as u16;
+        // Reserve at least 2 lines (1 for border + 1 for content)
+        lines.clamp(2, self.max_input_rows + 1)
     }
 
-    /// Handle terminal resize: update dimensions and reset scroll region
-    pub fn handle_resize(&self, new_cols: u16, new_rows: u16) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
-        inner.cols = new_cols;
-        inner.rows = new_rows;
-        // Clamp content cursor within new width
-        if inner.content_cursor_col >= inner.cols.saturating_sub(1) {
-            inner.content_cursor_col = inner.cols.saturating_sub(1);
-        }
-        // Reapply scroll region for new dimensions using stored input height
-        let content_bottom = inner.rows.saturating_sub(inner.input_height);
-        let bottom = if content_bottom >= 1 {
-            content_bottom
-        } else {
-            1
-        };
-        write!(&mut inner.stdout, "\x1b[1;{bottom}r")?;
-        inner.stdout.flush()
+    /// Render the input area with textarea (static version)
+    fn render_input_area_static(f: &mut Frame, area: Rect, textarea: &TextArea) {
+        // Create a block with border for the input area
+        let input_block = Block::default()
+            .borders(Borders::TOP)
+            .title("Input (Enter=send, Shift+Enter=newline, Ctrl+C=quit)");
+
+        // Render the textarea widget inside the block
+        let inner_area = input_block.inner(area);
+        f.render_widget(input_block, area);
+        f.render_widget(textarea, inner_area);
+
+        // Set cursor position for the textarea
+        let cursor_pos = textarea.cursor();
+        let cursor_x = inner_area.x + cursor_pos.1 as u16;
+        let cursor_y = inner_area.y + cursor_pos.0 as u16;
+        f.set_cursor_position(Position::new(cursor_x, cursor_y));
     }
 
-    /// Apply overlay: temporarily reduce content region and render overlay lines
-    #[allow(dead_code)]
-    pub fn apply_overlay(
-        &self,
-        overlay_height: u16,
-        overlay_lines: &[String],
-        input_area: &InputArea,
-    ) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
-
-        let input_height = input_area.get_display_height() as u16;
-        let content_bottom = inner.rows.saturating_sub(input_height + overlay_height);
-        let bottom = if content_bottom >= 1 {
-            content_bottom
-        } else {
-            1
-        };
-
-        // Set smaller scroll region
-        write!(&mut inner.stdout, "\x1b[1;{bottom}r")?;
-
-        // Render overlay lines just above the input area
-        let overlay_start_row = inner.rows.saturating_sub(input_height + overlay_height);
-        for (i, line) in overlay_lines.iter().enumerate() {
-            execute!(
-                &mut inner.stdout,
-                MoveTo(0, overlay_start_row + i as u16),
-                Clear(ClearType::CurrentLine),
-                Print(line)
-            )?;
+    /// Render pending user message with dimmed and italic styling
+    fn render_pending_message(f: &mut Frame, area: Rect, message: &str) {
+        if area.height == 0 {
+            return;
         }
 
-        inner.stdout.flush()
-    }
+        let text = md::from_str(message);
+        let paragraph = Paragraph::new(text)
+            .style(
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            )
+            .wrap(Wrap { trim: false });
 
-    /// Clear overlay: restore full content region
-    #[allow(dead_code)]
-    pub fn clear_overlay(
-        &self,
-        overlay_height: u16,
-        input_area: &InputArea,
-    ) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
-
-        let input_height = input_area.get_display_height() as u16;
-
-        // Clear overlay lines
-        let overlay_start_row = inner.rows.saturating_sub(input_height + overlay_height);
-        for i in 0..overlay_height {
-            execute!(
-                &mut inner.stdout,
-                MoveTo(0, overlay_start_row + i),
-                Clear(ClearType::CurrentLine)
-            )?;
-        }
-
-        // Restore full content region
-        let content_bottom = inner.rows.saturating_sub(input_height);
-        let bottom = if content_bottom >= 1 {
-            content_bottom
-        } else {
-            1
-        };
-        write!(&mut inner.stdout, "\x1b[1;{bottom}r")?;
-
-        inner.stdout.flush()
-    }
-
-    /// Reset scroll region and disable raw mode. Call on exit.
-    pub fn teardown(&self) -> std::io::Result<()> {
-        self.reset_scroll_region()?;
-        disable_raw_mode()
-    }
-
-    /// Get current terminal dimensions
-    pub fn get_size(&self) -> (u16, u16) {
-        let inner = self.inner.lock().unwrap();
-        (inner.cols, inner.rows)
+        f.render_widget(paragraph, area);
     }
 }
