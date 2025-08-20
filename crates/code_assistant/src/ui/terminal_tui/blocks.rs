@@ -44,6 +44,7 @@ impl LiveBlockType {
     }
 
     /// Check if this is a tool use block with matching ID
+    #[allow(dead_code)]
     pub fn is_tool_with_id(&self, tool_id: &str) -> bool {
         match self {
             LiveBlockType::ToolUse(block) => block.id == tool_id,
@@ -78,6 +79,7 @@ impl PlainTextBlock {
 #[derive(Debug, Clone)]
 pub struct ThinkingBlock {
     pub content: String,
+    #[allow(dead_code)]
     pub start_time: std::time::Instant,
 }
 
@@ -89,6 +91,7 @@ impl ThinkingBlock {
         }
     }
 
+    #[allow(dead_code)]
     pub fn formatted_duration(&self) -> String {
         let duration = self.start_time.elapsed();
         if duration.as_secs() < 60 {

@@ -25,6 +25,7 @@ impl TerminalTuiUI {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_app_state(&self) -> Arc<Mutex<AppState>> {
         self.app_state.clone()
     }

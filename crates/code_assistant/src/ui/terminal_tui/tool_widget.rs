@@ -9,6 +9,7 @@ pub struct ToolWidget<'a> {
 }
 
 impl<'a> ToolWidget<'a> {
+    #[allow(dead_code)]
     pub fn new(tool_block: &'a ToolUseBlock) -> Self {
         Self { tool_block }
     }
@@ -34,6 +35,7 @@ impl<'a> ToolWidget<'a> {
     }
 
     /// Render regular parameters as compact inline elements
+    #[allow(dead_code)]
     fn render_regular_params(&self, area: Rect, buf: &mut Buffer, params: &[(String, &ParameterValue)]) {
         if params.is_empty() {
             return;
@@ -60,7 +62,7 @@ impl<'a> ToolWidget<'a> {
             let colon_pos = name.len();
             buf.set_string(x, y, name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
             buf.set_string(x + colon_pos as u16, y, ": ", Style::default().fg(Color::White));
-            buf.set_string(x + colon_pos as u16 + 2, y, &param.get_display_value(), Style::default().fg(Color::Gray));
+            buf.set_string(x + colon_pos as u16 + 2, y, param.get_display_value(), Style::default().fg(Color::Gray));
 
             x += param_len + 2; // Add some spacing
 
@@ -73,6 +75,7 @@ impl<'a> ToolWidget<'a> {
     }
 
     /// Render full-width parameters as separate blocks
+    #[allow(dead_code)]
     fn render_fullwidth_params(&self, area: Rect, buf: &mut Buffer, params: &[(String, &ParameterValue)]) -> u16 {
         let mut current_y = area.y;
 
@@ -155,7 +158,7 @@ impl<'a> Widget for ToolWidget<'a> {
 
             buf.set_string(area.x, current_y, name, Style::default().fg(Color::Cyan));
             buf.set_string(area.x + name.len() as u16, current_y, ": ", Style::default().fg(Color::White));
-            buf.set_string(area.x + name.len() as u16 + 2, current_y, &param.get_display_value(), Style::default().fg(Color::Gray));
+            buf.set_string(area.x + name.len() as u16 + 2, current_y, param.get_display_value(), Style::default().fg(Color::Gray));
             current_y += 1;
         }
 
@@ -199,7 +202,7 @@ impl<'a> Widget for ToolWidget<'a> {
         // Error message if present
         if let Some(ref message) = self.tool_block.status_message {
             if self.tool_block.status == ToolStatus::Error && current_y < area.y + area.height {
-                let error_text = format!("Error: {}", message);
+                let error_text = format!("Error: {message}");
                 let display_text = if error_text.len() > area.width as usize {
                     &error_text[..area.width as usize]
                 } else {
@@ -258,7 +261,7 @@ fn render_parameter_value(tool_name: &str, param_name: &str, param_value: &str) 
     match (tool_name, param_name) {
         // Diff parameters - show as diff with simple prefix
         ("replace_in_file", "diff") => {
-            format!("--- OLD\n+++ NEW\n{}", param_value)
+            format!("--- OLD\n+++ NEW\n{param_value}")
         }
         ("edit", "old_text") => {
             format!("- {}", param_value.replace('\n', "\n- "))

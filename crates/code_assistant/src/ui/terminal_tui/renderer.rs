@@ -153,10 +153,10 @@ impl TerminalRenderer {
                             continue;
                         }
                         if is_full_width_parameter(&tool_block.name, name) {
-                            tool_text.push_str(&format!("  {}:\n", name));
+                            tool_text.push_str(&format!("  {name}:\n"));
                             // Show all lines of full-width parameters in finalized view
                             for line in param.value.lines() {
-                                tool_text.push_str(&format!("    {}\n", line));
+                                tool_text.push_str(&format!("    {line}\n"));
                             }
                         } else {
                             tool_text.push_str(&format!("  {}: {}\n", name, param.value)); // Show full value, not truncated
@@ -165,7 +165,7 @@ impl TerminalRenderer {
                     
                     // Add status message if present
                     if let Some(ref message) = tool_block.status_message {
-                        tool_text.push_str(&format!("  Status: {}\n", message));
+                        tool_text.push_str(&format!("  Status: {message}\n"));
                     }
                     
                     self.finalized_blocks.push(tool_text);
@@ -276,10 +276,10 @@ impl TerminalRenderer {
                             continue;
                         }
                         if is_full_width_parameter(&tool_block.name, name) {
-                            tool_text.push_str(&format!("  {}:\n", name));
+                            tool_text.push_str(&format!("  {name}:\n"));
                             // Show first few lines of full-width parameters for live view
                             for line in param.value.lines().take(3) {
-                                tool_text.push_str(&format!("    {}\n", line));
+                                tool_text.push_str(&format!("    {line}\n"));
                             }
                             if param.value.lines().count() > 3 {
                                 tool_text.push_str("    ...\n");
@@ -291,7 +291,7 @@ impl TerminalRenderer {
                     
                     // Add status message if present
                     if let Some(ref message) = tool_block.status_message {
-                        tool_text.push_str(&format!("  Status: {}\n", message));
+                        tool_text.push_str(&format!("  Status: {message}\n"));
                     }
                     
                     if cursor_y > 0 {

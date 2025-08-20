@@ -41,6 +41,7 @@ pub trait UserInterface: Send + Sync {
     fn clear_rate_limit(&self);
 
     /// Downcast to Any for accessing concrete type methods
+    #[allow(dead_code)]
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
