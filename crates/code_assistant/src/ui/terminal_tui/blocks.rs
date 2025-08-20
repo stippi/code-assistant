@@ -9,14 +9,27 @@ pub enum LiveBlockType {
 }
 
 impl LiveBlockType {
-    /// Get the markdown content for rendering
-    pub fn get_markdown_content(&self) -> String {
+    /// Get the markdown content for rendering (only for PlainText and Thinking)
+    pub fn get_markdown_content(&self) -> Option<String> {
         match self {
-            LiveBlockType::PlainText(block) => block.content.clone(),
+            LiveBlockType::PlainText(block) => Some(block.content.clone()),
             LiveBlockType::Thinking(block) => {
-                format!("**🧠 Thinking...**\n\n*{}*", block.content)
+                Some(format!("*{}*", block.content))
             }
-            LiveBlockType::ToolUse(block) => block.render_as_markdown(),
+            LiveBlockType::ToolUse(_) => None, // ToolUse blocks use custom widget
+        }
+    }
+
+    /// Check if this is a tool use block
+    pub fn is_tool_use(&self) -> bool {
+        matches!(self, LiveBlockType::ToolUse(_))
+    }
+
+    /// Get reference to tool use block
+    pub fn as_tool_use(&self) -> Option<&ToolUseBlock> {
+        match self {
+            LiveBlockType::ToolUse(block) => Some(block),
+            _ => None,
         }
     }
 
@@ -123,66 +136,7 @@ impl ToolUseBlock {
         }
     }
 
-    /// Render the tool use block as markdown
-    pub fn render_as_markdown(&self) -> String {
-        let mut content = String::new();
 
-        // Tool header with status
-        let status_emoji = match self.status {
-            crate::ui::ToolStatus::Pending => "🔄",
-            crate::ui::ToolStatus::Running => "⚙️",
-            crate::ui::ToolStatus::Success => "✅",
-            crate::ui::ToolStatus::Error => "❌",
-        };
-
-        content.push_str(&format!("\n{} **{}**\n\n", status_emoji, self.name));
-
-        // Render parameters
-        if !self.parameters.is_empty() {
-            // Separate regular and full-width parameters
-            let (regular_params, fullwidth_params): (Vec<_>, Vec<_>) = self.parameters
-                .iter()
-                .partition(|(name, _)| !is_full_width_parameter(&self.name, name));
-
-            // Regular parameters in a compact format
-            if !regular_params.is_empty() {
-                for (name, param) in regular_params {
-                    if should_hide_parameter(&self.name, name, &param.value) {
-                        continue;
-                    }
-                    content.push_str(&format!("- **{}:** `{}`\n", name, param.get_display_value()));
-                }
-                content.push('\n');
-            }
-
-            // Full-width parameters with special rendering
-            for (name, param) in fullwidth_params {
-                if should_hide_parameter(&self.name, name, &param.value) {
-                    continue;
-                }
-                content.push_str(&render_parameter_markdown(&self.name, name, &param.value));
-                content.push('\n');
-            }
-        }
-
-        // Status message for errors
-        if let Some(ref message) = self.status_message {
-            if self.status == crate::ui::ToolStatus::Error {
-                content.push_str(&format!("**Error:** {}\n\n", message));
-            }
-        }
-
-        // Output
-        if let Some(ref output) = self.output {
-            if !output.is_empty() {
-                content.push_str("**Output:**\n```\n");
-                content.push_str(output);
-                content.push_str("\n```\n\n");
-            }
-        }
-
-        content
-    }
 }
 
 /// Parameter value that can be streamed
@@ -206,60 +160,6 @@ impl ParameterValue {
             format!("{}...", &self.value[..97])
         } else {
             self.value.clone()
-        }
-    }
-}
-
-/// Check if a parameter should be rendered full-width
-fn is_full_width_parameter(tool_name: &str, param_name: &str) -> bool {
-    match (tool_name, param_name) {
-        // Diff-style parameters
-        ("replace_in_file", "diff") => true,
-        ("edit", "old_text") => true,
-        ("edit", "new_text") => true,
-        // Content parameters
-        ("write_file", "content") => true,
-        ("read_files", _) => true, // All read_files parameters are full-width
-        // Large text parameters
-        (_, "content") => true,
-        (_, "output") => true,
-        (_, "query") => true,
-        _ => false,
-    }
-}
-
-/// Check if a parameter should be hidden (e.g., project parameter matching current project)
-fn should_hide_parameter(tool_name: &str, param_name: &str, param_value: &str) -> bool {
-    // For now, simple logic - could be expanded later
-    match (tool_name, param_name) {
-        (_, "project") => {
-            // Hide project parameter if it's empty or matches a common default
-            param_value.is_empty() || param_value == "." || param_value == "unknown"
-        }
-        _ => false,
-    }
-}
-
-/// Render a parameter as markdown with special formatting
-fn render_parameter_markdown(tool_name: &str, param_name: &str, param_value: &str) -> String {
-    match (tool_name, param_name) {
-        // Diff parameters get special rendering
-        ("replace_in_file", "diff") => {
-            format!("**Diff:**\n```diff\n{}\n```\n", param_value)
-        }
-        ("edit", "old_text") => {
-            format!("**Old text:**\n```\n{}\n```\n", param_value)
-        }
-        ("edit", "new_text") => {
-            format!("**New text:**\n```\n{}\n```\n", param_value)
-        }
-        // File content
-        ("write_file", "content") => {
-            format!("**Content:**\n```\n{}\n```\n", param_value)
-        }
-        // Default full-width rendering
-        _ => {
-            format!("**{}:**\n```\n{}\n```\n", param_name, param_value)
         }
     }
 }

@@ -134,9 +134,29 @@ impl TerminalRenderer {
     /// We do NOT insert into scrollback immediately; overflow logic will promote rows as needed.
     pub fn finalize_live_block(&mut self) -> Result<()> {
         if let Some(block) = self.live_block.take() {
-            let markdown_content = block.get_markdown_content();
-            if !markdown_content.trim().is_empty() {
-                self.finalized_blocks.push(markdown_content);
+            if block.is_tool_use() {
+                // For tool use blocks, create a simple text representation
+                if let Some(tool_block) = block.as_tool_use() {
+                    let tool_summary = format!("{} {} - {}",
+                        match tool_block.status {
+                            crate::ui::ToolStatus::Pending => "🔄",
+                            crate::ui::ToolStatus::Running => "⚙️",
+                            crate::ui::ToolStatus::Success => "✅",
+                            crate::ui::ToolStatus::Error => "❌",
+                        },
+                        tool_block.name,
+                        match tool_block.status {
+                            crate::ui::ToolStatus::Success => "completed",
+                            crate::ui::ToolStatus::Error => "failed",
+                            _ => "finished",
+                        }
+                    );
+                    self.finalized_blocks.push(tool_summary);
+                }
+            } else if let Some(markdown_content) = block.get_markdown_content() {
+                if !markdown_content.trim().is_empty() {
+                    self.finalized_blocks.push(markdown_content);
+                }
             }
         }
         // Keep a 1-line gap: implemented implicitly by always reserving one empty line at bottom
@@ -220,9 +240,42 @@ impl TerminalRenderer {
 
         // 1) Render current live block (so it is closest to the input)
         if let Some(ref live_block) = self.live_block {
-            let live_markdown = live_block.get_markdown_content();
-            if !live_markdown.trim().is_empty() && cursor_y > 0 {
-                let _ = measure_and_render(&live_markdown, &mut scratch, &mut cursor_y);
+            if live_block.is_tool_use() {
+                // For tool use blocks, create a detailed text representation
+                if let Some(tool_block) = live_block.as_tool_use() {
+                    let status_symbol = match tool_block.status {
+                        crate::ui::ToolStatus::Pending => "●",
+                        crate::ui::ToolStatus::Running => "●",
+                        crate::ui::ToolStatus::Success => "●",
+                        crate::ui::ToolStatus::Error => "●",
+                    };
+
+                    let mut tool_text = format!("{} {}\n", status_symbol, tool_block.name);
+
+                    // Add parameters
+                    for (name, param) in &tool_block.parameters {
+                        if should_hide_parameter(&tool_block.name, name, &param.value) {
+                            continue;
+                        }
+                        if is_full_width_parameter(&tool_block.name, name) {
+                            tool_text.push_str(&format!("  {}:\n", name));
+                            // Show first few lines of full-width parameters
+                            for line in param.value.lines().take(3) {
+                                tool_text.push_str(&format!("    {}\n", line));
+                            }
+                        } else {
+                            tool_text.push_str(&format!("  {}: {}\n", name, param.get_display_value()));
+                        }
+                    }
+
+                    if cursor_y > 0 {
+                        let _ = measure_and_render(&tool_text, &mut scratch, &mut cursor_y);
+                    }
+                }
+            } else if let Some(live_markdown) = live_block.get_markdown_content() {
+                if !live_markdown.trim().is_empty() && cursor_y > 0 {
+                    let _ = measure_and_render(&live_markdown, &mut scratch, &mut cursor_y);
+                }
             }
         }
 
@@ -362,5 +415,33 @@ impl TerminalRenderer {
             .wrap(Wrap { trim: false });
 
         f.render_widget(paragraph, area);
+    }
+}
+
+/// Check if a parameter should be rendered full-width
+fn is_full_width_parameter(tool_name: &str, param_name: &str) -> bool {
+    match (tool_name, param_name) {
+        // Diff-style parameters
+        ("replace_in_file", "diff") => true,
+        ("edit", "old_text") => true,
+        ("edit", "new_text") => true,
+        // Content parameters
+        ("write_file", "content") => true,
+        // Large text parameters
+        (_, "content") if param_name != "message" => true, // Exclude short message content
+        (_, "output") => true,
+        (_, "query") => true,
+        _ => false,
+    }
+}
+
+/// Check if a parameter should be hidden
+fn should_hide_parameter(tool_name: &str, param_name: &str, param_value: &str) -> bool {
+    match (tool_name, param_name) {
+        (_, "project") => {
+            // Hide project parameter if it's empty or matches common defaults
+            param_value.is_empty() || param_value == "." || param_value == "unknown"
+        }
+        _ => false,
     }
 }

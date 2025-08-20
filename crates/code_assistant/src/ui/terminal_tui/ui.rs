@@ -172,9 +172,7 @@ impl UserInterface for TerminalTuiUI {
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
                     renderer_guard.start_plain_text_block();
-                    // Add a small header to indicate AI response
-                    let header = format!("**Assistant:** ({})\n\n", chrono::Utc::now().format("%H:%M:%S"));
-                    renderer_guard.append_to_live_block(&header);
+                    // No header needed - content speaks for itself
                 }
             }
             UiEvent::AppendToTextBlock { content } => {
