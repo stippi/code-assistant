@@ -120,10 +120,20 @@ impl UserInterface for TerminalTuiUI {
                 debug!("Updating tool status for {}: {:?}", tool_id, status);
                 state.tool_statuses.insert(tool_id.clone(), status);
 
-                // Update tool status in renderer
+                // Update tool status in renderer - only if current block matches tool_id
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.update_tool_status(&tool_id, status, message, output);
+
+                    let is_correct_tool = match &renderer_guard.live_block {
+                        Some(super::blocks::LiveBlockType::ToolUse(tool_block)) => {
+                            tool_block.id == tool_id
+                        }
+                        _ => false,
+                    };
+
+                    if is_correct_tool {
+                        renderer_guard.update_tool_status(&tool_id, status, message, output);
+                    }
                 }
             }
             UiEvent::ClearMessages => {
@@ -168,36 +178,60 @@ impl UserInterface for TerminalTuiUI {
             }
             UiEvent::StreamingStarted(_request_id) => {
                 debug!("Streaming started");
-                // Start a new plain text live block for streaming content
+                // Finalize any existing live block before starting new stream
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.start_plain_text_block();
-                    // No header needed - content speaks for itself
+
+                    // Finalize current block if any
+                    if renderer_guard.live_block.is_some() {
+                        let _ = renderer_guard.finalize_live_block();
+                    }
+
+                    // Don't start a new block yet - wait for first content
                 }
             }
             UiEvent::AppendToTextBlock { content } => {
                 debug!("Appending to text block: {}", content.trim());
 
-                // Append to current live block
+                // Ensure we have a plain text block, or finalize current and start new one
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
+
+                    let needs_new_text_block = match &renderer_guard.live_block {
+                        Some(super::blocks::LiveBlockType::PlainText(_)) => false,
+                        Some(_) => true, // Different block type, need to finalize
+                        None => true, // No block, need to start
+                    };
+
+                    if needs_new_text_block {
+                        // Finalize current block if any
+                        if renderer_guard.live_block.is_some() {
+                            let _ = renderer_guard.finalize_live_block();
+                        }
+                        renderer_guard.start_plain_text_block();
+                    }
+
                     renderer_guard.append_to_live_block(&content);
                 }
             }
             UiEvent::AppendToThinkingBlock { content } => {
                 debug!("Appending to thinking block: {}", content.trim());
 
-                // Ensure we have a thinking block, or create one
+                // Ensure we have a thinking block, or finalize current and start new one
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
 
-                    // Check if current live block is thinking, if not start a new one
                     let needs_new_thinking_block = match &renderer_guard.live_block {
                         Some(super::blocks::LiveBlockType::Thinking(_)) => false,
-                        _ => true,
+                        Some(_) => true, // Different block type, need to finalize
+                        None => true, // No block, need to start
                     };
 
                     if needs_new_thinking_block {
+                        // Finalize current block if any
+                        if renderer_guard.live_block.is_some() {
+                            let _ = renderer_guard.finalize_live_block();
+                        }
                         renderer_guard.start_thinking_block();
                     }
 
@@ -209,9 +243,15 @@ impl UserInterface for TerminalTuiUI {
             UiEvent::StartTool { name, id } => {
                 debug!("Starting tool: {} ({})", name, id);
 
-                // Start a new tool use block
+                // Finalize current block if any, then start new tool use block
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
+
+                    // Always finalize current block when starting a new tool
+                    if renderer_guard.live_block.is_some() {
+                        let _ = renderer_guard.finalize_live_block();
+                    }
+
                     renderer_guard.start_tool_use_block(name, id);
                 }
             }
@@ -222,10 +262,25 @@ impl UserInterface for TerminalTuiUI {
             } => {
                 debug!("Updating tool parameter: {} = {}", name, value.trim());
 
-                // Update parameter in tool use block
+                // Update parameter in tool use block - only if current block matches tool_id
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.add_or_update_tool_parameter(&tool_id, name, value);
+
+                    // Check if current live block is the right tool
+                    let is_correct_tool = match &renderer_guard.live_block {
+                        Some(super::blocks::LiveBlockType::ToolUse(tool_block)) => {
+                            tool_block.id == tool_id
+                        }
+                        _ => false,
+                    };
+
+                    if is_correct_tool {
+                        renderer_guard.add_or_update_tool_parameter(&tool_id, name, value);
+                    } else {
+                        // This shouldn't happen if events are sent correctly,
+                        // but we could start a new tool block here if needed
+                        debug!("Received parameter update for tool {} but current block doesn't match", tool_id);
+                    }
                 }
             }
             UiEvent::EndTool { id } => {
