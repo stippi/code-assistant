@@ -114,18 +114,24 @@ impl UserInterface for TerminalTuiUI {
             UiEvent::UpdateToolStatus {
                 tool_id,
                 status,
-                message: _,
-                output: _,
+                message,
+                output,
             } => {
                 debug!("Updating tool status for {}: {:?}", tool_id, status);
-                state.tool_statuses.insert(tool_id, status);
+                state.tool_statuses.insert(tool_id.clone(), status);
+
+                // Update tool status in renderer
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.update_tool_status(&tool_id, status, message, output);
+                }
             }
             UiEvent::ClearMessages => {
                 debug!("Clearing messages");
                 // Clear live and finalized blocks in renderer
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.start_live_block(); // This clears live text
+                    renderer_guard.live_block = None;
                     renderer_guard.finalized_blocks.clear();
                     renderer_guard.last_overflow = 0;
                 }
@@ -162,12 +168,12 @@ impl UserInterface for TerminalTuiUI {
             }
             UiEvent::StreamingStarted(_request_id) => {
                 debug!("Streaming started");
-                // Start a new live block for streaming content
+                // Start a new plain text live block for streaming content
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.start_live_block();
+                    renderer_guard.start_plain_text_block();
                     // Add a small header to indicate AI response
-                    let header = format!("\n**Assistant:** ({})\n\n", chrono::Utc::now().format("%H:%M:%S"));
+                    let header = format!("**Assistant:** ({})\n\n", chrono::Utc::now().format("%H:%M:%S"));
                     renderer_guard.append_to_live_block(&header);
                 }
             }
@@ -183,9 +189,20 @@ impl UserInterface for TerminalTuiUI {
             UiEvent::AppendToThinkingBlock { content } => {
                 debug!("Appending to thinking block: {}", content.trim());
 
-                // Append to current live block (thinking content)
+                // Ensure we have a thinking block, or create one
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
+
+                    // Check if current live block is thinking, if not start a new one
+                    let needs_new_thinking_block = match &renderer_guard.live_block {
+                        Some(super::blocks::LiveBlockType::Thinking(_)) => false,
+                        _ => true,
+                    };
+
+                    if needs_new_thinking_block {
+                        renderer_guard.start_thinking_block();
+                    }
+
                     if !content.trim().is_empty() {
                         renderer_guard.append_to_live_block(&content);
                     }
@@ -194,33 +211,30 @@ impl UserInterface for TerminalTuiUI {
             UiEvent::StartTool { name, id } => {
                 debug!("Starting tool: {} ({})", name, id);
 
-                // Append tool start to live block
+                // Start a new tool use block
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.append_to_live_block(&format!("\n• {name}\n"));
+                    renderer_guard.start_tool_use_block(name, id);
                 }
             }
             UiEvent::UpdateToolParameter {
-                tool_id: _,
+                tool_id,
                 name,
                 value,
             } => {
                 debug!("Updating tool parameter: {} = {}", name, value.trim());
 
-                // Append parameter to live block
+                // Update parameter in tool use block
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.append_to_live_block(&format!("  {}: {}\n", name, value.trim()));
+                    renderer_guard.add_or_update_tool_parameter(&tool_id, name, value);
                 }
             }
             UiEvent::EndTool { id } => {
                 debug!("Ending tool: {}", id);
 
-                // Add spacing after tool
-                if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.append_to_live_block("\n");
-                }
+                // Tool use block is already complete, no additional action needed
+                // The tool status should have been updated via UpdateToolStatus
             }
             UiEvent::AddImage {
                 media_type,

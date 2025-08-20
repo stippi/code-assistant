@@ -10,13 +10,15 @@ use std::io;
 use tui_markdown as md;
 use tui_textarea::TextArea;
 
+use super::blocks::{LiveBlockType, PlainTextBlock, ThinkingBlock, ToolUseBlock};
+
 /// Handles the terminal display and rendering using ratatui
 pub struct TerminalRenderer {
     pub terminal: Terminal<CrosstermBackend<io::Stdout>>,
     /// Finalized markdown blocks (as source strings)
     pub finalized_blocks: Vec<String>,
-    /// Current live/streaming markdown source (appended over time)
-    live_text: String,
+    /// Current live block being streamed
+    pub live_block: Option<LiveBlockType>,
     /// Optional pending user message (displayed between input and live content while streaming)
     pending_user_message: Option<String>,
     /// Last computed overflow (how many rows have been promoted so far); used to promote only deltas
@@ -32,7 +34,7 @@ impl TerminalRenderer {
         Ok(Self {
             terminal,
             finalized_blocks: Vec::new(),
-            live_text: String::new(),
+            live_block: None,
             pending_user_message: None,
             last_overflow: 0,
             max_input_rows: 5, // max input height (content lines + border line)
@@ -67,10 +69,27 @@ impl TerminalRenderer {
         Ok(())
     }
 
-    /// Start a new live block (reset live_text)
-    pub fn start_live_block(&mut self) {
-        self.live_text.clear();
+    /// Start a new plain text live block
+    pub fn start_plain_text_block(&mut self) {
+        self.live_block = Some(LiveBlockType::PlainText(PlainTextBlock::new()));
         self.last_overflow = 0;
+    }
+
+    /// Start a new thinking live block
+    pub fn start_thinking_block(&mut self) {
+        self.live_block = Some(LiveBlockType::Thinking(ThinkingBlock::new()));
+        self.last_overflow = 0;
+    }
+
+    /// Start a new tool use live block
+    pub fn start_tool_use_block(&mut self, name: String, id: String) {
+        self.live_block = Some(LiveBlockType::ToolUse(ToolUseBlock::new(name, id)));
+        self.last_overflow = 0;
+    }
+
+    /// Legacy method for backward compatibility
+    pub fn start_live_block(&mut self) {
+        self.start_plain_text_block();
     }
 
     /// Set a pending user message (displayed while streaming)
@@ -80,15 +99,45 @@ impl TerminalRenderer {
 
     /// Append text to the current live block
     pub fn append_to_live_block(&mut self, text: &str) {
-        self.live_text.push_str(text);
+        if let Some(ref mut block) = self.live_block {
+            block.append_content(text);
+        }
+    }
+
+    /// Add or update a tool parameter
+    pub fn add_or_update_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
+        if let Some(ref mut block) = self.live_block {
+            if let Some(tool_block) = block.get_tool_mut(tool_id) {
+                tool_block.add_or_update_parameter(name, value);
+            }
+        }
+    }
+
+    /// Update tool status
+    pub fn update_tool_status(
+        &mut self,
+        tool_id: &str,
+        status: crate::ui::ToolStatus,
+        message: Option<String>,
+        output: Option<String>,
+    ) {
+        if let Some(ref mut block) = self.live_block {
+            if let Some(tool_block) = block.get_tool_mut(tool_id) {
+                tool_block.status = status;
+                tool_block.status_message = message;
+                tool_block.output = output;
+            }
+        }
     }
 
     /// Finalize the current live block: move remaining visible content into finalized_blocks
     /// We do NOT insert into scrollback immediately; overflow logic will promote rows as needed.
     pub fn finalize_live_block(&mut self) -> Result<()> {
-        if !self.live_text.is_empty() {
-            self.finalized_blocks
-                .push(std::mem::take(&mut self.live_text));
+        if let Some(block) = self.live_block.take() {
+            let markdown_content = block.get_markdown_content();
+            if !markdown_content.trim().is_empty() {
+                self.finalized_blocks.push(markdown_content);
+            }
         }
         // Keep a 1-line gap: implemented implicitly by always reserving one empty line at bottom
         self.last_overflow = 0;
@@ -169,9 +218,12 @@ impl TerminalRenderer {
             0
         };
 
-        // 1) Render live_text (so it is closest to the input)
-        if !self.live_text.is_empty() && cursor_y > 0 {
-            let _ = measure_and_render(&self.live_text, &mut scratch, &mut cursor_y);
+        // 1) Render current live block (so it is closest to the input)
+        if let Some(ref live_block) = self.live_block {
+            let live_markdown = live_block.get_markdown_content();
+            if !live_markdown.trim().is_empty() && cursor_y > 0 {
+                let _ = measure_and_render(&live_markdown, &mut scratch, &mut cursor_y);
+            }
         }
 
         // 2) Render finalized blocks from newest to oldest above live until we filled enough
