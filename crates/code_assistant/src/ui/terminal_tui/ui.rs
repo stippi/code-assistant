@@ -165,11 +165,13 @@ impl UserInterface for TerminalTuiUI {
                                 let _ = renderer_guard.add_user_message(&attachment_text);
                             }
                             crate::persistence::DraftAttachment::Image { mime_type, .. } => {
-                                let attachment_text = format!("  [attachment: image ({mime_type})]\n");
+                                let attachment_text =
+                                    format!("  [attachment: image ({mime_type})]\n");
                                 let _ = renderer_guard.add_user_message(&attachment_text);
                             }
                             crate::persistence::DraftAttachment::File { filename, .. } => {
-                                let attachment_text = format!("  [attachment: file ({filename})]\n");
+                                let attachment_text =
+                                    format!("  [attachment: file ({filename})]\n");
                                 let _ = renderer_guard.add_user_message(&attachment_text);
                             }
                         }
@@ -200,7 +202,7 @@ impl UserInterface for TerminalTuiUI {
                     let needs_new_text_block = match &renderer_guard.live_block {
                         Some(super::blocks::LiveBlockType::PlainText(_)) => false,
                         Some(_) => true, // Different block type, need to finalize
-                        None => true, // No block, need to start
+                        None => true,    // No block, need to start
                     };
 
                     if needs_new_text_block {
@@ -224,7 +226,7 @@ impl UserInterface for TerminalTuiUI {
                     let needs_new_thinking_block = match &renderer_guard.live_block {
                         Some(super::blocks::LiveBlockType::Thinking(_)) => false,
                         Some(_) => true, // Different block type, need to finalize
-                        None => true, // No block, need to start
+                        None => true,    // No block, need to start
                     };
 
                     if needs_new_thinking_block {
@@ -279,15 +281,17 @@ impl UserInterface for TerminalTuiUI {
                     } else {
                         // This shouldn't happen if events are sent correctly,
                         // but we could start a new tool block here if needed
-                        debug!("Received parameter update for tool {} but current block doesn't match", tool_id);
+                        debug!(
+                            "Received parameter update for tool {} but current block doesn't match",
+                            tool_id
+                        );
                     }
                 }
             }
             UiEvent::EndTool { id } => {
-                debug!("Ending tool: {}", id);
-
-                // Tool use block is already complete, no additional action needed
-                // The tool status should have been updated via UpdateToolStatus
+                // EndTool just marks the end of parameter streaming
+                // The actual status comes later via UpdateToolStatus
+                // For now, we don't change the status here - wait for UpdateToolStatus
             }
             UiEvent::AddImage {
                 media_type,

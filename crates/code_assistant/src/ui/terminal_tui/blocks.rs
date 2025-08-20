@@ -13,9 +13,7 @@ impl LiveBlockType {
     pub fn get_markdown_content(&self) -> Option<String> {
         match self {
             LiveBlockType::PlainText(block) => Some(block.content.clone()),
-            LiveBlockType::Thinking(block) => {
-                Some(format!("*{}*", block.content))
-            }
+            LiveBlockType::Thinking(block) => Some(format!("*{}*", block.content)),
             LiveBlockType::ToolUse(_) => None, // ToolUse blocks use custom widget
         }
     }
@@ -118,9 +116,7 @@ impl ToolUseBlock {
     pub fn new(name: String, id: String) -> Self {
         Self {
             name,
-            id,
-            parameters: HashMap::new(),
-            status: crate::ui::ToolStatus::Pending,
+            status: crate::ui::ToolStatus::Pending, // Start with Pending (gray - streaming)
             status_message: None,
             output: None,
         }
@@ -135,8 +131,6 @@ impl ToolUseBlock {
             }
         }
     }
-
-
 }
 
 /// Parameter value that can be streamed

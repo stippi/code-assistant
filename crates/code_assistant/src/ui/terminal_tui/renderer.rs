@@ -133,25 +133,40 @@ impl TerminalRenderer {
     /// Finalize the current live block: move remaining visible content into finalized_blocks
     /// We do NOT insert into scrollback immediately; overflow logic will promote rows as needed.
     pub fn finalize_live_block(&mut self) -> Result<()> {
-        if let Some(block) = self.live_block.take() {
-            if block.is_tool_use() {
-                // For tool use blocks, create a simple text representation
+                // For tool use blocks, create a detailed text representation with parameters
                 if let Some(tool_block) = block.as_tool_use() {
-                    let tool_summary = format!("{} {} - {}",
-                        match tool_block.status {
-                            crate::ui::ToolStatus::Pending => "🔄",
-                            crate::ui::ToolStatus::Running => "⚙️",
-                            crate::ui::ToolStatus::Success => "✅",
-                            crate::ui::ToolStatus::Error => "❌",
-                        },
-                        tool_block.name,
-                        match tool_block.status {
-                            crate::ui::ToolStatus::Success => "completed",
-                            crate::ui::ToolStatus::Error => "failed",
-                            _ => "finished",
+                    let status_symbol = "●"; // Always use dot
+                    let status_text = match tool_block.status {
+                        crate::ui::ToolStatus::Pending => "streaming", // Gray - parameters streaming
+                        crate::ui::ToolStatus::Running => "running",   // Blue - tool is executing
+                        crate::ui::ToolStatus::Success => "success",   // Green - successful result
+                        crate::ui::ToolStatus::Error => "error",       // Red - error result
+                    };
+
+                    let mut tool_text = format!("{} {} ({})\n", status_symbol, tool_block.name, status_text);
+
+                    // Add parameters with full details
+                    for (name, param) in &tool_block.parameters {
+                        if should_hide_parameter(&tool_block.name, name, &param.value) {
+                            continue;
                         }
-                    );
-                    self.finalized_blocks.push(tool_summary);
+                        if is_full_width_parameter(&tool_block.name, name) {
+                            tool_text.push_str(&format!("  {}:\n", name));
+                            // Show all lines of full-width parameters in finalized view
+                            for line in param.value.lines() {
+                                tool_text.push_str(&format!("    {}\n", line));
+                            }
+                        } else {
+                            tool_text.push_str(&format!("  {}: {}\n", name, param.value)); // Show full value, not truncated
+                        }
+                    }
+
+                    // Add status message if present
+                    if let Some(ref message) = tool_block.status_message {
+                        tool_text.push_str(&format!("  Status: {}\n", message));
+                    }
+
+                    self.finalized_blocks.push(tool_text);
                 }
             } else if let Some(markdown_content) = block.get_markdown_content() {
                 if !markdown_content.trim().is_empty() {
@@ -190,42 +205,43 @@ impl TerminalRenderer {
         // Reserve one blank line as gap above input (at the very bottom)
         cursor_y = cursor_y.saturating_sub(1);
 
-        // Helper: render a markdown string into temp buffer to measure height (limited to remaining space)
-        let measure_and_render = |md_src: &str, dst: &mut Buffer, bottom_y: &mut u16| {
-            let text = md::from_str(md_src);
-            let para_for_measure = Paragraph::new(text.clone()).wrap(Wrap { trim: false });
-            // Only allocate tmp up to remaining space to keep it cheap
-            let max_h = (*bottom_y).clamp(1, 500); // cap to 500 to avoid huge temps
-            let mut tmp = Buffer::empty(Rect::new(0, 0, width, max_h));
-            para_for_measure.render(Rect::new(0, 0, width, max_h), &mut tmp);
-            let mut used = 0u16;
-            'scan: for y in (0..max_h).rev() {
-                let mut row_empty = true;
-                for x in 0..width {
-                    let c = tmp.cell((x, y)).expect("cell in tmp buffer");
-                    if !c.symbol().is_empty() && c.symbol() != " " {
-                        row_empty = false;
-                        break;
+            {
+                // Regular markdown rendering
+                let text = md::from_str(md_src);
+                let para_for_measure = Paragraph::new(text.clone()).wrap(Wrap { trim: false });
+                // Only allocate tmp up to remaining space to keep it cheap
+                let max_h = (*bottom_y).clamp(1, 500); // cap to 500 to avoid huge temps
+                let mut tmp = Buffer::empty(Rect::new(0, 0, width, max_h));
+                para_for_measure.render(Rect::new(0, 0, width, max_h), &mut tmp);
+                let mut used = 0u16;
+                'scan: for y in (0..max_h).rev() {
+                    let mut row_empty = true;
+                    for x in 0..width {
+                        let c = tmp.cell((x, y)).expect("cell in tmp buffer");
+                        if !c.symbol().is_empty() && c.symbol() != " " {
+                            row_empty = false;
+                            break;
+                        }
+                    }
+                    if !row_empty {
+                        used = y + 1;
+                        break 'scan;
                     }
                 }
-                if !row_empty {
-                    used = y + 1;
-                    break 'scan;
+                if used == 0 {
+                    return 0u16;
                 }
+                let h = used.min(*bottom_y);
+                if h == 0 {
+                    return 0u16;
+                }
+                // render into destination aligned at bottom
+                let area = Rect::new(0, bottom_y.saturating_sub(h), width, h);
+                let para_for_draw = Paragraph::new(text).wrap(Wrap { trim: false });
+                para_for_draw.render(area, dst);
+                *bottom_y = bottom_y.saturating_sub(h);
+                h
             }
-            if used == 0 {
-                return 0u16;
-            }
-            let h = used.min(*bottom_y);
-            if h == 0 {
-                return 0u16;
-            }
-            // render into destination aligned at bottom
-            let area = Rect::new(0, bottom_y.saturating_sub(h), width, h);
-            let para_for_draw = Paragraph::new(text).wrap(Wrap { trim: false });
-            para_for_draw.render(area, dst);
-            *bottom_y = bottom_y.saturating_sub(h);
-            h
         };
 
         // Reserve space for pending user message if present
@@ -241,31 +257,36 @@ impl TerminalRenderer {
         // 1) Render current live block (so it is closest to the input)
         if let Some(ref live_block) = self.live_block {
             if live_block.is_tool_use() {
-                // For tool use blocks, create a detailed text representation
-                if let Some(tool_block) = live_block.as_tool_use() {
-                    let status_symbol = match tool_block.status {
-                        crate::ui::ToolStatus::Pending => "●",
-                        crate::ui::ToolStatus::Running => "●",
-                        crate::ui::ToolStatus::Success => "●",
-                        crate::ui::ToolStatus::Error => "●",
+                    let status_symbol = "●"; // Always use dot
+                    let status_text = match tool_block.status {
+                        crate::ui::ToolStatus::Pending => "streaming", // Gray - parameters streaming
+                        crate::ui::ToolStatus::Running => "running",   // Blue - tool is executing
+                        crate::ui::ToolStatus::Success => "success",   // Green - successful result
+                        crate::ui::ToolStatus::Error => "error",       // Red - error result
                     };
 
-                    let mut tool_text = format!("{} {}\n", status_symbol, tool_block.name);
+                    let mut tool_text = format!("{} {} ({})\n", status_symbol, tool_block.name, status_text);
 
                     // Add parameters
                     for (name, param) in &tool_block.parameters {
                         if should_hide_parameter(&tool_block.name, name, &param.value) {
                             continue;
                         }
-                        if is_full_width_parameter(&tool_block.name, name) {
-                            tool_text.push_str(&format!("  {}:\n", name));
-                            // Show first few lines of full-width parameters
+                            // Show first few lines of full-width parameters for live view
                             for line in param.value.lines().take(3) {
                                 tool_text.push_str(&format!("    {}\n", line));
+                            }
+                            if param.value.lines().count() > 3 {
+                                tool_text.push_str("    ...\n");
                             }
                         } else {
                             tool_text.push_str(&format!("  {}: {}\n", name, param.get_display_value()));
                         }
+                    }
+
+                    // Add status message if present
+                    if let Some(ref message) = tool_block.status_message {
+                        tool_text.push_str(&format!("  Status: {}\n", message));
                     }
 
                     if cursor_y > 0 {
