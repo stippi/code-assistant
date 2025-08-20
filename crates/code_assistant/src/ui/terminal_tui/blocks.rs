@@ -116,6 +116,8 @@ impl ToolUseBlock {
     pub fn new(name: String, id: String) -> Self {
         Self {
             name,
+            id,
+            parameters: HashMap::new(),
             status: crate::ui::ToolStatus::Pending, // Start with Pending (gray - streaming)
             status_message: None,
             output: None,

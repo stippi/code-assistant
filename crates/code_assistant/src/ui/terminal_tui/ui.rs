@@ -288,7 +288,7 @@ impl UserInterface for TerminalTuiUI {
                     }
                 }
             }
-            UiEvent::EndTool { id } => {
+            UiEvent::EndTool { id: _ } => {
                 // EndTool just marks the end of parameter streaming
                 // The actual status comes later via UpdateToolStatus
                 // For now, we don't change the status here - wait for UpdateToolStatus
