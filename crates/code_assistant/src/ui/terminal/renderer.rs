@@ -70,8 +70,6 @@ pub struct TerminalRenderer {
     pub last_overflow: u16,
     /// Maximum rows for input area (including 1 for content min + border)
     pub max_input_rows: u16,
-    /// Counter for generating message IDs
-    next_message_id: u64,
     /// Spinner state for loading indication
     spinner_state: SpinnerState,
 }
@@ -87,7 +85,6 @@ impl TerminalRenderer {
             pending_user_message: None,
             last_overflow: 0,
             max_input_rows: 5, // max input height (content lines + border line)
-            next_message_id: 1,
             spinner_state: SpinnerState::Hidden,
         })
     }
@@ -121,7 +118,7 @@ impl TerminalRenderer {
     }
 
     /// Start a new message (called on StreamingStarted)
-    pub fn start_new_message(&mut self, request_id: u64) {
+    pub fn start_new_message(&mut self, _request_id: u64) {
         // Show loading spinner
         self.spinner_state = SpinnerState::Loading {
             start_time: Instant::now(),
@@ -134,10 +131,8 @@ impl TerminalRenderer {
             }
         }
 
-        // Start new live message with request_id if provided
-        let message_id = format!("req_{request_id}");
-        self.next_message_id += 1;
-        self.live_message = Some(LiveMessage::new(message_id));
+        // Start new live message
+        self.live_message = Some(LiveMessage::new());
         self.last_overflow = 0;
     }
 
@@ -231,10 +226,7 @@ impl TerminalRenderer {
     /// Add a user message as finalized message and clear any pending user message
     pub fn add_user_message(&mut self, content: &str) -> Result<()> {
         // Create a finalized message with a single plain text block
-        let message_id = format!("user_{}", self.next_message_id);
-        self.next_message_id += 1;
-
-        let mut user_message = LiveMessage::new(message_id);
+        let mut user_message = LiveMessage::new();
         let mut text_block = PlainTextBlock::new();
         text_block.content = content.to_string();
         user_message.add_block(MessageBlock::PlainText(text_block));
@@ -248,10 +240,7 @@ impl TerminalRenderer {
     /// Add an instruction/informational message as a finalized message
     /// This is for system messages, welcome text, etc.
     pub fn add_instruction_message(&mut self, content: &str) -> Result<()> {
-        let message_id = format!("instruction_{}", self.next_message_id);
-        self.next_message_id += 1;
-
-        let mut instruction_message = LiveMessage::new(message_id);
+        let mut instruction_message = LiveMessage::new();
         let mut text_block = PlainTextBlock::new();
         text_block.content = content.to_string();
         instruction_message.add_block(MessageBlock::PlainText(text_block));

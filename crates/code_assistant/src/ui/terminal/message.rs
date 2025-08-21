@@ -8,15 +8,13 @@ use crate::ui::ToolStatus;
 /// A complete message containing multiple blocks
 #[derive(Debug, Clone)]
 pub struct LiveMessage {
-    pub _id: String,
     pub blocks: Vec<MessageBlock>,
     pub finalized: bool,
 }
 
 impl LiveMessage {
-    pub fn new(id: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            _id: id,
             blocks: Vec::new(),
             finalized: false,
         }
