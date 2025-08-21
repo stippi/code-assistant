@@ -6,4 +6,4 @@ pub mod state;
 pub mod tool_widget;
 pub mod ui;
 
-pub use app::TerminalTuiApp;
+pub use app::TerminalTuiApp as TerminalApp;

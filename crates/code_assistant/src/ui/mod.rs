@@ -2,7 +2,6 @@ pub mod backend;
 pub mod gpui;
 pub mod streaming;
 pub mod terminal;
-pub mod terminal_tui;
 pub mod ui_events;
 use async_trait::async_trait;
 pub use streaming::DisplayFragment;
@@ -44,6 +43,3 @@ pub trait UserInterface: Send + Sync {
     #[allow(dead_code)]
     fn as_any(&self) -> &dyn std::any::Any;
 }
-
-#[cfg(test)]
-mod terminal_test;

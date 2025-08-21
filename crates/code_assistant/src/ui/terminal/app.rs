@@ -2,7 +2,7 @@ use crate::app::AgentRunConfig;
 use crate::persistence::FileSessionPersistence;
 use crate::session::manager::{AgentConfig, SessionManager};
 use crate::ui::backend::{handle_backend_events, BackendEvent, BackendResponse};
-use crate::ui::terminal_tui::{
+use crate::ui::terminal::{
     input::InputManager, renderer::TerminalRenderer, state::AppState, ui::TerminalTuiUI,
 };
 use crate::ui::UserInterface;
@@ -28,7 +28,7 @@ async fn event_loop(
         }
 
         // Check for events with a timeout
-        if event::poll(tokio::time::Duration::from_millis(100))? {
+        if event::poll(tokio::time::Duration::from_millis(8))? {
             match event::read()? {
                 Event::Key(key_event) => {
                     let (should_quit, user_message) = input_manager.handle_key_event(key_event);
