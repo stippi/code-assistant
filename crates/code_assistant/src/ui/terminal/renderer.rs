@@ -460,8 +460,7 @@ impl TerminalRenderer {
                 break;
             }
 
-            let widget = block.create_widget();
-            let block_height = widget.calculate_height(width).min(*cursor_y);
+            let block_height = block.calculate_height(width).min(*cursor_y);
 
             if block_height > 0 {
                 let area = Rect::new(
@@ -470,7 +469,7 @@ impl TerminalRenderer {
                     width,
                     block_height,
                 );
-                widget.render(area, scratch);
+                block.clone().render(area, scratch);
                 *cursor_y = cursor_y.saturating_sub(block_height);
 
                 // Add one line gap between blocks within a message

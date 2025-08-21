@@ -78,28 +78,10 @@ impl MessageBlock {
         }
     }
 
-    /// Create a widget for rendering this block
-    pub fn create_widget(&self) -> MessageBlockWidget {
-        match self {
-            MessageBlock::PlainText(block) => MessageBlockWidget::PlainText(block),
-            MessageBlock::Thinking(block) => MessageBlockWidget::Thinking(block),
-            MessageBlock::ToolUse(block) => MessageBlockWidget::ToolUse(block),
-        }
-    }
-}
-
-/// Widget wrapper for different block types
-pub enum MessageBlockWidget<'a> {
-    PlainText(&'a PlainTextBlock),
-    Thinking(&'a ThinkingBlock),
-    ToolUse(&'a ToolUseBlock),
-}
-
-impl<'a> MessageBlockWidget<'a> {
     /// Calculate the height needed to render this block
     pub fn calculate_height(&self, width: u16) -> u16 {
         match self {
-            MessageBlockWidget::PlainText(block) => {
+            MessageBlock::PlainText(block) => {
                 if block.content.trim().is_empty() {
                     return 0;
                 }
@@ -115,7 +97,7 @@ impl<'a> MessageBlockWidget<'a> {
                 }
                 total_lines.max(1)
             }
-            MessageBlockWidget::Thinking(block) => {
+            MessageBlock::Thinking(block) => {
                 if block.content.trim().is_empty() {
                     return 0;
                 }
@@ -132,7 +114,7 @@ impl<'a> MessageBlockWidget<'a> {
                 }
                 total_lines.max(1)
             }
-            MessageBlockWidget::ToolUse(block) => {
+            MessageBlock::ToolUse(block) => {
                 let mut height = 1; // Tool name line
 
                 // Count parameter lines
@@ -164,10 +146,10 @@ impl<'a> MessageBlockWidget<'a> {
     }
 }
 
-impl<'a> Widget for MessageBlockWidget<'a> {
+impl Widget for MessageBlock {
     fn render(self, area: Rect, buf: &mut Buffer) {
         match self {
-            MessageBlockWidget::PlainText(block) => {
+            MessageBlock::PlainText(block) => {
                 if !block.content.trim().is_empty() {
                     let text = md::from_str(&block.content);
                     let paragraph = ratatui::widgets::Paragraph::new(text)
@@ -175,7 +157,7 @@ impl<'a> Widget for MessageBlockWidget<'a> {
                     paragraph.render(area, buf);
                 }
             }
-            MessageBlockWidget::Thinking(block) => {
+            MessageBlock::Thinking(block) => {
                 if !block.content.trim().is_empty() {
                     let formatted = format!("*{}*", block.content);
                     let text = md::from_str(&formatted);
@@ -189,8 +171,8 @@ impl<'a> Widget for MessageBlockWidget<'a> {
                     paragraph.render(area, buf);
                 }
             }
-            MessageBlockWidget::ToolUse(block) => {
-                let tool_widget = ToolWidget::new(block);
+            MessageBlock::ToolUse(block) => {
+                let tool_widget = ToolWidget::new(&block);
                 tool_widget.render(area, buf);
             }
         }
