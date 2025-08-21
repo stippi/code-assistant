@@ -104,12 +104,7 @@ impl UserInterface for TerminalTuiUI {
                 // Set pending message in renderer if available
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    if let Some(msg) = message {
-                        let formatted = format!("\n\n**User:** {msg}\n");
-                        renderer_guard.set_pending_user_message(formatted);
-                    } else {
-                        renderer_guard.set_pending_user_message("".to_string());
-                    }
+                    renderer_guard.set_pending_user_message(message);
                 }
             }
             UiEvent::UpdateToolStatus {
@@ -121,30 +116,18 @@ impl UserInterface for TerminalTuiUI {
                 debug!("Updating tool status for {}: {:?}", tool_id, status);
                 state.tool_statuses.insert(tool_id.clone(), status);
 
-                // Update tool status in renderer - only if current block matches tool_id
+                // Update tool status in renderer - can now update any tool in current message
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-
-                    let is_correct_tool = match &renderer_guard.live_block {
-                        Some(super::blocks::LiveBlockType::ToolUse(tool_block)) => {
-                            tool_block.id == tool_id
-                        }
-                        _ => false,
-                    };
-
-                    if is_correct_tool {
-                        renderer_guard.update_tool_status(&tool_id, status, message, output);
-                    }
+                    renderer_guard.update_tool_status(&tool_id, status, message, output);
                 }
             }
             UiEvent::ClearMessages => {
                 debug!("Clearing messages");
-                // Clear live and finalized blocks in renderer
+                // Clear all messages in renderer
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.live_block = None;
-                    renderer_guard.finalized_blocks.clear();
-                    renderer_guard.last_overflow = 0;
+                    renderer_guard.clear_all_messages();
                 }
             }
             UiEvent::DisplayUserInput {
@@ -153,7 +136,7 @@ impl UserInterface for TerminalTuiUI {
             } => {
                 debug!("Displaying user input: {}", content);
 
-                // Add user message as finalized block
+                // Add user message
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
                     let formatted = format!("\n\n**User:** {content}\n");
@@ -181,36 +164,35 @@ impl UserInterface for TerminalTuiUI {
             }
             UiEvent::StreamingStarted(_request_id) => {
                 debug!("Streaming started");
-                // Finalize any existing live block before starting new stream
+                // Start a new message - this will finalize any existing live message
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-
-                    // Finalize current block if any
-                    if renderer_guard.live_block.is_some() {
-                        let _ = renderer_guard.finalize_live_block();
-                    }
-
-                    // Don't start a new block yet - wait for first content
+                    renderer_guard.start_new_message();
                 }
             }
             UiEvent::AppendToTextBlock { content } => {
-                debug!("Appending to text block: {}", content.trim());
+                debug!("Appending to text block: '{content}'");
 
-                // Ensure we have a plain text block, or finalize current and start new one
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
 
-                    let needs_new_text_block = match &renderer_guard.live_block {
-                        Some(super::blocks::LiveBlockType::PlainText(_)) => false,
-                        Some(_) => true, // Different block type, need to finalize
-                        None => true,    // No block, need to start
+                    // Ensure we have a live message
+                    if renderer_guard.live_message.is_none() {
+                        renderer_guard.start_new_message();
+                    }
+
+                    // Check if we need a new plain text block
+                    let needs_new_text_block = if let Some(ref message) = renderer_guard.live_message {
+                        match message.blocks.last() {
+                            Some(super::message::MessageBlock::PlainText(_)) => false,
+                            Some(_) => true, // Different block type, need new block
+                            None => true,    // No blocks, need new block
+                        }
+                    } else {
+                        true
                     };
 
                     if needs_new_text_block {
-                        // Finalize current block if any
-                        if renderer_guard.live_block.is_some() {
-                            let _ = renderer_guard.finalize_live_block();
-                        }
                         renderer_guard.start_plain_text_block();
                     }
 
@@ -218,23 +200,28 @@ impl UserInterface for TerminalTuiUI {
                 }
             }
             UiEvent::AppendToThinkingBlock { content } => {
-                debug!("Appending to thinking block: {}", content.trim());
+                debug!("Appending to thinking block: '{content}'");
 
-                // Ensure we have a thinking block, or finalize current and start new one
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
 
-                    let needs_new_thinking_block = match &renderer_guard.live_block {
-                        Some(super::blocks::LiveBlockType::Thinking(_)) => false,
-                        Some(_) => true, // Different block type, need to finalize
-                        None => true,    // No block, need to start
+                    // Ensure we have a live message
+                    if renderer_guard.live_message.is_none() {
+                        renderer_guard.start_new_message();
+                    }
+
+                    // Check if we need a new thinking block
+                    let needs_new_thinking_block = if let Some(ref message) = renderer_guard.live_message {
+                        match message.blocks.last() {
+                            Some(super::message::MessageBlock::Thinking(_)) => false,
+                            Some(_) => true, // Different block type, need new block
+                            None => true,    // No blocks, need new block
+                        }
+                    } else {
+                        true
                     };
 
                     if needs_new_thinking_block {
-                        // Finalize current block if any
-                        if renderer_guard.live_block.is_some() {
-                            let _ = renderer_guard.finalize_live_block();
-                        }
                         renderer_guard.start_thinking_block();
                     }
 
@@ -246,15 +233,15 @@ impl UserInterface for TerminalTuiUI {
             UiEvent::StartTool { name, id } => {
                 debug!("Starting tool: {} ({})", name, id);
 
-                // Finalize current block if any, then start new tool use block
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
 
-                    // Always finalize current block when starting a new tool
-                    if renderer_guard.live_block.is_some() {
-                        let _ = renderer_guard.finalize_live_block();
+                    // Ensure we have a live message
+                    if renderer_guard.live_message.is_none() {
+                        renderer_guard.start_new_message();
                     }
 
+                    // Always start a new tool use block
                     renderer_guard.start_tool_use_block(name, id);
                 }
             }
@@ -263,30 +250,12 @@ impl UserInterface for TerminalTuiUI {
                 name,
                 value,
             } => {
-                debug!("Updating tool parameter: {} = {}", name, value.trim());
+                debug!("Updating tool parameter: {name} = '{value}'");
 
-                // Update parameter in tool use block - only if current block matches tool_id
+                // Update parameter in current message
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-
-                    // Check if current live block is the right tool
-                    let is_correct_tool = match &renderer_guard.live_block {
-                        Some(super::blocks::LiveBlockType::ToolUse(tool_block)) => {
-                            tool_block.id == tool_id
-                        }
-                        _ => false,
-                    };
-
-                    if is_correct_tool {
-                        renderer_guard.add_or_update_tool_parameter(&tool_id, name, value);
-                    } else {
-                        // This shouldn't happen if events are sent correctly,
-                        // but we could start a new tool block here if needed
-                        debug!(
-                            "Received parameter update for tool {} but current block doesn't match",
-                            tool_id
-                        );
-                    }
+                    renderer_guard.add_or_update_tool_parameter(&tool_id, name, value);
                 }
             }
             UiEvent::EndTool { id: _ } => {
@@ -294,26 +263,11 @@ impl UserInterface for TerminalTuiUI {
                 // The actual status comes later via UpdateToolStatus
                 // For now, we don't change the status here - wait for UpdateToolStatus
             }
-            UiEvent::AddImage {
-                media_type,
-                data: _,
-            } => {
-                debug!("Adding image: {}", media_type);
-
-                // Add image placeholder to live block
-                if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.append_to_live_block(&format!("[image: {media_type}]\n"));
-                }
-            }
             UiEvent::StreamingStopped { id, cancelled } => {
                 debug!("Streaming stopped (id: {}, cancelled: {})", id, cancelled);
 
-                // Finalize the current live block
-                if let Some(renderer) = self.renderer.lock().await.as_ref() {
-                    let mut renderer_guard = renderer.lock().await;
-                    let _ = renderer_guard.finalize_live_block();
-                }
+                // Don't finalize the message yet - keep it live for tool status updates
+                // It will be finalized when the next StreamingStarted event arrives
             }
             _ => {
                 // For other events, just log them

@@ -1,0 +1,309 @@
+use std::collections::HashMap;
+use ratatui::prelude::*;
+use tui_markdown as md;
+
+use crate::ui::ToolStatus;
+use super::tool_widget::ToolWidget;
+
+/// A complete message containing multiple blocks
+#[derive(Debug, Clone)]
+pub struct LiveMessage {
+    pub _id: String,
+    pub blocks: Vec<MessageBlock>,
+    pub finalized: bool,
+}
+
+impl LiveMessage {
+    pub fn new(id: String) -> Self {
+        Self {
+            _id: id,
+            blocks: Vec::new(),
+            finalized: false,
+        }
+    }
+
+    /// Add a new block to this message
+    pub fn add_block(&mut self, block: MessageBlock) {
+        self.blocks.push(block);
+    }
+
+    /// Get the last block if it matches the expected type
+    pub fn get_last_block_mut(&mut self) -> Option<&mut MessageBlock> {
+        self.blocks.last_mut()
+    }
+
+    /// Get a mutable reference to a tool block by ID
+    pub fn get_tool_block_mut(&mut self, tool_id: &str) -> Option<&mut ToolUseBlock> {
+        for block in &mut self.blocks {
+            if let MessageBlock::ToolUse(tool_block) = block {
+                if tool_block.id == tool_id {
+                    return Some(tool_block);
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if this message has any content
+    pub fn has_content(&self) -> bool {
+        !self.blocks.is_empty() && self.blocks.iter().any(|block| block.has_content())
+    }
+}
+
+/// Different types of blocks within a message
+#[derive(Debug, Clone)]
+pub enum MessageBlock {
+    PlainText(PlainTextBlock),
+    Thinking(ThinkingBlock),
+    ToolUse(ToolUseBlock),
+}
+
+impl MessageBlock {
+    /// Check if this block has any content
+    pub fn has_content(&self) -> bool {
+        match self {
+            MessageBlock::PlainText(block) => !block.content.trim().is_empty(),
+            MessageBlock::Thinking(block) => !block.content.trim().is_empty(),
+            MessageBlock::ToolUse(block) => !block.name.is_empty(),
+        }
+    }
+
+    /// Append content to the block (only for text-based blocks)
+    pub fn append_content(&mut self, content: &str) {
+        match self {
+            MessageBlock::PlainText(block) => block.content.push_str(content),
+            MessageBlock::Thinking(block) => block.content.push_str(content),
+            MessageBlock::ToolUse(_) => {
+                // Tool use blocks don't support general content appending
+                // Parameter updates are handled separately
+            }
+        }
+    }
+
+    /// Create a widget for rendering this block
+    pub fn create_widget(&self) -> MessageBlockWidget {
+        match self {
+            MessageBlock::PlainText(block) => MessageBlockWidget::PlainText(block),
+            MessageBlock::Thinking(block) => MessageBlockWidget::Thinking(block),
+            MessageBlock::ToolUse(block) => MessageBlockWidget::ToolUse(block),
+        }
+    }
+}
+
+/// Widget wrapper for different block types
+pub enum MessageBlockWidget<'a> {
+    PlainText(&'a PlainTextBlock),
+    Thinking(&'a ThinkingBlock),
+    ToolUse(&'a ToolUseBlock),
+}
+
+impl<'a> MessageBlockWidget<'a> {
+    /// Calculate the height needed to render this block
+    pub fn calculate_height(&self, _width: u16) -> u16 {
+        match self {
+            MessageBlockWidget::PlainText(block) => {
+                if block.content.trim().is_empty() {
+                    return 0;
+                }
+                let _text = md::from_str(&block.content);
+                // Estimate height based on content - this is approximate
+                let lines = block.content.lines().count() as u16;
+                lines.max(1)
+            }
+            MessageBlockWidget::Thinking(block) => {
+                if block.content.trim().is_empty() {
+                    return 0;
+                }
+                let formatted = format!("*{}*", block.content);
+                let lines = formatted.lines().count() as u16;
+                lines.max(1)
+            }
+            MessageBlockWidget::ToolUse(block) => {
+                let mut height = 1; // Tool name line
+
+                // Count parameter lines
+                for (name, param) in &block.parameters {
+                    if should_hide_parameter(&block.name, name, &param.value) {
+                        continue;
+                    }
+                    if is_full_width_parameter(&block.name, name) {
+                        height += 1; // Parameter name
+                        height += param.value.lines().take(3).count() as u16; // Max 3 lines of content
+                    } else {
+                        height += 1; // Regular parameter line
+                    }
+                }
+
+                // Status message
+                if block.status_message.is_some() && block.status == ToolStatus::Error {
+                    height += 1;
+                }
+
+                // Output
+                if block.output.is_some() && block.status == ToolStatus::Success {
+                    height += 1;
+                }
+
+                height
+            }
+        }
+    }
+}
+
+impl<'a> Widget for MessageBlockWidget<'a> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        match self {
+            MessageBlockWidget::PlainText(block) => {
+                if !block.content.trim().is_empty() {
+                    let text = md::from_str(&block.content);
+                    let paragraph = ratatui::widgets::Paragraph::new(text)
+                        .wrap(ratatui::widgets::Wrap { trim: false });
+                    paragraph.render(area, buf);
+                }
+            }
+            MessageBlockWidget::Thinking(block) => {
+                if !block.content.trim().is_empty() {
+                    let formatted = format!("*{}*", block.content);
+                    let text = md::from_str(&formatted);
+                    let paragraph = ratatui::widgets::Paragraph::new(text)
+                        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC))
+                        .wrap(ratatui::widgets::Wrap { trim: false });
+                    paragraph.render(area, buf);
+                }
+            }
+            MessageBlockWidget::ToolUse(block) => {
+                let tool_widget = ToolWidget::new(block);
+                tool_widget.render(area, buf);
+            }
+        }
+    }
+}
+
+/// Plain text block for regular assistant responses
+#[derive(Debug, Clone)]
+pub struct PlainTextBlock {
+    pub content: String,
+}
+
+impl PlainTextBlock {
+    pub fn new() -> Self {
+        Self {
+            content: String::new(),
+        }
+    }
+}
+
+/// Thinking block for assistant reasoning
+#[derive(Debug, Clone)]
+pub struct ThinkingBlock {
+    pub content: String,
+    pub start_time: std::time::Instant,
+}
+
+impl ThinkingBlock {
+    pub fn new() -> Self {
+        Self {
+            content: String::new(),
+            start_time: std::time::Instant::now(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn formatted_duration(&self) -> String {
+        let duration = self.start_time.elapsed();
+        if duration.as_secs() < 60 {
+            format!("{}s", duration.as_secs())
+        } else {
+            let minutes = duration.as_secs() / 60;
+            let seconds = duration.as_secs() % 60;
+            format!("{minutes}m{seconds}s")
+        }
+    }
+}
+
+/// Tool use block with parameters
+#[derive(Debug, Clone)]
+pub struct ToolUseBlock {
+    pub name: String,
+    pub id: String,
+    pub parameters: HashMap<String, ParameterValue>,
+    pub status: ToolStatus,
+    pub status_message: Option<String>,
+    pub output: Option<String>,
+}
+
+impl ToolUseBlock {
+    pub fn new(name: String, id: String) -> Self {
+        Self {
+            name,
+            id,
+            parameters: HashMap::new(),
+            status: ToolStatus::Pending,
+            status_message: None,
+            output: None,
+        }
+    }
+
+    /// Add or update a parameter value
+    pub fn add_or_update_parameter(&mut self, name: String, value: String) {
+        match self.parameters.get_mut(&name) {
+            Some(param) => param.append_value(&value),
+            None => {
+                self.parameters.insert(name, ParameterValue::new(value));
+            }
+        }
+    }
+}
+
+/// Parameter value that can be streamed
+#[derive(Debug, Clone)]
+pub struct ParameterValue {
+    pub value: String,
+}
+
+impl ParameterValue {
+    pub fn new(value: String) -> Self {
+        Self { value }
+    }
+
+    pub fn append_value(&mut self, content: &str) {
+        self.value.push_str(content);
+    }
+
+    pub fn get_display_value(&self) -> String {
+        // Truncate long values for regular parameters
+        if self.value.len() > 100 {
+            format!("{}...", &self.value[..97])
+        } else {
+            self.value.clone()
+        }
+    }
+}
+
+/// Check if a parameter should be rendered full-width
+fn is_full_width_parameter(tool_name: &str, param_name: &str) -> bool {
+    match (tool_name, param_name) {
+        // Diff-style parameters
+        ("replace_in_file", "diff") => true,
+        ("edit", "old_text") => true,
+        ("edit", "new_text") => true,
+        // Content parameters
+        ("write_file", "content") => true,
+        // Large text parameters
+        (_, "content") if param_name != "message" => true, // Exclude short message content
+        (_, "output") => true,
+        (_, "query") => true,
+        _ => false,
+    }
+}
+
+/// Check if a parameter should be hidden
+fn should_hide_parameter(tool_name: &str, param_name: &str, param_value: &str) -> bool {
+    match (tool_name, param_name) {
+        (_, "project") => {
+            // Hide project parameter if it's empty or matches common defaults
+            param_value.is_empty() || param_value == "." || param_value == "unknown"
+        }
+        _ => false,
+    }
+}

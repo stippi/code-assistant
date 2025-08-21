@@ -10,21 +10,24 @@ use std::io;
 use tui_markdown as md;
 use tui_textarea::TextArea;
 
-use super::blocks::{LiveBlockType, PlainTextBlock, ThinkingBlock, ToolUseBlock};
+use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ThinkingBlock, ToolUseBlock};
+use crate::ui::ToolStatus;
 
 /// Handles the terminal display and rendering using ratatui
 pub struct TerminalRenderer {
     pub terminal: Terminal<CrosstermBackend<io::Stdout>>,
-    /// Finalized markdown blocks (as source strings)
-    pub finalized_blocks: Vec<String>,
-    /// Current live block being streamed
-    pub live_block: Option<LiveBlockType>,
+    /// Finalized messages (as complete message structures)
+    pub finalized_messages: Vec<LiveMessage>,
+    /// Current live message being streamed
+    pub live_message: Option<LiveMessage>,
     /// Optional pending user message (displayed between input and live content while streaming)
     pending_user_message: Option<String>,
     /// Last computed overflow (how many rows have been promoted so far); used to promote only deltas
     pub last_overflow: u16,
     /// Maximum rows for input area (including 1 for content min + border)
     pub max_input_rows: u16,
+    /// Counter for generating message IDs
+    next_message_id: u64,
 }
 
 impl TerminalRenderer {
@@ -33,11 +36,12 @@ impl TerminalRenderer {
 
         Ok(Self {
             terminal,
-            finalized_blocks: Vec::new(),
-            live_block: None,
+            finalized_messages: Vec::new(),
+            live_message: None,
             pending_user_message: None,
             last_overflow: 0,
             max_input_rows: 5, // max input height (content lines + border line)
+            next_message_id: 1,
         })
     }
 
@@ -69,60 +73,86 @@ impl TerminalRenderer {
         Ok(())
     }
 
-    /// Start a new plain text live block
+    /// Start a new message (called on StreamingStarted)
+    pub fn start_new_message(&mut self) {
+        // Finalize current message if any
+        if let Some(mut current_message) = self.live_message.take() {
+            current_message.finalized = true;
+            if current_message.has_content() {
+                self.finalized_messages.push(current_message);
+            }
+        }
+
+        // Start new live message
+        let message_id = format!("msg_{}", self.next_message_id);
+        self.next_message_id += 1;
+        self.live_message = Some(LiveMessage::new(message_id));
+        self.last_overflow = 0;
+    }
+
+    /// Start a new plain text block within the current message
     pub fn start_plain_text_block(&mut self) {
-        self.live_block = Some(LiveBlockType::PlainText(PlainTextBlock::new()));
-        self.last_overflow = 0;
-    }
-
-    /// Start a new thinking live block
-    pub fn start_thinking_block(&mut self) {
-        self.live_block = Some(LiveBlockType::Thinking(ThinkingBlock::new()));
-        self.last_overflow = 0;
-    }
-
-    /// Start a new tool use live block
-    pub fn start_tool_use_block(&mut self, name: String, id: String) {
-        self.live_block = Some(LiveBlockType::ToolUse(ToolUseBlock::new(name, id)));
-        self.last_overflow = 0;
-    }
-
-    /// Legacy method for backward compatibility
-    pub fn start_live_block(&mut self) {
-        self.start_plain_text_block();
-    }
-
-    /// Set a pending user message (displayed while streaming)
-    pub fn set_pending_user_message(&mut self, message: String) {
-        self.pending_user_message = Some(message);
-    }
-
-    /// Append text to the current live block
-    pub fn append_to_live_block(&mut self, text: &str) {
-        if let Some(ref mut block) = self.live_block {
-            block.append_content(text);
+        if let Some(ref mut message) = self.live_message {
+            message.add_block(MessageBlock::PlainText(PlainTextBlock::new()));
         }
     }
 
-    /// Add or update a tool parameter
+    /// Start a new thinking block within the current message
+    pub fn start_thinking_block(&mut self) {
+        if let Some(ref mut message) = self.live_message {
+            message.add_block(MessageBlock::Thinking(ThinkingBlock::new()));
+        }
+    }
+
+    /// Start a new tool use block within the current message
+    pub fn start_tool_use_block(&mut self, name: String, id: String) {
+        if let Some(ref mut message) = self.live_message {
+            message.add_block(MessageBlock::ToolUse(ToolUseBlock::new(name, id)));
+        }
+    }
+
+    /// Legacy method for backward compatibility - starts a plain text block
+    pub fn start_live_block(&mut self) {
+        // Ensure we have a live message
+        if self.live_message.is_none() {
+            self.start_new_message();
+        }
+        self.start_plain_text_block();
+    }
+
+    /// Set or unset a pending user message (displayed while streaming)
+    pub fn set_pending_user_message(&mut self, message: Option<String>) {
+        self.pending_user_message = message;
+    }
+
+    /// Append text to the last block in the current message
+    pub fn append_to_live_block(&mut self, text: &str) {
+        if let Some(ref mut message) = self.live_message {
+            if let Some(last_block) = message.get_last_block_mut() {
+                last_block.append_content(text);
+            }
+        }
+    }
+
+    /// Add or update a tool parameter in the current message
     pub fn add_or_update_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
-        if let Some(ref mut block) = self.live_block {
-            if let Some(tool_block) = block.get_tool_mut(tool_id) {
+        if let Some(ref mut message) = self.live_message {
+            if let Some(tool_block) = message.get_tool_block_mut(tool_id) {
                 tool_block.add_or_update_parameter(name, value);
             }
         }
     }
 
-    /// Update tool status
+    /// Update tool status in the current message
     pub fn update_tool_status(
         &mut self,
         tool_id: &str,
-        status: crate::ui::ToolStatus,
+        status: ToolStatus,
         message: Option<String>,
         output: Option<String>,
     ) {
-        if let Some(ref mut block) = self.live_block {
-            if let Some(tool_block) = block.get_tool_mut(tool_id) {
+        if let Some(ref mut live_message) = self.live_message {
+            if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
                 tool_block.status = status;
                 tool_block.status_message = message;
                 tool_block.output = output;
@@ -130,62 +160,45 @@ impl TerminalRenderer {
         }
     }
 
-    /// Finalize the current live block: move remaining visible content into finalized_blocks
-    /// We do NOT insert into scrollback immediately; overflow logic will promote rows as needed.
-    pub fn finalize_live_block(&mut self) -> Result<()> {
-        if let Some(block) = self.live_block.take() {
-            if block.is_tool_use() {
-                // For tool use blocks, create a detailed text representation with parameters
-                if let Some(tool_block) = block.as_tool_use() {
-                    let status_symbol = "●"; // Always use dot
-                    let status_text = match tool_block.status {
-                        crate::ui::ToolStatus::Pending => "streaming", // Gray - parameters streaming
-                        crate::ui::ToolStatus::Running => "running",   // Blue - tool is executing
-                        crate::ui::ToolStatus::Success => "success",   // Green - successful result
-                        crate::ui::ToolStatus::Error => "error",       // Red - error result
-                    };
-                    
-                    let mut tool_text = format!("{} {} ({})\n", status_symbol, tool_block.name, status_text);
-                    
-                    // Add parameters with full details
-                    for (name, param) in &tool_block.parameters {
-                        if should_hide_parameter(&tool_block.name, name, &param.value) {
-                            continue;
-                        }
-                        if is_full_width_parameter(&tool_block.name, name) {
-                            tool_text.push_str(&format!("  {name}:\n"));
-                            // Show all lines of full-width parameters in finalized view
-                            for line in param.value.lines() {
-                                tool_text.push_str(&format!("    {line}\n"));
-                            }
-                        } else {
-                            tool_text.push_str(&format!("  {}: {}\n", name, param.value)); // Show full value, not truncated
-                        }
-                    }
-                    
-                    // Add status message if present
-                    if let Some(ref message) = tool_block.status_message {
-                        tool_text.push_str(&format!("  Status: {message}\n"));
-                    }
-                    
-                    self.finalized_blocks.push(tool_text);
-                }
-            } else if let Some(markdown_content) = block.get_markdown_content() {
-                if !markdown_content.trim().is_empty() {
-                    self.finalized_blocks.push(markdown_content);
-                }
+    /// Finalize the current live message
+    pub fn finalize_live_message(&mut self) -> Result<()> {
+        if let Some(mut message) = self.live_message.take() {
+            message.finalized = true;
+            if message.has_content() {
+                self.finalized_messages.push(message);
             }
         }
-        // Keep a 1-line gap: implemented implicitly by always reserving one empty line at bottom
         self.last_overflow = 0;
         Ok(())
     }
 
-    /// Add a user message as finalized block and clear any pending user message
+    /// Legacy method - finalize current message
+    pub fn finalize_live_block(&mut self) -> Result<()> {
+        self.finalize_live_message()
+    }
+
+    /// Add a user message as finalized message and clear any pending user message
     pub fn add_user_message(&mut self, content: &str) -> Result<()> {
-        self.finalized_blocks.push(content.to_string());
+        // Create a finalized message with a single plain text block
+        let message_id = format!("user_{}", self.next_message_id);
+        self.next_message_id += 1;
+
+        let mut user_message = LiveMessage::new(message_id);
+        let mut text_block = PlainTextBlock::new();
+        text_block.content = content.to_string();
+        user_message.add_block(MessageBlock::PlainText(text_block));
+        user_message.finalized = true;
+
+        self.finalized_messages.push(user_message);
         self.pending_user_message = None; // Clear pending message when it becomes finalized
         Ok(())
+    }
+
+    /// Clear all messages and reset state
+    pub fn clear_all_messages(&mut self) {
+        self.finalized_messages.clear();
+        self.live_message = None;
+        self.last_overflow = 0;
     }
 
     /// Render the complete UI: composed finalized content + live content + 1-line gap + input
@@ -196,7 +209,7 @@ impl TerminalRenderer {
         let available = term_size.height.saturating_sub(input_height);
         let width = term_size.width;
 
-        // Compose scratch buffer: render 1 blank line (gap), then live_text, then finalized tail above
+        // Compose scratch buffer: render 1 blank line (gap), then live_message, then finalized tail above
         let headroom: u16 = 200; // keep small to reduce work per frame
         let scratch_height = available.saturating_add(headroom).max(available);
         let mut scratch = Buffer::empty(Rect::new(0, 0, width, scratch_height));
@@ -207,106 +220,27 @@ impl TerminalRenderer {
         // Reserve one blank line as gap above input (at the very bottom)
         cursor_y = cursor_y.saturating_sub(1);
 
-        // Helper: render a markdown string into temp buffer to measure height (limited to remaining space)
-        let measure_and_render = |md_src: &str, dst: &mut Buffer, bottom_y: &mut u16| {
-            let text = md::from_str(md_src);
-            let para_for_measure = Paragraph::new(text.clone()).wrap(Wrap { trim: false });
-            // Only allocate tmp up to remaining space to keep it cheap
-            let max_h = (*bottom_y).clamp(1, 500); // cap to 500 to avoid huge temps
-            let mut tmp = Buffer::empty(Rect::new(0, 0, width, max_h));
-            para_for_measure.render(Rect::new(0, 0, width, max_h), &mut tmp);
-            let mut used = 0u16;
-            'scan: for y in (0..max_h).rev() {
-                let mut row_empty = true;
-                for x in 0..width {
-                    let c = tmp.cell((x, y)).expect("cell in tmp buffer");
-                    if !c.symbol().is_empty() && c.symbol() != " " {
-                        row_empty = false;
-                        break;
-                    }
-                }
-                if !row_empty {
-                    used = y + 1;
-                    break 'scan;
-                }
-            }
-            if used == 0 {
-                return 0u16;
-            }
-            let h = used.min(*bottom_y);
-            if h == 0 {
-                return 0u16;
-            }
-            // render into destination aligned at bottom
-            let area = Rect::new(0, bottom_y.saturating_sub(h), width, h);
-            let para_for_draw = Paragraph::new(text).wrap(Wrap { trim: false });
-            para_for_draw.render(area, dst);
-            *bottom_y = bottom_y.saturating_sub(h);
-            h
-        };
-
         // Reserve space for pending user message if present
         let pending_height = if let Some(ref pending_msg) = self.pending_user_message {
-            let _ = measure_and_render(pending_msg, &mut scratch, &mut cursor_y);
+            let rendered_height = self.render_message_content_to_buffer(pending_msg, &mut scratch, &mut cursor_y, width);
             // Add a small gap above pending message
             cursor_y = cursor_y.saturating_sub(1);
-            2 // approximate height including gap
+            rendered_height + 1
         } else {
             0
         };
 
-        // 1) Render current live block (so it is closest to the input)
-        if let Some(ref live_block) = self.live_block {
-            if live_block.is_tool_use() {
-                // For tool use blocks, create a detailed text representation
-                if let Some(tool_block) = live_block.as_tool_use() {
-                    let status_symbol = "●"; // Always use dot
-                    let status_text = match tool_block.status {
-                        crate::ui::ToolStatus::Pending => "streaming", // Gray - parameters streaming
-                        crate::ui::ToolStatus::Running => "running",   // Blue - tool is executing
-                        crate::ui::ToolStatus::Success => "success",   // Green - successful result
-                        crate::ui::ToolStatus::Error => "error",       // Red - error result
-                    };
-                    
-                    let mut tool_text = format!("{} {} ({})\n", status_symbol, tool_block.name, status_text);
-                    
-                    // Add parameters
-                    for (name, param) in &tool_block.parameters {
-                        if should_hide_parameter(&tool_block.name, name, &param.value) {
-                            continue;
-                        }
-                        if is_full_width_parameter(&tool_block.name, name) {
-                            tool_text.push_str(&format!("  {name}:\n"));
-                            // Show first few lines of full-width parameters for live view
-                            for line in param.value.lines().take(3) {
-                                tool_text.push_str(&format!("    {line}\n"));
-                            }
-                            if param.value.lines().count() > 3 {
-                                tool_text.push_str("    ...\n");
-                            }
-                        } else {
-                            tool_text.push_str(&format!("  {}: {}\n", name, param.get_display_value()));
-                        }
-                    }
-                    
-                    // Add status message if present
-                    if let Some(ref message) = tool_block.status_message {
-                        tool_text.push_str(&format!("  Status: {message}\n"));
-                    }
-                    
-                    if cursor_y > 0 {
-                        let _ = measure_and_render(&tool_text, &mut scratch, &mut cursor_y);
-                    }
-                }
-            } else if let Some(live_markdown) = live_block.get_markdown_content() {
-                if !live_markdown.trim().is_empty() && cursor_y > 0 {
-                    let _ = measure_and_render(&live_markdown, &mut scratch, &mut cursor_y);
-                }
+        // 1) Render current live message (so it is closest to the input)
+        if let Some(ref live_message) = self.live_message {
+            if live_message.has_content() && cursor_y > 0 {
+                self.render_message_to_buffer(live_message, &mut scratch, &mut cursor_y, width);
+                // Add gap after live message
+                cursor_y = cursor_y.saturating_sub(1);
             }
         }
 
-        // 2) Render finalized blocks from newest to oldest above live until we filled enough
-        for md_src in self.finalized_blocks.iter().rev() {
+        // 2) Render finalized messages from newest to oldest above live until we filled enough
+        for message in self.finalized_messages.iter().rev() {
             if cursor_y == 0 {
                 break;
             }
@@ -315,7 +249,10 @@ impl TerminalRenderer {
             if filled >= available + headroom {
                 break;
             }
-            let _ = measure_and_render(md_src, &mut scratch, &mut cursor_y);
+
+            self.render_message_to_buffer(message, &mut scratch, &mut cursor_y, width);
+            // Add gap after each message
+            cursor_y = cursor_y.saturating_sub(1);
         }
 
         // Now composed content occupies rows [cursor_y .. scratch_height)
@@ -399,6 +336,75 @@ impl TerminalRenderer {
         Ok(())
     }
 
+    /// Render a message to the scratch buffer, updating cursor_y
+    fn render_message_to_buffer(&self, message: &LiveMessage, scratch: &mut Buffer, cursor_y: &mut u16, width: u16) {
+        // Render blocks from last to first (bottom to top)
+        for block in message.blocks.iter().rev() {
+            if *cursor_y == 0 {
+                break;
+            }
+
+            let widget = block.create_widget();
+            let block_height = widget.calculate_height(width).min(*cursor_y);
+
+            if block_height > 0 {
+                let area = Rect::new(0, cursor_y.saturating_sub(block_height), width, block_height);
+                widget.render(area, scratch);
+                *cursor_y = cursor_y.saturating_sub(block_height);
+
+                // Add one line gap between blocks within a message
+                *cursor_y = cursor_y.saturating_sub(1);
+            }
+        }
+    }
+
+    /// Render markdown content to buffer (for pending messages)
+    fn render_message_content_to_buffer(&self, content: &str, scratch: &mut Buffer, cursor_y: &mut u16, width: u16) -> u16 {
+        if content.trim().is_empty() || *cursor_y == 0 {
+            return 0;
+        }
+
+        let text = md::from_str(content);
+        let para_for_measure = Paragraph::new(text.clone()).wrap(Wrap { trim: false });
+
+        // Only allocate tmp up to remaining space to keep it cheap
+        let max_h = (*cursor_y).clamp(1, 500); // cap to 500 to avoid huge temps
+        let mut tmp = Buffer::empty(Rect::new(0, 0, width, max_h));
+        para_for_measure.render(Rect::new(0, 0, width, max_h), &mut tmp);
+
+        let mut used = 0u16;
+        'scan: for y in (0..max_h).rev() {
+            let mut row_empty = true;
+            for x in 0..width {
+                let c = tmp.cell((x, y)).expect("cell in tmp buffer");
+                if !c.symbol().is_empty() && c.symbol() != " " {
+                    row_empty = false;
+                    break;
+                }
+            }
+            if !row_empty {
+                used = y + 1;
+                break 'scan;
+            }
+        }
+
+        if used == 0 {
+            return 0;
+        }
+
+        let h = used.min(*cursor_y);
+        if h == 0 {
+            return 0;
+        }
+
+        // render into destination aligned at bottom
+        let area = Rect::new(0, cursor_y.saturating_sub(h), width, h);
+        let para_for_draw = Paragraph::new(text).wrap(Wrap { trim: false });
+        para_for_draw.render(area, scratch);
+        *cursor_y = cursor_y.saturating_sub(h);
+        h
+    }
+
     /// Calculate the height needed for the input area based on textarea content
     pub fn calculate_input_height(&self, textarea: &TextArea) -> u16 {
         let lines = textarea.lines().len() as u16;
@@ -441,33 +447,5 @@ impl TerminalRenderer {
             .wrap(Wrap { trim: false });
 
         f.render_widget(paragraph, area);
-    }
-}
-
-/// Check if a parameter should be rendered full-width
-fn is_full_width_parameter(tool_name: &str, param_name: &str) -> bool {
-    match (tool_name, param_name) {
-        // Diff-style parameters
-        ("replace_in_file", "diff") => true,
-        ("edit", "old_text") => true,
-        ("edit", "new_text") => true,
-        // Content parameters
-        ("write_file", "content") => true,
-        // Large text parameters
-        (_, "content") if param_name != "message" => true, // Exclude short message content
-        (_, "output") => true,
-        (_, "query") => true,
-        _ => false,
-    }
-}
-
-/// Check if a parameter should be hidden
-fn should_hide_parameter(tool_name: &str, param_name: &str, param_value: &str) -> bool {
-    match (tool_name, param_name) {
-        (_, "project") => {
-            // Hide project parameter if it's empty or matches common defaults
-            param_value.is_empty() || param_value == "." || param_value == "unknown"
-        }
-        _ => false,
     }
 }
