@@ -121,6 +121,10 @@ impl TerminalTuiApp {
         let terminal_ui = TerminalTuiUI::new();
         let ui: Arc<dyn UserInterface> = Arc::new(terminal_ui.clone());
 
+        // Setup UI event channel for display fragments
+        let (ui_event_tx, ui_event_rx) = async_channel::unbounded::<crate::ui::UiEvent>();
+        terminal_ui.set_event_sender(ui_event_tx).await;
+
         // Setup backend communication channels
         let (backend_event_tx, backend_event_rx) = async_channel::unbounded::<BackendEvent>();
         let (backend_response_tx, backend_response_rx) =
@@ -219,6 +223,16 @@ impl TerminalTuiApp {
 
         // Kick off a session list refresh (optional but useful)
         let _ = backend_event_tx.try_send(BackendEvent::ListSessions);
+
+        // Spawn a background task to process UI events from display fragments
+        {
+            let terminal_ui_clone = terminal_ui.clone();
+            tokio::spawn(async move {
+                while let Ok(event) = ui_event_rx.recv().await {
+                    let _ = terminal_ui_clone.send_event(event).await;
+                }
+            });
+        }
 
         // Spawn a background task to translate backend responses into UiEvents
         {

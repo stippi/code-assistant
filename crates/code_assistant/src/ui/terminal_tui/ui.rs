@@ -2,7 +2,7 @@ use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
 use std::any::Any;
 use std::sync::Arc;
 use tokio::sync::{watch, Mutex};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::renderer::TerminalRenderer;
 use super::state::AppState;
@@ -13,6 +13,7 @@ pub struct TerminalTuiUI {
     redraw_tx: Arc<Mutex<Option<watch::Sender<()>>>>,
     pub cancel_flag: Arc<Mutex<bool>>,
     pub renderer: Arc<Mutex<Option<Arc<Mutex<TerminalRenderer>>>>>,
+    event_sender: Arc<Mutex<Option<async_channel::Sender<UiEvent>>>>,
 }
 
 impl TerminalTuiUI {
@@ -22,6 +23,7 @@ impl TerminalTuiUI {
             redraw_tx: Arc::new(Mutex::new(None)),
             cancel_flag: Arc::new(Mutex::new(false)),
             renderer: Arc::new(Mutex::new(None)),
+            event_sender: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -47,6 +49,24 @@ impl TerminalTuiUI {
         if let Some(tx) = self.redraw_tx.lock().await.as_ref() {
             let _ = tx.send(());
         }
+    }
+
+    /// Set the event sender for pushing events
+    pub async fn set_event_sender(&self, sender: async_channel::Sender<UiEvent>) {
+        *self.event_sender.lock().await = Some(sender);
+    }
+
+    /// Helper to push an event to the queue
+    fn push_event(&self, event: UiEvent) {
+        let rt = tokio::runtime::Handle::current();
+        let event_sender = self.event_sender.clone();
+        rt.spawn(async move {
+            if let Some(sender) = event_sender.lock().await.as_ref() {
+                if let Err(err) = sender.send(event).await {
+                    warn!("Failed to send event via channel: {}", err);
+                }
+            }
+        });
     }
 }
 
@@ -294,42 +314,33 @@ impl UserInterface for TerminalTuiUI {
             }
         });
 
-        // Convert display fragments to UI events that can be processed asynchronously
-        // This avoids blocking in the sync display_fragment method
-        let rt = tokio::runtime::Handle::current();
-        let self_clone = self.clone();
-
+        // Convert display fragments to UI events using push_event (like GPUI)
         match fragment {
             DisplayFragment::PlainText(text) => {
-                let text_clone = text.clone();
-                rt.spawn(async move {
-                    let _ = self_clone
-                        .send_event(UiEvent::AppendToTextBlock {
-                            content: text_clone,
-                        })
-                        .await;
+                self.push_event(UiEvent::AppendToTextBlock {
+                    content: text.clone(),
                 });
             }
             DisplayFragment::ThinkingText(text) => {
-                let text_clone = text.clone();
-                rt.spawn(async move {
-                    let _ = self_clone
-                        .send_event(UiEvent::AppendToThinkingBlock {
-                            content: text_clone,
-                        })
-                        .await;
+                self.push_event(UiEvent::AppendToThinkingBlock {
+                    content: text.clone(),
                 });
             }
             DisplayFragment::ToolName { name, id } => {
-                let name_clone = name.clone();
-                let id_clone = id.clone();
-                rt.spawn(async move {
-                    let _ = self_clone
-                        .send_event(UiEvent::StartTool {
-                            name: name_clone,
-                            id: id_clone,
-                        })
-                        .await;
+                if id.is_empty() {
+                    warn!(
+                        "StreamingProcessor provided empty tool ID for tool '{}' - this is a bug!",
+                        name
+                    );
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Empty tool ID for tool '{name}'"),
+                    )));
+                }
+
+                self.push_event(UiEvent::StartTool {
+                    name: name.clone(),
+                    id: id.clone(),
                 });
             }
             DisplayFragment::ToolParameter {
@@ -337,40 +348,39 @@ impl UserInterface for TerminalTuiUI {
                 value,
                 tool_id,
             } => {
-                let name_clone = name.clone();
-                let value_clone = value.clone();
-                let tool_id_clone = tool_id.clone();
-                rt.spawn(async move {
-                    let _ = self_clone
-                        .send_event(UiEvent::UpdateToolParameter {
-                            tool_id: tool_id_clone,
-                            name: name_clone,
-                            value: value_clone,
-                        })
-                        .await;
+                if tool_id.is_empty() {
+                    warn!("StreamingProcessor provided empty tool ID for parameter '{}' - this is a bug!", name);
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Empty tool ID for parameter '{name}'"),
+                    )));
+                }
+
+                self.push_event(UiEvent::UpdateToolParameter {
+                    tool_id: tool_id.clone(),
+                    name: name.clone(),
+                    value: value.clone(),
                 });
             }
             DisplayFragment::ToolEnd { id } => {
-                let id_clone = id.clone();
-                rt.spawn(async move {
-                    let _ = self_clone
-                        .send_event(UiEvent::EndTool { id: id_clone })
-                        .await;
-                });
+                if id.is_empty() {
+                    warn!("StreamingProcessor provided empty tool ID for ToolEnd - this is a bug!");
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Empty tool ID for ToolEnd".to_string(),
+                    )));
+                }
+
+                self.push_event(UiEvent::EndTool { id: id.clone() });
             }
             DisplayFragment::Image { media_type, data } => {
-                let media_type_clone = media_type.clone();
-                let data_clone = data.clone();
-                rt.spawn(async move {
-                    let _ = self_clone
-                        .send_event(UiEvent::AddImage {
-                            media_type: media_type_clone,
-                            data: data_clone,
-                        })
-                        .await;
+                self.push_event(UiEvent::AddImage {
+                    media_type: media_type.clone(),
+                    data: data.clone(),
                 });
             }
         }
+
         Ok(())
     }
 
