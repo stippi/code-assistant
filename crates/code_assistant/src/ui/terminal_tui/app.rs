@@ -3,15 +3,12 @@ use crate::persistence::FileSessionPersistence;
 use crate::session::manager::{AgentConfig, SessionManager};
 use crate::ui::backend::{handle_backend_events, BackendEvent, BackendResponse};
 use crate::ui::terminal_tui::{
-    input::InputManager,
-    renderer::TerminalRenderer,
-    state::AppState,
-    ui::TerminalTuiUI,
+    input::InputManager, renderer::TerminalRenderer, state::AppState, ui::TerminalTuiUI,
 };
 use crate::ui::UserInterface;
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event};
 use llm::factory::LLMClientConfig;
+use ratatui::crossterm::event::{self, Event};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
@@ -53,13 +50,12 @@ async fn event_loop(
                             };
 
                             let event = match activity_state {
-                                Some(crate::session::instance::SessionActivityState::Idle) | None => {
-                                    BackendEvent::SendUserMessage {
-                                        session_id,
-                                        message,
-                                        attachments: Vec::new(),
-                                    }
-                                }
+                                Some(crate::session::instance::SessionActivityState::Idle)
+                                | None => BackendEvent::SendUserMessage {
+                                    session_id,
+                                    message,
+                                    attachments: Vec::new(),
+                                },
                                 _ => BackendEvent::QueueUserMessage {
                                     session_id,
                                     message,
@@ -161,64 +157,46 @@ impl TerminalTuiApp {
         };
 
         // Determine which session to use and load it
-        let session_id = if config.continue_task {
+        let mut session_id = None;
+
+        // First, try to load existing session if continuing
+        if config.continue_task {
             let latest_session_id = {
                 let manager = multi_session_manager.lock().await;
                 manager.get_latest_session_id().unwrap_or(None)
             };
 
-            match latest_session_id {
-                Some(session_id) => {
-                    debug!("Continuing from latest session: {}", session_id);
-                    backend_event_tx
-                        .send(BackendEvent::LoadSession {
-                            session_id: session_id.clone(),
-                        })
-                        .await?;
-                    session_id
-                }
-                None => {
-                    debug!("No previous session found, creating new session");
-                    backend_event_tx
-                        .send(BackendEvent::CreateNewSession { name: None })
-                        .await?;
-
-                    match backend_response_rx.recv().await? {
-                        BackendResponse::SessionCreated { session_id } => {
-                            debug!("Created new session: {}", session_id);
-                            backend_event_tx
-                                .send(BackendEvent::LoadSession {
-                                    session_id: session_id.clone(),
-                                })
-                                .await?;
-                            session_id
-                        }
-                        BackendResponse::Error { message } => {
-                            return Err(anyhow::anyhow!("Failed to create session: {}", message));
-                        }
-                        _ => {
-                            return Err(anyhow::anyhow!(
-                                "Unexpected response when creating session"
-                            ));
-                        }
-                    }
-                }
+            if let Some(existing_session_id) = latest_session_id {
+                debug!("Continuing from latest session: {}", existing_session_id);
+                backend_event_tx
+                    .send(BackendEvent::LoadSession {
+                        session_id: existing_session_id.clone(),
+                    })
+                    .await?;
+                session_id = Some(existing_session_id);
+            } else {
+                debug!("No previous session found");
             }
-        } else {
+        }
+
+        // Create new session if we don't have one yet
+        if session_id.is_none() {
             debug!("Creating new session");
             backend_event_tx
                 .send(BackendEvent::CreateNewSession { name: None })
                 .await?;
 
             match backend_response_rx.recv().await? {
-                BackendResponse::SessionCreated { session_id } => {
-                    debug!("Created new session: {}", session_id);
+                BackendResponse::SessionCreated {
+                    session_id: new_session_id,
+                } => {
+                    debug!("Created new session: {}", new_session_id);
                     backend_event_tx
                         .send(BackendEvent::LoadSession {
-                            session_id: session_id.clone(),
+                            session_id: new_session_id.clone(),
                         })
                         .await?;
-                    session_id
+                    session_id = Some(new_session_id);
                 }
                 BackendResponse::Error { message } => {
                     return Err(anyhow::anyhow!("Failed to create session: {}", message));
@@ -227,7 +205,9 @@ impl TerminalTuiApp {
                     return Err(anyhow::anyhow!("Unexpected response when creating session"));
                 }
             }
-        };
+        }
+
+        let session_id = session_id.expect("Session ID should be set at this point");
 
         debug!("Terminal TUI connected to session: {}", session_id);
 
