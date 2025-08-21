@@ -99,24 +99,40 @@ pub enum MessageBlockWidget<'a> {
 
 impl<'a> MessageBlockWidget<'a> {
     /// Calculate the height needed to render this block
-    pub fn calculate_height(&self, _width: u16) -> u16 {
+    pub fn calculate_height(&self, width: u16) -> u16 {
         match self {
             MessageBlockWidget::PlainText(block) => {
                 if block.content.trim().is_empty() {
                     return 0;
                 }
-                let _text = md::from_str(&block.content);
-                // Estimate height based on content - this is approximate
-                let lines = block.content.lines().count() as u16;
-                lines.max(1)
+                // Account for text wrapping
+                let mut total_lines = 0u16;
+                for line in block.content.lines() {
+                    if line.is_empty() {
+                        total_lines += 1;
+                    } else {
+                        let wrapped_lines = (line.len() as u16 + width - 1) / width.max(1);
+                        total_lines += wrapped_lines.max(1);
+                    }
+                }
+                total_lines.max(1)
             }
             MessageBlockWidget::Thinking(block) => {
                 if block.content.trim().is_empty() {
                     return 0;
                 }
                 let formatted = format!("*{}*", block.content);
-                let lines = formatted.lines().count() as u16;
-                lines.max(1)
+                // Account for text wrapping
+                let mut total_lines = 0u16;
+                for line in formatted.lines() {
+                    if line.is_empty() {
+                        total_lines += 1;
+                    } else {
+                        let wrapped_lines = (line.len() as u16 + width - 1) / width.max(1);
+                        total_lines += wrapped_lines.max(1);
+                    }
+                }
+                total_lines.max(1)
             }
             MessageBlockWidget::ToolUse(block) => {
                 let mut height = 1; // Tool name line
