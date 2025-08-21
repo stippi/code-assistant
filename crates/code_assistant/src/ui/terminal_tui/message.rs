@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use ratatui::prelude::*;
+use std::collections::HashMap;
 use tui_markdown as md;
 
-use crate::ui::ToolStatus;
 use super::tool_widget::ToolWidget;
+use crate::ui::ToolStatus;
 
 /// A complete message containing multiple blocks
 #[derive(Debug, Clone)]
@@ -182,7 +182,11 @@ impl<'a> Widget for MessageBlockWidget<'a> {
                     let formatted = format!("*{}*", block.content);
                     let text = md::from_str(&formatted);
                     let paragraph = ratatui::widgets::Paragraph::new(text)
-                        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC))
+                        .style(
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::ITALIC),
+                        )
                         .wrap(ratatui::widgets::Wrap { trim: false });
                     paragraph.render(area, buf);
                 }

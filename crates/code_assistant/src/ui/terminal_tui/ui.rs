@@ -182,15 +182,16 @@ impl UserInterface for TerminalTuiUI {
                     }
 
                     // Check if we need a new plain text block
-                    let needs_new_text_block = if let Some(ref message) = renderer_guard.live_message {
-                        match message.blocks.last() {
-                            Some(super::message::MessageBlock::PlainText(_)) => false,
-                            Some(_) => true, // Different block type, need new block
-                            None => true,    // No blocks, need new block
-                        }
-                    } else {
-                        true
-                    };
+                    let needs_new_text_block =
+                        if let Some(ref message) = renderer_guard.live_message {
+                            match message.blocks.last() {
+                                Some(super::message::MessageBlock::PlainText(_)) => false,
+                                Some(_) => true, // Different block type, need new block
+                                None => true,    // No blocks, need new block
+                            }
+                        } else {
+                            true
+                        };
 
                     if needs_new_text_block {
                         renderer_guard.start_plain_text_block();
@@ -211,15 +212,16 @@ impl UserInterface for TerminalTuiUI {
                     }
 
                     // Check if we need a new thinking block
-                    let needs_new_thinking_block = if let Some(ref message) = renderer_guard.live_message {
-                        match message.blocks.last() {
-                            Some(super::message::MessageBlock::Thinking(_)) => false,
-                            Some(_) => true, // Different block type, need new block
-                            None => true,    // No blocks, need new block
-                        }
-                    } else {
-                        true
-                    };
+                    let needs_new_thinking_block =
+                        if let Some(ref message) = renderer_guard.live_message {
+                            match message.blocks.last() {
+                                Some(super::message::MessageBlock::Thinking(_)) => false,
+                                Some(_) => true, // Different block type, need new block
+                                None => true,    // No blocks, need new block
+                            }
+                        } else {
+                            true
+                        };
 
                     if needs_new_thinking_block {
                         renderer_guard.start_thinking_block();
@@ -282,6 +284,16 @@ impl UserInterface for TerminalTuiUI {
     }
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
+        // Hide spinner when first content arrives
+        let rt = tokio::runtime::Handle::current();
+        let renderer = self.renderer.clone();
+        rt.spawn(async move {
+            if let Some(renderer) = renderer.lock().await.as_ref() {
+                let mut renderer_guard = renderer.lock().await;
+                renderer_guard.hide_loading_spinner_if_active();
+            }
+        });
+
         // Convert display fragments to UI events that can be processed asynchronously
         // This avoids blocking in the sync display_fragment method
         let rt = tokio::runtime::Handle::current();
@@ -373,12 +385,28 @@ impl UserInterface for TerminalTuiUI {
 
     fn notify_rate_limit(&self, seconds_remaining: u64) {
         debug!("Rate limited for {} seconds", seconds_remaining);
-        // Could add rate limit notification to renderer here
+
+        let rt = tokio::runtime::Handle::current();
+        let renderer = self.renderer.clone();
+        rt.spawn(async move {
+            if let Some(renderer) = renderer.lock().await.as_ref() {
+                let mut renderer_guard = renderer.lock().await;
+                renderer_guard.show_rate_limit_spinner(seconds_remaining);
+            }
+        });
     }
 
     fn clear_rate_limit(&self) {
         debug!("Rate limit cleared");
-        // Could clear rate limit notification from renderer here
+
+        let rt = tokio::runtime::Handle::current();
+        let renderer = self.renderer.clone();
+        rt.spawn(async move {
+            if let Some(renderer) = renderer.lock().await.as_ref() {
+                let mut renderer_guard = renderer.lock().await;
+                renderer_guard.hide_spinner();
+            }
+        });
     }
 
     fn as_any(&self) -> &dyn Any {

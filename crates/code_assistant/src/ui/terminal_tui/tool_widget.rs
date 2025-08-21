@@ -41,7 +41,9 @@ impl<'a> Widget for ToolWidget<'a> {
         }
 
         // Separate regular and full-width parameters
-        let (regular_params, fullwidth_params): (Vec<_>, Vec<_>) = self.tool_block.parameters
+        let (regular_params, fullwidth_params): (Vec<_>, Vec<_>) = self
+            .tool_block
+            .parameters
             .iter()
             .map(|(k, v)| (k.clone(), v))
             .partition(|(name, _)| !is_full_width_parameter(&self.tool_block.name, name));
@@ -52,9 +54,20 @@ impl<'a> Widget for ToolWidget<'a> {
         let mut current_y = area.y;
 
         // First line: Status symbol + tool name
-        buf.set_string(area.x, current_y, status_symbol, Style::default().fg(status_color));
-        buf.set_string(area.x + 2, current_y, &self.tool_block.name,
-                      Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
+        buf.set_string(
+            area.x,
+            current_y,
+            status_symbol,
+            Style::default().fg(status_color),
+        );
+        buf.set_string(
+            area.x + 2,
+            current_y,
+            &self.tool_block.name,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        );
         current_y += 1;
 
         // Regular parameters on separate lines if we have any
@@ -66,9 +79,24 @@ impl<'a> Widget for ToolWidget<'a> {
                 continue;
             }
 
-            buf.set_string(area.x + 2, current_y, name, Style::default().fg(Color::Cyan));
-            buf.set_string(area.x + 2 + name.len() as u16, current_y, ": ", Style::default().fg(Color::White));
-            buf.set_string(area.x + 2 + name.len() as u16 + 2, current_y, param.get_display_value(), Style::default().fg(Color::Gray));
+            buf.set_string(
+                area.x + 2,
+                current_y,
+                name,
+                Style::default().fg(Color::Cyan),
+            );
+            buf.set_string(
+                area.x + 2 + name.len() as u16,
+                current_y,
+                ": ",
+                Style::default().fg(Color::White),
+            );
+            buf.set_string(
+                area.x + 2 + name.len() as u16 + 2,
+                current_y,
+                param.get_display_value(),
+                Style::default().fg(Color::Gray),
+            );
             current_y += 1;
         }
 
@@ -82,7 +110,14 @@ impl<'a> Widget for ToolWidget<'a> {
             }
 
             // Parameter name
-            buf.set_string(area.x + 2, current_y, name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+            buf.set_string(
+                area.x + 2,
+                current_y,
+                name,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            );
             current_y += 1;
 
             if current_y >= area.y + area.height {
@@ -104,7 +139,12 @@ impl<'a> Widget for ToolWidget<'a> {
                     line
                 };
 
-                buf.set_string(area.x + 4, current_y, display_line, Style::default().fg(Color::White));
+                buf.set_string(
+                    area.x + 4,
+                    current_y,
+                    display_line,
+                    Style::default().fg(Color::White),
+                );
                 current_y += 1;
             }
         }
@@ -117,7 +157,12 @@ impl<'a> Widget for ToolWidget<'a> {
                 } else {
                     message
                 };
-                buf.set_string(area.x + 2, current_y, display_text, Style::default().fg(Color::LightRed));
+                buf.set_string(
+                    area.x + 2,
+                    current_y,
+                    display_text,
+                    Style::default().fg(Color::LightRed),
+                );
             }
         }
     }

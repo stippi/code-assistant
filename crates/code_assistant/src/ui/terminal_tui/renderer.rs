@@ -12,6 +12,50 @@ use tui_textarea::TextArea;
 
 use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ThinkingBlock, ToolUseBlock};
 use crate::ui::ToolStatus;
+use std::time::Instant;
+
+/// Spinner state for loading indication
+#[derive(Debug, Clone)]
+pub enum SpinnerState {
+    Hidden,
+    Loading {
+        start_time: Instant,
+    },
+    RateLimit {
+        start_time: Instant,
+        seconds_remaining: u64,
+    },
+}
+
+impl SpinnerState {
+    fn get_spinner_char(&self) -> Option<(char, Color)> {
+        match self {
+            SpinnerState::Hidden => None,
+            SpinnerState::Loading { start_time } => {
+                let braille_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+                let elapsed_ms = start_time.elapsed().as_millis();
+                let index = (elapsed_ms / 100) % braille_chars.len() as u128;
+                Some((braille_chars[index as usize], Color::Blue))
+            }
+            SpinnerState::RateLimit { start_time, .. } => {
+                let braille_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+                let elapsed_ms = start_time.elapsed().as_millis();
+                let index = (elapsed_ms / 100) % braille_chars.len() as u128;
+                Some((braille_chars[index as usize], Color::LightRed))
+            }
+        }
+    }
+
+    fn get_status_text(&self) -> Option<String> {
+        match self {
+            SpinnerState::Hidden => None,
+            SpinnerState::Loading { .. } => None,
+            SpinnerState::RateLimit {
+                seconds_remaining, ..
+            } => Some(format!("Rate limited ({seconds_remaining}s)")),
+        }
+    }
+}
 
 /// Handles the terminal display and rendering using ratatui
 pub struct TerminalRenderer {
@@ -28,6 +72,8 @@ pub struct TerminalRenderer {
     pub max_input_rows: u16,
     /// Counter for generating message IDs
     next_message_id: u64,
+    /// Spinner state for loading indication
+    spinner_state: SpinnerState,
 }
 
 impl TerminalRenderer {
@@ -42,6 +88,7 @@ impl TerminalRenderer {
             last_overflow: 0,
             max_input_rows: 5, // max input height (content lines + border line)
             next_message_id: 1,
+            spinner_state: SpinnerState::Hidden,
         })
     }
 
@@ -75,6 +122,10 @@ impl TerminalRenderer {
 
     /// Start a new message (called on StreamingStarted)
     pub fn start_new_message(&mut self) {
+        // Show loading spinner
+        self.spinner_state = SpinnerState::Loading {
+            start_time: Instant::now(),
+        };
         // Finalize current message if any
         if let Some(mut current_message) = self.live_message.take() {
             current_message.finalized = true;
@@ -106,6 +157,8 @@ impl TerminalRenderer {
 
     /// Start a new tool use block within the current message
     pub fn start_tool_use_block(&mut self, name: String, id: String) {
+        // Hide spinner when first content arrives
+        self.hide_loading_spinner_if_active();
         if let Some(ref mut message) = self.live_message {
             message.add_block(MessageBlock::ToolUse(ToolUseBlock::new(name, id)));
         }
@@ -127,6 +180,8 @@ impl TerminalRenderer {
 
     /// Append text to the last block in the current message
     pub fn append_to_live_block(&mut self, text: &str) {
+        // Hide spinner when first content arrives
+        self.hide_loading_spinner_if_active();
         if let Some(ref mut message) = self.live_message {
             if let Some(last_block) = message.get_last_block_mut() {
                 last_block.append_content(text);
@@ -199,6 +254,27 @@ impl TerminalRenderer {
         self.finalized_messages.clear();
         self.live_message = None;
         self.last_overflow = 0;
+        self.spinner_state = SpinnerState::Hidden;
+    }
+
+    /// Show rate limit spinner with countdown
+    pub fn show_rate_limit_spinner(&mut self, seconds_remaining: u64) {
+        self.spinner_state = SpinnerState::RateLimit {
+            start_time: Instant::now(),
+            seconds_remaining,
+        };
+    }
+
+    /// Hide spinner
+    pub fn hide_spinner(&mut self) {
+        self.spinner_state = SpinnerState::Hidden;
+    }
+
+    /// Hide spinner if it's currently showing loading state
+    pub fn hide_loading_spinner_if_active(&mut self) {
+        if matches!(self.spinner_state, SpinnerState::Loading { .. }) {
+            self.spinner_state = SpinnerState::Hidden;
+        }
     }
 
     /// Render the complete UI: composed finalized content + live content + 1-line gap + input
@@ -222,7 +298,12 @@ impl TerminalRenderer {
 
         // Reserve space for pending user message if present
         let pending_height = if let Some(ref pending_msg) = self.pending_user_message {
-            let rendered_height = self.render_message_content_to_buffer(pending_msg, &mut scratch, &mut cursor_y, width);
+            let rendered_height = self.render_message_content_to_buffer(
+                pending_msg,
+                &mut scratch,
+                &mut cursor_y,
+                width,
+            );
             // Add a small gap above pending message
             cursor_y = cursor_y.saturating_sub(1);
             rendered_height + 1
@@ -230,7 +311,35 @@ impl TerminalRenderer {
             0
         };
 
-        // 1) Render current live message (so it is closest to the input)
+        // 1) Render spinner if active (closest to input)
+        if let Some((spinner_char, spinner_color)) = self.spinner_state.get_spinner_char() {
+            if cursor_y > 0 {
+                cursor_y = cursor_y.saturating_sub(1);
+
+                // Render spinner character
+                scratch.set_string(
+                    0,
+                    cursor_y,
+                    spinner_char.to_string(),
+                    Style::default().fg(spinner_color),
+                );
+
+                // Render status text if present
+                if let Some(status_text) = self.spinner_state.get_status_text() {
+                    scratch.set_string(
+                        2,
+                        cursor_y,
+                        &status_text,
+                        Style::default().fg(Color::LightRed),
+                    );
+                }
+
+                // Add gap after spinner
+                cursor_y = cursor_y.saturating_sub(1);
+            }
+        }
+
+        // 2) Render current live message (so it is closest to the input)
         if let Some(ref live_message) = self.live_message {
             if live_message.has_content() && cursor_y > 0 {
                 self.render_message_to_buffer(live_message, &mut scratch, &mut cursor_y, width);
@@ -239,7 +348,7 @@ impl TerminalRenderer {
             }
         }
 
-        // 2) Render finalized messages from newest to oldest above live until we filled enough
+        // 3) Render finalized messages from newest to oldest above live until we filled enough
         for message in self.finalized_messages.iter().rev() {
             if cursor_y == 0 {
                 break;
@@ -337,7 +446,13 @@ impl TerminalRenderer {
     }
 
     /// Render a message to the scratch buffer, updating cursor_y
-    fn render_message_to_buffer(&self, message: &LiveMessage, scratch: &mut Buffer, cursor_y: &mut u16, width: u16) {
+    fn render_message_to_buffer(
+        &self,
+        message: &LiveMessage,
+        scratch: &mut Buffer,
+        cursor_y: &mut u16,
+        width: u16,
+    ) {
         // Render blocks from last to first (bottom to top)
         for block in message.blocks.iter().rev() {
             if *cursor_y == 0 {
@@ -348,7 +463,12 @@ impl TerminalRenderer {
             let block_height = widget.calculate_height(width).min(*cursor_y);
 
             if block_height > 0 {
-                let area = Rect::new(0, cursor_y.saturating_sub(block_height), width, block_height);
+                let area = Rect::new(
+                    0,
+                    cursor_y.saturating_sub(block_height),
+                    width,
+                    block_height,
+                );
                 widget.render(area, scratch);
                 *cursor_y = cursor_y.saturating_sub(block_height);
 
@@ -359,7 +479,13 @@ impl TerminalRenderer {
     }
 
     /// Render markdown content to buffer (for pending messages)
-    fn render_message_content_to_buffer(&self, content: &str, scratch: &mut Buffer, cursor_y: &mut u16, width: u16) -> u16 {
+    fn render_message_content_to_buffer(
+        &self,
+        content: &str,
+        scratch: &mut Buffer,
+        cursor_y: &mut u16,
+        width: u16,
+    ) -> u16 {
         if content.trim().is_empty() || *cursor_y == 0 {
             return 0;
         }
