@@ -182,12 +182,12 @@ impl UserInterface for TerminalTuiUI {
                     }
                 }
             }
-            UiEvent::StreamingStarted(_request_id) => {
-                debug!("Streaming started");
+            UiEvent::StreamingStarted(request_id) => {
+                debug!("Streaming started for request {}", request_id);
                 // Start a new message - this will finalize any existing live message
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-                    renderer_guard.start_new_message();
+                    renderer_guard.start_new_message(request_id);
                 }
             }
             UiEvent::AppendToTextBlock { content } => {
@@ -195,28 +195,9 @@ impl UserInterface for TerminalTuiUI {
 
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-
-                    // Ensure we have a live message
-                    if renderer_guard.live_message.is_none() {
-                        renderer_guard.start_new_message();
-                    }
-
-                    // Check if we need a new plain text block
-                    let needs_new_text_block =
-                        if let Some(ref message) = renderer_guard.live_message {
-                            match message.blocks.last() {
-                                Some(super::message::MessageBlock::PlainText(_)) => false,
-                                Some(_) => true, // Different block type, need new block
-                                None => true,    // No blocks, need new block
-                            }
-                        } else {
-                            true
-                        };
-
-                    if needs_new_text_block {
-                        renderer_guard.start_plain_text_block();
-                    }
-
+                    renderer_guard.ensure_last_block_type(super::message::MessageBlock::PlainText(
+                        super::message::PlainTextBlock::new(),
+                    ));
                     renderer_guard.append_to_live_block(&content);
                 }
             }
@@ -225,27 +206,9 @@ impl UserInterface for TerminalTuiUI {
 
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-
-                    // Ensure we have a live message
-                    if renderer_guard.live_message.is_none() {
-                        renderer_guard.start_new_message();
-                    }
-
-                    // Check if we need a new thinking block
-                    let needs_new_thinking_block =
-                        if let Some(ref message) = renderer_guard.live_message {
-                            match message.blocks.last() {
-                                Some(super::message::MessageBlock::Thinking(_)) => false,
-                                Some(_) => true, // Different block type, need new block
-                                None => true,    // No blocks, need new block
-                            }
-                        } else {
-                            true
-                        };
-
-                    if needs_new_thinking_block {
-                        renderer_guard.start_thinking_block();
-                    }
+                    renderer_guard.ensure_last_block_type(super::message::MessageBlock::Thinking(
+                        super::message::ThinkingBlock::new(),
+                    ));
 
                     if !content.trim().is_empty() {
                         renderer_guard.append_to_live_block(&content);
@@ -257,12 +220,6 @@ impl UserInterface for TerminalTuiUI {
 
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
-
-                    // Ensure we have a live message
-                    if renderer_guard.live_message.is_none() {
-                        renderer_guard.start_new_message();
-                    }
-
                     // Always start a new tool use block
                     renderer_guard.start_tool_use_block(name, id);
                 }

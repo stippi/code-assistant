@@ -10,7 +10,7 @@ use std::io;
 use tui_markdown as md;
 use tui_textarea::TextArea;
 
-use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ThinkingBlock, ToolUseBlock};
+use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ToolUseBlock};
 use crate::ui::ToolStatus;
 use std::time::Instant;
 
@@ -121,7 +121,7 @@ impl TerminalRenderer {
     }
 
     /// Start a new message (called on StreamingStarted)
-    pub fn start_new_message(&mut self) {
+    pub fn start_new_message(&mut self, request_id: u64) {
         // Show loading spinner
         self.spinner_state = SpinnerState::Loading {
             start_time: Instant::now(),
@@ -134,43 +134,46 @@ impl TerminalRenderer {
             }
         }
 
-        // Start new live message
-        let message_id = format!("msg_{}", self.next_message_id);
+        // Start new live message with request_id if provided
+        let message_id = format!("req_{request_id}");
         self.next_message_id += 1;
         self.live_message = Some(LiveMessage::new(message_id));
         self.last_overflow = 0;
-    }
-
-    /// Start a new plain text block within the current message
-    pub fn start_plain_text_block(&mut self) {
-        if let Some(ref mut message) = self.live_message {
-            message.add_block(MessageBlock::PlainText(PlainTextBlock::new()));
-        }
-    }
-
-    /// Start a new thinking block within the current message
-    pub fn start_thinking_block(&mut self) {
-        if let Some(ref mut message) = self.live_message {
-            message.add_block(MessageBlock::Thinking(ThinkingBlock::new()));
-        }
     }
 
     /// Start a new tool use block within the current message
     pub fn start_tool_use_block(&mut self, name: String, id: String) {
         // Hide spinner when first content arrives
         self.hide_loading_spinner_if_active();
-        if let Some(ref mut message) = self.live_message {
-            message.add_block(MessageBlock::ToolUse(ToolUseBlock::new(name, id)));
-        }
+
+        let live_message = self
+            .live_message
+            .as_mut()
+            .expect("start_tool_use_block called without an active live message");
+
+        live_message.add_block(MessageBlock::ToolUse(ToolUseBlock::new(name, id)));
     }
 
-    /// Legacy method for backward compatibility - starts a plain text block
-    pub fn start_live_block(&mut self) {
-        // Ensure we have a live message
-        if self.live_message.is_none() {
-            self.start_new_message();
+    /// Ensure the last block in the live message is of the specified type
+    /// If not, append a new block of that type
+    /// Returns true if a new block was created, false if the last block was already the right type
+    pub fn ensure_last_block_type(&mut self, block: MessageBlock) -> bool {
+        let live_message = self.live_message.as_mut()
+            .expect("ensure_last_block_type called without an active live message - call start_new_message first");
+
+        // Check if we need a new block of the specified type
+        let needs_new_block = match live_message.blocks.last() {
+            Some(last_block) => {
+                std::mem::discriminant(last_block) != std::mem::discriminant(&block)
+            }
+            None => true, // No blocks, need new block
+        };
+
+        if needs_new_block {
+            live_message.add_block(block);
         }
-        self.start_plain_text_block();
+
+        needs_new_block
     }
 
     /// Set or unset a pending user message (displayed while streaming)
@@ -182,19 +185,26 @@ impl TerminalRenderer {
     pub fn append_to_live_block(&mut self, text: &str) {
         // Hide spinner when first content arrives
         self.hide_loading_spinner_if_active();
-        if let Some(ref mut message) = self.live_message {
-            if let Some(last_block) = message.get_last_block_mut() {
-                last_block.append_content(text);
-            }
+
+        let live_message = self
+            .live_message
+            .as_mut()
+            .expect("append_to_live_block called without an active live message");
+
+        if let Some(last_block) = live_message.get_last_block_mut() {
+            last_block.append_content(text);
         }
     }
 
     /// Add or update a tool parameter in the current message
     pub fn add_or_update_tool_parameter(&mut self, tool_id: &str, name: String, value: String) {
-        if let Some(ref mut message) = self.live_message {
-            if let Some(tool_block) = message.get_tool_block_mut(tool_id) {
-                tool_block.add_or_update_parameter(name, value);
-            }
+        let live_message = self
+            .live_message
+            .as_mut()
+            .expect("add_or_update_tool_parameter called without an active live message");
+
+        if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
+            tool_block.add_or_update_parameter(name, value);
         }
     }
 
@@ -206,30 +216,16 @@ impl TerminalRenderer {
         message: Option<String>,
         output: Option<String>,
     ) {
-        if let Some(ref mut live_message) = self.live_message {
-            if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
-                tool_block.status = status;
-                tool_block.status_message = message;
-                tool_block.output = output;
-            }
-        }
-    }
+        let live_message = self
+            .live_message
+            .as_mut()
+            .expect("update_tool_status called without an active live message");
 
-    /// Finalize the current live message
-    pub fn finalize_live_message(&mut self) -> Result<()> {
-        if let Some(mut message) = self.live_message.take() {
-            message.finalized = true;
-            if message.has_content() {
-                self.finalized_messages.push(message);
-            }
+        if let Some(tool_block) = live_message.get_tool_block_mut(tool_id) {
+            tool_block.status = status;
+            tool_block.status_message = message;
+            tool_block.output = output;
         }
-        self.last_overflow = 0;
-        Ok(())
-    }
-
-    /// Legacy method - finalize current message
-    pub fn finalize_live_block(&mut self) -> Result<()> {
-        self.finalize_live_message()
     }
 
     /// Add a user message as finalized message and clear any pending user message
@@ -246,6 +242,22 @@ impl TerminalRenderer {
 
         self.finalized_messages.push(user_message);
         self.pending_user_message = None; // Clear pending message when it becomes finalized
+        Ok(())
+    }
+
+    /// Add an instruction/informational message as a finalized message
+    /// This is for system messages, welcome text, etc.
+    pub fn add_instruction_message(&mut self, content: &str) -> Result<()> {
+        let message_id = format!("instruction_{}", self.next_message_id);
+        self.next_message_id += 1;
+
+        let mut instruction_message = LiveMessage::new(message_id);
+        let mut text_block = PlainTextBlock::new();
+        text_block.content = content.to_string();
+        instruction_message.add_block(MessageBlock::PlainText(text_block));
+        instruction_message.finalized = true;
+
+        self.finalized_messages.push(instruction_message);
         Ok(())
     }
 

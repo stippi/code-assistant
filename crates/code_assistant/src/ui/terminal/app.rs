@@ -279,16 +279,6 @@ impl TerminalTuiApp {
             });
         }
 
-        // Print initial instructions BEFORE entering raw mode
-        println!("Code Assistant Terminal UI (Experimental)");
-        println!("- Type in the input area at the bottom");
-        println!("- Use arrow keys to move cursor, backspace/delete to edit");
-        println!("- Press Enter to submit input, Shift+Enter for newline");
-        println!("- Press Ctrl+C to quit");
-        println!("- Background messages will appear above the input area");
-        println!("- Supports Markdown formatting in messages");
-        println!("---");
-
         // Flush stdout to ensure instructions are displayed
         std::io::Write::flush(&mut std::io::stdout())?;
 
@@ -308,25 +298,18 @@ impl TerminalTuiApp {
         let (redraw_tx, mut redraw_rx) = tokio::sync::watch::channel::<()>(());
         terminal_ui.set_redraw_sender(redraw_tx.clone());
 
-        // Print welcome message to content area using consistent API
+        // Print welcome message to content area
         {
             let mut renderer_guard = renderer.lock().await;
-            renderer_guard.start_live_block();
-            renderer_guard.append_to_live_block("Welcome to Code Assistant Terminal UI!\n");
-            renderer_guard.append_to_live_block("Type your message and press Enter to send.\n");
-            renderer_guard.append_to_live_block("Use Shift+Enter for multi-line input.\n");
-            renderer_guard.append_to_live_block("Press Ctrl+C to quit.\n\n");
-            renderer_guard.finalize_live_block()?;
+            let welcome_text = "Welcome to Code Assistant Terminal UI!\n\
+                               Type your message and press Enter to send.\n\
+                               Use Shift+Enter for multi-line input.\n\
+                               Press Ctrl+C to quit.\n\n";
+            renderer_guard.add_instruction_message(welcome_text)?;
         }
 
         // Send initial task if provided
         if let Some(task) = &config.task {
-            {
-                let mut renderer_guard = renderer.lock().await;
-                renderer_guard.start_live_block();
-                renderer_guard.append_to_live_block(&format!("Starting with task: {task}\n\n"));
-                renderer_guard.finalize_live_block()?;
-            }
             let _ = backend_event_tx.try_send(BackendEvent::SendUserMessage {
                 session_id: session_id.clone(),
                 message: task.clone(),
