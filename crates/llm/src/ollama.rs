@@ -231,6 +231,11 @@ impl OllamaClient {
         request: &OllamaRequest,
         request_id: u64,
     ) -> Result<LLMResponse> {
+        debug!(
+            "Sending request to Ollama: '{}'",
+            serde_json::to_string(request)?
+        );
+
         let response = self
             .client
             .post(self.get_url())
@@ -296,6 +301,11 @@ impl OllamaClient {
         request_id: u64,
         streaming_callback: &StreamingCallback,
     ) -> Result<LLMResponse> {
+        debug!(
+            "Sending request to Ollama: '{}'",
+            serde_json::to_string(request)?
+        );
+
         let response = self
             .client
             .post(self.get_url())
@@ -466,8 +476,6 @@ impl LLMProvider for OllamaClient {
                     .collect()
             }),
         };
-
-        debug!("Sending request to Ollama: {:?}", ollama_request);
 
         let request_id = request.request_id;
 
