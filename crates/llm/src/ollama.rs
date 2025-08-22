@@ -316,7 +316,6 @@ impl OllamaClient {
 
         // Store status code before consuming response
         let status = response.status();
-
         if !status.is_success() {
             let error_text = response
                 .text()
