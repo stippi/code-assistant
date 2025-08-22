@@ -124,26 +124,24 @@ impl<'a> Widget for ToolWidget<'a> {
                 break;
             }
 
-            // Parameter value with special formatting
+            // Parameter value with special formatting - show full content for full-width parameters
             let rendered_value = render_parameter_value(&self.tool_block.name, name, &param.value);
-            let lines: Vec<&str> = rendered_value.lines().take(3).collect(); // Limit to 3 lines for compactness
+            let lines: Vec<&str> = rendered_value.lines().collect(); // Show all lines for full-width parameters
 
             for line in lines {
                 if current_y >= area.y + area.height {
                     break;
                 }
 
-                let display_line = if line.len() > area.width as usize {
-                    &line[..area.width as usize]
-                } else {
-                    line
-                };
+                // Don't truncate full-width parameters - show the complete content
+                let display_line = line;
+                let line_color = get_parameter_line_color(&self.tool_block.name, name, line);
 
                 buf.set_string(
                     area.x + 4,
                     current_y,
                     display_line,
-                    Style::default().fg(Color::White),
+                    Style::default().fg(line_color),
                 );
                 current_y += 1;
             }
@@ -204,12 +202,21 @@ fn render_parameter_value(tool_name: &str, param_name: &str, param_value: &str) 
             format!("--- OLD\n+++ NEW\n{param_value}")
         }
         ("edit", "old_text") => {
-            format!("- {}", param_value.replace('\n', "\n- "))
+            param_value.to_string() // Show old_text as-is, color will be handled by get_parameter_line_color
         }
         ("edit", "new_text") => {
-            format!("+ {}", param_value.replace('\n', "\n+ "))
+            param_value.to_string() // Show new_text as-is, color will be handled by get_parameter_line_color
         }
         // Regular full-width parameters
         _ => param_value.to_string(),
+    }
+}
+
+/// Get the appropriate color for a parameter line based on tool and parameter type
+fn get_parameter_line_color(tool_name: &str, param_name: &str, _line: &str) -> Color {
+    match (tool_name, param_name) {
+        ("edit", "old_text") => Color::Red,
+        ("edit", "new_text") => Color::Green,
+        _ => Color::White,
     }
 }

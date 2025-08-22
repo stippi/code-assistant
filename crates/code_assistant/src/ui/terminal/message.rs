@@ -124,7 +124,7 @@ impl MessageBlock {
                     }
                     if is_full_width_parameter(&block.name, name) {
                         height += 1; // Parameter name
-                        height += param.value.lines().take(3).count() as u16; // Max 3 lines of content
+                        height += param.value.lines().count() as u16; // Show all lines for full-width parameters
                     } else {
                         height += 1; // Regular parameter line
                     }
