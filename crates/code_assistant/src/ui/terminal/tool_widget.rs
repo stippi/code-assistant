@@ -1,5 +1,6 @@
 use crate::ui::ToolStatus;
 use ratatui::prelude::*;
+use similar::{ChangeTag, TextDiff};
 
 use super::message::ToolUseBlock;
 
@@ -40,13 +41,28 @@ impl<'a> Widget for ToolWidget<'a> {
             return; // Not enough space
         }
 
-        // Separate regular and full-width parameters
-        let (regular_params, fullwidth_params): (Vec<_>, Vec<_>) = self
+        // Check if we should combine old_text and new_text into a virtual diff for completed edit tools
+        let should_show_combined_diff = self.tool_block.name == "edit"
+            && matches!(
+                self.tool_block.status,
+                ToolStatus::Success | ToolStatus::Error
+            )
+            && self.tool_block.parameters.contains_key("old_text")
+            && self.tool_block.parameters.contains_key("new_text");
+
+        // Separate regular and full-width parameters, handling the special diff case
+        let (regular_params, mut fullwidth_params): (Vec<_>, Vec<_>) = self
             .tool_block
             .parameters
             .iter()
             .map(|(k, v)| (k.clone(), v))
             .partition(|(name, _)| !is_full_width_parameter(&self.tool_block.name, name));
+
+        // If we should show combined diff, remove old_text and new_text from fullwidth_params
+        // and we'll handle them specially
+        if should_show_combined_diff {
+            fullwidth_params.retain(|(name, _)| name != "old_text" && name != "new_text");
+        }
 
         let status_color = self.get_status_color();
         let status_symbol = self.get_status_symbol();
@@ -144,6 +160,57 @@ impl<'a> Widget for ToolWidget<'a> {
                     Style::default().fg(line_color),
                 );
                 current_y += 1;
+            }
+        }
+
+        // Render combined diff for completed edit tools
+        if should_show_combined_diff {
+            if current_y >= area.y + area.height {
+                // No more space
+            } else if let (Some(old_param), Some(new_param)) = (
+                self.tool_block.parameters.get("old_text"),
+                self.tool_block.parameters.get("new_text"),
+            ) {
+                // Parameter name for the combined diff
+                buf.set_string(
+                    area.x + 2,
+                    current_y,
+                    "diff",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                );
+                current_y += 1;
+
+                if current_y < area.y + area.height {
+                    // Render the combined diff using similar crate directly
+                    let diff = TextDiff::configure()
+                        .newline_terminated(true)
+                        .diff_lines(&old_param.value, &new_param.value);
+
+                    for change in diff.iter_all_changes() {
+                        if current_y >= area.y + area.height {
+                            break;
+                        }
+
+                        let line_content = change.value().trim_end();
+                        let (color, prefix) = match change.tag() {
+                            ChangeTag::Equal => (Color::Gray, " "),
+                            ChangeTag::Delete => (Color::Red, "-"),
+                            ChangeTag::Insert => (Color::Green, "+"),
+                        };
+
+                        let display_text = format!("{prefix} {line_content}");
+
+                        buf.set_string(
+                            area.x + 4,
+                            current_y,
+                            &display_text,
+                            Style::default().fg(color),
+                        );
+                        current_y += 1;
+                    }
+                }
             }
         }
 

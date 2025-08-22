@@ -310,7 +310,7 @@ impl TerminalTuiApp {
         {
             let mut renderer_guard = renderer.lock().await;
             let log_file_path = dirs::cache_dir()
-                .unwrap_or_else(|| std::env::temp_dir())
+                .unwrap_or_else(std::env::temp_dir)
                 .join("code-assistant")
                 .join("terminal-ui.log");
 

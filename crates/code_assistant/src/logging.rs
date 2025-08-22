@@ -9,7 +9,7 @@ pub fn setup_logging(verbose_level: u8, to_stdout: bool) {
 pub fn setup_logging_for_terminal_ui(verbose_level: u8) {
     // For terminal UI, log to a file to prevent interference with the UI
     let log_file_path = dirs::cache_dir()
-        .unwrap_or_else(|| std::env::temp_dir())
+        .unwrap_or_else(std::env::temp_dir)
         .join("code-assistant")
         .join("terminal-ui.log");
 
@@ -56,8 +56,7 @@ fn setup_logging_with_file(
             .open(&log_file_path)
             .unwrap_or_else(|_| {
                 eprintln!(
-                    "Warning: Could not open log file {:?}, falling back to stderr",
-                    log_file_path
+                    "Warning: Could not open log file {log_file_path:?}, falling back to stderr"
                 );
                 std::fs::File::create("/dev/null").unwrap_or_else(|_| {
                     // On Windows, use NUL device

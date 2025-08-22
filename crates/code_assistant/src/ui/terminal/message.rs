@@ -117,16 +117,42 @@ impl MessageBlock {
             MessageBlock::ToolUse(block) => {
                 let mut height = 1; // Tool name line
 
+                // Check if we should show combined diff for completed edit tools
+                let should_show_combined_diff = block.name == "edit"
+                    && matches!(block.status, ToolStatus::Success | ToolStatus::Error)
+                    && block.parameters.contains_key("old_text")
+                    && block.parameters.contains_key("new_text");
+
                 // Count parameter lines
                 for (name, param) in &block.parameters {
                     if should_hide_parameter(&block.name, name, &param.value) {
                         continue;
                     }
+
+                    // Skip old_text and new_text if we're showing combined diff
+                    if should_show_combined_diff && (name == "old_text" || name == "new_text") {
+                        continue;
+                    }
+
                     if is_full_width_parameter(&block.name, name) {
                         height += 1; // Parameter name
                         height += param.value.lines().count() as u16; // Show all lines for full-width parameters
                     } else {
                         height += 1; // Regular parameter line
+                    }
+                }
+
+                // Add height for combined diff if applicable
+                if should_show_combined_diff {
+                    if let (Some(old_param), Some(new_param)) = (
+                        block.parameters.get("old_text"),
+                        block.parameters.get("new_text"),
+                    ) {
+                        height += 1; // "diff" parameter name
+                                     // Estimate diff height - this is approximate but should be close enough
+                        let old_lines = old_param.value.lines().count();
+                        let new_lines = new_param.value.lines().count();
+                        height += (old_lines + new_lines) as u16; // Conservative estimate
                     }
                 }
 
