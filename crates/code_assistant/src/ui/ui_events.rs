@@ -94,4 +94,8 @@ pub enum UiEvent {
     RequestPendingMessageEdit { session_id: String },
     /// Update pending message display
     UpdatePendingMessage { message: Option<String> },
+    /// Display an error message to the user
+    DisplayError { message: String },
+    /// Clear the current error display
+    ClearError,
 }

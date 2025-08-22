@@ -16,7 +16,7 @@ use crate::types::{ToolSyntax, WorkingMemory};
 use crate::ui::UserInterface;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
-use tracing::debug;
+use tracing::{debug, error};
 
 /// The main SessionManager that manages multiple active sessions with on-demand agents
 pub struct SessionManager {
@@ -322,13 +322,26 @@ impl SessionManager {
                     );
                 }
                 Err(e) => {
-                    tracing::error!("Agent failed for session {}: {}", session_id_clone, e);
+                    error!("Agent failed for session {}: {}", session_id_clone, e);
                     // Also log the full error chain for debugging
-                    tracing::debug!(
+                    debug!(
                         "Agent error chain for session {}: {:?}",
-                        session_id_clone,
-                        e
+                        session_id_clone, e
                     );
+
+                    // Send error to UI for user notification
+                    let error_message = format!("Agent error: {e}");
+                    if let Err(ui_error) = ui_clone
+                        .send_event(crate::ui::UiEvent::DisplayError {
+                            message: error_message,
+                        })
+                        .await
+                    {
+                        error!(
+                            "Failed to send error to UI for session {}: {}",
+                            session_id_clone, ui_error
+                        );
+                    }
                 }
             }
             result
@@ -502,28 +515,23 @@ impl SessionManager {
                             );
                         }
                         Ok(Err(e)) => {
-                            tracing::error!("Agent task failed for session {}: {}", session_id, e);
+                            error!("Agent task failed for session {}: {}", session_id, e);
                             // Log the full error chain for debugging
-                            tracing::debug!(
-                                "Agent error chain for session {}: {:?}",
-                                session_id,
-                                e
-                            );
+                            debug!("Agent error chain for session {}: {:?}", session_id, e);
+                            // Note: Error display is handled in the agent task itself
                         }
                         Err(join_error) => {
                             if join_error.is_cancelled() {
                                 debug!("Agent task was cancelled for session {}", session_id);
                             } else if join_error.is_panic() {
-                                tracing::error!(
+                                error!(
                                     "Agent task panicked for session {}: {:?}",
-                                    session_id,
-                                    join_error
+                                    session_id, join_error
                                 );
                             } else {
-                                tracing::error!(
+                                error!(
                                     "Agent task join error for session {}: {}",
-                                    session_id,
-                                    join_error
+                                    session_id, join_error
                                 );
                             }
                         }

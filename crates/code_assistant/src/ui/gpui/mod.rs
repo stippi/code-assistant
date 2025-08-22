@@ -86,6 +86,9 @@ pub struct Gpui {
     // Draft storage system
     draft_storage: Arc<DraftStorage>,
     session_drafts: Arc<Mutex<HashMap<String, String>>>,
+
+    // Error state management
+    current_error: Arc<Mutex<Option<String>>>,
 }
 
 fn init(cx: &mut App) {
@@ -210,6 +213,9 @@ impl Gpui {
             // Draft storage system
             draft_storage,
             session_drafts: Arc::new(Mutex::new(HashMap::new())),
+
+            // Error state management
+            current_error: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -742,6 +748,9 @@ impl Gpui {
                     message,
                     attachments.len()
                 );
+                // Clear any existing error when user sends a new message
+                *self.current_error.lock().unwrap() = None;
+
                 if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
                     let _ = sender.try_send(BackendEvent::SendUserMessage {
                         session_id,
@@ -891,6 +900,20 @@ impl Gpui {
                     .expect("Failed to update entity");
                 }
             }
+            UiEvent::DisplayError { message } => {
+                debug!("UI: DisplayError event with message: {}", message);
+                // Store the error message in state
+                *self.current_error.lock().unwrap() = Some(message);
+                // Refresh UI to show the error popover
+                cx.refresh().expect("Failed to refresh windows");
+            }
+            UiEvent::ClearError => {
+                debug!("UI: ClearError event");
+                // Clear the error message from state
+                *self.current_error.lock().unwrap() = None;
+                // Refresh UI to hide the error popover
+                cx.refresh().expect("Failed to refresh windows");
+            }
         }
     }
 
@@ -982,6 +1005,10 @@ impl Gpui {
 
     pub fn get_current_session_id(&self) -> Option<String> {
         self.current_session_id.lock().unwrap().clone()
+    }
+
+    pub fn get_current_error(&self) -> Option<String> {
+        self.current_error.lock().unwrap().clone()
     }
 
     // Extended draft management methods with attachments
@@ -1120,6 +1147,8 @@ impl Gpui {
             }
             BackendResponse::Error { message } => {
                 warn!("Backend error: {}", message);
+                // Display the error to the user
+                self.push_event(UiEvent::DisplayError { message });
             }
             BackendResponse::PendingMessageForEdit {
                 session_id,
@@ -1160,6 +1189,8 @@ impl UserInterface for Gpui {
             UiEvent::StreamingStarted(request_id) => {
                 // Store the request ID
                 *self.current_request_id.lock().unwrap() = *request_id;
+                // Clear any existing error when new operation starts
+                *self.current_error.lock().unwrap() = None;
             }
             UiEvent::StreamingStopped { .. } => {
                 // Clear stop request for current session since streaming has stopped

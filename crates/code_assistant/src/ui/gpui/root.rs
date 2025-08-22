@@ -309,12 +309,92 @@ impl RootView {
 
     /// Render the floating status popover if needed
     fn render_status_popover(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
-        // Get current session activity state from global Gpui
-        let current_activity_state = if let Some(gpui) = cx.try_global::<Gpui>() {
-            gpui.current_session_activity_state.lock().unwrap().clone()
+        // Get current error and session activity state from global Gpui
+        let (current_error, current_activity_state) = if let Some(gpui) = cx.try_global::<Gpui>() {
+            (
+                gpui.get_current_error(),
+                gpui.current_session_activity_state.lock().unwrap().clone(),
+            )
         } else {
-            None
+            (None, None)
         };
+
+        // Check for error first (higher priority than activity states)
+        if let Some(error_message) = current_error {
+            let (bg_color, border_color, text_color) = if cx.theme().is_dark() {
+                (
+                    rgba(0x7F1D1D80), // Dark red background with transparency
+                    rgba(0xEF4444FF), // Red border
+                    rgba(0xFCA5A5FF), // Light red text
+                )
+            } else {
+                (
+                    rgba(0xFEF2F2FF), // Light red background
+                    rgba(0xF87171FF), // Red border
+                    rgba(0xDC2626FF), // Dark red text
+                )
+            };
+
+            // Return the error popover positioned at bottom
+            return vec![div()
+                .absolute()
+                .bottom(px(80.)) // Above input area (input is ~76px tall)
+                .left(px(0.))
+                .right(px(0.))
+                .flex()
+                .justify_center() // Center the content horizontally
+                .child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .bg(bg_color)
+                        .border_1()
+                        .border_color(border_color)
+                        .rounded_lg()
+                        .shadow_lg()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .max_w(px(600.)) // Limit width for long error messages
+                        .child(
+                            svg()
+                                .size(px(14.))
+                                .path(SharedString::from("icons/circle_stop.svg"))
+                                .text_color(text_color),
+                        )
+                        .child(
+                            div()
+                                .text_color(text_color)
+                                .text_size(px(11.))
+                                .font_weight(gpui::FontWeight(500.0))
+                                .child(error_message),
+                        )
+                        .child(
+                            // Add a close button
+                            div()
+                                .size(px(16.))
+                                .rounded_sm()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(rgba(0xFFFFFF20))) // Light overlay on hover
+                                .child(
+                                    svg()
+                                        .size(px(10.))
+                                        .path(SharedString::from("icons/close.svg"))
+                                        .text_color(text_color),
+                                )
+                                .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
+                                    // Clear the error when close button is clicked
+                                    if let Some(sender) = cx.try_global::<UiEventSender>() {
+                                        let _ = sender.0.try_send(UiEvent::ClearError);
+                                    }
+                                }),
+                        ),
+                )
+                .into_any_element()];
+        }
 
         if let Some(activity_state) = current_activity_state {
             if matches!(
