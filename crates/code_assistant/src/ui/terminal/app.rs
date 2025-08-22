@@ -3,7 +3,10 @@ use crate::persistence::FileSessionPersistence;
 use crate::session::manager::{AgentConfig, SessionManager};
 use crate::ui::backend::{handle_backend_events, BackendEvent, BackendResponse};
 use crate::ui::terminal::{
-    input::InputManager, renderer::TerminalRenderer, state::AppState, ui::TerminalTuiUI,
+    input::{InputManager, KeyEventResult},
+    renderer::TerminalRenderer,
+    state::AppState,
+    ui::TerminalTuiUI,
 };
 use crate::ui::UserInterface;
 use anyhow::Result;
@@ -31,39 +34,74 @@ async fn event_loop(
         if event::poll(tokio::time::Duration::from_millis(8))? {
             match event::read()? {
                 Event::Key(key_event) => {
-                    let (should_quit, user_message) = input_manager.handle_key_event(key_event);
+                    let key_result = input_manager.handle_key_event(key_event);
 
-                    if should_quit {
-                        break;
-                    }
+                    match key_result {
+                        KeyEventResult::Quit => {
+                            break;
+                        }
+                        KeyEventResult::Escape => {
+                            // Check if there's an error to dismiss first
+                            let has_error = {
+                                let renderer_guard = renderer.lock().await;
+                                renderer_guard.has_error()
+                            };
 
-                    if let Some(message) = user_message {
-                        let current_session_id = {
-                            let state = app_state.lock().await;
-                            state.current_session_id.clone()
-                        };
+                            if has_error {
+                                // Clear the error
+                                let mut renderer_guard = renderer.lock().await;
+                                renderer_guard.clear_error();
+                            } else {
+                                // Check if agent is running and cancel it
+                                let activity_state = {
+                                    let state = app_state.lock().await;
+                                    state.activity_state.clone()
+                                };
 
-                        if let Some(session_id) = current_session_id {
-                            let activity_state = {
+                                if let Some(state) = activity_state {
+                                    if !matches!(
+                                        state,
+                                        crate::session::instance::SessionActivityState::Idle
+                                    ) {
+                                        // Agent is running, send cancel request
+                                        // This would need to be implemented similar to GPUI's cancel mechanism
+                                        debug!("Escape pressed - would cancel running agent");
+                                        // TODO: Implement agent cancellation for terminal UI
+                                    }
+                                }
+                            }
+                        }
+                        KeyEventResult::SendMessage(message) => {
+                            let current_session_id = {
                                 let state = app_state.lock().await;
-                                state.activity_state.clone()
+                                state.current_session_id.clone()
                             };
 
-                            let event = match activity_state {
-                                Some(crate::session::instance::SessionActivityState::Idle)
-                                | None => BackendEvent::SendUserMessage {
-                                    session_id,
-                                    message,
-                                    attachments: Vec::new(),
-                                },
-                                _ => BackendEvent::QueueUserMessage {
-                                    session_id,
-                                    message,
-                                    attachments: Vec::new(),
-                                },
-                            };
+                            if let Some(session_id) = current_session_id {
+                                let activity_state = {
+                                    let state = app_state.lock().await;
+                                    state.activity_state.clone()
+                                };
 
-                            let _ = backend_event_tx.send(event).await;
+                                let event = match activity_state {
+                                    Some(crate::session::instance::SessionActivityState::Idle)
+                                    | None => BackendEvent::SendUserMessage {
+                                        session_id,
+                                        message,
+                                        attachments: Vec::new(),
+                                    },
+                                    _ => BackendEvent::QueueUserMessage {
+                                        session_id,
+                                        message,
+                                        attachments: Vec::new(),
+                                    },
+                                };
+
+                                let _ = backend_event_tx.send(event).await;
+                            }
+                        }
+                        KeyEventResult::Continue => {
+                            // Do nothing, just continue the loop
                         }
                     }
                 }
@@ -265,11 +303,9 @@ impl TerminalTuiApp {
                                 .await;
                         }
                         BackendResponse::Error { message } => {
-                            // Handle error via UI event
+                            // Display error in status area
                             let _ = ui_clone
-                                .send_event(crate::ui::UiEvent::AppendToTextBlock {
-                                    content: format!("\n[error] {message}\n"),
-                                })
+                                .send_event(crate::ui::UiEvent::DisplayError { message })
                                 .await;
                         }
                         BackendResponse::SessionCreated { .. } => {}

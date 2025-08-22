@@ -159,6 +159,8 @@ impl UserInterface for TerminalTuiUI {
                 // Add user message
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
+                    // Clear any existing error when user sends a message
+                    renderer_guard.clear_error();
                     let formatted = format!("\n\n**User:** {content}\n");
                     let _ = renderer_guard.add_user_message(&formatted);
 
@@ -188,6 +190,8 @@ impl UserInterface for TerminalTuiUI {
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
                     renderer_guard.start_new_message(request_id);
+                    // Clear any existing error when new operation starts
+                    renderer_guard.clear_error();
                 }
             }
             UiEvent::AppendToTextBlock { content } => {
@@ -247,6 +251,22 @@ impl UserInterface for TerminalTuiUI {
 
                 // Don't finalize the message yet - keep it live for tool status updates
                 // It will be finalized when the next StreamingStarted event arrives
+            }
+            UiEvent::DisplayError { message } => {
+                debug!("Displaying error: {}", message);
+                // Set error in renderer
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.set_error(message);
+                }
+            }
+            UiEvent::ClearError => {
+                debug!("Clearing error");
+                // Clear error in renderer
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.clear_error();
+                }
             }
             _ => {
                 // For other events, just log them

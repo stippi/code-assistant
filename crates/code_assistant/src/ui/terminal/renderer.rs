@@ -66,6 +66,8 @@ pub struct TerminalRenderer {
     pub live_message: Option<LiveMessage>,
     /// Optional pending user message (displayed between input and live content while streaming)
     pending_user_message: Option<String>,
+    /// Current error message to display
+    current_error: Option<String>,
     /// Last computed overflow (how many rows have been promoted so far); used to promote only deltas
     pub last_overflow: u16,
     /// Maximum rows for input area (including 1 for content min + border)
@@ -83,6 +85,7 @@ impl TerminalRenderer {
             finalized_messages: Vec::new(),
             live_message: None,
             pending_user_message: None,
+            current_error: None,
             last_overflow: 0,
             max_input_rows: 5, // max input height (content lines + border line)
             spinner_state: SpinnerState::Hidden,
@@ -297,8 +300,18 @@ impl TerminalRenderer {
         // Reserve one blank line as gap above input (at the very bottom)
         cursor_y = cursor_y.saturating_sub(1);
 
-        // Reserve space for pending user message if present
-        let pending_height = if let Some(ref pending_msg) = self.pending_user_message {
+        // Reserve space for status area (error takes priority over pending message)
+        let status_height = if let Some(ref error_msg) = self.current_error {
+            let rendered_height = self.render_message_content_to_buffer(
+                error_msg,
+                &mut scratch,
+                &mut cursor_y,
+                width,
+            );
+            // Add a small gap above error message
+            cursor_y = cursor_y.saturating_sub(1);
+            rendered_height + 1
+        } else if let Some(ref pending_msg) = self.pending_user_message {
             let rendered_height = self.render_message_content_to_buffer(
                 pending_msg,
                 &mut scratch,
@@ -396,9 +409,9 @@ impl TerminalRenderer {
         self.terminal.draw(|f| {
             let full = f.area();
 
-            let [content_area, pending_area, input_area] = Layout::vertical([
+            let [content_area, status_area, input_area] = Layout::vertical([
                 Constraint::Min(1),
-                Constraint::Length(pending_height),
+                Constraint::Length(status_height),
                 Constraint::Length(input_height),
             ])
             .areas(full);
@@ -434,9 +447,11 @@ impl TerminalRenderer {
                 }
             }
 
-            // Render pending user message if present
-            if let Some(ref pending_msg) = self.pending_user_message {
-                Self::render_pending_message(f, pending_area, pending_msg);
+            // Render status area (error takes priority over pending message)
+            if let Some(ref error_msg) = self.current_error {
+                Self::render_error_message(f, status_area, error_msg);
+            } else if let Some(ref pending_msg) = self.pending_user_message {
+                Self::render_pending_message(f, status_area, pending_msg);
             }
 
             // Render input area (block + textarea)
@@ -573,5 +588,35 @@ impl TerminalRenderer {
             .wrap(Wrap { trim: false });
 
         f.render_widget(paragraph, area);
+    }
+
+    /// Render error message with red styling and dismiss instructions
+    fn render_error_message(f: &mut Frame, area: Rect, message: &str) {
+        if area.height == 0 {
+            return;
+        }
+
+        let error_text = format!("Error: {message} (Press Esc to dismiss)");
+        let text = md::from_str(&error_text);
+        let paragraph = Paragraph::new(text)
+            .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+            .wrap(Wrap { trim: false });
+
+        f.render_widget(paragraph, area);
+    }
+
+    /// Set an error message to display
+    pub fn set_error(&mut self, error_message: String) {
+        self.current_error = Some(error_message);
+    }
+
+    /// Clear the current error message
+    pub fn clear_error(&mut self) {
+        self.current_error = None;
+    }
+
+    /// Check if there's currently an error being displayed
+    pub fn has_error(&self) -> bool {
+        self.current_error.is_some()
     }
 }

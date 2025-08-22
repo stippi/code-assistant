@@ -4,6 +4,19 @@ use ratatui::{
 };
 use tui_textarea::TextArea;
 
+/// Result of handling a key event
+#[derive(Debug, PartialEq)]
+pub enum KeyEventResult {
+    /// Continue processing normally
+    Continue,
+    /// Quit the application
+    Quit,
+    /// Submit a message
+    SendMessage(String),
+    /// Escape key was pressed - main loop decides what to do
+    Escape,
+}
+
 /// Manages the input area using tui-textarea
 pub struct InputManager {
     pub textarea: TextArea<'static>,
@@ -16,23 +29,26 @@ impl InputManager {
         }
     }
 
-    /// Handle a key event and return (should_quit, submitted_content)
-    pub fn handle_key_event(&mut self, key_event: KeyEvent) -> (bool, Option<String>) {
+    /// Handle a key event and return the appropriate result
+    pub fn handle_key_event(&mut self, key_event: KeyEvent) -> KeyEventResult {
         match key_event {
             KeyEvent {
                 code: KeyCode::Char('c'),
                 modifiers: KeyModifiers::CONTROL,
                 ..
-            } => {
-                return (true, None); // Signal to quit
-            }
+            } => KeyEventResult::Quit,
+            KeyEvent {
+                code: KeyCode::Esc,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => KeyEventResult::Escape,
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::SHIFT,
                 ..
             } => {
                 self.textarea.insert_newline();
-                return (false, None);
+                KeyEventResult::Continue
             }
             KeyEvent {
                 code: KeyCode::Enter,
@@ -43,16 +59,17 @@ impl InputManager {
                 let content = self.get_content();
                 if !content.is_empty() {
                     self.clear();
-                    return (false, Some(content));
+                    KeyEventResult::SendMessage(content)
+                } else {
+                    KeyEventResult::Continue
                 }
-                return (false, None);
             }
             _ => {
                 // Forward the key event directly to tui-textarea
                 self.textarea.input(key_event);
+                KeyEventResult::Continue
             }
         }
-        (false, None)
     }
 
     /// Get the current content of the textarea
@@ -95,25 +112,22 @@ mod tests {
         assert_eq!(input_manager.get_content(), "");
 
         // Test character input
-        let (quit, submitted) = input_manager
+        let result = input_manager
             .handle_key_event(create_key_event(KeyCode::Char('h'), KeyModifiers::NONE));
-        assert!(!quit);
-        assert!(submitted.is_none());
+        assert_eq!(result, KeyEventResult::Continue);
 
-        let (quit, submitted) = input_manager
+        let result = input_manager
             .handle_key_event(create_key_event(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert!(!quit);
-        assert!(submitted.is_none());
+        assert_eq!(result, KeyEventResult::Continue);
 
         // Content should contain the typed characters
         let content = input_manager.get_content();
         assert_eq!(content, "hi");
 
         // Test submission
-        let (quit, submitted) =
+        let result =
             input_manager.handle_key_event(create_key_event(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(!quit);
-        assert_eq!(submitted, Some("hi".to_string()));
+        assert_eq!(result, KeyEventResult::SendMessage("hi".to_string()));
 
         // Content should be cleared after submission
         assert_eq!(input_manager.get_content(), "");
@@ -123,10 +137,18 @@ mod tests {
     fn test_quit_signal() {
         let mut input_manager = InputManager::new();
 
-        let (quit, submitted) = input_manager
+        let result = input_manager
             .handle_key_event(create_key_event(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        assert!(quit);
-        assert!(submitted.is_none());
+        assert_eq!(result, KeyEventResult::Quit);
+    }
+
+    #[test]
+    fn test_escape_key() {
+        let mut input_manager = InputManager::new();
+
+        let result =
+            input_manager.handle_key_event(create_key_event(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(result, KeyEventResult::Escape);
     }
 
     #[test]
@@ -138,10 +160,9 @@ mod tests {
         input_manager.handle_key_event(create_key_event(KeyCode::Char('i'), KeyModifiers::NONE));
 
         // Shift+Enter should add newline without submitting
-        let (quit, submitted) =
+        let result =
             input_manager.handle_key_event(create_key_event(KeyCode::Enter, KeyModifiers::SHIFT));
-        assert!(!quit);
-        assert!(submitted.is_none());
+        assert_eq!(result, KeyEventResult::Continue);
 
         // Add more text
         input_manager.handle_key_event(create_key_event(KeyCode::Char('b'), KeyModifiers::NONE));
@@ -153,9 +174,8 @@ mod tests {
         assert_eq!(content, "hi\nbye");
 
         // Regular Enter should submit
-        let (quit, submitted) =
+        let result =
             input_manager.handle_key_event(create_key_event(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(!quit);
-        assert_eq!(submitted, Some("hi\nbye".to_string()));
+        assert_eq!(result, KeyEventResult::SendMessage("hi\nbye".to_string()));
     }
 }
