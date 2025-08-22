@@ -317,15 +317,6 @@ impl OllamaClient {
         // Store status code before consuming response
         let status = response.status();
 
-        // Log response headers for debugging encoding issues
-        let headers = response.headers();
-        if let Some(content_type) = headers.get("content-type") {
-            debug!("Ollama response Content-Type: {:?}", content_type);
-        }
-        if let Some(charset) = headers.get("charset") {
-            debug!("Ollama response Charset: {:?}", charset);
-        }
-
         if !status.is_success() {
             let error_text = response
                 .text()
