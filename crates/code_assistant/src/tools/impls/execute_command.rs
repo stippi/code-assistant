@@ -71,23 +71,28 @@ impl Tool for ExecuteCommandTool {
     type Output = ExecuteCommandOutput;
 
     fn spec(&self) -> ToolSpec {
+        let description = concat!(
+            "Execute a command line or shell script within a specified project. ",
+            "Blocks until the command returns by itself and then provides all output at once. ",
+            "Must not be used with commands that would keep running forever, unless combined with a timeout."
+        );
         ToolSpec {
             name: "execute_command",
-            description: "Execute a command line within a specified project",
+            description,
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
                     "project": {
                         "type": "string",
-                        "description": "Name of the project context for the command"
+                        "description": "Name of the project context for the command/script"
                     },
                     "command_line": {
                         "type": "string",
-                        "description": "The complete command to execute"
+                        "description": "The complete command or shell script to execute"
                     },
                     "working_dir": {
                         "type": "string",
-                        "description": "Optional: working directory for the command (relative to project root)"
+                        "description": "Optional: working directory (relative to project root)"
                     }
                 },
                 "required": ["project", "command_line"]

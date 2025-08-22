@@ -1,3 +1,4 @@
+pub mod backend;
 pub mod gpui;
 pub mod streaming;
 pub mod terminal;
@@ -37,7 +38,8 @@ pub trait UserInterface: Send + Sync {
 
     /// Clear rate limit notification
     fn clear_rate_limit(&self);
-}
 
-#[cfg(test)]
-mod terminal_test;
+    /// Downcast to Any for accessing concrete type methods
+    #[allow(dead_code)]
+    fn as_any(&self) -> &dyn std::any::Any;
+}

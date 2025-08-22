@@ -82,6 +82,7 @@ impl AgentStatePersistence for SessionStatePersistence {
     }
 }
 
+#[allow(dead_code)]
 const STATE_FILE: &str = ".code-assistant.state.json";
 
 /// Simple file-based persistence that saves agent state to a single JSON file
@@ -94,6 +95,7 @@ pub struct FileStatePersistence {
 }
 
 impl FileStatePersistence {
+    #[allow(dead_code)]
     pub fn new(working_dir: &Path, tool_syntax: ToolSyntax, use_diff_blocks: bool) -> Self {
         let state_file_path = working_dir.join(STATE_FILE);
         info!("Using state file: {}", state_file_path.display());
@@ -105,6 +107,7 @@ impl FileStatePersistence {
     }
 
     /// Load agent state from the state file if it exists
+    #[allow(dead_code)]
     pub fn load_agent_state(&self) -> Result<Option<ChatSession>> {
         if !self.state_file_path.exists() {
             debug!(
@@ -129,6 +132,7 @@ impl FileStatePersistence {
     }
 
     /// Check if the state file exists
+    #[allow(dead_code)]
     pub fn has_saved_state(&self) -> bool {
         self.state_file_path.exists()
     }

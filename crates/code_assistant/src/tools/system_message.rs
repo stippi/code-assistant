@@ -5,31 +5,38 @@ use crate::tools::core::ToolScope;
 use crate::tools::ParserRegistry;
 
 const SYSTEM_MESSAGE: &str = include_str!("../../resources/system_message.md");
-const SYSTEM_MESSAGE_TOOLS: &str = include_str!("../../resources/system_message_tools.md");
+const TOOLS_INTRODUCTION: &str = include_str!("../../resources/tool_use_intro.md");
 
 /// Generate a system message for the given tool syntax and scope
 pub fn generate_system_message(tool_syntax: ToolSyntax, scope: ToolScope) -> String {
-    match tool_syntax {
-        ToolSyntax::Native => SYSTEM_MESSAGE.to_string(),
-        _ => {
-            // For XML and Caret modes, get the base template and replace placeholders
-            let mut base = SYSTEM_MESSAGE_TOOLS.to_string();
+    let mut base = SYSTEM_MESSAGE.to_string();
 
-            // Get parser and generate syntax-specific documentation
+    match tool_syntax {
+        ToolSyntax::Native => {
+            // For native mode, replace the entire placeholder section with an empty line
+            base = base.replace("{{syntax}}\n\n{{tools}}\n\n", "\n");
+            base
+        }
+        _ => {
+            // For XML and Caret modes, get parser and generate documentation
             let parser = ParserRegistry::get(tool_syntax);
 
-            // Replace syntax documentation
+            let tool_use_header = "TOOL USE\n\n";
+
+            // Replace syntax documentation with tools introduction + syntax doc
             if let Some(syntax_doc) = parser.generate_syntax_documentation() {
-                base = base.replace("{{syntax}}", &syntax_doc);
+                let syntax_content = format!("{TOOLS_INTRODUCTION}{syntax_doc}");
+                base = base.replace("{{syntax}}", &syntax_content);
             } else {
-                base = base.replace("{{syntax}}", "");
+                base = base.replace("{{syntax}}", TOOLS_INTRODUCTION);
             }
 
-            // Replace tools documentation
+            // Replace tools documentation with header + tools doc
             if let Some(tools_doc) = parser.generate_tool_documentation(scope) {
-                base = base.replace("{{tools}}", &tools_doc);
+                let tools_content = format!("{tool_use_header}{tools_doc}");
+                base = base.replace("{{tools}}", &tools_content);
             } else {
-                base = base.replace("{{tools}}", "");
+                base = base.replace("{{tools}}", tool_use_header);
             }
 
             base
@@ -49,6 +56,7 @@ mod tests {
         assert!(!native_msg.contains("{{syntax}}"));
         assert!(!native_msg.contains("<tool:"));
         assert!(!native_msg.contains("^^^"));
+        assert!(!native_msg.contains("TOOL USE"));
         println!("✓ Native system message OK ({} chars)", native_msg.len());
 
         // Test XML mode
@@ -69,6 +77,10 @@ mod tests {
             !xml_msg.contains("triple-caret"),
             "XML message should not contain caret syntax docs"
         );
+        assert!(
+            xml_msg.contains("TOOL USE"),
+            "XML message should contain tool use sections"
+        );
         println!("✓ XML system message OK ({} chars)", xml_msg.len());
 
         // Test Caret mode
@@ -88,6 +100,10 @@ mod tests {
         assert!(
             !caret_msg.contains("<tool:"),
             "Caret message should not contain XML syntax docs"
+        );
+        assert!(
+            caret_msg.contains("TOOL USE"),
+            "Caret message should contain tool use sections"
         );
         println!("✓ Caret system message OK ({} chars)", caret_msg.len());
 
