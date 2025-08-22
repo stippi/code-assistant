@@ -316,6 +316,16 @@ impl OllamaClient {
 
         // Store status code before consuming response
         let status = response.status();
+
+        // Log response headers for debugging encoding issues
+        let headers = response.headers();
+        if let Some(content_type) = headers.get("content-type") {
+            debug!("Ollama response Content-Type: {:?}", content_type);
+        }
+        if let Some(charset) = headers.get("charset") {
+            debug!("Ollama response Charset: {:?}", charset);
+        }
+
         if !status.is_success() {
             let error_text = response
                 .text()
@@ -335,8 +345,10 @@ impl OllamaClient {
         let mut final_eval_counts = (0u32, 0u32); // (prompt_eval_count, eval_count)
 
         while let Some(chunk) = response.chunk().await? {
-            for byte in chunk {
-                if byte == b'\n' {
+            let chunk_str = std::str::from_utf8(&chunk)?;
+
+            for ch in chunk_str.chars() {
+                if ch == '\n' {
                     if !line_buffer.is_empty() {
                         if let Ok(chunk_response) =
                             serde_json::from_str::<OllamaResponse>(&line_buffer)
@@ -349,7 +361,7 @@ impl OllamaClient {
                                 ))?;
                                 accumulated_content.push_str(&chunk_response.message.content);
                             }
-                            // Handle tinking content
+                            // Handle thinking content
                             if !chunk_response.message.thinking.is_empty() {
                                 streaming_callback(&StreamingChunk::Thinking(
                                     chunk_response.message.thinking.clone(),
@@ -389,7 +401,7 @@ impl OllamaClient {
                         line_buffer.clear();
                     }
                 } else {
-                    line_buffer.push(byte as char);
+                    line_buffer.push(ch);
                 }
             }
         }
