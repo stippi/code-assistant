@@ -26,8 +26,13 @@ async fn main() -> Result<()> {
     match args.mode {
         Some(Mode::Server { verbose }) => app::server::run(verbose).await,
         None => {
-            // Use stderr for both terminal and GPUI modes to keep stdout clean
-            setup_logging(args.verbose, false);
+            if args.ui {
+                // GPUI mode - use stderr to keep stdout clean
+                setup_logging(args.verbose, false);
+            } else {
+                // Terminal UI mode - log to file to prevent UI interference
+                logging::setup_logging_for_terminal_ui(args.verbose);
+            }
 
             // Ensure the path exists and is a directory
             if !args.path.is_dir() {

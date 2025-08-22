@@ -286,6 +286,14 @@ impl TerminalTuiApp {
         let input_manager = InputManager::new();
         let mut renderer = TerminalRenderer::new()?;
 
+        // Setup panic hook to ensure terminal is cleaned up on panic
+        let original_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic_info| {
+            // Try to disable raw mode on panic
+            let _ = ratatui::crossterm::terminal::disable_raw_mode();
+            original_hook(panic_info);
+        }));
+
         // Setup terminal AFTER printing instructions
         renderer.setup_terminal()?;
 
@@ -301,11 +309,21 @@ impl TerminalTuiApp {
         // Print welcome message to content area
         {
             let mut renderer_guard = renderer.lock().await;
-            let welcome_text = "Welcome to Code Assistant Terminal UI!\n\
-                               Type your message and press Enter to send.\n\
-                               Use Shift+Enter for multi-line input.\n\
-                               Press Ctrl+C to quit.\n\n";
-            renderer_guard.add_instruction_message(welcome_text)?;
+            let log_file_path = dirs::cache_dir()
+                .unwrap_or_else(|| std::env::temp_dir())
+                .join("code-assistant")
+                .join("terminal-ui.log");
+
+            let welcome_text = format!(
+                "Welcome to Code Assistant Terminal UI!\n\
+                Type your message and press Enter to send.\n\
+                Use Shift+Enter for multi-line input.\n\
+                Press Ctrl+C to quit.\n\
+                \n\
+                Debug logs are written to: {}\n\n",
+                log_file_path.display()
+            );
+            renderer_guard.add_instruction_message(&welcome_text)?;
         }
 
         // Send initial task if provided
