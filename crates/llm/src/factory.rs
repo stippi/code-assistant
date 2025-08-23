@@ -1,8 +1,8 @@
 use crate::auth::TokenManager;
 use crate::config::{AiCoreConfig, DeploymentConfig};
 use crate::{
-    AiCoreClient, AnthropicClient, GroqClient, LLMProvider, MistralAiClient, OllamaClient,
-    OpenAIClient, OpenRouterClient, VertexClient,
+    AiCoreClient, AnthropicClient, CerebrasClient, GroqClient, LLMProvider, MistralAiClient,
+    OllamaClient, OpenAIClient, OpenRouterClient, VertexClient,
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -12,6 +12,7 @@ use std::path::PathBuf;
 pub enum LLMProviderType {
     AiCore,
     Anthropic,
+    Cerebras,
     Groq,
     MistralAI,
     Ollama,
@@ -156,6 +157,17 @@ pub async fn create_llm_client(config: LLMClientConfig) -> Result<Box<dyn LLMPro
                     api_key, model_name, base_url,
                 )))
             }
+        }
+
+        LLMProviderType::Cerebras => {
+            let api_key = std::env::var("CEREBRAS_API_KEY")
+                .context("CEREBRAS_API_KEY environment variable not set")?;
+            let model_name = config.model.unwrap_or_else(|| "gpt-oss-120b".to_string());
+            let base_url = config
+                .base_url
+                .unwrap_or(CerebrasClient::default_base_url());
+
+            Ok(Box::new(CerebrasClient::new(api_key, model_name, base_url)))
         }
 
         LLMProviderType::Groq => {

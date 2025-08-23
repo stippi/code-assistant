@@ -18,6 +18,7 @@ pub mod aicore_invoke;
 pub mod anthropic;
 pub mod anthropic_playback;
 pub mod auth;
+pub mod cerebras;
 pub mod config;
 pub mod display;
 pub mod factory;
@@ -32,6 +33,7 @@ pub mod vertex;
 
 pub use aicore_invoke::AiCoreClient;
 pub use anthropic::AnthropicClient;
+pub use cerebras::CerebrasClient;
 pub use groq::GroqClient;
 pub use mistralai::MistralAiClient;
 pub use ollama::OllamaClient;
