@@ -1368,7 +1368,8 @@ mod tests {
 
             // Extract visible content (excluding input area at bottom)
             let mut viewport_lines = Vec::new();
-            for y in 0..8 { // 8 lines for content (10 total - 2 for input)
+            for y in 0..8 {
+                // 8 lines for content (10 total - 2 for input)
                 let mut line_text = String::new();
                 for x in 0..80 {
                     let cell = buffer.cell((x, y)).unwrap();
@@ -1462,8 +1463,10 @@ mod tests {
 
             // 1. Live message should be visible in viewport (closest to input)
             let viewport_text = viewport_lines_2.join(" ");
-            assert!(viewport_text.contains("Live message content"),
-                "Live message should be visible in viewport");
+            assert!(
+                viewport_text.contains("Live message content"),
+                "Live message should be visible in viewport"
+            );
 
             // 2. Check for duplication - no message should appear in both viewport and scrollback
 
@@ -1519,20 +1522,33 @@ mod tests {
             }
 
             // 3. No message should appear in both viewport and scrollback
-            let intersection: Vec<_> = viewport_messages.intersection(&scrollback_messages).collect();
-            assert!(intersection.is_empty(),
-                "Messages should not be duplicated between viewport and scrollback: {:?}", intersection);
+            let intersection: Vec<_> = viewport_messages
+                .intersection(&scrollback_messages)
+                .collect();
+            assert!(
+                intersection.is_empty(),
+                "Messages should not be duplicated between viewport and scrollback: {intersection:?}"
+            );
 
             // 4. Scrollback should contain older content
-            assert!(!scrollback_lines_2.is_empty(), "Should have content in scrollback");
+            assert!(
+                !scrollback_lines_2.is_empty(),
+                "Should have content in scrollback"
+            );
 
             // 5. Verify overflow tracking is reasonable
             assert!(renderer.last_overflow > 0, "Should track overflow amount");
 
             // 6. Total unique messages should equal what we added
             let total_unique_messages = viewport_messages.len() + scrollback_messages.len();
-            assert!(total_unique_messages <= 6, "Should not have more messages than we created");
-            assert!(total_unique_messages >= 3, "Should have at least some of our messages visible");
+            assert!(
+                total_unique_messages <= 6,
+                "Should not have more messages than we created"
+            );
+            assert!(
+                total_unique_messages >= 3,
+                "Should have at least some of our messages visible"
+            );
         }
 
         #[test]
@@ -1549,10 +1565,17 @@ mod tests {
             // Start a live message with a tool that will be tall
             renderer.start_new_message(1);
             renderer.start_tool_use_block("write_file".to_string(), "tool_1".to_string());
-            renderer.add_or_update_tool_parameter("tool_1", "path".to_string(), "long_file.txt".to_string());
+            renderer.add_or_update_tool_parameter(
+                "tool_1",
+                "path".to_string(),
+                "long_file.txt".to_string(),
+            );
 
             // Add a large content parameter that will make the tool block tall
-            let large_content = (0..10).map(|i| format!("Line {i} of file content")).collect::<Vec<_>>().join("\n");
+            let large_content = (0..10)
+                .map(|i| format!("Line {i} of file content"))
+                .collect::<Vec<_>>()
+                .join("\n");
             renderer.add_or_update_tool_parameter("tool_1", "content".to_string(), large_content);
 
             // First render - live message should already overflow
@@ -1611,9 +1634,11 @@ mod tests {
             let initial_non_empty_lines = initial_scrollback_lines.len();
             let modified_non_empty_lines = modified_scrollback_lines.len();
 
-            assert!(modified_non_empty_lines <= initial_non_empty_lines + 2,
-                "Scrollback should not grow significantly when modifying live message. Initial: {}, Modified: {}",
-                initial_non_empty_lines, modified_non_empty_lines);
+            assert!(
+                modified_non_empty_lines <= initial_non_empty_lines + 2,
+                "Scrollback should not grow significantly when modifying live message.\
+                Initial: {initial_non_empty_lines}, Modified: {modified_non_empty_lines}"
+            );
 
             // Check for obvious duplication patterns
             let mut line_counts = std::collections::HashMap::new();
@@ -1621,12 +1646,13 @@ mod tests {
                 *line_counts.entry(line.clone()).or_insert(0) += 1;
             }
 
-            let duplicated_lines: Vec<_> = line_counts.iter()
-                .filter(|(_, &count)| count > 1)
-                .collect();
+            let duplicated_lines: Vec<_> =
+                line_counts.iter().filter(|(_, &count)| count > 1).collect();
 
-            assert!(duplicated_lines.is_empty(),
-                "Found duplicated lines in scrollback: {:?}", duplicated_lines);
+            assert!(
+                duplicated_lines.is_empty(),
+                "Found duplicated lines in scrollback: {duplicated_lines:?}",
+            );
 
             // Add more content to the live message
             renderer.append_to_live_block("\n\nAdditional text appended to live message");
@@ -1661,12 +1687,15 @@ mod tests {
                 *final_line_counts.entry(line.clone()).or_insert(0) += 1;
             }
 
-            let final_duplicated_lines: Vec<_> = final_line_counts.iter()
+            let final_duplicated_lines: Vec<_> = final_line_counts
+                .iter()
                 .filter(|(_, &count)| count > 1)
                 .collect();
 
-            assert!(final_duplicated_lines.is_empty(),
-                "Found duplicated lines in final scrollback: {:?}", final_duplicated_lines);
+            assert!(
+                final_duplicated_lines.is_empty(),
+                "Found duplicated lines in final scrollback: {final_duplicated_lines:?}"
+            );
         }
 
         #[test]
