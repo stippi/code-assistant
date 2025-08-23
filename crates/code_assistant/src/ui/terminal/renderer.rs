@@ -1344,65 +1344,329 @@ mod tests {
         #[test]
         fn test_scrollback_behavior_with_overflow() {
             // Create a smaller terminal to test scrollback more easily
-            let mut renderer = create_test_renderer(80, 10); // Only 10 lines tall
+            let mut renderer = create_test_renderer(80, 10); // Only 10 lines tall (8 content + 2 input)
             let textarea = tui_textarea::TextArea::default();
 
-            // Add multiple finalized messages that will overflow the viewport
-            for i in 0..5 {
-                let message = create_text_message(&format!(
-                    "This is message number {i} with some content that might wrap"
-                ));
+            // Add exactly 3 finalized messages with predictable single-line content
+            for i in 0..3 {
+                let message = create_text_message(&format!("Message {i}"));
                 renderer.finalized_messages.push(message);
             }
 
-            // Render and check that content overflows to scrollback
+            // Add a live message that will push content into scrollback
+            renderer.start_new_message(1);
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("Live message content");
+
+            // First render - should have minimal overflow
             renderer.render(&textarea).unwrap();
             let backend = renderer.terminal.backend();
 
-            // Should have content in main buffer
+            // Capture what's in viewport and scrollback
             let buffer = backend.buffer();
-            let mut main_buffer_has_content = false;
-            for y in 0..8 {
-                // Check above input area
+            let scrollback = backend.scrollback();
+
+            // Extract visible content (excluding input area at bottom)
+            let mut viewport_lines = Vec::new();
+            for y in 0..8 { // 8 lines for content (10 total - 2 for input)
+                let mut line_text = String::new();
                 for x in 0..80 {
                     let cell = buffer.cell((x, y)).unwrap();
-                    if !cell.symbol().trim().is_empty() {
-                        main_buffer_has_content = true;
-                        break;
-                    }
+                    line_text.push_str(cell.symbol());
                 }
-                if main_buffer_has_content {
-                    break;
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    viewport_lines.push(format!("V{y}: {trimmed}"));
                 }
             }
-            assert!(
-                main_buffer_has_content,
-                "Main buffer should have visible content"
-            );
 
-            // Should have content in scrollback buffer due to overflow
-            let scrollback = backend.scrollback();
-            let mut scrollback_has_content = false;
+            // Extract scrollback content
+            let mut scrollback_lines = Vec::new();
             for y in 0..scrollback.area().height {
+                let mut line_text = String::new();
                 for x in 0..scrollback.area().width {
                     if let Some(cell) = scrollback.cell((x, y)) {
-                        if !cell.symbol().trim().is_empty() {
-                            scrollback_has_content = true;
-                            break;
-                        }
+                        line_text.push_str(cell.symbol());
                     }
                 }
-                if scrollback_has_content {
-                    break;
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    scrollback_lines.push(format!("S{y}: {trimmed}"));
                 }
             }
-            assert!(
-                scrollback_has_content,
-                "Scrollback buffer should contain overflowed content"
-            );
 
-            // Verify last_overflow was updated
+            println!("=== After first render ===");
+            println!("Viewport content:");
+            for line in &viewport_lines {
+                println!("  {line}");
+            }
+            println!("Scrollback content:");
+            for line in &scrollback_lines {
+                println!("  {line}");
+            }
+            println!("last_overflow: {}", renderer.last_overflow);
+
+            // Now add more content to force more overflow
+            for i in 3..6 {
+                let message = create_text_message(&format!("Additional message {i}"));
+                renderer.finalized_messages.push(message);
+            }
+
+            // Second render - should push more content to scrollback
+            renderer.render(&textarea).unwrap();
+            let backend = renderer.terminal.backend();
+
+            // Capture content again
+            let buffer = backend.buffer();
+            let scrollback = backend.scrollback();
+
+            let mut viewport_lines_2 = Vec::new();
+            for y in 0..8 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    viewport_lines_2.push(format!("V{y}: {trimmed}"));
+                }
+            }
+
+            let mut scrollback_lines_2 = Vec::new();
+            for y in 0..scrollback.area().height {
+                let mut line_text = String::new();
+                for x in 0..scrollback.area().width {
+                    if let Some(cell) = scrollback.cell((x, y)) {
+                        line_text.push_str(cell.symbol());
+                    }
+                }
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    scrollback_lines_2.push(format!("S{y}: {trimmed}"));
+                }
+            }
+
+            println!("=== After second render ===");
+            println!("Viewport content:");
+            for line in &viewport_lines_2 {
+                println!("  {line}");
+            }
+            println!("Scrollback content:");
+            for line in &scrollback_lines_2 {
+                println!("  {line}");
+            }
+            println!("last_overflow: {}", renderer.last_overflow);
+
+            // Specific assertions to catch duplication bugs:
+
+            // 1. Live message should be visible in viewport (closest to input)
+            let viewport_text = viewport_lines_2.join(" ");
+            assert!(viewport_text.contains("Live message content"),
+                "Live message should be visible in viewport");
+
+            // 2. Check for duplication - no message should appear in both viewport and scrollback
+
+            // Extract unique message identifiers from both areas
+            let mut viewport_messages = std::collections::HashSet::new();
+            let mut scrollback_messages = std::collections::HashSet::new();
+
+            // Simple regex-free approach: look for exact patterns
+            for line in &viewport_lines_2 {
+                // Look for "Message X" patterns
+                if let Some(start) = line.find("Message ") {
+                    let after_msg = &line[start + 8..]; // "Message ".len() = 8
+                    if let Some(space_pos) = after_msg.find(' ') {
+                        let id = &after_msg[..space_pos];
+                        viewport_messages.insert(format!("Message {id}"));
+                    } else if !after_msg.is_empty() {
+                        viewport_messages.insert(format!("Message {after_msg}"));
+                    }
+                }
+                // Look for "Additional message X" patterns
+                if let Some(start) = line.find("Additional message ") {
+                    let after_msg = &line[start + 19..]; // "Additional message ".len() = 19
+                    if let Some(space_pos) = after_msg.find(' ') {
+                        let id = &after_msg[..space_pos];
+                        viewport_messages.insert(format!("Additional message {id}"));
+                    } else if !after_msg.is_empty() {
+                        viewport_messages.insert(format!("Additional message {after_msg}"));
+                    }
+                }
+            }
+
+            for line in &scrollback_lines_2 {
+                // Look for "Message X" patterns
+                if let Some(start) = line.find("Message ") {
+                    let after_msg = &line[start + 8..];
+                    if let Some(space_pos) = after_msg.find(' ') {
+                        let id = &after_msg[..space_pos];
+                        scrollback_messages.insert(format!("Message {id}"));
+                    } else if !after_msg.is_empty() {
+                        scrollback_messages.insert(format!("Message {after_msg}"));
+                    }
+                }
+                // Look for "Additional message X" patterns
+                if let Some(start) = line.find("Additional message ") {
+                    let after_msg = &line[start + 19..];
+                    if let Some(space_pos) = after_msg.find(' ') {
+                        let id = &after_msg[..space_pos];
+                        scrollback_messages.insert(format!("Additional message {id}"));
+                    } else if !after_msg.is_empty() {
+                        scrollback_messages.insert(format!("Additional message {after_msg}"));
+                    }
+                }
+            }
+
+            // 3. No message should appear in both viewport and scrollback
+            let intersection: Vec<_> = viewport_messages.intersection(&scrollback_messages).collect();
+            assert!(intersection.is_empty(),
+                "Messages should not be duplicated between viewport and scrollback: {:?}", intersection);
+
+            // 4. Scrollback should contain older content
+            assert!(!scrollback_lines_2.is_empty(), "Should have content in scrollback");
+
+            // 5. Verify overflow tracking is reasonable
             assert!(renderer.last_overflow > 0, "Should track overflow amount");
+
+            // 6. Total unique messages should equal what we added
+            let total_unique_messages = viewport_messages.len() + scrollback_messages.len();
+            assert!(total_unique_messages <= 6, "Should not have more messages than we created");
+            assert!(total_unique_messages >= 3, "Should have at least some of our messages visible");
+        }
+
+        #[test]
+        fn test_tall_live_message_modification_no_duplication() {
+            // Test the scenario where a live message is already tall and being modified
+            // This should not cause duplication in scrollback
+            let mut renderer = create_test_renderer(40, 8); // Very small terminal: 6 content + 2 input
+            let textarea = tui_textarea::TextArea::default();
+
+            // Add one finalized message first
+            let message = create_text_message("Previous message");
+            renderer.finalized_messages.push(message);
+
+            // Start a live message with a tool that will be tall
+            renderer.start_new_message(1);
+            renderer.start_tool_use_block("write_file".to_string(), "tool_1".to_string());
+            renderer.add_or_update_tool_parameter("tool_1", "path".to_string(), "long_file.txt".to_string());
+
+            // Add a large content parameter that will make the tool block tall
+            let large_content = (0..10).map(|i| format!("Line {i} of file content")).collect::<Vec<_>>().join("\n");
+            renderer.add_or_update_tool_parameter("tool_1", "content".to_string(), large_content);
+
+            // First render - live message should already overflow
+            renderer.render(&textarea).unwrap();
+            let backend = renderer.terminal.backend();
+
+            let mut initial_scrollback_lines = Vec::new();
+            let scrollback = backend.scrollback();
+            for y in 0..scrollback.area().height {
+                let mut line_text = String::new();
+                for x in 0..scrollback.area().width {
+                    if let Some(cell) = scrollback.cell((x, y)) {
+                        line_text.push_str(cell.symbol());
+                    }
+                }
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    initial_scrollback_lines.push(trimmed.to_string());
+                }
+            }
+
+            println!("=== Initial scrollback after tall live message ===");
+            for (i, line) in initial_scrollback_lines.iter().enumerate() {
+                println!("  {i}: {line}");
+            }
+
+            // Now modify the live message by updating tool status
+            renderer.update_tool_status("tool_1", crate::ui::ToolStatus::Success, None, None);
+
+            // Second render - should not duplicate content in scrollback
+            renderer.render(&textarea).unwrap();
+            let backend = renderer.terminal.backend();
+
+            let mut modified_scrollback_lines = Vec::new();
+            let scrollback = backend.scrollback();
+            for y in 0..scrollback.area().height {
+                let mut line_text = String::new();
+                for x in 0..scrollback.area().width {
+                    if let Some(cell) = scrollback.cell((x, y)) {
+                        line_text.push_str(cell.symbol());
+                    }
+                }
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    modified_scrollback_lines.push(trimmed.to_string());
+                }
+            }
+
+            println!("=== Scrollback after live message modification ===");
+            for (i, line) in modified_scrollback_lines.iter().enumerate() {
+                println!("  {i}: {line}");
+            }
+
+            // Key assertion: scrollback should not have grown significantly
+            // It might grow slightly due to status change, but should not double
+            let initial_non_empty_lines = initial_scrollback_lines.len();
+            let modified_non_empty_lines = modified_scrollback_lines.len();
+
+            assert!(modified_non_empty_lines <= initial_non_empty_lines + 2,
+                "Scrollback should not grow significantly when modifying live message. Initial: {}, Modified: {}",
+                initial_non_empty_lines, modified_non_empty_lines);
+
+            // Check for obvious duplication patterns
+            let mut line_counts = std::collections::HashMap::new();
+            for line in &modified_scrollback_lines {
+                *line_counts.entry(line.clone()).or_insert(0) += 1;
+            }
+
+            let duplicated_lines: Vec<_> = line_counts.iter()
+                .filter(|(_, &count)| count > 1)
+                .collect();
+
+            assert!(duplicated_lines.is_empty(),
+                "Found duplicated lines in scrollback: {:?}", duplicated_lines);
+
+            // Add more content to the live message
+            renderer.append_to_live_block("\n\nAdditional text appended to live message");
+
+            // Third render
+            renderer.render(&textarea).unwrap();
+            let backend = renderer.terminal.backend();
+
+            let mut final_scrollback_lines = Vec::new();
+            let scrollback = backend.scrollback();
+            for y in 0..scrollback.area().height {
+                let mut line_text = String::new();
+                for x in 0..scrollback.area().width {
+                    if let Some(cell) = scrollback.cell((x, y)) {
+                        line_text.push_str(cell.symbol());
+                    }
+                }
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    final_scrollback_lines.push(trimmed.to_string());
+                }
+            }
+
+            println!("=== Final scrollback after appending to live message ===");
+            for (i, line) in final_scrollback_lines.iter().enumerate() {
+                println!("  {i}: {line}");
+            }
+
+            // Final assertion: should not have excessive duplication
+            let mut final_line_counts = std::collections::HashMap::new();
+            for line in &final_scrollback_lines {
+                *final_line_counts.entry(line.clone()).or_insert(0) += 1;
+            }
+
+            let final_duplicated_lines: Vec<_> = final_line_counts.iter()
+                .filter(|(_, &count)| count > 1)
+                .collect();
+
+            assert!(final_duplicated_lines.is_empty(),
+                "Found duplicated lines in final scrollback: {:?}", final_duplicated_lines);
         }
 
         #[test]
