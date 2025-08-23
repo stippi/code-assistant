@@ -1,6 +1,6 @@
 use anyhow::Result;
 use ratatui::{
-    backend::CrosstermBackend,
+    backend::{Backend, CrosstermBackend},
     layout::Position,
     prelude::*,
     widgets::{Block, Borders, Paragraph, Wrap},
@@ -58,8 +58,10 @@ impl SpinnerState {
 }
 
 /// Handles the terminal display and rendering using ratatui
-pub struct TerminalRenderer {
-    pub terminal: Terminal<CrosstermBackend<io::Stdout>>,
+pub struct TerminalRenderer<B: Backend> {
+    pub terminal: Terminal<B>,
+    /// Factory function to create new terminal instances (used for resizing)
+    terminal_factory: Box<dyn Fn() -> Result<Terminal<B>> + Send + Sync>,
     /// Finalized messages (as complete message structures)
     pub finalized_messages: Vec<LiveMessage>,
     /// Current live message being streamed
@@ -76,12 +78,18 @@ pub struct TerminalRenderer {
     spinner_state: SpinnerState,
 }
 
-impl TerminalRenderer {
-    pub fn new() -> Result<Self> {
-        let terminal = Self::create_terminal()?;
+/// Type alias for the production terminal renderer
+pub type ProductionTerminalRenderer = TerminalRenderer<CrosstermBackend<io::Stdout>>;
 
+impl<B: Backend> TerminalRenderer<B> {
+    pub fn with_factory<F>(factory: F) -> Result<Self>
+    where
+        F: Fn() -> Result<Terminal<B>> + Send + Sync + 'static,
+    {
+        let terminal = factory()?;
         Ok(Self {
             terminal,
+            terminal_factory: Box::new(factory),
             finalized_messages: Vec::new(),
             live_message: None,
             pending_user_message: None,
@@ -90,16 +98,6 @@ impl TerminalRenderer {
             max_input_rows: 5, // max input height (content lines + border line)
             spinner_state: SpinnerState::Hidden,
         })
-    }
-
-    // Create a terminal with inline viewport height equal to current terminal height
-    fn create_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
-        let (_w, h) = ratatui::crossterm::terminal::size()?;
-        let backend = CrosstermBackend::new(io::stdout());
-        let options = TerminalOptions {
-            viewport: Viewport::Inline(h),
-        };
-        Terminal::with_options(backend, options).map_err(Into::into)
     }
 
     /// Setup terminal for ratatui usage
@@ -114,9 +112,9 @@ impl TerminalRenderer {
         Ok(())
     }
 
-    /// Update terminal size and adjust viewport (recreate Terminal with new Inline height)
+    /// Update terminal size and adjust viewport (recreate terminal using factory)
     pub fn update_size(&mut self, _input_height: u16) -> Result<()> {
-        self.terminal = Self::create_terminal()?;
+        self.terminal = (self.terminal_factory)()?;
         Ok(())
     }
 
@@ -549,8 +547,9 @@ impl TerminalRenderer {
     /// Calculate the height needed for the input area based on textarea content
     pub fn calculate_input_height(&self, textarea: &TextArea) -> u16 {
         let lines = textarea.lines().len() as u16;
-        // Reserve at least 2 lines (1 for border + 1 for content)
-        lines.clamp(2, self.max_input_rows + 1)
+        // Add 1 for border, then clamp to reasonable bounds
+        let height_with_border = lines + 1;
+        height_with_border.clamp(2, self.max_input_rows + 1)
     }
 
     /// Render the input area with textarea (static version)
@@ -618,5 +617,1310 @@ impl TerminalRenderer {
     /// Check if there's currently an error being displayed
     pub fn has_error(&self) -> bool {
         self.current_error.is_some()
+    }
+}
+
+impl ProductionTerminalRenderer {
+    pub fn new() -> Result<Self> {
+        Self::with_factory(|| {
+            let (_w, h) = ratatui::crossterm::terminal::size()?;
+            let backend = CrosstermBackend::new(io::stdout());
+            let options = TerminalOptions {
+                viewport: Viewport::Inline(h),
+            };
+            Terminal::with_options(backend, options).map_err(Into::into)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::terminal::message::{LiveMessage, MessageBlock, PlainTextBlock};
+    use ratatui::backend::TestBackend;
+
+    /// Create a test renderer using TestBackend for proper testing
+    fn create_test_renderer(width: u16, height: u16) -> TerminalRenderer<TestBackend> {
+        TerminalRenderer::with_factory(move || {
+            let backend = TestBackend::new(width, height);
+            let options = TerminalOptions {
+                viewport: Viewport::Inline(height),
+            };
+            Terminal::with_options(backend, options).map_err(Into::into)
+        })
+        .unwrap()
+    }
+
+    /// Create a default test renderer with reasonable dimensions
+    fn create_default_test_renderer() -> TerminalRenderer<TestBackend> {
+        create_test_renderer(80, 20)
+    }
+
+    /// Helper to create a simple text message
+    fn create_text_message(content: &str) -> LiveMessage {
+        let mut message = LiveMessage::new();
+        let mut text_block = PlainTextBlock::new();
+        text_block.content = content.to_string();
+        message.add_block(MessageBlock::PlainText(text_block));
+        message.finalized = true;
+        message
+    }
+
+    mod scrollback_tests {
+        use super::*;
+
+        #[test]
+        fn test_basic_renderer_creation_and_state() {
+            let renderer = create_default_test_renderer();
+            assert_eq!(renderer.finalized_messages.len(), 0);
+            assert!(renderer.live_message.is_none());
+            assert_eq!(renderer.last_overflow, 0);
+            assert!(!renderer.has_error());
+        }
+
+        #[test]
+        fn test_message_finalization_workflow() {
+            let mut renderer = create_default_test_renderer();
+
+            // Start a new message
+            renderer.start_new_message(1);
+            assert!(renderer.live_message.is_some());
+            assert_eq!(renderer.finalized_messages.len(), 0);
+
+            // Add content to live message
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("Test content");
+
+            // Verify live message has content
+            let live_message = renderer.live_message.as_ref().unwrap();
+            assert!(live_message.has_content());
+            assert!(!live_message.finalized);
+
+            // Start another message - should finalize the previous one
+            renderer.start_new_message(2);
+
+            // Previous message should be finalized
+            assert_eq!(renderer.finalized_messages.len(), 1);
+            assert!(renderer.finalized_messages[0].finalized);
+            assert!(renderer.finalized_messages[0].has_content());
+
+            // New live message should be empty
+            let new_live = renderer.live_message.as_ref().unwrap();
+            assert!(!new_live.has_content());
+            assert!(!new_live.finalized);
+        }
+
+        #[test]
+        fn test_ensure_last_block_type_behavior() {
+            let mut renderer = create_default_test_renderer();
+
+            // Start a message
+            renderer.start_new_message(1);
+
+            // First call should create a new block
+            let created_new =
+                renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            assert!(created_new, "Should create new block when none exists");
+
+            // Second call with same type should not create new block
+            let created_new =
+                renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            assert!(
+                !created_new,
+                "Should not create new block when same type exists"
+            );
+
+            // Call with different type should create new block
+            let created_new = renderer.ensure_last_block_type(MessageBlock::Thinking(
+                crate::ui::terminal::message::ThinkingBlock::new(),
+            ));
+            assert!(
+                created_new,
+                "Should create new block when different type requested"
+            );
+
+            // Verify we have 2 blocks now
+            let live_message = renderer.live_message.as_ref().unwrap();
+            assert_eq!(live_message.blocks.len(), 2);
+        }
+
+        #[test]
+        fn test_content_appending_to_blocks() {
+            let mut renderer = create_default_test_renderer();
+
+            // Start a message
+            renderer.start_new_message(1);
+
+            // Add a text block and append content
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("Hello ");
+            renderer.append_to_live_block("world!");
+
+            // Verify content was appended
+            let live_message = renderer.live_message.as_ref().unwrap();
+            assert_eq!(live_message.blocks.len(), 1);
+
+            if let MessageBlock::PlainText(text_block) = &live_message.blocks[0] {
+                assert_eq!(text_block.content, "Hello world!");
+            } else {
+                panic!("Expected PlainText block");
+            }
+        }
+
+        #[test]
+        fn test_pending_message_rendering() {
+            let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
+
+            // Initially no pending message - should render only input area
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            // Check that most of the screen is empty (no pending message content)
+            let mut has_content_above_input = false;
+            for y in 0..15 {
+                // Check above input area
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    if !cell.symbol().trim().is_empty() {
+                        has_content_above_input = true;
+                        break;
+                    }
+                }
+                if has_content_above_input {
+                    break;
+                }
+            }
+            assert!(
+                !has_content_above_input,
+                "Should have no content above input when no pending message"
+            );
+
+            // Set pending message and render
+            renderer.set_pending_user_message(Some("User is typing a message...".to_string()));
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            // Verify pending message is rendered in dimmed style above input
+            let mut found_pending_text = false;
+            for y in 0..18 {
+                // Check in status area above input
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("User is typing") {
+                    found_pending_text = true;
+                    break;
+                }
+            }
+            assert!(found_pending_text, "Should render pending message text");
+
+            // Clear pending message and verify it's gone
+            renderer.set_pending_user_message(None);
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_pending_after_clear = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("User is typing") {
+                    found_pending_after_clear = true;
+                    break;
+                }
+            }
+            assert!(
+                !found_pending_after_clear,
+                "Pending message should be cleared from rendering"
+            );
+        }
+
+        #[test]
+        fn test_error_message_rendering() {
+            let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
+
+            // Initially no error - should render cleanly
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            // Check that no error text is present
+            let mut found_error_text = false;
+            for y in 0..20 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Error:") {
+                    found_error_text = true;
+                    break;
+                }
+            }
+            assert!(!found_error_text, "Should have no error text initially");
+
+            // Set error and render
+            renderer.set_error("Something went wrong".to_string());
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            // Verify error message is rendered with "Error:" prefix and dismiss instruction
+            let mut found_error_prefix = false;
+            let mut found_error_content = false;
+            let mut found_dismiss_instruction = false;
+
+            for y in 0..18 {
+                // Check in status area above input
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Error:") {
+                    found_error_prefix = true;
+                }
+                if line_text.contains("Something went wrong") {
+                    found_error_content = true;
+                }
+                if line_text.contains("Press Esc to dismiss") {
+                    found_dismiss_instruction = true;
+                }
+            }
+
+            assert!(found_error_prefix, "Should render 'Error:' prefix");
+            assert!(found_error_content, "Should render error message content");
+            assert!(
+                found_dismiss_instruction,
+                "Should render dismiss instruction"
+            );
+
+            // Clear error and verify it's gone
+            renderer.clear_error();
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_error_after_clear = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Error:") || line_text.contains("Something went wrong") {
+                    found_error_after_clear = true;
+                    break;
+                }
+            }
+            assert!(
+                !found_error_after_clear,
+                "Error message should be cleared from rendering"
+            );
+        }
+
+        #[test]
+        fn test_spinner_state_management() {
+            let mut renderer = create_default_test_renderer();
+
+            // Initially hidden
+            assert!(matches!(renderer.spinner_state, SpinnerState::Hidden));
+
+            // Start new message should show loading spinner
+            renderer.start_new_message(1);
+            assert!(matches!(
+                renderer.spinner_state,
+                SpinnerState::Loading { .. }
+            ));
+
+            // Hide spinner
+            renderer.hide_spinner();
+            assert!(matches!(renderer.spinner_state, SpinnerState::Hidden));
+
+            // Show rate limit spinner
+            renderer.show_rate_limit_spinner(30);
+            assert!(matches!(
+                renderer.spinner_state,
+                SpinnerState::RateLimit {
+                    seconds_remaining: 30,
+                    ..
+                }
+            ));
+        }
+
+        #[test]
+        fn test_clear_all_messages() {
+            let mut renderer = create_default_test_renderer();
+
+            // Add some finalized messages
+            for i in 0..3 {
+                let message = create_text_message(&format!("Message {i}"));
+                renderer.finalized_messages.push(message);
+            }
+
+            // Add live message
+            renderer.start_new_message(1);
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("Live content");
+
+            // Set some state
+            renderer.last_overflow = 10;
+            renderer.show_rate_limit_spinner(30);
+
+            // Clear all messages
+            renderer.clear_all_messages();
+
+            // Everything should be reset
+            assert_eq!(renderer.last_overflow, 0);
+            assert!(renderer.finalized_messages.is_empty());
+            assert!(renderer.live_message.is_none());
+            assert!(matches!(renderer.spinner_state, SpinnerState::Hidden));
+        }
+
+        #[test]
+        fn test_tool_status_updates() {
+            let mut renderer = create_default_test_renderer();
+
+            // Start a message with a tool block
+            renderer.start_new_message(1);
+            renderer.start_tool_use_block("test_tool".to_string(), "tool_1".to_string());
+
+            // Update tool status
+            renderer.update_tool_status(
+                "tool_1",
+                crate::ui::ToolStatus::Running,
+                Some("Processing...".to_string()),
+                None,
+            );
+
+            // Verify tool block was updated
+            let live_message = renderer.live_message.as_ref().unwrap();
+            assert_eq!(live_message.blocks.len(), 1);
+
+            if let MessageBlock::ToolUse(tool_block) = &live_message.blocks[0] {
+                assert_eq!(tool_block.status, crate::ui::ToolStatus::Running);
+                assert_eq!(tool_block.status_message, Some("Processing...".to_string()));
+            } else {
+                panic!("Expected ToolUse block");
+            }
+        }
+    }
+
+    mod message_height_tests {
+        use super::*;
+        use crate::ui::terminal::message::{ThinkingBlock, ToolUseBlock};
+
+        #[test]
+        fn test_plain_text_height_calculation() {
+            let width = 80;
+
+            // Test empty content
+            let empty_block = PlainTextBlock::new();
+            let message_block = MessageBlock::PlainText(empty_block);
+            assert_eq!(
+                message_block.calculate_height(width),
+                0,
+                "Empty content should have 0 height"
+            );
+
+            // Test single line
+            let mut single_line_block = PlainTextBlock::new();
+            single_line_block.content = "Hello world".to_string();
+            let message_block = MessageBlock::PlainText(single_line_block);
+            assert_eq!(
+                message_block.calculate_height(width),
+                1,
+                "Single line should have height 1"
+            );
+
+            // Test multiple lines
+            let mut multi_line_block = PlainTextBlock::new();
+            multi_line_block.content = "Line 1\nLine 2\nLine 3".to_string();
+            let message_block = MessageBlock::PlainText(multi_line_block);
+            assert_eq!(
+                message_block.calculate_height(width),
+                3,
+                "Three lines should have height 3"
+            );
+
+            // Test line wrapping
+            let long_line = "a".repeat(160); // Should wrap to 2 lines with width 80
+            let mut wrap_block = PlainTextBlock::new();
+            wrap_block.content = long_line;
+            let message_block = MessageBlock::PlainText(wrap_block);
+            assert_eq!(
+                message_block.calculate_height(width),
+                2,
+                "Long line should wrap to 2 lines"
+            );
+        }
+
+        #[test]
+        fn test_thinking_block_height_calculation() {
+            let width = 80;
+
+            // Test empty thinking block
+            let empty_thinking = ThinkingBlock::new();
+            let message_block = MessageBlock::Thinking(empty_thinking);
+            assert_eq!(
+                message_block.calculate_height(width),
+                0,
+                "Empty thinking block should have 0 height"
+            );
+
+            // Test thinking block with content
+            let mut thinking_block = ThinkingBlock::new();
+            thinking_block.content = "I'm thinking about this problem".to_string();
+            let message_block = MessageBlock::Thinking(thinking_block);
+            assert!(
+                message_block.calculate_height(width) >= 1,
+                "Thinking block with content should have height >= 1"
+            );
+        }
+
+        #[test]
+        fn test_tool_use_block_height_calculation() {
+            let width = 80;
+
+            // Test basic tool block
+            let tool_block = ToolUseBlock::new("test_tool".to_string(), "tool_id_1".to_string());
+            let message_block = MessageBlock::ToolUse(tool_block);
+            assert_eq!(
+                message_block.calculate_height(width),
+                1,
+                "Basic tool block should have height 1 (tool name line)"
+            );
+
+            // Test tool block with simple parameters
+            let mut tool_block =
+                ToolUseBlock::new("write_file".to_string(), "tool_id_2".to_string());
+            tool_block.add_or_update_parameter("path".to_string(), "test.txt".to_string());
+            tool_block.add_or_update_parameter("content".to_string(), "Hello\nWorld".to_string());
+
+            let message_block = MessageBlock::ToolUse(tool_block);
+            let height = message_block.calculate_height(width);
+
+            // Should include: tool name + path parameter + content parameter (full-width)
+            assert!(
+                height > 1,
+                "Tool block with parameters should have height > 1"
+            );
+            assert!(height < 20, "Tool block height should be reasonable"); // Sanity check
+
+            // Test edit tool with old_text and new_text (should show combined diff)
+            let mut edit_tool = ToolUseBlock::new("edit".to_string(), "edit_id".to_string());
+            edit_tool.status = crate::ui::ToolStatus::Success;
+            edit_tool.add_or_update_parameter("old_text".to_string(), "old content".to_string());
+            edit_tool.add_or_update_parameter("new_text".to_string(), "new content".to_string());
+
+            let message_block = MessageBlock::ToolUse(edit_tool);
+            let height = message_block.calculate_height(width);
+
+            // Should include: tool name + diff section
+            assert!(height >= 2, "Edit tool with diff should have height >= 2");
+        }
+
+        #[test]
+        fn test_message_block_edge_cases() {
+            let width = 1; // Very narrow width
+
+            // Test with narrow width
+            let mut text_block = PlainTextBlock::new();
+            text_block.content = "Hello".to_string(); // 5 chars should wrap to 5 lines
+            let message_block = MessageBlock::PlainText(text_block);
+            assert_eq!(
+                message_block.calculate_height(width),
+                5,
+                "Each character should be on its own line with width 1"
+            );
+
+            // Test with zero width (edge case)
+            let mut text_block = PlainTextBlock::new();
+            text_block.content = "Hello".to_string();
+            let message_block = MessageBlock::PlainText(text_block);
+            let height = message_block.calculate_height(0);
+            assert!(height > 0, "Should handle zero width gracefully");
+        }
+    }
+
+    mod input_height_tests {
+        use super::*;
+
+        #[test]
+        fn test_input_height_calculation() {
+            let renderer = create_default_test_renderer();
+
+            // Test empty textarea
+            let textarea = tui_textarea::TextArea::default();
+            let height = renderer.calculate_input_height(&textarea);
+            assert_eq!(
+                height, 2,
+                "Empty textarea should have minimum height (1 content + 1 border)"
+            );
+
+            // Test single line content
+            let mut textarea = tui_textarea::TextArea::default();
+            textarea.insert_str("Hello");
+            let height = renderer.calculate_input_height(&textarea);
+            assert_eq!(height, 2, "Single line should still be minimum height");
+
+            // Test multiple lines
+            let mut textarea = tui_textarea::TextArea::default();
+            textarea.insert_str("Line 1\nLine 2\nLine 3");
+            let height = renderer.calculate_input_height(&textarea);
+            assert_eq!(
+                height, 4,
+                "Three lines should give height 4 (3 content + 1 border)"
+            );
+
+            // Test max height constraint
+            let mut textarea = tui_textarea::TextArea::default();
+            let many_lines = (0..10)
+                .map(|i| format!("Line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            textarea.insert_str(&many_lines);
+            let height = renderer.calculate_input_height(&textarea);
+            assert_eq!(
+                height,
+                renderer.max_input_rows + 1,
+                "Should be capped at max_input_rows + border"
+            );
+        }
+
+        #[test]
+        fn test_input_height_constraints() {
+            let renderer = create_default_test_renderer();
+
+            // Test that height is always at least 2 (content + border)
+            let textarea = tui_textarea::TextArea::default();
+            let height = renderer.calculate_input_height(&textarea);
+            assert!(height >= 2, "Height should always be at least 2");
+
+            // Test that height never exceeds max_input_rows + 1
+            let mut textarea = tui_textarea::TextArea::default();
+            let excessive_lines = (0..100)
+                .map(|i| format!("Line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            textarea.insert_str(&excessive_lines);
+            let height = renderer.calculate_input_height(&textarea);
+            assert!(
+                height <= renderer.max_input_rows + 1,
+                "Height should never exceed max_input_rows + 1"
+            );
+        }
+    }
+
+    mod integration_tests {
+        use super::*;
+
+        #[test]
+        fn test_complete_message_workflow_rendering() {
+            let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
+
+            // 1. Start streaming - should show spinner
+            renderer.start_new_message(1);
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            // Look for spinner character (braille patterns)
+            let mut found_spinner = false;
+            for y in 0..18 {
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    let symbol = cell.symbol();
+                    if symbol.chars().any(|c| {
+                        matches!(c, '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏')
+                    }) {
+                        found_spinner = true;
+                        break;
+                    }
+                }
+                if found_spinner {
+                    break;
+                }
+            }
+            assert!(
+                found_spinner,
+                "Should show loading spinner when streaming starts"
+            );
+
+            // 2. Add some text content - spinner should disappear
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("Here's my response: ");
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            // Check that text content is rendered
+            let mut found_response_text = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Here's my response") {
+                    found_response_text = true;
+                    break;
+                }
+            }
+            assert!(
+                found_response_text,
+                "Should render live message text content"
+            );
+
+            // 3. Start a tool - should render tool block
+            renderer.start_tool_use_block("write_file".to_string(), "tool_1".to_string());
+            renderer.add_or_update_tool_parameter(
+                "tool_1",
+                "path".to_string(),
+                "test.txt".to_string(),
+            );
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_tool_name = false;
+            let mut found_path_param = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("write_file") {
+                    found_tool_name = true;
+                }
+                if line_text.contains("test.txt") {
+                    found_path_param = true;
+                }
+            }
+            assert!(found_tool_name, "Should render tool name");
+            assert!(found_path_param, "Should render tool parameters");
+
+            // 4. Update tool status - should reflect in rendering (status indicator, not output)
+            renderer.update_tool_status(
+                "tool_1",
+                crate::ui::ToolStatus::Success,
+                None,
+                Some("File written successfully".to_string()), // This is for LLM, not UI
+            );
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            // Look for tool with success status indicator (green bullet)
+            let mut found_success_status = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                // Look for the tool name line
+                if line_text.contains("write_file") {
+                    // Check if the status symbol (first character) is green (success)
+                    let status_cell = buffer.cell((0, y)).unwrap();
+                    if status_cell.fg == Color::Green && status_cell.symbol() == "●" {
+                        found_success_status = true;
+                        break;
+                    }
+                }
+            }
+            assert!(
+                found_success_status,
+                "Should render tool with green success status indicator"
+            );
+
+            // 5. Finalize message by starting new one
+            renderer.start_new_message(2);
+            assert_eq!(renderer.finalized_messages.len(), 1);
+            assert!(renderer.finalized_messages[0].finalized);
+        }
+
+        #[test]
+        fn test_scrollback_behavior_with_overflow() {
+            // Create a smaller terminal to test scrollback more easily
+            let mut renderer = create_test_renderer(80, 10); // Only 10 lines tall (8 content + 2 input)
+            let textarea = tui_textarea::TextArea::default();
+
+            // Add exactly 3 finalized messages with predictable single-line content
+            for i in 0..3 {
+                let message = create_text_message(&format!("Message {i}"));
+                renderer.finalized_messages.push(message);
+            }
+
+            // Add a live message that will push content into scrollback
+            renderer.start_new_message(1);
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("Live message content");
+
+            // First render - should have minimal overflow
+            renderer.render(&textarea).unwrap();
+            let backend = renderer.terminal.backend();
+
+            // Capture what's in viewport and scrollback
+            let buffer = backend.buffer();
+            let scrollback = backend.scrollback();
+
+            // Extract visible content (excluding input area at bottom)
+            let mut viewport_lines = Vec::new();
+            for y in 0..8 {
+                // 8 lines for content (10 total - 2 for input)
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    viewport_lines.push(format!("V{y}: {trimmed}"));
+                }
+            }
+
+            // Extract scrollback content
+            let mut scrollback_lines = Vec::new();
+            for y in 0..scrollback.area().height {
+                let mut line_text = String::new();
+                for x in 0..scrollback.area().width {
+                    if let Some(cell) = scrollback.cell((x, y)) {
+                        line_text.push_str(cell.symbol());
+                    }
+                }
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    scrollback_lines.push(format!("S{y}: {trimmed}"));
+                }
+            }
+
+            println!("=== After first render ===");
+            println!("Viewport content:");
+            for line in &viewport_lines {
+                println!("  {line}");
+            }
+            println!("Scrollback content:");
+            for line in &scrollback_lines {
+                println!("  {line}");
+            }
+            println!("last_overflow: {}", renderer.last_overflow);
+
+            // Now add more content to force more overflow
+            for i in 3..6 {
+                let message = create_text_message(&format!("Additional message {i}"));
+                renderer.finalized_messages.push(message);
+            }
+
+            // Second render - should push more content to scrollback
+            renderer.render(&textarea).unwrap();
+            let backend = renderer.terminal.backend();
+
+            // Capture content again
+            let buffer = backend.buffer();
+            let scrollback = backend.scrollback();
+
+            let mut viewport_lines_2 = Vec::new();
+            for y in 0..8 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    viewport_lines_2.push(format!("V{y}: {trimmed}"));
+                }
+            }
+
+            let mut scrollback_lines_2 = Vec::new();
+            for y in 0..scrollback.area().height {
+                let mut line_text = String::new();
+                for x in 0..scrollback.area().width {
+                    if let Some(cell) = scrollback.cell((x, y)) {
+                        line_text.push_str(cell.symbol());
+                    }
+                }
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    scrollback_lines_2.push(format!("S{y}: {trimmed}"));
+                }
+            }
+
+            println!("=== After second render ===");
+            println!("Viewport content:");
+            for line in &viewport_lines_2 {
+                println!("  {line}");
+            }
+            println!("Scrollback content:");
+            for line in &scrollback_lines_2 {
+                println!("  {line}");
+            }
+            println!("last_overflow: {}", renderer.last_overflow);
+
+            // Specific assertions to catch duplication bugs:
+
+            // 1. Live message should be visible in viewport (closest to input)
+            let viewport_text = viewport_lines_2.join(" ");
+            assert!(
+                viewport_text.contains("Live message content"),
+                "Live message should be visible in viewport"
+            );
+
+            // 2. Check for duplication - no message should appear in both viewport and scrollback
+
+            // Extract unique message identifiers from both areas
+            let mut viewport_messages = std::collections::HashSet::new();
+            let mut scrollback_messages = std::collections::HashSet::new();
+
+            // Simple regex-free approach: look for exact patterns
+            for line in &viewport_lines_2 {
+                // Look for "Message X" patterns
+                if let Some(start) = line.find("Message ") {
+                    let after_msg = &line[start + 8..]; // "Message ".len() = 8
+                    if let Some(space_pos) = after_msg.find(' ') {
+                        let id = &after_msg[..space_pos];
+                        viewport_messages.insert(format!("Message {id}"));
+                    } else if !after_msg.is_empty() {
+                        viewport_messages.insert(format!("Message {after_msg}"));
+                    }
+                }
+                // Look for "Additional message X" patterns
+                if let Some(start) = line.find("Additional message ") {
+                    let after_msg = &line[start + 19..]; // "Additional message ".len() = 19
+                    if let Some(space_pos) = after_msg.find(' ') {
+                        let id = &after_msg[..space_pos];
+                        viewport_messages.insert(format!("Additional message {id}"));
+                    } else if !after_msg.is_empty() {
+                        viewport_messages.insert(format!("Additional message {after_msg}"));
+                    }
+                }
+            }
+
+            for line in &scrollback_lines_2 {
+                // Look for "Message X" patterns
+                if let Some(start) = line.find("Message ") {
+                    let after_msg = &line[start + 8..];
+                    if let Some(space_pos) = after_msg.find(' ') {
+                        let id = &after_msg[..space_pos];
+                        scrollback_messages.insert(format!("Message {id}"));
+                    } else if !after_msg.is_empty() {
+                        scrollback_messages.insert(format!("Message {after_msg}"));
+                    }
+                }
+                // Look for "Additional message X" patterns
+                if let Some(start) = line.find("Additional message ") {
+                    let after_msg = &line[start + 19..];
+                    if let Some(space_pos) = after_msg.find(' ') {
+                        let id = &after_msg[..space_pos];
+                        scrollback_messages.insert(format!("Additional message {id}"));
+                    } else if !after_msg.is_empty() {
+                        scrollback_messages.insert(format!("Additional message {after_msg}"));
+                    }
+                }
+            }
+
+            // 3. No message should appear in both viewport and scrollback
+            let intersection: Vec<_> = viewport_messages
+                .intersection(&scrollback_messages)
+                .collect();
+            assert!(
+                intersection.is_empty(),
+                "Messages should not be duplicated between viewport and scrollback: {intersection:?}"
+            );
+
+            // 4. Scrollback should contain older content
+            assert!(
+                !scrollback_lines_2.is_empty(),
+                "Should have content in scrollback"
+            );
+
+            // 5. Verify overflow tracking is reasonable
+            assert!(renderer.last_overflow > 0, "Should track overflow amount");
+
+            // 6. Total unique messages should equal what we added
+            let total_unique_messages = viewport_messages.len() + scrollback_messages.len();
+            assert!(
+                total_unique_messages <= 6,
+                "Should not have more messages than we created"
+            );
+            assert!(
+                total_unique_messages >= 3,
+                "Should have at least some of our messages visible"
+            );
+        }
+
+        #[test]
+        fn test_tall_live_message_modification_no_duplication() {
+            // Test the scenario where a live message is already tall and being modified
+            // This should not cause duplication in scrollback
+            let mut renderer = create_test_renderer(40, 8); // Very small terminal: 6 content + 2 input
+            let textarea = tui_textarea::TextArea::default();
+
+            // Add one finalized message first
+            let message = create_text_message("Previous message");
+            renderer.finalized_messages.push(message);
+
+            // Start a live message with a tool that will be tall
+            renderer.start_new_message(1);
+            renderer.start_tool_use_block("write_file".to_string(), "tool_1".to_string());
+            renderer.add_or_update_tool_parameter(
+                "tool_1",
+                "path".to_string(),
+                "long_file.txt".to_string(),
+            );
+
+            // Add a large content parameter that will make the tool block tall
+            let large_content = (0..10)
+                .map(|i| format!("Line {i} of file content"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            renderer.add_or_update_tool_parameter("tool_1", "content".to_string(), large_content);
+
+            // First render - live message should already overflow
+            renderer.render(&textarea).unwrap();
+            let backend = renderer.terminal.backend();
+
+            let mut initial_scrollback_lines = Vec::new();
+            let scrollback = backend.scrollback();
+            for y in 0..scrollback.area().height {
+                let mut line_text = String::new();
+                for x in 0..scrollback.area().width {
+                    if let Some(cell) = scrollback.cell((x, y)) {
+                        line_text.push_str(cell.symbol());
+                    }
+                }
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    initial_scrollback_lines.push(trimmed.to_string());
+                }
+            }
+
+            println!("=== Initial scrollback after tall live message ===");
+            for (i, line) in initial_scrollback_lines.iter().enumerate() {
+                println!("  {i}: {line}");
+            }
+
+            // Now modify the live message by updating tool status
+            renderer.update_tool_status("tool_1", crate::ui::ToolStatus::Success, None, None);
+
+            // Second render - should not duplicate content in scrollback
+            renderer.render(&textarea).unwrap();
+            let backend = renderer.terminal.backend();
+
+            let mut modified_scrollback_lines = Vec::new();
+            let scrollback = backend.scrollback();
+            for y in 0..scrollback.area().height {
+                let mut line_text = String::new();
+                for x in 0..scrollback.area().width {
+                    if let Some(cell) = scrollback.cell((x, y)) {
+                        line_text.push_str(cell.symbol());
+                    }
+                }
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    modified_scrollback_lines.push(trimmed.to_string());
+                }
+            }
+
+            println!("=== Scrollback after live message modification ===");
+            for (i, line) in modified_scrollback_lines.iter().enumerate() {
+                println!("  {i}: {line}");
+            }
+
+            // Key assertion: scrollback should not have grown significantly
+            // It might grow slightly due to status change, but should not double
+            let initial_non_empty_lines = initial_scrollback_lines.len();
+            let modified_non_empty_lines = modified_scrollback_lines.len();
+
+            assert!(
+                modified_non_empty_lines <= initial_non_empty_lines + 2,
+                "Scrollback should not grow significantly when modifying live message.\
+                Initial: {initial_non_empty_lines}, Modified: {modified_non_empty_lines}"
+            );
+
+            // Check for obvious duplication patterns
+            let mut line_counts = std::collections::HashMap::new();
+            for line in &modified_scrollback_lines {
+                *line_counts.entry(line.clone()).or_insert(0) += 1;
+            }
+
+            let duplicated_lines: Vec<_> =
+                line_counts.iter().filter(|(_, &count)| count > 1).collect();
+
+            assert!(
+                duplicated_lines.is_empty(),
+                "Found duplicated lines in scrollback: {duplicated_lines:?}",
+            );
+
+            // Add more content to the live message
+            renderer.append_to_live_block("\n\nAdditional text appended to live message");
+
+            // Third render
+            renderer.render(&textarea).unwrap();
+            let backend = renderer.terminal.backend();
+
+            let mut final_scrollback_lines = Vec::new();
+            let scrollback = backend.scrollback();
+            for y in 0..scrollback.area().height {
+                let mut line_text = String::new();
+                for x in 0..scrollback.area().width {
+                    if let Some(cell) = scrollback.cell((x, y)) {
+                        line_text.push_str(cell.symbol());
+                    }
+                }
+                let trimmed = line_text.trim_end();
+                if !trimmed.is_empty() {
+                    final_scrollback_lines.push(trimmed.to_string());
+                }
+            }
+
+            println!("=== Final scrollback after appending to live message ===");
+            for (i, line) in final_scrollback_lines.iter().enumerate() {
+                println!("  {i}: {line}");
+            }
+
+            // Final assertion: should not have excessive duplication
+            let mut final_line_counts = std::collections::HashMap::new();
+            for line in &final_scrollback_lines {
+                *final_line_counts.entry(line.clone()).or_insert(0) += 1;
+            }
+
+            let final_duplicated_lines: Vec<_> = final_line_counts
+                .iter()
+                .filter(|(_, &count)| count > 1)
+                .collect();
+
+            assert!(
+                final_duplicated_lines.is_empty(),
+                "Found duplicated lines in final scrollback: {final_duplicated_lines:?}"
+            );
+        }
+
+        #[test]
+        fn test_live_message_rendering_priority() {
+            let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
+
+            // Add some finalized messages
+            for i in 0..2 {
+                let message = create_text_message(&format!("Finalized message {i}"));
+                renderer.finalized_messages.push(message);
+            }
+
+            // Start a live message
+            renderer.start_new_message(1);
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("This is live content being streamed");
+
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            // Live content should appear closest to input (bottom of content area)
+            let mut found_live_content = false;
+            let mut found_finalized_content = false;
+            let mut live_content_y = None;
+            let mut finalized_content_y = None;
+
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+
+                if line_text.contains("live content being streamed") {
+                    found_live_content = true;
+                    live_content_y = Some(y);
+                }
+                if line_text.contains("Finalized message") {
+                    found_finalized_content = true;
+                    if finalized_content_y.is_none() {
+                        finalized_content_y = Some(y);
+                    }
+                }
+            }
+
+            assert!(found_live_content, "Should render live content");
+            assert!(found_finalized_content, "Should render finalized content");
+
+            // Live content should appear below (higher y coordinate) finalized content
+            if let (Some(live_y), Some(finalized_y)) = (live_content_y, finalized_content_y) {
+                assert!(
+                    live_y > finalized_y,
+                    "Live content should appear closer to input than finalized content"
+                );
+            }
+        }
+
+        #[test]
+        fn test_spinner_rendering_states() {
+            let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
+
+            // Test loading spinner
+            renderer.start_new_message(1);
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_loading_spinner = false;
+            for y in 0..18 {
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    let symbol = cell.symbol();
+                    if symbol.chars().any(|c| {
+                        matches!(c, '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏')
+                    }) {
+                        found_loading_spinner = true;
+                        break;
+                    }
+                }
+                if found_loading_spinner {
+                    break;
+                }
+            }
+            assert!(found_loading_spinner, "Should show loading spinner");
+
+            // Test rate limit spinner with text
+            renderer.show_rate_limit_spinner(30);
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_rate_limit_text = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Rate limited") && line_text.contains("30s") {
+                    found_rate_limit_text = true;
+                    break;
+                }
+            }
+            assert!(
+                found_rate_limit_text,
+                "Should show rate limit text with countdown"
+            );
+
+            // Test hidden spinner
+            renderer.hide_spinner();
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_spinner_after_hide = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                    if cell.symbol().chars().any(|c| {
+                        matches!(c, '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏')
+                    }) {
+                        found_spinner_after_hide = true;
+                        break;
+                    }
+                }
+                if line_text.contains("Rate limited") {
+                    found_spinner_after_hide = true;
+                    break;
+                }
+            }
+            assert!(
+                !found_spinner_after_hide,
+                "Should hide spinner and rate limit text"
+            );
+        }
+
+        #[test]
+        fn test_error_takes_priority_over_pending_message_in_rendering() {
+            let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
+
+            // Set both pending message and error
+            renderer.set_pending_user_message(Some("User is typing...".to_string()));
+            renderer.set_error("Critical error occurred".to_string());
+
+            // Render and verify error takes priority over pending message
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_error = false;
+            let mut found_pending = false;
+
+            for y in 0..18 {
+                // Check status area above input
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Critical error occurred") || line_text.contains("Error:") {
+                    found_error = true;
+                }
+                if line_text.contains("User is typing") {
+                    found_pending = true;
+                }
+            }
+
+            assert!(found_error, "Error message should be visible");
+            assert!(
+                !found_pending,
+                "Pending message should be hidden when error is present"
+            );
+
+            // Clear error - pending message should now be visible
+            renderer.clear_error();
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_error_after_clear = false;
+            let mut found_pending_after_clear = false;
+
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Critical error occurred") || line_text.contains("Error:") {
+                    found_error_after_clear = true;
+                }
+                if line_text.contains("User is typing") {
+                    found_pending_after_clear = true;
+                }
+            }
+
+            assert!(!found_error_after_clear, "Error should be cleared");
+            assert!(
+                found_pending_after_clear,
+                "Pending message should now be visible"
+            );
+
+            // Clear pending message - should have clean status area
+            renderer.set_pending_user_message(None);
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut has_status_content = false;
+            for y in 0..17 {
+                // Check status area (excluding input border)
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    if !cell.symbol().trim().is_empty() {
+                        has_status_content = true;
+                        break;
+                    }
+                }
+                if has_status_content {
+                    break;
+                }
+            }
+            assert!(
+                !has_status_content,
+                "Status area should be clean when no error or pending message"
+            );
+        }
     }
 }

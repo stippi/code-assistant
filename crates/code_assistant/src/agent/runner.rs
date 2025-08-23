@@ -631,7 +631,7 @@ impl Agent {
         self.cached_system_message = OnceLock::new();
     }
 
-    /// Convert ToolResult blocks to Text blocks for XML mode
+    /// Convert ToolResult blocks to Text blocks for custom tool-syntax mode
     fn convert_tool_results_to_text(&self, messages: Vec<Message>) -> Vec<Message> {
         // Create a fresh ResourcesTracker for rendering
         let mut resources_tracker = crate::tools::core::render::ResourcesTracker::new();
@@ -667,19 +667,11 @@ impl Agent {
 
                         for block in blocks {
                             match block {
-                                ContentBlock::ToolResult {
-                                    tool_use_id,
-                                    content,
-                                    ..
-                                } => {
+                                ContentBlock::ToolResult { tool_use_id, .. } => {
                                     // Get the dynamically rendered content for this tool result
                                     if let Some(rendered_output) = tool_outputs.get(tool_use_id) {
                                         // Add the rendered tool output from actual tool execution
                                         text_content.push_str(rendered_output);
-                                        text_content.push_str("\n\n");
-                                    } else if tool_use_id.starts_with("failed-tool-") {
-                                        // For failed tool error messages, use the content directly
-                                        text_content.push_str(content);
                                         text_content.push_str("\n\n");
                                     }
                                 }

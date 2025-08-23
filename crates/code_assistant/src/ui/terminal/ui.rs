@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{watch, Mutex};
 use tracing::{debug, warn};
 
-use super::renderer::TerminalRenderer;
+use super::renderer::ProductionTerminalRenderer;
 use super::state::AppState;
 
 #[derive(Clone)]
@@ -12,7 +12,7 @@ pub struct TerminalTuiUI {
     app_state: Arc<Mutex<AppState>>,
     redraw_tx: Arc<Mutex<Option<watch::Sender<()>>>>,
     pub cancel_flag: Arc<Mutex<bool>>,
-    pub renderer: Arc<Mutex<Option<Arc<Mutex<TerminalRenderer>>>>>,
+    pub renderer: Arc<Mutex<Option<Arc<Mutex<ProductionTerminalRenderer>>>>>,
     event_sender: Arc<Mutex<Option<async_channel::Sender<UiEvent>>>>,
 }
 
@@ -40,7 +40,7 @@ impl TerminalTuiUI {
         });
     }
 
-    pub async fn set_renderer_async(&self, renderer: Arc<Mutex<TerminalRenderer>>) {
+    pub async fn set_renderer_async(&self, renderer: Arc<Mutex<ProductionTerminalRenderer>>) {
         *self.renderer.lock().await = Some(renderer);
     }
 
