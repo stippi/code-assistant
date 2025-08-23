@@ -1,6 +1,6 @@
 use anyhow::Result;
 use ratatui::{
-    backend::CrosstermBackend,
+    backend::{Backend, CrosstermBackend},
     layout::Position,
     prelude::*,
     widgets::{Block, Borders, Paragraph, Wrap},
@@ -58,8 +58,10 @@ impl SpinnerState {
 }
 
 /// Handles the terminal display and rendering using ratatui
-pub struct TerminalRenderer {
-    pub terminal: Terminal<CrosstermBackend<io::Stdout>>,
+pub struct TerminalRenderer<B: Backend> {
+    pub terminal: Terminal<B>,
+    /// Factory function to create new terminal instances (used for resizing)
+    terminal_factory: Box<dyn Fn() -> Result<Terminal<B>> + Send + Sync>,
     /// Finalized messages (as complete message structures)
     pub finalized_messages: Vec<LiveMessage>,
     /// Current live message being streamed
@@ -76,12 +78,18 @@ pub struct TerminalRenderer {
     spinner_state: SpinnerState,
 }
 
-impl TerminalRenderer {
-    pub fn new() -> Result<Self> {
-        let terminal = Self::create_terminal()?;
+/// Type alias for the production terminal renderer
+pub type ProductionTerminalRenderer = TerminalRenderer<CrosstermBackend<io::Stdout>>;
 
+impl<B: Backend> TerminalRenderer<B> {
+    pub fn with_factory<F>(factory: F) -> Result<Self>
+    where
+        F: Fn() -> Result<Terminal<B>> + Send + Sync + 'static,
+    {
+        let terminal = factory()?;
         Ok(Self {
             terminal,
+            terminal_factory: Box::new(factory),
             finalized_messages: Vec::new(),
             live_message: None,
             pending_user_message: None,
@@ -90,16 +98,6 @@ impl TerminalRenderer {
             max_input_rows: 5, // max input height (content lines + border line)
             spinner_state: SpinnerState::Hidden,
         })
-    }
-
-    // Create a terminal with inline viewport height equal to current terminal height
-    fn create_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
-        let (_w, h) = ratatui::crossterm::terminal::size()?;
-        let backend = CrosstermBackend::new(io::stdout());
-        let options = TerminalOptions {
-            viewport: Viewport::Inline(h),
-        };
-        Terminal::with_options(backend, options).map_err(Into::into)
     }
 
     /// Setup terminal for ratatui usage
@@ -114,9 +112,9 @@ impl TerminalRenderer {
         Ok(())
     }
 
-    /// Update terminal size and adjust viewport (recreate Terminal with new Inline height)
+    /// Update terminal size and adjust viewport (recreate terminal using factory)
     pub fn update_size(&mut self, _input_height: u16) -> Result<()> {
-        self.terminal = Self::create_terminal()?;
+        self.terminal = (self.terminal_factory)()?;
         Ok(())
     }
 
@@ -549,8 +547,9 @@ impl TerminalRenderer {
     /// Calculate the height needed for the input area based on textarea content
     pub fn calculate_input_height(&self, textarea: &TextArea) -> u16 {
         let lines = textarea.lines().len() as u16;
-        // Reserve at least 2 lines (1 for border + 1 for content)
-        lines.clamp(2, self.max_input_rows + 1)
+        // Add 1 for border, then clamp to reasonable bounds
+        let height_with_border = lines + 1;
+        height_with_border.clamp(2, self.max_input_rows + 1)
     }
 
     /// Render the input area with textarea (static version)
@@ -618,5 +617,564 @@ impl TerminalRenderer {
     /// Check if there's currently an error being displayed
     pub fn has_error(&self) -> bool {
         self.current_error.is_some()
+    }
+}
+
+impl ProductionTerminalRenderer {
+    pub fn new() -> Result<Self> {
+        Self::with_factory(|| {
+            let (_w, h) = ratatui::crossterm::terminal::size()?;
+            let backend = CrosstermBackend::new(io::stdout());
+            let options = TerminalOptions {
+                viewport: Viewport::Inline(h),
+            };
+            Terminal::with_options(backend, options).map_err(Into::into)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::terminal::message::{LiveMessage, MessageBlock, PlainTextBlock};
+    use ratatui::backend::TestBackend;
+
+    /// Create a test renderer using TestBackend for proper testing
+    fn create_test_renderer(width: u16, height: u16) -> TerminalRenderer<TestBackend> {
+        TerminalRenderer::with_factory(move || {
+            let backend = TestBackend::new(width, height);
+            let options = TerminalOptions {
+                viewport: Viewport::Inline(height),
+            };
+            Terminal::with_options(backend, options).map_err(Into::into)
+        })
+        .unwrap()
+    }
+
+    /// Create a default test renderer with reasonable dimensions
+    fn create_default_test_renderer() -> TerminalRenderer<TestBackend> {
+        create_test_renderer(80, 20)
+    }
+
+    /// Helper to create a simple text message
+    fn create_text_message(content: &str) -> LiveMessage {
+        let mut message = LiveMessage::new();
+        let mut text_block = PlainTextBlock::new();
+        text_block.content = content.to_string();
+        message.add_block(MessageBlock::PlainText(text_block));
+        message.finalized = true;
+        message
+    }
+
+    mod scrollback_tests {
+        use super::*;
+
+        #[test]
+        fn test_basic_renderer_creation_and_state() {
+            let renderer = create_default_test_renderer();
+            assert_eq!(renderer.finalized_messages.len(), 0);
+            assert!(renderer.live_message.is_none());
+            assert_eq!(renderer.last_overflow, 0);
+            assert!(!renderer.has_error());
+        }
+
+        #[test]
+        fn test_message_finalization_workflow() {
+            let mut renderer = create_default_test_renderer();
+
+            // Start a new message
+            renderer.start_new_message(1);
+            assert!(renderer.live_message.is_some());
+            assert_eq!(renderer.finalized_messages.len(), 0);
+
+            // Add content to live message
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("Test content");
+
+            // Verify live message has content
+            let live_message = renderer.live_message.as_ref().unwrap();
+            assert!(live_message.has_content());
+            assert!(!live_message.finalized);
+
+            // Start another message - should finalize the previous one
+            renderer.start_new_message(2);
+
+            // Previous message should be finalized
+            assert_eq!(renderer.finalized_messages.len(), 1);
+            assert!(renderer.finalized_messages[0].finalized);
+            assert!(renderer.finalized_messages[0].has_content());
+
+            // New live message should be empty
+            let new_live = renderer.live_message.as_ref().unwrap();
+            assert!(!new_live.has_content());
+            assert!(!new_live.finalized);
+        }
+
+        #[test]
+        fn test_ensure_last_block_type_behavior() {
+            let mut renderer = create_default_test_renderer();
+
+            // Start a message
+            renderer.start_new_message(1);
+
+            // First call should create a new block
+            let created_new =
+                renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            assert!(created_new, "Should create new block when none exists");
+
+            // Second call with same type should not create new block
+            let created_new =
+                renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            assert!(
+                !created_new,
+                "Should not create new block when same type exists"
+            );
+
+            // Call with different type should create new block
+            let created_new = renderer.ensure_last_block_type(MessageBlock::Thinking(
+                crate::ui::terminal::message::ThinkingBlock::new(),
+            ));
+            assert!(
+                created_new,
+                "Should create new block when different type requested"
+            );
+
+            // Verify we have 2 blocks now
+            let live_message = renderer.live_message.as_ref().unwrap();
+            assert_eq!(live_message.blocks.len(), 2);
+        }
+
+        #[test]
+        fn test_content_appending_to_blocks() {
+            let mut renderer = create_default_test_renderer();
+
+            // Start a message
+            renderer.start_new_message(1);
+
+            // Add a text block and append content
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("Hello ");
+            renderer.append_to_live_block("world!");
+
+            // Verify content was appended
+            let live_message = renderer.live_message.as_ref().unwrap();
+            assert_eq!(live_message.blocks.len(), 1);
+
+            if let MessageBlock::PlainText(text_block) = &live_message.blocks[0] {
+                assert_eq!(text_block.content, "Hello world!");
+            } else {
+                panic!("Expected PlainText block");
+            }
+        }
+
+        #[test]
+        fn test_pending_message_state_management() {
+            let mut renderer = create_default_test_renderer();
+
+            // Initially no pending message
+            assert!(renderer.pending_user_message.is_none());
+
+            // Set pending message
+            renderer.set_pending_user_message(Some("Test pending message".to_string()));
+            assert!(renderer.pending_user_message.is_some());
+            assert_eq!(
+                renderer.pending_user_message.as_ref().unwrap(),
+                "Test pending message"
+            );
+
+            // Clear pending message
+            renderer.set_pending_user_message(None);
+            assert!(renderer.pending_user_message.is_none());
+        }
+
+        #[test]
+        fn test_error_state_management() {
+            let mut renderer = create_default_test_renderer();
+
+            // Initially no error
+            assert!(!renderer.has_error());
+
+            // Set error
+            renderer.set_error("Test error message".to_string());
+            assert!(renderer.has_error());
+
+            // Clear error
+            renderer.clear_error();
+            assert!(!renderer.has_error());
+        }
+
+        #[test]
+        fn test_spinner_state_management() {
+            let mut renderer = create_default_test_renderer();
+
+            // Initially hidden
+            assert!(matches!(renderer.spinner_state, SpinnerState::Hidden));
+
+            // Start new message should show loading spinner
+            renderer.start_new_message(1);
+            assert!(matches!(
+                renderer.spinner_state,
+                SpinnerState::Loading { .. }
+            ));
+
+            // Hide spinner
+            renderer.hide_spinner();
+            assert!(matches!(renderer.spinner_state, SpinnerState::Hidden));
+
+            // Show rate limit spinner
+            renderer.show_rate_limit_spinner(30);
+            assert!(matches!(
+                renderer.spinner_state,
+                SpinnerState::RateLimit {
+                    seconds_remaining: 30,
+                    ..
+                }
+            ));
+        }
+
+        #[test]
+        fn test_clear_all_messages() {
+            let mut renderer = create_default_test_renderer();
+
+            // Add some finalized messages
+            for i in 0..3 {
+                let message = create_text_message(&format!("Message {i}"));
+                renderer.finalized_messages.push(message);
+            }
+
+            // Add live message
+            renderer.start_new_message(1);
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("Live content");
+
+            // Set some state
+            renderer.last_overflow = 10;
+            renderer.show_rate_limit_spinner(30);
+
+            // Clear all messages
+            renderer.clear_all_messages();
+
+            // Everything should be reset
+            assert_eq!(renderer.last_overflow, 0);
+            assert!(renderer.finalized_messages.is_empty());
+            assert!(renderer.live_message.is_none());
+            assert!(matches!(renderer.spinner_state, SpinnerState::Hidden));
+        }
+
+        #[test]
+        fn test_tool_status_updates() {
+            let mut renderer = create_default_test_renderer();
+
+            // Start a message with a tool block
+            renderer.start_new_message(1);
+            renderer.start_tool_use_block("test_tool".to_string(), "tool_1".to_string());
+
+            // Update tool status
+            renderer.update_tool_status(
+                "tool_1",
+                crate::ui::ToolStatus::Running,
+                Some("Processing...".to_string()),
+                None,
+            );
+
+            // Verify tool block was updated
+            let live_message = renderer.live_message.as_ref().unwrap();
+            assert_eq!(live_message.blocks.len(), 1);
+
+            if let MessageBlock::ToolUse(tool_block) = &live_message.blocks[0] {
+                assert_eq!(tool_block.status, crate::ui::ToolStatus::Running);
+                assert_eq!(tool_block.status_message, Some("Processing...".to_string()));
+            } else {
+                panic!("Expected ToolUse block");
+            }
+        }
+    }
+
+    mod message_height_tests {
+        use super::*;
+        use crate::ui::terminal::message::{ThinkingBlock, ToolUseBlock};
+
+        #[test]
+        fn test_plain_text_height_calculation() {
+            let width = 80;
+
+            // Test empty content
+            let empty_block = PlainTextBlock::new();
+            let message_block = MessageBlock::PlainText(empty_block);
+            assert_eq!(
+                message_block.calculate_height(width),
+                0,
+                "Empty content should have 0 height"
+            );
+
+            // Test single line
+            let mut single_line_block = PlainTextBlock::new();
+            single_line_block.content = "Hello world".to_string();
+            let message_block = MessageBlock::PlainText(single_line_block);
+            assert_eq!(
+                message_block.calculate_height(width),
+                1,
+                "Single line should have height 1"
+            );
+
+            // Test multiple lines
+            let mut multi_line_block = PlainTextBlock::new();
+            multi_line_block.content = "Line 1\nLine 2\nLine 3".to_string();
+            let message_block = MessageBlock::PlainText(multi_line_block);
+            assert_eq!(
+                message_block.calculate_height(width),
+                3,
+                "Three lines should have height 3"
+            );
+
+            // Test line wrapping
+            let long_line = "a".repeat(160); // Should wrap to 2 lines with width 80
+            let mut wrap_block = PlainTextBlock::new();
+            wrap_block.content = long_line;
+            let message_block = MessageBlock::PlainText(wrap_block);
+            assert_eq!(
+                message_block.calculate_height(width),
+                2,
+                "Long line should wrap to 2 lines"
+            );
+        }
+
+        #[test]
+        fn test_thinking_block_height_calculation() {
+            let width = 80;
+
+            // Test empty thinking block
+            let empty_thinking = ThinkingBlock::new();
+            let message_block = MessageBlock::Thinking(empty_thinking);
+            assert_eq!(
+                message_block.calculate_height(width),
+                0,
+                "Empty thinking block should have 0 height"
+            );
+
+            // Test thinking block with content
+            let mut thinking_block = ThinkingBlock::new();
+            thinking_block.content = "I'm thinking about this problem".to_string();
+            let message_block = MessageBlock::Thinking(thinking_block);
+            assert!(
+                message_block.calculate_height(width) >= 1,
+                "Thinking block with content should have height >= 1"
+            );
+        }
+
+        #[test]
+        fn test_tool_use_block_height_calculation() {
+            let width = 80;
+
+            // Test basic tool block
+            let tool_block = ToolUseBlock::new("test_tool".to_string(), "tool_id_1".to_string());
+            let message_block = MessageBlock::ToolUse(tool_block);
+            assert_eq!(
+                message_block.calculate_height(width),
+                1,
+                "Basic tool block should have height 1 (tool name line)"
+            );
+
+            // Test tool block with simple parameters
+            let mut tool_block =
+                ToolUseBlock::new("write_file".to_string(), "tool_id_2".to_string());
+            tool_block.add_or_update_parameter("path".to_string(), "test.txt".to_string());
+            tool_block.add_or_update_parameter("content".to_string(), "Hello\nWorld".to_string());
+
+            let message_block = MessageBlock::ToolUse(tool_block);
+            let height = message_block.calculate_height(width);
+
+            // Should include: tool name + path parameter + content parameter (full-width)
+            assert!(
+                height > 1,
+                "Tool block with parameters should have height > 1"
+            );
+            assert!(height < 20, "Tool block height should be reasonable"); // Sanity check
+
+            // Test edit tool with old_text and new_text (should show combined diff)
+            let mut edit_tool = ToolUseBlock::new("edit".to_string(), "edit_id".to_string());
+            edit_tool.status = crate::ui::ToolStatus::Success;
+            edit_tool.add_or_update_parameter("old_text".to_string(), "old content".to_string());
+            edit_tool.add_or_update_parameter("new_text".to_string(), "new content".to_string());
+
+            let message_block = MessageBlock::ToolUse(edit_tool);
+            let height = message_block.calculate_height(width);
+
+            // Should include: tool name + diff section
+            assert!(height >= 2, "Edit tool with diff should have height >= 2");
+        }
+
+        #[test]
+        fn test_message_block_edge_cases() {
+            let width = 1; // Very narrow width
+
+            // Test with narrow width
+            let mut text_block = PlainTextBlock::new();
+            text_block.content = "Hello".to_string(); // 5 chars should wrap to 5 lines
+            let message_block = MessageBlock::PlainText(text_block);
+            assert_eq!(
+                message_block.calculate_height(width),
+                5,
+                "Each character should be on its own line with width 1"
+            );
+
+            // Test with zero width (edge case)
+            let mut text_block = PlainTextBlock::new();
+            text_block.content = "Hello".to_string();
+            let message_block = MessageBlock::PlainText(text_block);
+            let height = message_block.calculate_height(0);
+            assert!(height > 0, "Should handle zero width gracefully");
+        }
+    }
+
+    mod input_height_tests {
+        use super::*;
+
+        #[test]
+        fn test_input_height_calculation() {
+            let renderer = create_default_test_renderer();
+
+            // Test empty textarea
+            let textarea = tui_textarea::TextArea::default();
+            let height = renderer.calculate_input_height(&textarea);
+            assert_eq!(
+                height, 2,
+                "Empty textarea should have minimum height (1 content + 1 border)"
+            );
+
+            // Test single line content
+            let mut textarea = tui_textarea::TextArea::default();
+            textarea.insert_str("Hello");
+            let height = renderer.calculate_input_height(&textarea);
+            assert_eq!(height, 2, "Single line should still be minimum height");
+
+            // Test multiple lines
+            let mut textarea = tui_textarea::TextArea::default();
+            textarea.insert_str("Line 1\nLine 2\nLine 3");
+            let height = renderer.calculate_input_height(&textarea);
+            assert_eq!(
+                height, 4,
+                "Three lines should give height 4 (3 content + 1 border)"
+            );
+
+            // Test max height constraint
+            let mut textarea = tui_textarea::TextArea::default();
+            let many_lines = (0..10)
+                .map(|i| format!("Line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            textarea.insert_str(&many_lines);
+            let height = renderer.calculate_input_height(&textarea);
+            assert_eq!(
+                height,
+                renderer.max_input_rows + 1,
+                "Should be capped at max_input_rows + border"
+            );
+        }
+
+        #[test]
+        fn test_input_height_constraints() {
+            let renderer = create_default_test_renderer();
+
+            // Test that height is always at least 2 (content + border)
+            let textarea = tui_textarea::TextArea::default();
+            let height = renderer.calculate_input_height(&textarea);
+            assert!(height >= 2, "Height should always be at least 2");
+
+            // Test that height never exceeds max_input_rows + 1
+            let mut textarea = tui_textarea::TextArea::default();
+            let excessive_lines = (0..100)
+                .map(|i| format!("Line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            textarea.insert_str(&excessive_lines);
+            let height = renderer.calculate_input_height(&textarea);
+            assert!(
+                height <= renderer.max_input_rows + 1,
+                "Height should never exceed max_input_rows + 1"
+            );
+        }
+    }
+
+    mod integration_tests {
+        use super::*;
+
+        #[test]
+        fn test_complete_message_workflow() {
+            let mut renderer = create_default_test_renderer();
+
+            // Simulate a complete streaming workflow
+
+            // 1. Start streaming
+            renderer.start_new_message(1);
+            assert!(matches!(
+                renderer.spinner_state,
+                SpinnerState::Loading { .. }
+            ));
+
+            // 2. Add some text content
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("Here's my response: ");
+
+            // 3. Start a tool
+            renderer.start_tool_use_block("write_file".to_string(), "tool_1".to_string());
+            renderer.add_or_update_tool_parameter(
+                "tool_1",
+                "path".to_string(),
+                "test.txt".to_string(),
+            );
+            renderer.add_or_update_tool_parameter(
+                "tool_1",
+                "content".to_string(),
+                "Hello world".to_string(),
+            );
+
+            // 4. Update tool status
+            renderer.update_tool_status(
+                "tool_1",
+                crate::ui::ToolStatus::Success,
+                None,
+                Some("File written".to_string()),
+            );
+
+            // 5. Add more text
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("The file has been created successfully!");
+
+            // Verify the message structure
+            let live_message = renderer.live_message.as_ref().unwrap();
+            assert_eq!(live_message.blocks.len(), 3); // text, tool, text
+            assert!(live_message.has_content());
+
+            // 6. Start new message (should finalize the previous one)
+            renderer.start_new_message(2);
+
+            assert_eq!(renderer.finalized_messages.len(), 1);
+            assert!(renderer.finalized_messages[0].finalized);
+            assert_eq!(renderer.finalized_messages[0].blocks.len(), 3);
+        }
+
+        #[test]
+        fn test_error_and_pending_message_interaction() {
+            let mut renderer = create_default_test_renderer();
+
+            // Set pending message
+            renderer.set_pending_user_message(Some("User is typing...".to_string()));
+            assert!(renderer.pending_user_message.is_some());
+
+            // Set error (should coexist with pending message)
+            renderer.set_error("Something went wrong".to_string());
+            assert!(renderer.has_error());
+            assert!(renderer.pending_user_message.is_some());
+
+            // Clear error
+            renderer.clear_error();
+            assert!(!renderer.has_error());
+            assert!(renderer.pending_user_message.is_some());
+
+            // Clear pending message
+            renderer.set_pending_user_message(None);
+            assert!(renderer.pending_user_message.is_none());
+        }
     }
 }

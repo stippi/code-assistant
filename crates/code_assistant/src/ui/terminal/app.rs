@@ -4,7 +4,7 @@ use crate::session::manager::{AgentConfig, SessionManager};
 use crate::ui::backend::{handle_backend_events, BackendEvent, BackendResponse};
 use crate::ui::terminal::{
     input::{InputManager, KeyEventResult},
-    renderer::TerminalRenderer,
+    renderer::ProductionTerminalRenderer,
     state::AppState,
     ui::TerminalTuiUI,
 };
@@ -19,7 +19,7 @@ use tracing::debug;
 /// Main event loop for handling terminal events
 async fn event_loop(
     mut input_manager: InputManager,
-    renderer: Arc<Mutex<TerminalRenderer>>,
+    renderer: Arc<Mutex<ProductionTerminalRenderer>>,
     app_state: Arc<Mutex<AppState>>,
     backend_event_tx: async_channel::Sender<BackendEvent>,
 ) -> Result<()> {
@@ -320,7 +320,7 @@ impl TerminalTuiApp {
 
         // Initialize components
         let input_manager = InputManager::new();
-        let mut renderer = TerminalRenderer::new()?;
+        let mut renderer = ProductionTerminalRenderer::new()?;
 
         // Setup panic hook to ensure terminal is cleaned up on panic
         let original_hook = std::panic::take_hook();
