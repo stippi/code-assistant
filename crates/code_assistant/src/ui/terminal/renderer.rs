@@ -768,39 +768,158 @@ mod tests {
         }
 
         #[test]
-        fn test_pending_message_state_management() {
+        fn test_pending_message_rendering() {
             let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
 
-            // Initially no pending message
-            assert!(renderer.pending_user_message.is_none());
+            // Initially no pending message - should render only input area
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
 
-            // Set pending message
-            renderer.set_pending_user_message(Some("Test pending message".to_string()));
-            assert!(renderer.pending_user_message.is_some());
-            assert_eq!(
-                renderer.pending_user_message.as_ref().unwrap(),
-                "Test pending message"
+            // Check that most of the screen is empty (no pending message content)
+            let mut has_content_above_input = false;
+            for y in 0..15 {
+                // Check above input area
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    if !cell.symbol().trim().is_empty() {
+                        has_content_above_input = true;
+                        break;
+                    }
+                }
+                if has_content_above_input {
+                    break;
+                }
+            }
+            assert!(
+                !has_content_above_input,
+                "Should have no content above input when no pending message"
             );
 
-            // Clear pending message
+            // Set pending message and render
+            renderer.set_pending_user_message(Some("User is typing a message...".to_string()));
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            // Verify pending message is rendered in dimmed style above input
+            let mut found_pending_text = false;
+            for y in 0..18 {
+                // Check in status area above input
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("User is typing") {
+                    found_pending_text = true;
+                    break;
+                }
+            }
+            assert!(found_pending_text, "Should render pending message text");
+
+            // Clear pending message and verify it's gone
             renderer.set_pending_user_message(None);
-            assert!(renderer.pending_user_message.is_none());
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_pending_after_clear = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("User is typing") {
+                    found_pending_after_clear = true;
+                    break;
+                }
+            }
+            assert!(
+                !found_pending_after_clear,
+                "Pending message should be cleared from rendering"
+            );
         }
 
         #[test]
-        fn test_error_state_management() {
+        fn test_error_message_rendering() {
             let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
 
-            // Initially no error
-            assert!(!renderer.has_error());
+            // Initially no error - should render cleanly
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
 
-            // Set error
-            renderer.set_error("Test error message".to_string());
-            assert!(renderer.has_error());
+            // Check that no error text is present
+            let mut found_error_text = false;
+            for y in 0..20 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Error:") {
+                    found_error_text = true;
+                    break;
+                }
+            }
+            assert!(!found_error_text, "Should have no error text initially");
 
-            // Clear error
+            // Set error and render
+            renderer.set_error("Something went wrong".to_string());
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            // Verify error message is rendered with "Error:" prefix and dismiss instruction
+            let mut found_error_prefix = false;
+            let mut found_error_content = false;
+            let mut found_dismiss_instruction = false;
+
+            for y in 0..18 {
+                // Check in status area above input
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Error:") {
+                    found_error_prefix = true;
+                }
+                if line_text.contains("Something went wrong") {
+                    found_error_content = true;
+                }
+                if line_text.contains("Press Esc to dismiss") {
+                    found_dismiss_instruction = true;
+                }
+            }
+
+            assert!(found_error_prefix, "Should render 'Error:' prefix");
+            assert!(found_error_content, "Should render error message content");
+            assert!(
+                found_dismiss_instruction,
+                "Should render dismiss instruction"
+            );
+
+            // Clear error and verify it's gone
             renderer.clear_error();
-            assert!(!renderer.has_error());
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_error_after_clear = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Error:") || line_text.contains("Something went wrong") {
+                    found_error_after_clear = true;
+                    break;
+                }
+            }
+            assert!(
+                !found_error_after_clear,
+                "Error message should be cleared from rendering"
+            );
         }
 
         #[test]
@@ -1100,81 +1219,415 @@ mod tests {
         use super::*;
 
         #[test]
-        fn test_complete_message_workflow() {
+        fn test_complete_message_workflow_rendering() {
             let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
 
-            // Simulate a complete streaming workflow
-
-            // 1. Start streaming
+            // 1. Start streaming - should show spinner
             renderer.start_new_message(1);
-            assert!(matches!(
-                renderer.spinner_state,
-                SpinnerState::Loading { .. }
-            ));
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
 
-            // 2. Add some text content
+            // Look for spinner character (braille patterns)
+            let mut found_spinner = false;
+            for y in 0..18 {
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    let symbol = cell.symbol();
+                    if symbol.chars().any(|c| {
+                        matches!(c, '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏')
+                    }) {
+                        found_spinner = true;
+                        break;
+                    }
+                }
+                if found_spinner {
+                    break;
+                }
+            }
+            assert!(
+                found_spinner,
+                "Should show loading spinner when streaming starts"
+            );
+
+            // 2. Add some text content - spinner should disappear
             renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
             renderer.append_to_live_block("Here's my response: ");
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
 
-            // 3. Start a tool
+            // Check that text content is rendered
+            let mut found_response_text = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Here's my response") {
+                    found_response_text = true;
+                    break;
+                }
+            }
+            assert!(
+                found_response_text,
+                "Should render live message text content"
+            );
+
+            // 3. Start a tool - should render tool block
             renderer.start_tool_use_block("write_file".to_string(), "tool_1".to_string());
             renderer.add_or_update_tool_parameter(
                 "tool_1",
                 "path".to_string(),
                 "test.txt".to_string(),
             );
-            renderer.add_or_update_tool_parameter(
-                "tool_1",
-                "content".to_string(),
-                "Hello world".to_string(),
-            );
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
 
-            // 4. Update tool status
+            let mut found_tool_name = false;
+            let mut found_path_param = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("write_file") {
+                    found_tool_name = true;
+                }
+                if line_text.contains("test.txt") {
+                    found_path_param = true;
+                }
+            }
+            assert!(found_tool_name, "Should render tool name");
+            assert!(found_path_param, "Should render tool parameters");
+
+            // 4. Update tool status - should reflect in rendering (status indicator, not output)
             renderer.update_tool_status(
                 "tool_1",
                 crate::ui::ToolStatus::Success,
                 None,
-                Some("File written".to_string()),
+                Some("File written successfully".to_string()), // This is for LLM, not UI
+            );
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            // Look for tool with success status indicator (green bullet)
+            let mut found_success_status = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                // Look for the tool name line
+                if line_text.contains("write_file") {
+                    // Check if the status symbol (first character) is green (success)
+                    let status_cell = buffer.cell((0, y)).unwrap();
+                    if status_cell.fg == Color::Green && status_cell.symbol() == "●" {
+                        found_success_status = true;
+                        break;
+                    }
+                }
+            }
+            assert!(
+                found_success_status,
+                "Should render tool with green success status indicator"
             );
 
-            // 5. Add more text
-            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
-            renderer.append_to_live_block("The file has been created successfully!");
-
-            // Verify the message structure
-            let live_message = renderer.live_message.as_ref().unwrap();
-            assert_eq!(live_message.blocks.len(), 3); // text, tool, text
-            assert!(live_message.has_content());
-
-            // 6. Start new message (should finalize the previous one)
+            // 5. Finalize message by starting new one
             renderer.start_new_message(2);
-
             assert_eq!(renderer.finalized_messages.len(), 1);
             assert!(renderer.finalized_messages[0].finalized);
-            assert_eq!(renderer.finalized_messages[0].blocks.len(), 3);
         }
 
         #[test]
-        fn test_error_and_pending_message_interaction() {
+        fn test_scrollback_behavior_with_overflow() {
+            // Create a smaller terminal to test scrollback more easily
+            let mut renderer = create_test_renderer(80, 10); // Only 10 lines tall
+            let textarea = tui_textarea::TextArea::default();
+
+            // Add multiple finalized messages that will overflow the viewport
+            for i in 0..5 {
+                let message = create_text_message(&format!(
+                    "This is message number {i} with some content that might wrap"
+                ));
+                renderer.finalized_messages.push(message);
+            }
+
+            // Render and check that content overflows to scrollback
+            renderer.render(&textarea).unwrap();
+            let backend = renderer.terminal.backend();
+
+            // Should have content in main buffer
+            let buffer = backend.buffer();
+            let mut main_buffer_has_content = false;
+            for y in 0..8 {
+                // Check above input area
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    if !cell.symbol().trim().is_empty() {
+                        main_buffer_has_content = true;
+                        break;
+                    }
+                }
+                if main_buffer_has_content {
+                    break;
+                }
+            }
+            assert!(
+                main_buffer_has_content,
+                "Main buffer should have visible content"
+            );
+
+            // Should have content in scrollback buffer due to overflow
+            let scrollback = backend.scrollback();
+            let mut scrollback_has_content = false;
+            for y in 0..scrollback.area().height {
+                for x in 0..scrollback.area().width {
+                    if let Some(cell) = scrollback.cell((x, y)) {
+                        if !cell.symbol().trim().is_empty() {
+                            scrollback_has_content = true;
+                            break;
+                        }
+                    }
+                }
+                if scrollback_has_content {
+                    break;
+                }
+            }
+            assert!(
+                scrollback_has_content,
+                "Scrollback buffer should contain overflowed content"
+            );
+
+            // Verify last_overflow was updated
+            assert!(renderer.last_overflow > 0, "Should track overflow amount");
+        }
+
+        #[test]
+        fn test_live_message_rendering_priority() {
             let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
 
-            // Set pending message
+            // Add some finalized messages
+            for i in 0..2 {
+                let message = create_text_message(&format!("Finalized message {i}"));
+                renderer.finalized_messages.push(message);
+            }
+
+            // Start a live message
+            renderer.start_new_message(1);
+            renderer.ensure_last_block_type(MessageBlock::PlainText(PlainTextBlock::new()));
+            renderer.append_to_live_block("This is live content being streamed");
+
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            // Live content should appear closest to input (bottom of content area)
+            let mut found_live_content = false;
+            let mut found_finalized_content = false;
+            let mut live_content_y = None;
+            let mut finalized_content_y = None;
+
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+
+                if line_text.contains("live content being streamed") {
+                    found_live_content = true;
+                    live_content_y = Some(y);
+                }
+                if line_text.contains("Finalized message") {
+                    found_finalized_content = true;
+                    if finalized_content_y.is_none() {
+                        finalized_content_y = Some(y);
+                    }
+                }
+            }
+
+            assert!(found_live_content, "Should render live content");
+            assert!(found_finalized_content, "Should render finalized content");
+
+            // Live content should appear below (higher y coordinate) finalized content
+            if let (Some(live_y), Some(finalized_y)) = (live_content_y, finalized_content_y) {
+                assert!(
+                    live_y > finalized_y,
+                    "Live content should appear closer to input than finalized content"
+                );
+            }
+        }
+
+        #[test]
+        fn test_spinner_rendering_states() {
+            let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
+
+            // Test loading spinner
+            renderer.start_new_message(1);
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_loading_spinner = false;
+            for y in 0..18 {
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    let symbol = cell.symbol();
+                    if symbol.chars().any(|c| {
+                        matches!(c, '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏')
+                    }) {
+                        found_loading_spinner = true;
+                        break;
+                    }
+                }
+                if found_loading_spinner {
+                    break;
+                }
+            }
+            assert!(found_loading_spinner, "Should show loading spinner");
+
+            // Test rate limit spinner with text
+            renderer.show_rate_limit_spinner(30);
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_rate_limit_text = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Rate limited") && line_text.contains("30s") {
+                    found_rate_limit_text = true;
+                    break;
+                }
+            }
+            assert!(
+                found_rate_limit_text,
+                "Should show rate limit text with countdown"
+            );
+
+            // Test hidden spinner
+            renderer.hide_spinner();
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_spinner_after_hide = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                    if cell.symbol().chars().any(|c| {
+                        matches!(c, '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏')
+                    }) {
+                        found_spinner_after_hide = true;
+                        break;
+                    }
+                }
+                if line_text.contains("Rate limited") {
+                    found_spinner_after_hide = true;
+                    break;
+                }
+            }
+            assert!(
+                !found_spinner_after_hide,
+                "Should hide spinner and rate limit text"
+            );
+        }
+
+        #[test]
+        fn test_error_takes_priority_over_pending_message_in_rendering() {
+            let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
+
+            // Set both pending message and error
             renderer.set_pending_user_message(Some("User is typing...".to_string()));
-            assert!(renderer.pending_user_message.is_some());
+            renderer.set_error("Critical error occurred".to_string());
 
-            // Set error (should coexist with pending message)
-            renderer.set_error("Something went wrong".to_string());
-            assert!(renderer.has_error());
-            assert!(renderer.pending_user_message.is_some());
+            // Render and verify error takes priority over pending message
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
 
-            // Clear error
+            let mut found_error = false;
+            let mut found_pending = false;
+
+            for y in 0..18 {
+                // Check status area above input
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Critical error occurred") || line_text.contains("Error:") {
+                    found_error = true;
+                }
+                if line_text.contains("User is typing") {
+                    found_pending = true;
+                }
+            }
+
+            assert!(found_error, "Error message should be visible");
+            assert!(
+                !found_pending,
+                "Pending message should be hidden when error is present"
+            );
+
+            // Clear error - pending message should now be visible
             renderer.clear_error();
-            assert!(!renderer.has_error());
-            assert!(renderer.pending_user_message.is_some());
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
 
-            // Clear pending message
+            let mut found_error_after_clear = false;
+            let mut found_pending_after_clear = false;
+
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Critical error occurred") || line_text.contains("Error:") {
+                    found_error_after_clear = true;
+                }
+                if line_text.contains("User is typing") {
+                    found_pending_after_clear = true;
+                }
+            }
+
+            assert!(!found_error_after_clear, "Error should be cleared");
+            assert!(
+                found_pending_after_clear,
+                "Pending message should now be visible"
+            );
+
+            // Clear pending message - should have clean status area
             renderer.set_pending_user_message(None);
-            assert!(renderer.pending_user_message.is_none());
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut has_status_content = false;
+            for y in 0..17 {
+                // Check status area (excluding input border)
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    if !cell.symbol().trim().is_empty() {
+                        has_status_content = true;
+                        break;
+                    }
+                }
+                if has_status_content {
+                    break;
+                }
+            }
+            assert!(
+                !has_status_content,
+                "Status area should be clean when no error or pending message"
+            );
         }
     }
 }
