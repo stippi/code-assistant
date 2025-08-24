@@ -246,8 +246,15 @@ impl UserInterface for TerminalTuiUI {
                 // The actual status comes later via UpdateToolStatus
                 // For now, we don't change the status here - wait for UpdateToolStatus
             }
-            UiEvent::StreamingStopped { id, cancelled } => {
-                debug!("Streaming stopped (id: {}, cancelled: {})", id, cancelled);
+            UiEvent::StreamingStopped {
+                id,
+                cancelled,
+                error,
+            } => {
+                debug!(
+                    "Streaming stopped (id: {}, cancelled: {}, error: {:?})",
+                    id, cancelled, error
+                );
 
                 // Don't finalize the message yet - keep it live for tool status updates
                 // It will be finalized when the next StreamingStarted event arrives

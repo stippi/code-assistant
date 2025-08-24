@@ -849,6 +849,7 @@ impl Agent {
                         .send_event(UiEvent::StreamingStopped {
                             id: request_id,
                             cancelled: true,
+                            error: None,
                         })
                         .await;
                     // Return empty response
@@ -868,6 +869,7 @@ impl Agent {
                     .send_event(UiEvent::StreamingStopped {
                         id: request_id,
                         cancelled: false,
+                        error: Some(e.to_string()),
                     })
                     .await;
                 return Err(e);
@@ -902,6 +904,7 @@ impl Agent {
             .send_event(UiEvent::StreamingStopped {
                 id: request_id,
                 cancelled: false,
+                error: None,
             })
             .await;
         debug!("Completed LLM request with ID: {}", request_id);
