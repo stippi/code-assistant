@@ -60,8 +60,8 @@ pub async fn handle_retryable_error<
                         // Apply exponential backoff based on retry attempts
                         // Double the delay for each retry attempt after the first
                         if attempts > 0 {
-                            let multiplier = 2u32.pow(attempts as u32);
-                            delay = delay * multiplier;
+                            let multiplier = 2u32.pow(attempts);
+                            delay *= multiplier;
                         }
                         let delay_secs = delay.as_secs();
                         warn!(
