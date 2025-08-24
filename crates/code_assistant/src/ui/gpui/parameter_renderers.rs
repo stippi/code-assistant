@@ -11,6 +11,25 @@ pub fn create_parameter_key(tool_name: &str, param_name: &str) -> ParameterKey {
     format!("{tool_name}:{param_name}")
 }
 
+/// Specification for a virtual parameter that combines multiple actual parameters
+#[derive(Clone, Debug)]
+pub struct VirtualParameterSpec {
+    pub virtual_name: String,
+    pub source_params: Vec<String>,
+    pub completion_strategy: VirtualParameterCompletionStrategy,
+}
+
+/// Strategy for when to show virtual parameters vs individual source parameters
+#[derive(Clone, Debug)]
+pub enum VirtualParameterCompletionStrategy {
+    /// Show individual parameters during streaming, switch to virtual when all sources present
+    StreamIndividualThenCombine,
+    /// Wait for EndTool event before showing virtual parameter
+    WaitForToolCompletion,
+    /// Show virtual parameter as soon as any source parameter arrives
+    ShowImmediately,
+}
+
 /// Trait for parameter renderers that can provide custom rendering for tool parameters
 pub trait ParameterRenderer: Send + Sync {
     /// List of supported tool+parameter combinations
@@ -29,6 +48,24 @@ pub trait ParameterRenderer: Send + Sync {
     /// Default is false (normal inline parameter)
     fn is_full_width(&self, _tool_name: &str, _param_name: &str) -> bool {
         false
+    }
+
+    /// Define virtual parameters that combine multiple actual parameters
+    /// Returns: Vec<VirtualParameterSpec> defining how to combine parameters
+    fn virtual_parameters(&self) -> Vec<VirtualParameterSpec> {
+        Vec::new()
+    }
+
+    /// Render a virtual parameter from collected source parameters
+    /// Returns Some(element) if this renderer can handle the virtual parameter, None otherwise
+    fn render_virtual_parameter(
+        &self,
+        _tool_name: &str,
+        _virtual_param_name: &str,
+        _source_params: &HashMap<String, String>,
+        _theme: &gpui_component::theme::Theme,
+    ) -> Option<gpui::AnyElement> {
+        None
     }
 }
 
@@ -112,6 +149,113 @@ impl ParameterRendererRegistry {
     ) -> gpui::AnyElement {
         let renderer = self.get_renderer(tool_name, param_name);
         renderer.render(tool_name, param_name, param_value, theme)
+    }
+
+    /// Get virtual parameters that should be rendered for a tool
+    pub fn get_virtual_parameters_for_tool(&self, tool_name: &str) -> Vec<VirtualParameterSpec> {
+        use std::collections::HashSet;
+
+        let mut seen_virtual_params = HashSet::new();
+        let specs: Vec<VirtualParameterSpec> = self.renderers
+            .values()
+            .flat_map(|renderer| renderer.virtual_parameters())
+            .filter(|spec| {
+                // Only include if this renderer supports the tool for any of the source parameters
+                spec.source_params.iter().any(|param| {
+                    let key = create_parameter_key(tool_name, param);
+                    self.renderers.contains_key(&key)
+                })
+            })
+            .filter(|spec| {
+                // Deduplicate by virtual parameter name to avoid multiple instances
+                let virtual_key = format!("{}:{}", tool_name, spec.virtual_name);
+                if seen_virtual_params.contains(&virtual_key) {
+                    false
+                } else {
+                    seen_virtual_params.insert(virtual_key);
+                    true
+                }
+            })
+            .collect();
+
+        specs
+    }
+
+    /// Check if parameters should be hidden due to virtual parameter handling
+    pub fn should_hide_parameter(
+        &self,
+        _tool_name: &str,
+        param_name: &str,
+        all_params: &HashMap<String, String>,
+        tool_completed: bool,
+    ) -> bool {
+        for renderer in self.renderers.values() {
+            for virtual_spec in renderer.virtual_parameters() {
+                if virtual_spec.source_params.contains(&param_name.to_string()) {
+                    return match virtual_spec.completion_strategy {
+                        VirtualParameterCompletionStrategy::StreamIndividualThenCombine => {
+                            // Hide if all source params present OR tool completed
+                            virtual_spec
+                                .source_params
+                                .iter()
+                                .all(|p| all_params.contains_key(p))
+                                || tool_completed
+                        }
+                        VirtualParameterCompletionStrategy::WaitForToolCompletion => tool_completed,
+                        VirtualParameterCompletionStrategy::ShowImmediately => {
+                            true // Always hide source params
+                        }
+                    };
+                }
+            }
+        }
+        false
+    }
+
+    /// Render virtual parameters for a tool given the current parameter state
+    pub fn render_virtual_parameters(
+        &self,
+        tool_name: &str,
+        all_params: &HashMap<String, String>,
+        tool_completed: bool,
+        theme: &gpui_component::theme::Theme,
+    ) -> Vec<gpui::AnyElement> {
+        let mut virtual_elements = Vec::new();
+
+        for virtual_spec in self.get_virtual_parameters_for_tool(tool_name) {
+            // Check completion strategy to see if we should render this virtual parameter
+            let should_render = match virtual_spec.completion_strategy {
+                VirtualParameterCompletionStrategy::StreamIndividualThenCombine => {
+                    virtual_spec
+                        .source_params
+                        .iter()
+                        .all(|p| all_params.contains_key(p))
+                        || tool_completed
+                }
+                VirtualParameterCompletionStrategy::WaitForToolCompletion => tool_completed,
+                VirtualParameterCompletionStrategy::ShowImmediately => virtual_spec
+                    .source_params
+                    .iter()
+                    .any(|p| all_params.contains_key(p)),
+            };
+
+            if should_render {
+                // Find renderer that can handle this virtual parameter
+                for renderer_arc in self.renderers.values() {
+                    if let Some(element) = renderer_arc.render_virtual_parameter(
+                        tool_name,
+                        &virtual_spec.virtual_name,
+                        all_params,
+                        theme,
+                    ) {
+                        virtual_elements.push(element);
+                        break; // Only use the first renderer that can handle it
+                    }
+                }
+            }
+        }
+
+        virtual_elements
     }
 }
 

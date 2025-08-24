@@ -9,8 +9,6 @@ impl ParameterRenderer for DiffParameterRenderer {
     fn supported_parameters(&self) -> Vec<(String, String)> {
         vec![
             ("replace_in_file".to_string(), "diff".to_string()),
-            ("edit".to_string(), "old_text".to_string()),
-            ("edit".to_string(), "new_text".to_string()),
         ]
     }
 
@@ -38,14 +36,6 @@ impl ParameterRenderer for DiffParameterRenderer {
                     .child(parse_and_render_diff(param_value, theme))
                     .into_any()
             }
-            ("edit", "old_text") => {
-                // Show old_text with deletion styling
-                render_edit_text_block(param_value, true, theme)
-            }
-            ("edit", "new_text") => {
-                // Show new_text with addition styling
-                render_edit_text_block(param_value, false, theme)
-            }
             _ => {
                 // Fallback for unknown parameters
                 div()
@@ -68,7 +58,7 @@ impl ParameterRenderer for DiffParameterRenderer {
         // All diff-style parameters are full-width
         matches!(
             (tool_name, param_name),
-            ("replace_in_file", "diff") | ("edit", "old_text") | ("edit", "new_text")
+            ("replace_in_file", "diff")
         )
     }
 }
@@ -391,45 +381,5 @@ fn render_streaming_diff_section(
                 .child(section.replace_content.clone())
                 .into_any(),
         ])
-        .into_any()
-}
-
-/// Render a text block for the edit tool (old_text or new_text)
-fn render_edit_text_block(
-    text: &str,
-    is_deletion: bool,
-    theme: &gpui_component::theme::Theme,
-) -> gpui::AnyElement {
-    // Choose colors based on whether this is old_text (deletion) or new_text (addition)
-    let (border_color, text_color) = if is_deletion {
-        // Red for deletions (old_text)
-        if theme.is_dark() {
-            (rgb(0xCC5555), rgb(0xFFBBBB))
-        } else {
-            (rgb(0xCC3333), rgb(0xAA0000))
-        }
-    } else {
-        // Green for additions (new_text)
-        if theme.is_dark() {
-            (rgb(0x55CC55), rgb(0xBBFFBB))
-        } else {
-            (rgb(0x33AA33), rgb(0x007700))
-        }
-    };
-
-    div()
-        .rounded_md()
-        .bg(if theme.is_dark() {
-            rgba(0x0A0A0AFF) // Dunklerer Hintergrund im Dark Mode
-        } else {
-            rgba(0xEAEAEAFF) // Hellerer Hintergrund im Light Mode
-        })
-        .p_2()
-        .border_l_2()
-        .border_color(border_color)
-        .text_color(text_color)
-        .text_size(px(15.))
-        .font_weight(FontWeight(500.0))
-        .child(text.to_string())
         .into_any()
 }

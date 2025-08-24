@@ -192,6 +192,7 @@ impl MessageContainer {
             status_message: None,
             output: None,
             is_collapsed: false, // Default to expanded
+            completed: false,    // Default to not completed
         });
         let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
         elements.push(view);
@@ -380,6 +381,7 @@ impl MessageContainer {
                 status_message: None,
                 output: None,
                 is_collapsed: false, // Default to expanded
+                completed: false,    // Default to not completed
             };
 
             tool.parameters.push(ParameterBlock {
@@ -396,10 +398,22 @@ impl MessageContainer {
     }
 
     // Mark a tool as ended (could add visual indicator)
-    pub fn end_tool_use(&self, id: impl Into<String>, _cx: &mut Context<Self>) {
-        // Currently no specific action needed, but could add visual indicator
-        // that the tool execution is complete
-        let _id = id.into();
+    pub fn end_tool_use(&self, id: impl Into<String>, cx: &mut Context<Self>) {
+        let id = id.into();
+        let elements = self.elements.lock().unwrap();
+
+        // Find the tool and mark it as completed
+        for element in elements.iter() {
+            let _ = cx.update_entity(element, |block_view, cx| {
+                if let Some(tool_block) = block_view.block.as_tool_mut() {
+                    if tool_block.id == id {
+                        tool_block.completed = true;
+                        cx.notify(); // Trigger re-render to show virtual parameters
+                        return;
+                    }
+                }
+            }); // Ignore errors from update_entity
+        }
     }
 
     fn finish_any_thinking_blocks(&self, cx: &mut Context<Self>) {
@@ -869,11 +883,32 @@ impl Render for BlockView {
 
                 // Filter out hidden parameters, then separate into regular and full-width
                 let current_project = self.current_project.lock().unwrap().clone();
+                let registry = ParameterRendererRegistry::global();
+
+                // Convert parameters to HashMap for virtual parameter processing
+                let param_map: std::collections::HashMap<String, String> = block
+                    .parameters
+                    .iter()
+                    .map(|p| (p.name.clone(), p.value.clone()))
+                    .collect();
+
                 let should_hide_param = |param: &ParameterBlock| {
-                    // Simple, focused logic for hiding project parameter when it matches current project
-                    param.name == "project"
+                    // Hide project parameter logic (existing)
+                    let hide_project = param.name == "project"
                         && !current_project.is_empty()
-                        && param.value == current_project
+                        && param.value == current_project;
+
+                    // Hide parameters that are part of virtual parameters (NEW)
+                    let hide_virtual = registry.as_ref().map_or(false, |reg| {
+                        reg.should_hide_parameter(
+                            &block.name,
+                            &param.name,
+                            &param_map,
+                            block.completed,
+                        )
+                    });
+
+                    hide_project || hide_virtual
                 };
 
                 let visible_params: Vec<&ParameterBlock> = block
@@ -882,7 +917,18 @@ impl Render for BlockView {
                     .filter(|param| !should_hide_param(param))
                     .collect();
 
-                let registry = ParameterRendererRegistry::global();
+                // Get virtual parameters that should be rendered
+                let virtual_elements: Vec<gpui::AnyElement> = if let Some(registry) = &registry {
+                    registry.render_virtual_parameters(
+                        &block.name,
+                        &param_map,
+                        block.completed,
+                        cx.theme(),
+                    )
+                } else {
+                    Vec::new()
+                };
+                let has_virtual_elements = !virtual_elements.is_empty();
 
                 let (regular_params, fullwidth_params): (
                     Vec<&ParameterBlock>,
@@ -999,6 +1045,7 @@ impl Render for BlockView {
 
                                     let content_height_rc = self.content_height.clone();
                                     let has_expandable_content = !fullwidth_params.is_empty() ||
+                                        has_virtual_elements ||
                                         block.output.as_ref().is_some_and(|o| !o.is_empty());
 
                                     if has_expandable_content && (!block.is_collapsed || scale > 0.0) {
@@ -1050,6 +1097,19 @@ impl Render for BlockView {
                                                                 );
                                                             }
 
+                                                            // Virtual parameters
+                                                            if has_virtual_elements {
+                                                                expandable_elements.push(
+                                                                    div()
+                                                                        .flex()
+                                                                        .flex_col()
+                                                                        .w_full()
+                                                                        .mt_1()
+                                                                        .children(virtual_elements)
+                                                                        .into_any(),
+                                                                );
+                                                            }
+
                                                             // Output with consistent rendering
                                                             if let Some(output_content) = &block.output {
                                                                 if !output_content.is_empty() {
@@ -1079,6 +1139,7 @@ impl Render for BlockView {
                                                         // Add bottom padding to prevent content overlapping with collapse bar
                                                         .when(
                                                             !fullwidth_params.is_empty() ||
+                                                            has_virtual_elements ||
                                                             block.output.as_ref().is_some_and(|o| !o.is_empty()),
                                                             |div| div.pb(px(24.0))
                                                         )
@@ -1116,6 +1177,7 @@ impl Render for BlockView {
                             };
 
                             let has_expandable_content = !fullwidth_params.is_empty() ||
+                                has_virtual_elements ||
                                 block.output.as_ref().is_some_and(|o| !o.is_empty());
 
                             if has_expandable_content && (!block.is_collapsed || scale > 0.0) {
@@ -1307,6 +1369,7 @@ pub struct ToolUseBlock {
     pub status_message: Option<String>,
     pub output: Option<String>,
     pub is_collapsed: bool,
+    pub completed: bool, // Track if EndTool event received
 }
 
 /// Parameter for a tool
