@@ -404,12 +404,11 @@ impl MessageContainer {
 
         // Find the tool and mark it as completed
         for element in elements.iter() {
-            let _ = cx.update_entity(element, |block_view, cx| {
+            cx.update_entity(element, |block_view, cx| {
                 if let Some(tool_block) = block_view.block.as_tool_mut() {
                     if tool_block.id == id {
                         tool_block.completed = true;
                         cx.notify(); // Trigger re-render to show virtual parameters
-                        return;
                     }
                 }
             }); // Ignore errors from update_entity
@@ -899,7 +898,7 @@ impl Render for BlockView {
                         && param.value == current_project;
 
                     // Hide parameters that are part of virtual parameters (NEW)
-                    let hide_virtual = registry.as_ref().map_or(false, |reg| {
+                    let hide_virtual = registry.as_ref().is_some_and(|reg| {
                         reg.should_hide_parameter(
                             &block.name,
                             &param.name,

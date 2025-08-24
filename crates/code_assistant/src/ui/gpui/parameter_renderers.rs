@@ -25,8 +25,10 @@ pub enum VirtualParameterCompletionStrategy {
     /// Show individual parameters during streaming, switch to virtual when all sources present
     StreamIndividualThenCombine,
     /// Wait for EndTool event before showing virtual parameter
+    #[allow(dead_code)]
     WaitForToolCompletion,
     /// Show virtual parameter as soon as any source parameter arrives
+    #[allow(dead_code)]
     ShowImmediately,
 }
 
@@ -156,7 +158,8 @@ impl ParameterRendererRegistry {
         use std::collections::HashSet;
 
         let mut seen_virtual_params = HashSet::new();
-        let specs: Vec<VirtualParameterSpec> = self.renderers
+        let specs: Vec<VirtualParameterSpec> = self
+            .renderers
             .values()
             .flat_map(|renderer| renderer.virtual_parameters())
             .filter(|spec| {

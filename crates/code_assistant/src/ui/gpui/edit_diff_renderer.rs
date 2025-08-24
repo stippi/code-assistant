@@ -377,7 +377,9 @@ mod tests {
 
     #[test]
     fn test_virtual_parameter_deduplication() {
-        use crate::ui::gpui::parameter_renderers::{ParameterRendererRegistry, DefaultParameterRenderer};
+        use crate::ui::gpui::parameter_renderers::{
+            DefaultParameterRenderer, ParameterRendererRegistry,
+        };
 
         // Create a registry and register the EditDiffRenderer
         let mut registry = ParameterRendererRegistry::new(Box::new(DefaultParameterRenderer));
@@ -389,6 +391,9 @@ mod tests {
         // Should only get one virtual parameter spec, not two (one for each source param)
         assert_eq!(virtual_params.len(), 1);
         assert_eq!(virtual_params[0].virtual_name, "diff");
-        assert_eq!(virtual_params[0].source_params, vec!["old_text", "new_text"]);
+        assert_eq!(
+            virtual_params[0].source_params,
+            vec!["old_text", "new_text"]
+        );
     }
 }

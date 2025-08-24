@@ -7,9 +7,7 @@ pub struct DiffParameterRenderer;
 
 impl ParameterRenderer for DiffParameterRenderer {
     fn supported_parameters(&self) -> Vec<(String, String)> {
-        vec![
-            ("replace_in_file".to_string(), "diff".to_string()),
-        ]
+        vec![("replace_in_file".to_string(), "diff".to_string())]
     }
 
     fn render(
@@ -56,10 +54,7 @@ impl ParameterRenderer for DiffParameterRenderer {
 
     fn is_full_width(&self, tool_name: &str, param_name: &str) -> bool {
         // All diff-style parameters are full-width
-        matches!(
-            (tool_name, param_name),
-            ("replace_in_file", "diff")
-        )
+        matches!((tool_name, param_name), ("replace_in_file", "diff"))
     }
 }
 
