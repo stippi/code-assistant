@@ -302,6 +302,7 @@ pub struct OpenAIClient {
     base_url: String,
     model: String,
     model_temperatures: HashMap<String, f32>,
+    model_reasoning_efforts: HashMap<String, String>,
     // Customization points
     auth_provider: Box<dyn AuthProvider>,
     request_customizer: Box<dyn RequestCustomizer>,
@@ -314,11 +315,13 @@ impl OpenAIClient {
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
         let model_temperatures = Self::default_temperatures();
+        let model_reasoning_efforts = Self::default_reasoning_efforts();
         Self {
             client: Client::new(),
             base_url,
             model,
             model_temperatures,
+            model_reasoning_efforts,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
         }
@@ -332,11 +335,13 @@ impl OpenAIClient {
         request_customizer: Box<dyn RequestCustomizer>,
     ) -> Self {
         let model_temperatures = Self::default_temperatures();
+        let model_reasoning_efforts = Self::default_reasoning_efforts();
         Self {
             client: Client::new(),
             base_url,
             model,
             model_temperatures,
+            model_reasoning_efforts,
             auth_provider,
             request_customizer,
         }
@@ -363,6 +368,21 @@ impl OpenAIClient {
             .get(&self.model)
             .cloned()
             .unwrap_or(1.0)
+    }
+
+    /// Returns default temperature mapping for known model IDs.
+    fn default_reasoning_efforts() -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("o3".to_string(), "low".to_string());
+        m.insert("o4-mini".to_string(), "low".to_string());
+        m.insert("gpt-oss-120b".to_string(), "low".to_string());
+        m.insert("openai/gpt-oss-120b".to_string(), "low".to_string());
+        // Add other model defaults as needed
+        m
+    }
+
+    fn get_reasoning_effort(&self) -> Option<String> {
+        self.model_reasoning_efforts.get(&self.model).cloned()
     }
 
     pub(crate) fn convert_message(message: &Message) -> Vec<OpenAIChatMessage> {
@@ -1023,7 +1043,7 @@ impl LLMProvider for OpenAIClient {
             stream: None,
             stream_options: None,
             prompt_cache_key: Some(request.session_id.clone()),
-            reasoning_effort: Some("low".to_string()),
+            reasoning_effort: self.get_reasoning_effort(),
             tool_choice: Some(serde_json::json!("auto")),
             tools: request.tools.map(|tools| {
                 tools
