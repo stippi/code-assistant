@@ -4,6 +4,7 @@ pub mod auto_scroll;
 pub mod chat_sidebar;
 pub mod content_renderer;
 pub mod diff_renderer;
+pub mod edit_diff_renderer;
 pub mod elements;
 pub mod file_icons;
 pub mod image;
@@ -21,6 +22,7 @@ use crate::types::WorkingMemory;
 use crate::ui::gpui::{
     content_renderer::ContentRenderer,
     diff_renderer::DiffParameterRenderer,
+    edit_diff_renderer::EditDiffRenderer,
     elements::MessageRole,
     parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
     simple_renderers::SimpleParameterRenderer,
@@ -149,6 +151,7 @@ impl Gpui {
 
         // Register specialized renderers
         registry.register_renderer(Box::new(DiffParameterRenderer));
+        registry.register_renderer(Box::new(EditDiffRenderer));
         registry.register_renderer(Box::new(ContentRenderer));
 
         // Register simple renderers for parameters that don't need labels
