@@ -54,7 +54,15 @@ pub async fn handle_retryable_error<
             ApiError::RateLimit(_) => {
                 if let Some(rate_limits) = &ctx.rate_limits {
                     if attempts < max_retries {
-                        let delay = rate_limits.get_retry_delay();
+                        // Get base delay from rate limit headers
+                        let mut delay = rate_limits.get_retry_delay();
+
+                        // Apply exponential backoff based on retry attempts
+                        // Double the delay for each retry attempt after the first
+                        if attempts > 0 {
+                            let multiplier = 2u32.pow(attempts as u32);
+                            delay = delay * multiplier;
+                        }
                         let delay_secs = delay.as_secs();
                         warn!(
                             "Rate limit hit (attempt {}/{}), waiting {} seconds before retry",
@@ -108,7 +116,10 @@ pub async fn handle_retryable_error<
                 } else {
                     // Fallback if no rate limit info available
                     if attempts < max_retries {
-                        let delay = Duration::from_secs(2u64.pow(attempts - 1));
+                        // Implement exponential backoff with a more appropriate base delay
+                        // Start with 60 seconds for the first retry, then double for each subsequent attempt
+                        let base_delay_secs = 60u64;
+                        let delay = Duration::from_secs(base_delay_secs * 2u64.pow(attempts));
                         warn!(
                             "Rate limit hit but no timing info available (attempt {}/{}), using exponential backoff: {} seconds",
                             attempts,
