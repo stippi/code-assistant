@@ -113,7 +113,10 @@ mod tests {
         let headers = customizer.get_additional_headers();
 
         assert_eq!(headers.len(), 1);
-        assert_eq!(headers[0], ("Content-Type".to_string(), "application/json".to_string()));
+        assert_eq!(
+            headers[0],
+            ("Content-Type".to_string(), "application/json".to_string())
+        );
     }
 
     #[test]
