@@ -464,14 +464,16 @@ impl UserInterface for ProxyUI {
                 // Update activity state to waiting for response
                 self.update_activity_state(SessionActivityState::WaitingForResponse);
             }
-            UiEvent::StreamingStopped { cancelled, .. } => {
+            UiEvent::StreamingStopped {
+                cancelled, error, ..
+            } => {
                 // Clear fragment buffer when LLM request ends - fragments are now part of message history
                 if let Ok(mut buffer) = self.fragment_buffer.lock() {
                     buffer.clear();
                 }
                 // Only update activity state back to agent running if streaming was not cancelled
-                // and the agent hasn't already completed (i.e., state is not already Idle)
-                if !cancelled {
+                // and there was no error, and the agent hasn't already completed (i.e., state is not already Idle)
+                if !cancelled && error.is_none() {
                     let current_state = self.session_activity_state.lock().unwrap().clone();
                     if matches!(
                         current_state,
@@ -480,6 +482,13 @@ impl UserInterface for ProxyUI {
                     ) {
                         self.update_activity_state(SessionActivityState::AgentRunning);
                     }
+                } else if let Some(error_msg) = error {
+                    // If there was an error, the agent will terminate, so don't transition to AgentRunning
+                    debug!(
+                        "StreamingStopped with error for session {}: {}",
+                        self.session_id, error_msg
+                    );
+                    // The agent task will set the state to Idle when it terminates
                 }
             }
             _ => {}
@@ -548,5 +557,66 @@ impl UserInterface for ProxyUI {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::mocks::MockUI;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn test_streaming_stopped_with_error_prevents_agent_running_state() {
+        let mock_ui = Arc::new(MockUI::default());
+        let fragment_buffer = Arc::new(Mutex::new(VecDeque::new()));
+        let is_session_connected = Arc::new(Mutex::new(true));
+        let session_activity_state = Arc::new(Mutex::new(SessionActivityState::WaitingForResponse));
+        let session_id = "test-session".to_string();
+
+        let proxy_ui = ProxyUI::new(
+            mock_ui.clone(),
+            fragment_buffer,
+            is_session_connected,
+            session_activity_state.clone(),
+            session_id,
+        );
+
+        // Simulate StreamingStopped with error
+        let _ = proxy_ui
+            .send_event(UiEvent::StreamingStopped {
+                id: 1,
+                cancelled: false,
+                error: Some("LLM request failed".to_string()),
+            })
+            .await;
+
+        // Verify that the activity state is NOT changed to AgentRunning when there's an error
+        let final_state = session_activity_state.lock().unwrap().clone();
+        assert_eq!(final_state, SessionActivityState::WaitingForResponse);
+
+        // Now test without error - should transition to AgentRunning
+        let session_activity_state2 =
+            Arc::new(Mutex::new(SessionActivityState::WaitingForResponse));
+        let proxy_ui2 = ProxyUI::new(
+            mock_ui.clone(),
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::new(Mutex::new(true)),
+            session_activity_state2.clone(),
+            "test-session-2".to_string(),
+        );
+
+        let _ = proxy_ui2
+            .send_event(UiEvent::StreamingStopped {
+                id: 2,
+                cancelled: false,
+                error: None,
+            })
+            .await;
+
+        // Verify that the activity state IS changed to AgentRunning when there's no error
+        let final_state2 = session_activity_state2.lock().unwrap().clone();
+        assert_eq!(final_state2, SessionActivityState::AgentRunning);
     }
 }

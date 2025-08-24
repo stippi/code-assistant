@@ -62,7 +62,11 @@ pub enum UiEvent {
     /// Streaming started for a request
     StreamingStarted(u64),
     /// Streaming stopped for a request
-    StreamingStopped { id: u64, cancelled: bool },
+    StreamingStopped {
+        id: u64,
+        cancelled: bool,
+        error: Option<String>,
+    },
     /// Refresh the chat list from session manager
     RefreshChatList,
     /// Update the chat list display

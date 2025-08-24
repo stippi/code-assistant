@@ -701,7 +701,11 @@ impl Gpui {
                     }
                 }
             }
-            UiEvent::StreamingStopped { id, cancelled } => {
+            UiEvent::StreamingStopped {
+                id,
+                cancelled,
+                error: _,
+            } => {
                 if cancelled {
                     let queue = self.message_queue.lock().unwrap();
                     for message_container in queue.iter() {
