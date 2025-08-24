@@ -267,7 +267,7 @@ impl RateLimitHandler for OpenAIRateLimitInfo {
 
     fn get_retry_delay(&self) -> Duration {
         // Take the longer of the two reset times if both are present
-        let mut delay = Duration::from_secs(2); // Default fallback
+        let mut delay = Duration::from_secs(60); // Default to 60 seconds for token-per-minute limits
 
         if let Some(requests_reset) = self.requests_reset {
             delay = delay.max(requests_reset);
