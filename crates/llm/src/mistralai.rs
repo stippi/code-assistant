@@ -2,16 +2,16 @@ use super::openai::{ApiKeyAuth, OpenAIClient, RequestCustomizer};
 use crate::{types::*, LLMProvider, StreamingCallback};
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::Value;
 
 /// MistralAI request customizer that strips unsupported fields
 pub struct MistralAiRequestCustomizer;
 
 impl RequestCustomizer for MistralAiRequestCustomizer {
     fn customize_request(&self, request: &mut serde_json::Value) -> Result<()> {
-        if let Value::Object(ref mut map) = request {
-            // Remove stream_options field as MistralAI doesn't support it
-            map.remove("stream_options");
+        if let Some(obj) = request.as_object_mut() {
+            // Remove stream_options and prompt_cache_key field as MistralAI doesn't support them
+            obj.remove("stream_options");
+            obj.remove("prompt_cache_key");
         }
         Ok(())
     }
