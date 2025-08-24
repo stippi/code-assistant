@@ -66,6 +66,8 @@ struct OpenAIRequest {
     messages: Vec<OpenAIChatMessage>,
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<serde_json::Value>>,
@@ -302,6 +304,7 @@ pub struct OpenAIClient {
     base_url: String,
     model: String,
     model_temperatures: HashMap<String, f32>,
+    model_top_ps: HashMap<String, f32>,
     model_reasoning_efforts: HashMap<String, String>,
     // Customization points
     auth_provider: Box<dyn AuthProvider>,
@@ -315,12 +318,14 @@ impl OpenAIClient {
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
         let model_temperatures = Self::default_temperatures();
+        let model_top_ps = Self::default_top_ps();
         let model_reasoning_efforts = Self::default_reasoning_efforts();
         Self {
             client: Client::new(),
             base_url,
             model,
             model_temperatures,
+            model_top_ps,
             model_reasoning_efforts,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
@@ -335,12 +340,14 @@ impl OpenAIClient {
         request_customizer: Box<dyn RequestCustomizer>,
     ) -> Self {
         let model_temperatures = Self::default_temperatures();
+        let model_top_ps = Self::default_top_ps();
         let model_reasoning_efforts = Self::default_reasoning_efforts();
         Self {
             client: Client::new(),
             base_url,
             model,
             model_temperatures,
+            model_top_ps,
             model_reasoning_efforts,
             auth_provider,
             request_customizer,
@@ -358,6 +365,7 @@ impl OpenAIClient {
         m.insert("o3".to_string(), 0.7);
         m.insert("o4-mini".to_string(), 0.7);
         m.insert("moonshotai/kimi-k2-instruct".to_string(), 0.6);
+        m.insert("qwen-3-coder-480b".to_string(), 0.7);
         // Add other model defaults as needed
         m
     }
@@ -368,6 +376,19 @@ impl OpenAIClient {
             .get(&self.model)
             .cloned()
             .unwrap_or(1.0)
+    }
+
+    /// Returns default temperature mapping for known model IDs.
+    fn default_top_ps() -> HashMap<String, f32> {
+        let mut m = HashMap::new();
+        m.insert("qwen-3-coder-480b".to_string(), 0.8);
+        // Add other model defaults as needed
+        m
+    }
+
+    /// Returns the temperature for the current model, defaulting to 1.0 if not set.
+    fn get_top_p(&self) -> Option<f32> {
+        self.model_top_ps.get(&self.model).cloned()
     }
 
     /// Returns default temperature mapping for known model IDs.
@@ -1040,6 +1061,7 @@ impl LLMProvider for OpenAIClient {
             model: self.model.clone(),
             messages,
             temperature: self.get_temperature(),
+            top_p: self.get_top_p(),
             stream: None,
             stream_options: None,
             prompt_cache_key: Some(request.session_id.clone()),
