@@ -212,26 +212,56 @@ impl MessageContainer {
         let mut updated = false;
 
         for element in elements.iter() {
-            element.update(cx, |view, cx| {
+            let mut should_animate_collapse = false;
+            let mut should_animate_expand = false;
+
+            element.update(cx, |view, _cx| {
                 if let Some(tool) = view.block.as_tool_mut() {
                     if tool.id == tool_id {
+                        let was_expanded = !tool.is_collapsed;
+
                         tool.status = status;
                         tool.status_message = message.clone();
                         tool.output = output.clone();
 
                         // Auto-collapse on completion or error
                         if status == ToolStatus::Success || status == ToolStatus::Error {
-                            tool.is_collapsed = true;
+                            if was_expanded {
+                                // Tool is transitioning from expanded to collapsed - trigger animation
+                                tool.is_collapsed = true;
+                                should_animate_collapse = true;
+                            }
+                            // If already collapsed, no need to animate
                         } else {
                             // Ensure it's expanded if it's still pending or in progress
-                            tool.is_collapsed = false;
+                            if tool.is_collapsed {
+                                // Tool is transitioning from collapsed to expanded - trigger animation
+                                tool.is_collapsed = false;
+                                should_animate_expand = true;
+                            }
+                            // If already expanded, no need to animate
                         }
 
                         updated = true;
-                        cx.notify();
                     }
                 }
             });
+
+            // Handle animation in a separate update to avoid borrowing conflicts
+            if should_animate_collapse || should_animate_expand {
+                element.update(cx, |view, cx| {
+                    if should_animate_collapse {
+                        view.start_expand_collapse_animation(false, cx);
+                    } else if should_animate_expand {
+                        view.start_expand_collapse_animation(true, cx);
+                    }
+                });
+            } else if updated {
+                // If we updated but don't need animation, still notify for re-render
+                element.update(cx, |_view, cx| {
+                    cx.notify();
+                });
+            }
         }
 
         updated
