@@ -734,9 +734,20 @@ impl MockProjectManager {
         path: PathBuf,
         explorer: Box<dyn CodeExplorer>,
     ) -> Self {
-        self.projects.insert(name.to_string(), Project { path });
+        self.projects.insert(name.to_string(), Project {
+            path,
+            format_on_save: None,
+        });
         self.explorers.insert(name.to_string(), explorer);
         self
+    }
+
+    // Helper to add a project with specific configuration
+    pub fn add_project(&mut self, name: String, project: Project) {
+        self.projects.insert(name.clone(), project);
+        // Add a default mock explorer
+        let files = std::collections::HashMap::new();
+        self.explorers.insert(name, Box::new(MockExplorer::new(files, None)));
     }
 }
 
@@ -747,7 +758,10 @@ impl ProjectManager for MockProjectManager {
 
         // Add the project
         self.projects
-            .insert(project_name.clone(), Project { path: path.clone() });
+            .insert(project_name.clone(), Project {
+                path: path.clone(),
+                format_on_save: None,
+            });
 
         // Add a default explorer for it
         self.explorers

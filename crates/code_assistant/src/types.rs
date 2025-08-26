@@ -8,6 +8,8 @@ use web::{WebPage, WebSearchResult};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Project {
     pub path: PathBuf,
+    #[serde(default)]
+    pub format_on_save: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

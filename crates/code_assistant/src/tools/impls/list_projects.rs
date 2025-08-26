@@ -101,6 +101,7 @@ mod tests {
             "test-project".to_string(),
             Project {
                 path: std::path::PathBuf::from("/path/to/test-project"),
+                format_on_save: None,
             },
         );
 

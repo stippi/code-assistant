@@ -65,7 +65,10 @@ impl ProjectManager for DefaultProjectManager {
         }
 
         // Add to temporary projects
-        self.temp_projects.insert(name.clone(), Project { path });
+        self.temp_projects.insert(name.clone(), Project {
+            path,
+            format_on_save: None,
+        });
 
         Ok(name)
     }
