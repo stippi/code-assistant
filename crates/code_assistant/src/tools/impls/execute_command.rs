@@ -7,7 +7,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the execute_command tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ExecuteCommandInput {
     pub project: String,
     pub command_line: String,
@@ -113,7 +113,7 @@ impl Tool for ExecuteCommandTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
@@ -152,8 +152,8 @@ impl Tool for ExecuteCommandTool {
             .await?;
 
         Ok(ExecuteCommandOutput {
-            project: input.project,
-            command_line: input.command_line,
+            project: input.project.clone(),
+            command_line: input.command_line.clone(),
             working_dir: working_dir_path,
             output: result.output,
             success: result.success,
@@ -230,7 +230,7 @@ mod tests {
         };
 
         // Create input
-        let input = ExecuteCommandInput {
+        let mut input = ExecuteCommandInput {
             project: "test-project".to_string(),
             command_line: "ls -la".to_string(),
             working_dir: Some("src".to_string()),
@@ -238,7 +238,7 @@ mod tests {
 
         // Execute tool
         let tool = ExecuteCommandTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify result
         assert_eq!(result.command_line, "ls -la");
@@ -275,7 +275,7 @@ mod tests {
         };
 
         // Create input
-        let input = ExecuteCommandInput {
+        let mut input = ExecuteCommandInput {
             project: "test-project".to_string(),
             command_line: "rm -rf /tmp/nonexistent".to_string(),
             working_dir: None,
@@ -283,7 +283,7 @@ mod tests {
 
         // Execute tool
         let tool = ExecuteCommandTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify result shows failure
         assert_eq!(result.command_line, "rm -rf /tmp/nonexistent");

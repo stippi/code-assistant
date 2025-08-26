@@ -1002,13 +1002,13 @@ mod tests {
         async fn execute<'a>(
             &self,
             _context: &mut ToolContext<'a>,
-            _input: Self::Input,
+            _input: &mut Self::Input,
         ) -> Result<Self::Output> {
             unimplemented!()
         }
     }
 
-    #[derive(serde::Deserialize)]
+    #[derive(serde::Deserialize, serde::Serialize)]
     struct TestInput {
         string_param: String,
         #[serde(default)]

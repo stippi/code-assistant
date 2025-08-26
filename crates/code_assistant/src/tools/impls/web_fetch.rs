@@ -7,7 +7,7 @@ use serde_json::json;
 use web::{WebClient, WebPage};
 
 // Input type for the web_fetch tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct WebFetchInput {
     pub url: String,
     pub selectors: Option<Vec<String>>,
@@ -102,7 +102,7 @@ impl Tool for WebFetchTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Create new client for each request
         let client = match WebClient::new().await {

@@ -9,7 +9,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the edit tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct EditInput {
     pub project: String,
     pub path: String,
@@ -122,7 +122,7 @@ impl Tool for EditTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
@@ -140,7 +140,7 @@ impl Tool for EditTool {
         let path = PathBuf::from(&input.path);
         if path.is_absolute() {
             return Ok(EditOutput {
-                project: input.project,
+                project: input.project.clone(),
                 path,
                 error: Some(FileUpdaterError::Other(
                     "Absolute paths are not allowed".to_string(),
@@ -153,8 +153,8 @@ impl Tool for EditTool {
 
         // Create a FileReplacement from the input
         let replacement = FileReplacement {
-            search: input.old_text,
-            replace: input.new_text,
+            search: input.old_text.clone(),
+            replace: input.new_text.clone(),
             replace_all: input.replace_all.unwrap_or(false),
         };
 
@@ -171,7 +171,7 @@ impl Tool for EditTool {
                 }
 
                 Ok(EditOutput {
-                    project: input.project,
+                    project: input.project.clone(),
                     path,
                     error: None,
                 })
@@ -185,7 +185,7 @@ impl Tool for EditTool {
                 };
 
                 Ok(EditOutput {
-                    project: input.project,
+                    project: input.project.clone(),
                     path,
                     error: Some(error),
                 })
@@ -277,7 +277,7 @@ mod tests {
         };
 
         // Create input for a valid replacement
-        let input = EditInput {
+        let mut input = EditInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             old_text: "fn original() {\n    println!(\"Original\");\n}".to_string(),
@@ -287,7 +287,7 @@ mod tests {
 
         // Execute the tool
         let tool = EditTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify the result
         assert!(result.error.is_none());
@@ -338,7 +338,7 @@ mod tests {
         };
 
         // Create input for replace all
-        let input = EditInput {
+        let mut input = EditInput {
             project: "test-project".to_string(),
             path: "test.js".to_string(),
             old_text: "console.log(".to_string(),
@@ -348,7 +348,7 @@ mod tests {
 
         // Execute the tool
         let tool = EditTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify the result
         assert!(result.error.is_none());
@@ -395,7 +395,7 @@ mod tests {
         };
 
         // Test case with multiple matches but replace_all = false
-        let input_multiple = EditInput {
+        let mut input_multiple = EditInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             old_text: "console.log".to_string(),
@@ -405,7 +405,7 @@ mod tests {
 
         // Execute the tool - should fail with multiple matches
         let tool = EditTool;
-        let result = tool.execute(&mut context, input_multiple).await?;
+        let result = tool.execute(&mut context, &mut input_multiple).await?;
 
         // Verify error for multiple matches
         assert!(result.error.is_some());
@@ -416,7 +416,7 @@ mod tests {
         }
 
         // Test case with missing content
-        let input_missing = EditInput {
+        let mut input_missing = EditInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             old_text: "non_existent_content".to_string(),
@@ -425,7 +425,7 @@ mod tests {
         };
 
         // Execute the tool - should fail with content not found
-        let result = tool.execute(&mut context, input_missing).await?;
+        let result = tool.execute(&mut context, &mut input_missing).await?;
 
         // Verify error for missing content
         assert!(result.error.is_some());
@@ -465,7 +465,7 @@ mod tests {
         };
 
         // Delete the TODO comment
-        let input = EditInput {
+        let mut input = EditInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             old_text: "    // TODO: Remove this comment\n".to_string(),
@@ -474,7 +474,7 @@ mod tests {
         };
 
         let tool = EditTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify the result
         assert!(result.error.is_none());
@@ -519,7 +519,7 @@ mod tests {
         };
 
         // Use LF endings in search text, should still match CRLF in file
-        let input = EditInput {
+        let mut input = EditInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             old_text: "function test() {\n  console.log('test');\n}".to_string(), // LF endings
@@ -528,7 +528,7 @@ mod tests {
         };
 
         let tool = EditTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify the result
         assert!(result.error.is_none());

@@ -9,7 +9,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the replace_in_file tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ReplaceInFileInput {
     pub project: String,
     pub path: String,
@@ -122,7 +122,7 @@ impl Tool for ReplaceInFileTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
@@ -141,7 +141,7 @@ impl Tool for ReplaceInFileTool {
             Ok(replacements) => replacements,
             Err(e) => {
                 return Ok(ReplaceInFileOutput {
-                    project: input.project,
+                    project: input.project.clone(),
                     path: PathBuf::from(&input.path),
                     error: Some(crate::utils::FileUpdaterError::Other(format!(
                         "Failed to parse replacements: {e}"
@@ -154,7 +154,7 @@ impl Tool for ReplaceInFileTool {
         let path = PathBuf::from(&input.path);
         if path.is_absolute() {
             return Ok(ReplaceInFileOutput {
-                project: input.project,
+                project: input.project.clone(),
                 path,
                 error: Some(crate::utils::FileUpdaterError::Other(
                     "Absolute paths are not allowed".to_string(),
@@ -178,7 +178,7 @@ impl Tool for ReplaceInFileTool {
                 }
 
                 Ok(ReplaceInFileOutput {
-                    project: input.project,
+                    project: input.project.clone(),
                     path,
                     error: None,
                 })
@@ -193,7 +193,7 @@ impl Tool for ReplaceInFileTool {
                     };
 
                 Ok(ReplaceInFileOutput {
-                    project: input.project,
+                    project: input.project.clone(),
                     path,
                     error: Some(error),
                 })
@@ -283,7 +283,7 @@ mod tests {
         };
 
         // Create input for a valid replacement
-        let input = ReplaceInFileInput {
+        let mut input = ReplaceInFileInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             diff: "<<<<<<< SEARCH\nfn original() {\n    println!(\"Original\");\n}\n=======\nfn renamed() {\n    println!(\"Updated\");\n}\n>>>>>>> REPLACE".to_string(),
@@ -291,7 +291,7 @@ mod tests {
 
         // Execute the tool
         let tool = ReplaceInFileTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify the result
         assert!(result.error.is_none());
@@ -339,7 +339,7 @@ mod tests {
         };
 
         // Test case with multiple matches
-        let input_multiple = ReplaceInFileInput {
+        let mut input_multiple = ReplaceInFileInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             diff: "<<<<<<< SEARCH\nconsole.log\n=======\nconsole.debug\n>>>>>>> REPLACE"
@@ -348,7 +348,7 @@ mod tests {
 
         // Execute the tool - should fail with multiple matches
         let tool = ReplaceInFileTool;
-        let result = tool.execute(&mut context, input_multiple).await?;
+        let result = tool.execute(&mut context, &mut input_multiple).await?;
 
         // Verify error for multiple matches
         assert!(result.error.is_some());
@@ -359,7 +359,7 @@ mod tests {
         }
 
         // Test case with missing content
-        let input_missing = ReplaceInFileInput {
+        let mut input_missing = ReplaceInFileInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             diff: "<<<<<<< SEARCH\nnon_existent_content\n=======\nreplacement\n>>>>>>> REPLACE"
@@ -367,7 +367,7 @@ mod tests {
         };
 
         // Execute the tool - should fail with content not found
-        let result = tool.execute(&mut context, input_missing).await?;
+        let result = tool.execute(&mut context, &mut input_missing).await?;
 
         // Verify error for missing content
         assert!(result.error.is_some());

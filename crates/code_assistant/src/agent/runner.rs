@@ -1,7 +1,6 @@
 use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
-use crate::format_on_save::FormatOnSaveHandler;
 use crate::persistence::ChatMetadata;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{generate_system_message, ParserRegistry, ToolRequest};
@@ -1050,10 +1049,14 @@ impl Agent {
         };
 
         // Execute the tool - could fail with ParseError or other errors
-        let result = match tool.invoke(&mut context, tool_request.input.clone()).await {
+        let mut input = tool_request.input.clone();
+        let result = match tool.invoke(&mut context, &mut input).await {
             Ok(result) => {
                 // Tool executed successfully (but may have failed functionally)
                 let success = result.is_success();
+
+                // Check if input parameters were modified during execution
+                let input_modified = input != tool_request.input;
 
                 // Determine UI status based on result
                 let status = if success {
@@ -1079,35 +1082,36 @@ impl Agent {
                     })
                     .await?;
 
+                // Create the tool request with potentially updated input
+                let final_tool_request = if input_modified {
+                    debug!("Tool input was modified during execution");
+                    ToolRequest {
+                        id: tool_request.id.clone(),
+                        name: tool_request.name.clone(),
+                        input: input.clone(),
+                    }
+                } else {
+                    tool_request.clone()
+                };
+
                 // Create and store the ToolExecution record
                 let tool_execution = ToolExecution {
-                    tool_request: tool_request.clone(),
+                    tool_request: final_tool_request.clone(),
                     result,
                 };
 
                 // Store the execution record
-                self.tool_executions.push(tool_execution.clone());
+                self.tool_executions.push(tool_execution);
 
-                // Process format-on-save if applicable
-                let format_handler = FormatOnSaveHandler::new(
-                    self.project_manager.as_ref(),
-                    self.command_executor.as_ref(),
-                );
-
-                if let Ok(Some(updated_request)) = format_handler
-                    .process_tool_execution(&tool_execution, self.tool_syntax)
-                    .await
-                {
-                    debug!("Tool execution updated after formatting");
-
-                    // Update the stored tool execution with the formatted parameters
-                    if let Some(last_execution) = self.tool_executions.last_mut() {
-                        last_execution.tool_request = updated_request.clone();
-                    }
-
-                    // Update message history to reflect the formatted tool call
-                    if let Err(e) = self.update_message_history_with_formatted_tool(&updated_request) {
-                        warn!("Failed to update message history after formatting: {}", e);
+                // Update message history if input was modified
+                if input_modified {
+                    if let Err(e) =
+                        self.update_message_history_with_formatted_tool(&final_tool_request)
+                    {
+                        warn!(
+                            "Failed to update message history after input modification: {}",
+                            e
+                        );
                     }
                 }
 
@@ -1156,7 +1160,10 @@ impl Agent {
     }
 
     /// Update message history to reflect formatted tool parameters
-    fn update_message_history_with_formatted_tool(&mut self, updated_request: &ToolRequest) -> Result<()> {
+    fn update_message_history_with_formatted_tool(
+        &mut self,
+        updated_request: &ToolRequest,
+    ) -> Result<()> {
         // Find the most recent assistant message that contains the tool call
         for message in self.message_history.iter_mut().rev() {
             if message.role == MessageRole::Assistant {
@@ -1176,7 +1183,11 @@ impl Agent {
                     MessageContent::Text(text) => {
                         // For text content, we need to update the tool call in the text
                         // This is more complex and depends on the tool syntax
-                        if let Ok(updated_text) = Self::update_tool_call_in_text_static(text, updated_request, self.tool_syntax) {
+                        if let Ok(updated_text) = Self::update_tool_call_in_text_static(
+                            text,
+                            updated_request,
+                            self.tool_syntax,
+                        ) {
                             *text = updated_text;
                             debug!("Updated tool call {} in text message", updated_request.id);
                             return Ok(());
@@ -1188,30 +1199,19 @@ impl Agent {
             }
         }
 
-        warn!("Could not find tool call {} to update in message history", updated_request.id);
+        warn!(
+            "Could not find tool call {} to update in message history",
+            updated_request.id
+        );
         Ok(())
     }
 
-    /// Update a tool call within text content based on the tool syntax
-    fn update_tool_call_in_text(&self, text: &str, updated_request: &ToolRequest) -> Result<String> {
-        use crate::tools::formatter::get_formatter;
-
-        // Generate the new formatted tool call
-        let formatter = get_formatter(self.tool_syntax);
-        let new_tool_call = formatter.format_tool_request(updated_request)?;
-
-        // For now, we'll implement a simple approach that appends a comment
-        // A more sophisticated implementation would parse and replace the specific tool call
-        let updated_text = format!(
-            "{}\n\n<!-- Tool call {} was updated after auto-formatting -->\n{}",
-            text, updated_request.id, new_tool_call
-        );
-
-        Ok(updated_text)
-    }
-
     /// Static helper to update tool call in text (to avoid borrowing issues)
-    fn update_tool_call_in_text_static(text: &str, updated_request: &ToolRequest, tool_syntax: ToolSyntax) -> Result<String> {
+    fn update_tool_call_in_text_static(
+        text: &str,
+        updated_request: &ToolRequest,
+        tool_syntax: ToolSyntax,
+    ) -> Result<String> {
         use crate::tools::formatter::get_formatter;
 
         // Generate the new formatted tool call

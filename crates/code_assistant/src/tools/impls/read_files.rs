@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 // Input type for the read_files tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ReadFilesInput {
     pub project: String,
     pub paths: Vec<String>,
@@ -147,7 +147,7 @@ impl Tool for ReadFilesTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
@@ -165,7 +165,7 @@ impl Tool for ReadFilesTool {
         let mut failed_files = Vec::new();
 
         // Process each path
-        for path_str in input.paths {
+        for path_str in input.paths.clone() {
             // Parse the path string to extract line range information
             let parsed_path = match PathWithLineRange::parse(&path_str) {
                 Ok(parsed) => parsed,
@@ -225,7 +225,7 @@ impl Tool for ReadFilesTool {
         }
 
         Ok(ReadFilesOutput {
-            project: input.project,
+            project: input.project.clone(),
             loaded_files,
             failed_files,
         })
@@ -302,13 +302,13 @@ mod tests {
         };
 
         // Parameters for read_files
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "paths": ["test.txt", "test2.txt"]
         });
 
         // Execute the tool
-        let result = read_files_tool.invoke(&mut context, params).await?;
+        let result = read_files_tool.invoke(&mut context, &mut params).await?;
 
         // Format the output
         let mut tracker = crate::tools::core::ResourcesTracker::new();

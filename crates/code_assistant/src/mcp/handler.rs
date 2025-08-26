@@ -268,7 +268,9 @@ impl MessageHandler {
             };
 
             // Invoke the tool
-            let result = tool.invoke(&mut context, arguments.clone()).await?;
+            let mut input = arguments.clone();
+            let result = tool.invoke(&mut context, &mut input).await?;
+            // input might have changed, but we have to ignore it in MCP mode
 
             // Format the output
             let mut tracker = crate::tools::core::ResourcesTracker::new();

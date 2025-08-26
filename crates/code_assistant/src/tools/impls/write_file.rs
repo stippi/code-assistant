@@ -8,7 +8,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the write_file tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct WriteFileInput {
     pub project: String,
     pub path: String,
@@ -119,7 +119,7 @@ impl Tool for WriteFileTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = match context
@@ -167,7 +167,7 @@ impl Tool for WriteFileTool {
 
                 Ok(WriteFileOutput {
                     path,
-                    content: input.content,
+                    content: input.content.clone(),
                     error: None,
                 })
             }
@@ -246,7 +246,7 @@ mod tests {
         };
 
         // Parameters for write_file
-        let input = WriteFileInput {
+        let mut input = WriteFileInput {
             project: "test-project".to_string(),
             path: "test.txt".to_string(),
             content: "Test content".to_string(),
@@ -254,7 +254,7 @@ mod tests {
         };
 
         // Execute the tool
-        let result = write_file_tool.execute(&mut context, input).await?;
+        let result = write_file_tool.execute(&mut context, &mut input).await?;
 
         // Check the result
         assert!(result.error.is_none());
@@ -314,7 +314,7 @@ mod tests {
         };
 
         // Parameters for write_file with append=true
-        let input = WriteFileInput {
+        let mut input = WriteFileInput {
             project: "test-project".to_string(),
             path: "test.txt".to_string(),
             content: "Test content".to_string(),
@@ -322,7 +322,7 @@ mod tests {
         };
 
         // Execute the tool
-        let result = write_file_tool.execute(&mut context, input).await?;
+        let result = write_file_tool.execute(&mut context, &mut input).await?;
 
         // Check the result
         assert!(result.error.is_none());
