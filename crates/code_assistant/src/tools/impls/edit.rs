@@ -4,9 +4,10 @@ use crate::tools::core::{
 use crate::types::{FileReplacement, LoadedResource};
 use crate::utils::FileUpdaterError;
 use anyhow::{anyhow, Result};
+use glob::Pattern;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // Input type for the edit tool
 #[derive(Deserialize, Serialize)]
@@ -15,7 +16,7 @@ pub struct EditInput {
     pub path: String,
     pub old_text: String,
     pub new_text: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replace_all: Option<bool>,
 }
 
@@ -50,10 +51,10 @@ impl Render for EditOutput {
                     )
                 }
                 FileUpdaterError::OverlappingMatches(index1, index2) => {
-                    format!("Overlapping replacements detected (blocks {} and {})", index1, index2)
+                    format!("Overlapping replacements detected (blocks {index1} and {index2})")
                 }
                 FileUpdaterError::AdjacentMatches(index1, index2) => {
-                    format!("Adjacent replacements detected (blocks {} and {})", index1, index2)
+                    format!("Adjacent replacements detected (blocks {index1} and {index2})")
                 }
                 FileUpdaterError::Other(msg) => {
                     format!("Failed to edit file '{}': {}", self.path.display(), msg)
@@ -70,6 +71,22 @@ impl ToolResult for EditOutput {
     fn is_success(&self) -> bool {
         self.error.is_none()
     }
+}
+
+// Helper function to check if a file should be formatted on save
+fn should_format_file(project_config: &crate::types::Project, file_path: &Path) -> Option<String> {
+    if let Some(format_patterns) = &project_config.format_on_save {
+        let file_name = file_path.to_string_lossy();
+
+        for (pattern, command) in format_patterns {
+            if let Ok(glob_pattern) = Pattern::new(pattern) {
+                if glob_pattern.matches(&file_name) {
+                    return Some(command.clone());
+                }
+            }
+        }
+    }
+    None
 }
 
 // Tool implementation
@@ -142,6 +159,12 @@ impl Tool for EditTool {
                 )
             })?;
 
+        // Get project configuration for format-on-save
+        let project_config = context
+            .project_manager
+            .get_project(&input.project)?
+            .ok_or_else(|| anyhow!("Project not found: {}", input.project))?;
+
         // Check for absolute path
         let path = PathBuf::from(&input.path);
         if path.is_absolute() {
@@ -164,9 +187,37 @@ impl Tool for EditTool {
             replace_all: input.replace_all.unwrap_or(false),
         };
 
-        // Apply the replacements using the explorer
-        match explorer.apply_replacements(&full_path, &[replacement]) {
-            Ok(new_content) => {
+        // Check if this file should be formatted on save
+        let format_result = if let Some(format_command) = should_format_file(&project_config, &path)
+        {
+            // Use format-aware replacement
+            explorer
+                .apply_replacements_with_formatting(
+                    &full_path,
+                    &[replacement.clone()],
+                    &format_command,
+                    context.command_executor,
+                )
+                .await
+        } else {
+            // Use regular replacement
+            match explorer.apply_replacements(&full_path, &[replacement]) {
+                Ok(content) => Ok((content, None)),
+                Err(e) => Err(e),
+            }
+        };
+
+        match format_result {
+            Ok((new_content, updated_replacements)) => {
+                // If formatting updated the replacement parameters, update our input
+                if let Some(updated) = updated_replacements {
+                    if let Some(updated_replacement) = updated.first() {
+                        input.old_text = updated_replacement.search.clone();
+                        input.new_text = updated_replacement.replace.clone();
+                        input.replace_all = Some(updated_replacement.replace_all);
+                    }
+                }
+
                 // If we have a working memory reference, update it with the modified file
                 if let Some(working_memory) = &mut context.working_memory {
                     // Add the file with new content to working memory
