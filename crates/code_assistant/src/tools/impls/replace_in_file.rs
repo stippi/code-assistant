@@ -52,10 +52,10 @@ impl Render for ReplaceInFileOutput {
                     )
                 }
                 crate::utils::FileUpdaterError::OverlappingMatches(index1, index2) => {
-                    format!("Overlapping SEARCH blocks detected (blocks {} and {})", index1, index2)
+                    format!("Overlapping SEARCH blocks detected (blocks {index1} and {index2})")
                 }
                 crate::utils::FileUpdaterError::AdjacentMatches(index1, index2) => {
-                    format!("Adjacent SEARCH blocks detected (blocks {} and {})", index1, index2)
+                    format!("Adjacent SEARCH blocks detected (blocks {index1} and {index2})")
                 }
                 crate::utils::FileUpdaterError::Other(msg) => {
                     format!(

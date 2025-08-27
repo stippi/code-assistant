@@ -10,6 +10,7 @@ use web::{WebClient, WebPage};
 #[derive(Deserialize, Serialize)]
 pub struct WebFetchInput {
     pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub selectors: Option<Vec<String>>,
 }
 

@@ -13,7 +13,7 @@ pub struct WriteFileInput {
     pub project: String,
     pub path: String,
     pub content: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub append: bool,
 }
 

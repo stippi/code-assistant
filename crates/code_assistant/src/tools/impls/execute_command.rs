@@ -11,6 +11,7 @@ use std::path::PathBuf;
 pub struct ExecuteCommandInput {
     pub project: String,
     pub command_line: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
 }
 

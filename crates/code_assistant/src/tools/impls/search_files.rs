@@ -12,7 +12,7 @@ use std::collections::HashMap;
 pub struct SearchFilesInput {
     pub project: String,
     pub regex: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<String>>,
 }
 
