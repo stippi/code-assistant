@@ -150,6 +150,15 @@ fn parse_json_response(
     Ok((tool_requests, response.clone()))
 }
 
+pub fn is_multiline_param(name: &str) -> bool {
+    name == "content"
+        || name == "command_line"
+        || name == "diff"
+        || name == "message"
+        || name == "old_text"
+        || name == "new_text"
+}
+
 /// XML-based tool invocation parser
 pub struct XmlParser;
 
@@ -322,8 +331,7 @@ impl XmlParser {
         };
 
         // Check if this is a multiline content parameter
-        let is_multiline =
-            name == "content" || name == "command_line" || name == "diff" || name == "message";
+        let is_multiline = is_multiline_param(name);
 
         // Generate appropriate placeholder text
         let placeholder = if is_multiline {
@@ -555,12 +563,7 @@ impl CaretParser {
         let is_array = prop.get("type").and_then(|t| t.as_str()) == Some("array");
 
         // Check if this is a multiline content parameter
-        let is_multiline = name == "content"
-            || name == "command_line"
-            || name == "diff"
-            || name == "message"
-            || name == "old_text"
-            || name == "new_text";
+        let is_multiline = is_multiline_param(name);
 
         // Generate appropriate placeholder text
         let placeholder = if name == "project" {
