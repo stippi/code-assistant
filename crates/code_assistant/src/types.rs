@@ -1,4 +1,5 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -255,6 +256,7 @@ impl ValueEnum for ToolSyntax {
     }
 }
 
+#[async_trait::async_trait]
 pub trait CodeExplorer: Send + Sync {
     fn root_dir(&self) -> PathBuf;
     /// Reads the content of a file
@@ -274,6 +276,14 @@ pub trait CodeExplorer: Send + Sync {
     fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry>;
     /// Applies FileReplacements to a file
     fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String>;
+    /// Applies FileReplacements to a file with formatting support
+    async fn apply_replacements_with_formatting(
+        &self,
+        path: &Path,
+        replacements: &[FileReplacement],
+        format_command: &str,
+        command_executor: &dyn crate::utils::CommandExecutor,
+    ) -> Result<(String, Option<Vec<FileReplacement>>)>;
     /// Search for text in files with advanced options
     fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>>;
     /// Create a cloned box of this explorer

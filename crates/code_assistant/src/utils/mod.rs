@@ -1,6 +1,6 @@
 mod command;
 pub mod content;
-mod file_updater;
+pub mod file_updater;
 mod writer;
 
 pub mod encoding;

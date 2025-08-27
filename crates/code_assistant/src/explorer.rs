@@ -3,6 +3,7 @@ use crate::types::{
     SearchMode, SearchOptions, SearchResult,
 };
 use anyhow::Result;
+use async_trait::async_trait;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 use std::collections::{HashMap, HashSet};
@@ -335,6 +336,7 @@ impl Explorer {
     }
 }
 
+#[async_trait::async_trait]
 impl CodeExplorer for Explorer {
     fn clone_box(&self) -> Box<dyn CodeExplorer> {
         Box::new(Explorer {
@@ -528,6 +530,82 @@ impl CodeExplorer for Explorer {
 
         // Return the normalized content for LLM
         Ok(updated_normalized)
+    }
+
+    async fn apply_replacements_with_formatting(
+        &self,
+        path: &Path,
+        replacements: &[FileReplacement],
+        format_command: &str,
+        command_executor: &dyn crate::utils::CommandExecutor,
+    ) -> Result<(String, Option<Vec<FileReplacement>>)> {
+        use crate::utils::file_updater::{
+            apply_matches, extract_stable_ranges, find_replacement_matches,
+            reconstruct_formatted_replacements,
+        };
+
+        // Get the original content
+        let original_content = std::fs::read_to_string(path)?;
+
+        // Get file format or detect if not available
+        let file_format = {
+            let formats = self.file_formats.read().unwrap();
+            match formats.get(path) {
+                Some(format) => format.clone(),
+                None => {
+                    // Detect format if not already known
+                    let encoding = FileEncoding::UTF8; // Fallback
+                    let line_ending = crate::utils::encoding::detect_line_ending(&original_content);
+                    FileFormat {
+                        encoding,
+                        line_ending,
+                    }
+                }
+            }
+        };
+
+        // Phase 1: Find matches and check for conflicts
+        let (matches, has_conflicts) = find_replacement_matches(&original_content, replacements)?;
+
+        // Phase 2: Apply replacements
+        let updated_content = apply_matches(&original_content, &matches, replacements)?;
+
+        // Phase 3: Write the file
+        crate::utils::encoding::write_file_with_format(path, &updated_content, &file_format)?;
+
+        // Phase 4: Run formatting
+        let output = command_executor
+            .execute(format_command, Some(&self.root_dir))
+            .await?;
+
+        if !output.success {
+            // Formatting failed - restore original content and return without updated replacements
+            crate::utils::encoding::write_file_with_format(path, &updated_content, &file_format)?;
+            return Ok((updated_content, None));
+        }
+
+        // Phase 5: Read formatted content
+        let formatted_content = std::fs::read_to_string(path)?;
+
+        // Phase 6: Try to reconstruct formatted replacements (if no conflicts)
+        let updated_replacements = if has_conflicts {
+            // Skip parameter reconstruction for conflicted cases
+            None
+        } else {
+            // Extract stable ranges for reconstruction
+            let stable_ranges = extract_stable_ranges(&original_content, &matches);
+
+            // Attempt to reconstruct formatted replacements
+            reconstruct_formatted_replacements(
+                &original_content,
+                &formatted_content,
+                &stable_ranges,
+                &matches,
+                replacements,
+            )
+        };
+
+        Ok((formatted_content, updated_replacements))
     }
 
     fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>> {

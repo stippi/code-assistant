@@ -276,6 +276,7 @@ impl MockExplorer {
     }
 }
 
+#[async_trait::async_trait]
 impl CodeExplorer for MockExplorer {
     fn clone_box(&self) -> Box<dyn CodeExplorer> {
         Box::new(MockExplorer {
@@ -441,6 +442,19 @@ impl CodeExplorer for MockExplorer {
         files.insert(path.to_path_buf(), updated_content.clone());
 
         Ok(updated_content)
+    }
+
+    async fn apply_replacements_with_formatting(
+        &self,
+        path: &Path,
+        replacements: &[FileReplacement],
+        _format_command: &str,
+        _command_executor: &dyn crate::utils::CommandExecutor,
+    ) -> Result<(String, Option<Vec<FileReplacement>>)> {
+        // For testing, just apply replacements without actual formatting
+        let updated_content = self.apply_replacements(path, replacements)?;
+        // Return None for updated_replacements to simulate no formatting changes
+        Ok((updated_content, None))
     }
 
     fn search(
