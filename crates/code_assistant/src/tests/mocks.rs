@@ -720,7 +720,7 @@ impl MockProjectManager {
             projects: HashMap::new(),
         };
         // Add default project
-        empty.with_project(
+        empty.with_project_path(
             "test",
             PathBuf::from("./root"),
             Box::new(create_explorer_mock()),
@@ -728,26 +728,32 @@ impl MockProjectManager {
     }
 
     // Helper to add a custom project and explorer
-    pub fn with_project(
-        mut self,
+    pub fn with_project_path(
+        self,
         name: &str,
         path: PathBuf,
         explorer: Box<dyn CodeExplorer>,
     ) -> Self {
-        self.projects.insert(name.to_string(), Project {
-            path,
-            format_on_save: None,
-        });
-        self.explorers.insert(name.to_string(), explorer);
-        self
+        self.with_project(
+            name,
+            Project {
+                path,
+                format_on_save: None,
+            },
+            explorer,
+        )
     }
 
-    // Helper to add a project with specific configuration
-    pub fn add_project(&mut self, name: String, project: Project) {
-        self.projects.insert(name.clone(), project);
-        // Add a default mock explorer
-        let files = std::collections::HashMap::new();
-        self.explorers.insert(name, Box::new(MockExplorer::new(files, None)));
+    // Helper to add a custom project and explorer
+    pub fn with_project(
+        mut self,
+        name: &str,
+        project: Project,
+        explorer: Box<dyn CodeExplorer>,
+    ) -> Self {
+        self.projects.insert(name.to_string(), project);
+        self.explorers.insert(name.to_string(), explorer);
+        self
     }
 }
 
@@ -757,11 +763,13 @@ impl ProjectManager for MockProjectManager {
         let project_name = "temp_project".to_string();
 
         // Add the project
-        self.projects
-            .insert(project_name.clone(), Project {
+        self.projects.insert(
+            project_name.clone(),
+            Project {
                 path: path.clone(),
                 format_on_save: None,
-            });
+            },
+        );
 
         // Add a default explorer for it
         self.explorers

@@ -292,7 +292,7 @@ mod tests {
 
         // Create a tool context with working memory
         let mut context = ToolContext::<'_> {
-            project_manager: &MockProjectManager::default().with_project(
+            project_manager: &MockProjectManager::default().with_project_path(
                 "test-project",
                 PathBuf::from("./root"),
                 Box::new(explorer),

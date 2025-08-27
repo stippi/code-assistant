@@ -49,7 +49,7 @@ async fn test_read_files_tool() -> Result<()> {
     let explorer = MockExplorer::new(files, file_tree);
 
     // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project(
+    let project_manager = MockProjectManager::default().with_project_path(
         "test-project",
         PathBuf::from("./root"),
         Box::new(explorer),
@@ -163,7 +163,7 @@ async fn test_write_file_tool() -> Result<()> {
     let explorer = MockExplorer::new(files.clone(), file_tree);
 
     // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project(
+    let project_manager = MockProjectManager::default().with_project_path(
         "test-project",
         PathBuf::from("./root"),
         Box::new(explorer),
@@ -296,7 +296,7 @@ async fn test_replace_in_file_tool() -> Result<()> {
     let explorer = MockExplorer::new(files, None);
 
     // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project(
+    let project_manager = MockProjectManager::default().with_project_path(
         "test-project",
         PathBuf::from("./root"),
         Box::new(explorer),
@@ -418,7 +418,7 @@ async fn test_execute_command_tool() -> Result<()> {
     let explorer = MockExplorer::default();
 
     // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project(
+    let project_manager = MockProjectManager::default().with_project_path(
         "test-project",
         PathBuf::from("./root"),
         Box::new(explorer),
@@ -550,7 +550,7 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
     let explorer = MockExplorer::new(files, file_tree);
 
     // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project(
+    let project_manager = MockProjectManager::default().with_project_path(
         "test-project",
         PathBuf::from("./root"),
         Box::new(explorer),

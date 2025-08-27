@@ -3,7 +3,6 @@ mod app;
 mod cli;
 mod config;
 mod explorer;
-mod format_on_save;
 mod logging;
 mod mcp;
 mod persistence;

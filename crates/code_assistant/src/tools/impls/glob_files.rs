@@ -262,7 +262,7 @@ mod tests {
         let explorer = create_explorer_mock();
 
         // Create a mock project manager
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),

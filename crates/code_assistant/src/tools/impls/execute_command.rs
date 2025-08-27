@@ -216,7 +216,7 @@ mod tests {
         let test_cmd_executor = create_command_executor_mock();
 
         // Setup the project manager with test explorer
-        let mock_project_manager = MockProjectManager::default().with_project(
+        let mock_project_manager = MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(test_explorer),
@@ -258,7 +258,7 @@ mod tests {
     async fn test_execute_command_failure() -> Result<()> {
         // Create test project manager with explorer
         let test_explorer = create_explorer_mock();
-        let mock_project_manager = MockProjectManager::default().with_project(
+        let mock_project_manager = MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(test_explorer),

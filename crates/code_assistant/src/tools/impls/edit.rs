@@ -257,7 +257,7 @@ mod tests {
 
         let explorer = MockExplorer::new(files, None);
 
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -318,7 +318,7 @@ mod tests {
 
         let explorer = MockExplorer::new(files, None);
 
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -378,7 +378,7 @@ mod tests {
 
         let explorer = MockExplorer::new(files, None);
 
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -449,7 +449,7 @@ mod tests {
 
         let explorer = MockExplorer::new(files, None);
 
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -503,7 +503,7 @@ mod tests {
 
         let explorer = MockExplorer::new(files, None);
 
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
