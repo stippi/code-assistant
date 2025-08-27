@@ -51,6 +51,12 @@ impl Render for ReplaceInFileOutput {
                         "Found {count} occurrences of SEARCH block with index {idx}\nA SEARCH block must match exactly one location. Try enlarging the section to replace."
                     )
                 }
+                crate::utils::FileUpdaterError::OverlappingMatches(index1, index2) => {
+                    format!("Overlapping SEARCH blocks detected (blocks {} and {})", index1, index2)
+                }
+                crate::utils::FileUpdaterError::AdjacentMatches(index1, index2) => {
+                    format!("Adjacent SEARCH blocks detected (blocks {} and {})", index1, index2)
+                }
                 crate::utils::FileUpdaterError::Other(msg) => {
                     format!(
                         "Failed to replace in file '{}': {}",

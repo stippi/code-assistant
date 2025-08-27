@@ -49,6 +49,12 @@ impl Render for EditOutput {
                         "Found {count} occurrences of old_text\nIt must match exactly one location. Try enlarging old_text to make it unique or use replace_all to replace all occurrences."
                     )
                 }
+                FileUpdaterError::OverlappingMatches(index1, index2) => {
+                    format!("Overlapping replacements detected (blocks {} and {})", index1, index2)
+                }
+                FileUpdaterError::AdjacentMatches(index1, index2) => {
+                    format!("Adjacent replacements detected (blocks {} and {})", index1, index2)
+                }
                 FileUpdaterError::Other(msg) => {
                     format!("Failed to edit file '{}': {}", self.path.display(), msg)
                 }
