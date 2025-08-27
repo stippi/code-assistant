@@ -194,3 +194,11 @@ Below are some topics that are likely the next focus.
   This increases the success rate of matching search blocks quite a bit, but certain ways of fuzzy matching might increase the success even more.
   Failed matches introduce quite a bit of inefficiency, since they almost always trigger the LLM to re-read a file.
   Even when the error output of the `replace_in_file` tool includes the complete file and tells the LLM *not* to re-read the file.
+- **Edit user messages**: Editing a user message should create a new branch in the session.
+  The user should still be able to toggle the active banches.
+- **Auto-format on save**: Run a configured formatter after writing or editing files.
+  Modify the replacement strings in the tool input parameters to make it seem like the LLM had provided the correctly formatted string in the first place.
+- **Select in messages**: Allow to copy/paste from any message in the session.
+
+
+
