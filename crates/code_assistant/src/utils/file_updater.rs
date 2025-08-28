@@ -210,6 +210,11 @@ pub fn reconstruct_formatted_replacements(
 ) -> Option<Vec<FileReplacement>> {
     let normalized_formatted = encoding::normalize_content(formatted_content);
 
+    // Helper: compare strings ignoring all whitespace differences
+    fn strip_whitespace(s: &str) -> String {
+        s.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
     // Try to find all stable ranges in the formatted content
     let mut stable_positions = Vec::new();
     let mut search_start = 0;
@@ -256,47 +261,38 @@ pub fn reconstruct_formatted_replacements(
             let before_stable = stable_ranges.iter().find(|sr| sr.end == match_range.start);
             let after_stable = stable_ranges.iter().find(|sr| sr.start == match_range.end);
 
+            // Require both anchors for conservative update
+            let (Some(before), Some(after)) = (before_stable, after_stable) else {
+                continue; // Skip update if we don't have both sides
+            };
+
             // Find corresponding positions in formatted content
-            let formatted_start = if let Some(before) = before_stable {
-                // Find where this stable range ends in formatted content
-                if let Some(idx) = stable_ranges.iter().position(|sr| sr.start == before.start) {
-                    if idx < stable_positions.len() {
-                        stable_positions[idx].1
-                    } else {
-                        continue; // Skip this replacement
-                    }
-                } else {
-                    0 // Start of file
-                }
+            let formatted_start = if let Some(idx) = stable_ranges.iter().position(|sr| sr.start == before.start) {
+                if idx < stable_positions.len() { stable_positions[idx].1 } else { continue }
             } else {
-                0 // Start of file
+                continue
             };
 
-            let formatted_end = if let Some(after) = after_stable {
-                // Find where this stable range starts in formatted content
-                if let Some(idx) = stable_ranges.iter().position(|sr| sr.start == after.start) {
-                    if idx < stable_positions.len() {
-                        stable_positions[idx].0
-                    } else {
-                        continue; // Skip this replacement
-                    }
-                } else {
-                    normalized_formatted.len() // End of file
-                }
+            let formatted_end = if let Some(idx) = stable_ranges.iter().position(|sr| sr.start == after.start) {
+                if idx < stable_positions.len() { stable_positions[idx].0 } else { continue }
             } else {
-                normalized_formatted.len() // End of file
+                continue
             };
 
-            // Extract the formatted replacement text
+            // Extract the formatted replacement text and compare ignoring whitespace
             if formatted_start <= formatted_end {
                 let formatted_replace =
                     normalized_formatted[formatted_start..formatted_end].to_string();
-                updated_replacements[replacement_index].replace = formatted_replace;
+                let formatted_norm = strip_whitespace(&formatted_replace);
+                let original_norm = strip_whitespace(&original_replacements[replacement_index].replace);
+
+                // Only update if the formatted slice is equivalent modulo whitespace
+                if formatted_norm == original_norm {
+                    updated_replacements[replacement_index].replace = formatted_replace;
+                }
             }
         } else {
             // Multiple matches (replace_all case) - for now, don't update these
-            // This is complex because we'd need to figure out which formatted sections
-            // correspond to which original matches
             continue;
         }
     }
