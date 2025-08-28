@@ -15,8 +15,8 @@ pub struct EditInput {
     pub path: String,
     pub old_text: String,
     pub new_text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replace_all: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace_all: bool,
 }
 
 // Output type
@@ -167,7 +167,7 @@ impl Tool for EditTool {
         let replacement = FileReplacement {
             search: input.old_text.clone(),
             replace: input.new_text.clone(),
-            replace_all: input.replace_all.unwrap_or(false),
+            replace_all: input.replace_all,
         };
 
         // Apply with or without formatting, based on project configuration
@@ -194,7 +194,7 @@ impl Tool for EditTool {
                     if let Some(updated_replacement) = updated.first() {
                         input.old_text = updated_replacement.search.clone();
                         input.new_text = updated_replacement.replace.clone();
-                        input.replace_all = Some(updated_replacement.replace_all);
+                        input.replace_all = updated_replacement.replace_all;
                     }
                 }
 
@@ -319,7 +319,7 @@ mod tests {
             path: "test.rs".to_string(),
             old_text: "fn original() {\n    println!(\"Original\");\n}".to_string(),
             new_text: "fn renamed() {\n    println!(\"Updated\");\n}".to_string(),
-            replace_all: None,
+            replace_all: false,
         };
 
         // Execute the tool
@@ -380,7 +380,7 @@ mod tests {
             path: "test.js".to_string(),
             old_text: "console.log(".to_string(),
             new_text: "logger.debug(".to_string(),
-            replace_all: Some(true),
+            replace_all: true,
         };
 
         // Execute the tool
@@ -437,7 +437,7 @@ mod tests {
             path: "test.rs".to_string(),
             old_text: "console.log".to_string(),
             new_text: "console.debug".to_string(),
-            replace_all: None, // defaults to false
+            replace_all: false,
         };
 
         // Execute the tool - should fail with multiple matches
@@ -458,7 +458,7 @@ mod tests {
             path: "test.rs".to_string(),
             old_text: "non_existent_content".to_string(),
             new_text: "replacement".to_string(),
-            replace_all: None,
+            replace_all: false,
         };
 
         // Execute the tool - should fail with content not found
@@ -507,7 +507,7 @@ mod tests {
             path: "test.rs".to_string(),
             old_text: "    // TODO: Remove this comment\n".to_string(),
             new_text: "".to_string(),
-            replace_all: None,
+            replace_all: false,
         };
 
         let tool = EditTool;
@@ -561,7 +561,7 @@ mod tests {
             path: "test.rs".to_string(),
             old_text: "function test() {\n  console.log('test');\n}".to_string(), // LF endings
             new_text: "function answer() {\n  return 42;\n}".to_string(),
-            replace_all: None,
+            replace_all: false,
         };
 
         let tool = EditTool;

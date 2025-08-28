@@ -203,7 +203,7 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
         path: "test.js".to_string(),
         old_text: "const y = 2;".to_string(), // formatted search
         new_text: "const y=42;".to_string(),  // unformatted replacement
-        replace_all: None,
+        replace_all: false,
     };
 
     let tool = EditTool;
@@ -433,7 +433,7 @@ async fn test_no_format_when_pattern_doesnt_match() -> Result<()> {
         path: "test.txt".to_string(),
         old_text: "Hello".to_string(),
         new_text: "Hi".to_string(),
-        replace_all: None,
+        replace_all: false,
     };
 
     let tool = EditTool;
@@ -507,7 +507,7 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
         path: "test.js".to_string(),
         old_text: "return 42;".to_string(),
         new_text: "return 'hello';".to_string(),
-        replace_all: None,
+        replace_all: false,
     };
 
     let tool = EditTool;
@@ -520,7 +520,7 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
         path: "test.ts".to_string(),
         old_text: "return 42;".to_string(),
         new_text: "return 'hello';".to_string(),
-        replace_all: None,
+        replace_all: false,
     };
 
     let result = tool.execute(&mut context, &mut ts_input).await?;
@@ -603,7 +603,7 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
         path: "src/main.rs".to_string(),
         old_text: "println!(\"Hello\");".to_string(),
         new_text: "println!(\"Hi there!\");".to_string(),
-        replace_all: None,
+        replace_all: false,
     };
 
     let result = tool.execute(&mut context, &mut src_input).await?;
@@ -615,7 +615,7 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
         path: "tests/test.rs".to_string(),
         old_text: "assert_eq!(1,1);".to_string(),
         new_text: "assert_eq!(2,2);".to_string(),
-        replace_all: None,
+        replace_all: false,
     };
 
     let result = tool.execute(&mut context, &mut test_input).await?;
@@ -627,7 +627,7 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
         path: "other.txt".to_string(),
         old_text: "Not a Rust file".to_string(),
         new_text: "Still not a Rust file".to_string(),
-        replace_all: None,
+        replace_all: false,
     };
 
     let result = tool.execute(&mut context, &mut txt_input).await?;
@@ -688,7 +688,7 @@ async fn test_format_on_save_with_conflicting_matches() -> Result<()> {
         path: "test.js".to_string(),
         old_text: "console.log('a');".to_string(),
         new_text: "console.log('updated');".to_string(),
-        replace_all: None,
+        replace_all: false,
     };
 
     let tool = EditTool;
