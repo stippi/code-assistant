@@ -173,13 +173,12 @@ pub fn extract_stable_ranges(content: &str, matches: &[MatchRange]) -> Vec<Stabl
         // Add stable range before this match (if any)
         if current_pos < match_range.start {
             let stable_content = normalized_content[current_pos..match_range.start].to_string();
-            if !stable_content.trim().is_empty() {
-                stable_ranges.push(StableRange {
-                    start: current_pos,
-                    end: match_range.start,
-                    content: stable_content,
-                });
-            }
+            // Include whitespace-only ranges as anchors to avoid shifting whitespace into replacements
+            stable_ranges.push(StableRange {
+                start: current_pos,
+                end: match_range.start,
+                content: stable_content,
+            });
         }
 
         // Move past this match
@@ -189,13 +188,12 @@ pub fn extract_stable_ranges(content: &str, matches: &[MatchRange]) -> Vec<Stabl
     // Add final stable range after the last match (if any)
     if current_pos < normalized_content.len() {
         let stable_content = normalized_content[current_pos..].to_string();
-        if !stable_content.trim().is_empty() {
-            stable_ranges.push(StableRange {
-                start: current_pos,
-                end: normalized_content.len(),
-                content: stable_content,
-            });
-        }
+        // Include whitespace-only ranges as anchors
+        stable_ranges.push(StableRange {
+            start: current_pos,
+            end: normalized_content.len(),
+            content: stable_content,
+        });
     }
 
     stable_ranges

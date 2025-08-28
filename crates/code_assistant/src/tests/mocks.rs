@@ -471,26 +471,62 @@ impl CodeExplorer for MockExplorer {
         format_command: &str,
         command_executor: &dyn crate::utils::CommandExecutor,
     ) -> Result<(String, Option<Vec<FileReplacement>>)> {
+        use crate::utils::file_updater::{
+            extract_stable_ranges, find_replacement_matches, reconstruct_formatted_replacements,
+        };
+
+        // Capture original content
+        let original_content = self.read_file(path)?;
+
+        // Find matches and detect adjacency/overlap
+        let (matches, has_conflicts) = find_replacement_matches(&original_content, replacements)?;
+
         // Apply replacements first
         let updated_content = self.apply_replacements(path, replacements)?;
 
         // Execute the format command to simulate formatting
-        let _output = command_executor
+        let output = command_executor
             .execute(format_command, Some(&PathBuf::from("./root")))
             .await?;
 
+        // If formatting failed, do not attempt to reconstruct replacements
+        if !output.success {
+            return Ok((updated_content, None));
+        }
+
         // After formatting command, if we have a formatted version for this path, apply it
-        if let Some(formatted) = self.formatted_after.lock().unwrap().get(path).cloned() {
+        let final_content = if let Some(formatted) = self
+            .formatted_after
+            .lock()
+            .unwrap()
+            .get(path)
+            .cloned()
+        {
             // Replace file contents with the formatted version
             self.files
                 .lock()
                 .unwrap()
                 .insert(path.to_path_buf(), formatted.clone());
-            return Ok((formatted, None));
-        }
+            formatted
+        } else {
+            updated_content.clone()
+        };
 
-        // Otherwise keep the updated (unformatted) content
-        Ok((updated_content, None))
+        // Try to reconstruct updated replacements if there are no conflicts
+        let updated_replacements = if has_conflicts {
+            None
+        } else {
+            let stable_ranges = extract_stable_ranges(&original_content, &matches);
+            reconstruct_formatted_replacements(
+                &original_content,
+                &final_content,
+                &stable_ranges,
+                &matches,
+                replacements,
+            )
+        };
+
+        Ok((final_content, updated_replacements))
     }
 
     fn search(

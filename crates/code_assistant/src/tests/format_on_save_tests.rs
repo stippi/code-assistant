@@ -3,7 +3,7 @@ use crate::tools::core::{Tool, ToolContext};
 use crate::tools::impls::edit::{EditInput, EditTool};
 use crate::tools::impls::replace_in_file::{ReplaceInFileInput, ReplaceInFileTool};
 use crate::tools::impls::write_file::{WriteFileInput, WriteFileTool};
-use crate::types::{FileReplacement, Project, WorkingMemory};
+use crate::types::{FileReplacement, LoadedResource, Project, WorkingMemory};
 use crate::utils::file_updater::{
     extract_stable_ranges, reconstruct_formatted_replacements, MatchRange,
 };
@@ -154,80 +154,16 @@ fn test_parameter_reconstruction_failure() -> Result<()> {
     Ok(())
 }
 
-/// Test edit tool with format-on-save configuration
-#[tokio::test]
-async fn test_edit_tool_with_format_on_save() -> Result<()> {
-    // Create test files
-    let mut files = HashMap::new();
-    files.insert(
-        PathBuf::from("./root/test.js"),
-        "function test(){console.log('hello');return 42;}".to_string(),
-    );
-
-    // Create mock command executor that simulates prettier formatting
-    let command_responses = vec![Ok(CommandOutput {
-        success: true,
-        output: "test.js\n".to_string(),
-    })];
-
-    let command_executor = MockCommandExecutor::new(command_responses);
-    let explorer = MockExplorer::new(files, None);
-
-    // Create project with format-on-save configuration
-    let mut format_on_save = HashMap::new();
-    format_on_save.insert("*.js".to_string(), "prettier --write {path}".to_string());
-
-    let project = Project {
-        path: PathBuf::from("./root"),
-        format_on_save: Some(format_on_save),
-    };
-
-    let project_manager = Box::new(MockProjectManager::default().with_project(
-        "test-project",
-        project,
-        Box::new(explorer),
-    ));
-
-    let mut working_memory = WorkingMemory::default();
-    let mut context = ToolContext {
-        project_manager: project_manager.as_ref(),
-        command_executor: &command_executor,
-        working_memory: Some(&mut working_memory),
-    };
-
-    // Test editing a JavaScript file that should be formatted
-    let mut input = EditInput {
-        project: "test-project".to_string(),
-        path: "test.js".to_string(),
-        old_text: "console.log('hello');".to_string(),
-        new_text: "console.log('updated');".to_string(),
-        replace_all: None,
-    };
-
-    let tool = EditTool;
-    let result = tool.execute(&mut context, &mut input).await?;
-
-    // Should succeed
-    assert!(result.error.is_none());
-
-    // Verify the format command was executed
-    let captured_commands = command_executor.get_captured_commands();
-    assert_eq!(captured_commands.len(), 1);
-    assert!(captured_commands[0]
-        .command_line
-        .contains("prettier --write"));
-
-    Ok(())
-}
+// (Removed) test_edit_tool_with_format_on_save: covered by the parameter update test below
 
 /// Test edit tool parameter updating after formatting
 #[tokio::test]
 async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
-    // Create test files with unformatted JavaScript
+    // Create test files with already formatted JavaScript
     let mut files = HashMap::new();
     files.insert(
         PathBuf::from("./root/test.js"),
-        "const x=1;const y=2;const z=3;".to_string(),
+        "const x = 1;const y = 2;const z = 3;".to_string(),
     );
 
     // Mock command executor that formats the file (adds spaces)
@@ -238,10 +174,13 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
 
     let command_executor = MockCommandExecutor::new(command_responses);
 
-    // Use the regular MockExplorer - the parameter update test is more complex
-    // and would require a more sophisticated mock. For now, let's just test
-    // that the edit succeeds with format-on-save enabled.
-    let explorer = MockExplorer::new(files, None);
+    // Provide a formatted version of the file after prettier runs
+    let mut formatted_map = HashMap::new();
+    formatted_map.insert(
+        PathBuf::from("./root/test.js"),
+        "const x = 1;const y = 42;const z = 3;".to_string(),
+    );
+    let explorer = MockExplorer::new_with_formatting(files, formatted_map, None);
 
     // Create project with format-on-save configuration
     let mut format_on_save = HashMap::new();
@@ -265,12 +204,12 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
         working_memory: Some(&mut working_memory),
     };
 
-    // Test editing with unformatted search text
+    // Test editing: search is formatted (matches file), replacement is unformatted
     let mut input = EditInput {
         project: "test-project".to_string(),
         path: "test.js".to_string(),
-        old_text: "const y=2;".to_string(),  // Unformatted search
-        new_text: "const y=42;".to_string(), // Unformatted replacement
+        old_text: "const y = 2;".to_string(), // formatted search
+        new_text: "const y=42;".to_string(),  // unformatted replacement
         replace_all: None,
     };
 
@@ -285,9 +224,24 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
     // Should succeed
     assert!(result.error.is_none());
 
-    // The input parameters should be updated to reflect the formatted version
-    // Note: This test may need adjustment based on the actual implementation
-    // For now, we'll just verify that the edit succeeded
+    // Verify that the formatter was called with the file path
+    let captured_commands = command_executor.get_captured_commands();
+    assert_eq!(captured_commands.len(), 1);
+    assert!(captured_commands[0]
+        .command_line
+        .contains("prettier --write test.js"));
+
+    // Verify that input parameters were updated to the formatted versions
+    assert_eq!(input.old_text, "const y = 2;"); // search unchanged
+    assert_eq!(input.new_text, "const y = 42;"); // replacement reflects formatted code
+
+    // Verify that working memory contains the formatted full file content
+    let key = ("test-project".to_string(), PathBuf::from("test.js"));
+    if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&key) {
+        assert_eq!(content, "const x = 1;const y = 42;const z = 3;");
+    } else {
+        panic!("Expected file in working memory");
+    }
 
     Ok(())
 }
