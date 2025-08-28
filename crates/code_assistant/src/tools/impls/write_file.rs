@@ -1,11 +1,12 @@
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
-use crate::types::LoadedResource;
+use crate::types::{LoadedResource, Project};
 use anyhow::Result;
+use glob::Pattern;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // Input type for the write_file tool
 #[derive(Deserialize, Serialize)]
@@ -57,6 +58,21 @@ impl ToolResult for WriteFileOutput {
     fn is_success(&self) -> bool {
         self.error.is_none()
     }
+}
+
+// Helper function to check if a file should be formatted on save
+fn should_format_file(project_config: &Project, file_path: &Path) -> Option<String> {
+    if let Some(format_patterns) = &project_config.format_on_save {
+        let file_name = file_path.to_string_lossy();
+        for (pattern, command) in format_patterns {
+            if let Ok(glob_pattern) = Pattern::new(pattern) {
+                if glob_pattern.matches(&file_name) {
+                    return Some(command.clone());
+                }
+            }
+        }
+    }
+    None
 }
 
 // Tool implementation
@@ -139,6 +155,12 @@ impl Tool for WriteFileTool {
             }
         };
 
+        // Load project configuration
+        let project_config = context
+            .project_manager
+            .get_project(&input.project)?
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {}", input.project))?;
+
         // Check for absolute path
         let path = PathBuf::from(&input.path);
         if path.is_absolute() {
@@ -152,13 +174,28 @@ impl Tool for WriteFileTool {
         // Join with root_dir to get full path
         let full_path = explorer.root_dir().join(&path);
 
-        // Write the file
+        // Write the file first
         match explorer.write_file(&full_path, &input.content, input.append) {
-            Ok(full_content) => {
-                // If we have a working memory reference, update it with the written file
+            Ok(mut full_content) => {
+                // If format-on-save applies, run the formatter
+                if let Some(template) = should_format_file(&project_config, &path) {
+                    let command_line =
+                        crate::utils::command::build_format_command(&template, &path);
+                    let _ = context
+                        .command_executor
+                        .execute(&command_line, Some(&explorer.root_dir()))
+                        .await;
+
+                    // Regardless of formatter success, try to re-read the file content
+                    if let Ok(updated) = explorer.read_file(&full_path) {
+                        full_content = updated;
+                        // Update the input content to the formatted content so the LLM sees it
+                        input.content = full_content.clone();
+                    }
+                }
+
+                // Update working memory if present
                 if let Some(working_memory) = &mut context.working_memory {
-                    // Always update the working memory with the complete content
-                    // For both new files and append operations
                     working_memory.loaded_resources.insert(
                         (input.project.clone(), path.clone()),
                         LoadedResource::File(full_content.clone()),
