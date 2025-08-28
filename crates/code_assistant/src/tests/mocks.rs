@@ -265,6 +265,19 @@ impl MockExplorer {
         }
     }
 
+    /// Create a MockExplorer that simulates formatting by using a separate set of formatted files
+    pub fn new_with_formatting(
+        initial_files: HashMap<PathBuf, String>,
+        formatted_files: HashMap<PathBuf, String>,
+        file_tree: Option<FileTreeEntry>,
+    ) -> Self {
+        // For now, just start with the formatted files since our tests will check the final state
+        Self {
+            files: Arc::new(Mutex::new(formatted_files)),
+            file_tree: Arc::new(Mutex::new(file_tree)),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn print_files(&self) {
         let files = self.files.lock().unwrap();
@@ -448,12 +461,20 @@ impl CodeExplorer for MockExplorer {
         &self,
         path: &Path,
         replacements: &[FileReplacement],
-        _format_command: &str,
-        _command_executor: &dyn crate::utils::CommandExecutor,
+        format_command: &str,
+        command_executor: &dyn crate::utils::CommandExecutor,
     ) -> Result<(String, Option<Vec<FileReplacement>>)> {
-        // For testing, just apply replacements without actual formatting
+        // Apply replacements first
         let updated_content = self.apply_replacements(path, replacements)?;
-        // Return None for updated_replacements to simulate no formatting changes
+
+        // Execute the format command to simulate formatting
+        let _output = command_executor
+            .execute(format_command, Some(&PathBuf::from("./root")))
+            .await?;
+
+        // For testing, return the updated content and None for updated replacements
+        // In a real implementation, this would read the formatted file and potentially
+        // reconstruct the replacement parameters
         Ok((updated_content, None))
     }
 

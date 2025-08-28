@@ -188,24 +188,27 @@ impl Tool for EditTool {
         };
 
         // Check if this file should be formatted on save
-        let format_result = if let Some(format_command) = should_format_file(&project_config, &path)
-        {
-            // Use format-aware replacement
-            explorer
-                .apply_replacements_with_formatting(
-                    &full_path,
-                    &[replacement.clone()],
-                    &format_command,
-                    context.command_executor,
-                )
-                .await
-        } else {
-            // Use regular replacement
-            match explorer.apply_replacements(&full_path, &[replacement]) {
-                Ok(content) => Ok((content, None)),
-                Err(e) => Err(e),
-            }
-        };
+        let format_result =
+            if let Some(format_command_template) = should_format_file(&project_config, &path) {
+                // Construct the full format command with the filename
+                let format_command = format!("{} {}", format_command_template, path.display());
+
+                // Use format-aware replacement
+                explorer
+                    .apply_replacements_with_formatting(
+                        &full_path,
+                        &[replacement.clone()],
+                        &format_command,
+                        context.command_executor,
+                    )
+                    .await
+            } else {
+                // Use regular replacement
+                match explorer.apply_replacements(&full_path, &[replacement]) {
+                    Ok(content) => Ok((content, None)),
+                    Err(e) => Err(e),
+                }
+            };
 
         match format_result {
             Ok((new_content, updated_replacements)) => {
