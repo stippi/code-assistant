@@ -495,22 +495,17 @@ impl CodeExplorer for MockExplorer {
         }
 
         // After formatting command, if we have a formatted version for this path, apply it
-        let final_content = if let Some(formatted) = self
-            .formatted_after
-            .lock()
-            .unwrap()
-            .get(path)
-            .cloned()
-        {
-            // Replace file contents with the formatted version
-            self.files
-                .lock()
-                .unwrap()
-                .insert(path.to_path_buf(), formatted.clone());
-            formatted
-        } else {
-            updated_content.clone()
-        };
+        let final_content =
+            if let Some(formatted) = self.formatted_after.lock().unwrap().get(path).cloned() {
+                // Replace file contents with the formatted version
+                self.files
+                    .lock()
+                    .unwrap()
+                    .insert(path.to_path_buf(), formatted.clone());
+                formatted
+            } else {
+                updated_content.clone()
+            };
 
         // Try to reconstruct updated replacements if there are no conflicts
         let updated_replacements = if has_conflicts {

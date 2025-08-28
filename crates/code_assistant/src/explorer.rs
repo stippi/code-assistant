@@ -3,7 +3,6 @@ use crate::types::{
     SearchMode, SearchOptions, SearchResult,
 };
 use anyhow::Result;
-use async_trait::async_trait;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 use std::collections::{HashMap, HashSet};

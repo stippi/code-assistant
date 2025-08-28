@@ -1,12 +1,11 @@
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
-use crate::types::{LoadedResource, Project};
+use crate::types::LoadedResource;
 use anyhow::Result;
-use glob::Pattern;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // Input type for the write_file tool
 #[derive(Deserialize, Serialize)]
@@ -58,21 +57,6 @@ impl ToolResult for WriteFileOutput {
     fn is_success(&self) -> bool {
         self.error.is_none()
     }
-}
-
-// Helper function to check if a file should be formatted on save
-fn should_format_file(project_config: &Project, file_path: &Path) -> Option<String> {
-    if let Some(format_patterns) = &project_config.format_on_save {
-        let file_name = file_path.to_string_lossy();
-        for (pattern, command) in format_patterns {
-            if let Ok(glob_pattern) = Pattern::new(pattern) {
-                if glob_pattern.matches(&file_name) {
-                    return Some(command.clone());
-                }
-            }
-        }
-    }
-    None
 }
 
 // Tool implementation
@@ -178,9 +162,7 @@ impl Tool for WriteFileTool {
         match explorer.write_file(&full_path, &input.content, input.append) {
             Ok(mut full_content) => {
                 // If format-on-save applies, run the formatter
-                if let Some(template) = should_format_file(&project_config, &path) {
-                    let command_line =
-                        crate::utils::command::build_format_command(&template, &path);
+                if let Some(command_line) = project_config.format_command_for(&path) {
                     let _ = context
                         .command_executor
                         .execute(&command_line, Some(&explorer.root_dir()))

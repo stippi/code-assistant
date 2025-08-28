@@ -81,6 +81,29 @@ impl ToolResult for ReplaceInFileOutput {
     }
 }
 
+fn render_diff_from_replacements(replacements: &[crate::types::FileReplacement]) -> String {
+    let mut out = String::new();
+    for (i, r) in replacements.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if r.replace_all {
+            out.push_str("<<<<<<< SEARCH_ALL\n");
+            out.push_str(&r.search);
+            out.push_str("\n=======\n");
+            out.push_str(&r.replace);
+            out.push_str("\n>>>>>>> REPLACE_ALL");
+        } else {
+            out.push_str("<<<<<<< SEARCH\n");
+            out.push_str(&r.search);
+            out.push_str("\n=======\n");
+            out.push_str(&r.replace);
+            out.push_str("\n>>>>>>> REPLACE");
+        }
+    }
+    out
+}
+
 // Tool implementation
 pub struct ReplaceInFileTool;
 
@@ -142,6 +165,12 @@ impl Tool for ReplaceInFileTool {
                 )
             })?;
 
+        // Load project configuration
+        let project_config = context
+            .project_manager
+            .get_project(&input.project)?
+            .ok_or_else(|| anyhow!("Project not found: {}", input.project))?;
+
         // Parse the replacements from the diff
         let replacements = match parse_search_replace_blocks(&input.diff) {
             Ok(replacements) => replacements,
@@ -171,12 +200,31 @@ impl Tool for ReplaceInFileTool {
         // Join with root_dir to get full path
         let full_path = explorer.root_dir().join(&path);
 
-        // Apply the replacements
-        match explorer.apply_replacements(&full_path, &replacements) {
-            Ok(new_content) => {
-                // If we have a working memory reference, update it with the modified file
+        // If format-on-save applies, use format-aware path
+        let result = if let Some(command_line) = project_config.format_command_for(&path) {
+            explorer
+                .apply_replacements_with_formatting(
+                    &full_path,
+                    &replacements,
+                    &command_line,
+                    context.command_executor,
+                )
+                .await
+        } else {
+            match explorer.apply_replacements(&full_path, &replacements) {
+                Ok(content) => Ok((content, None)),
+                Err(e) => Err(e),
+            }
+        };
+
+        match result {
+            Ok((new_content, updated_replacements)) => {
+                // If we have updated replacements (after formatting), update the diff text
+                if let Some(updated) = updated_replacements {
+                    input.diff = render_diff_from_replacements(&updated);
+                }
+
                 if let Some(working_memory) = &mut context.working_memory {
-                    // Add the file with new content to working memory
                     working_memory.loaded_resources.insert(
                         (input.project.clone(), path.clone()),
                         LoadedResource::File(new_content.clone()),
@@ -190,7 +238,6 @@ impl Tool for ReplaceInFileTool {
                 })
             }
             Err(e) => {
-                // Extract FileUpdaterError if present
                 let error =
                     if let Some(file_err) = e.downcast_ref::<crate::utils::FileUpdaterError>() {
                         file_err.clone()

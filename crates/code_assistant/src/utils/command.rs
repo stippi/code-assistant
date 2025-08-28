@@ -25,7 +25,7 @@ pub fn shell_quote_path(path: &Path) -> String {
         // Only quote if whitespace is present; basic behavior for tests
         if s.chars().any(|c| c.is_whitespace()) {
             let escaped = s.replace('\'', "'\\''");
-            format!("'{}'", escaped)
+            format!("'{escaped}'")
         } else {
             s.to_string()
         }
@@ -37,7 +37,7 @@ pub fn shell_quote_path(path: &Path) -> String {
         if s.chars().any(|c| c.is_whitespace()) {
             // Surround with double quotes and escape internal quotes by doubling them
             let escaped = s.replace('"', "\"\"");
-            format!("\"{}\"", escaped)
+            format!("\"{escaped}\"")
         } else {
             s.to_string()
         }

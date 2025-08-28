@@ -22,7 +22,6 @@ fn test_stable_range_extraction_simple() -> Result<()> {
         match_index: 0,
         start: 21, // Start of "console.log('hello');"
         end: 42,   // End of "console.log('hello');"
-        matched_text: "console.log('hello');".to_string(),
     }];
 
     let stable_ranges = extract_stable_ranges(content, &matches);
@@ -54,14 +53,12 @@ fn test_stable_range_extraction_multiple_matches() -> Result<()> {
             match_index: 0,
             start: 0, // "const a = 1;"
             end: 12,
-            matched_text: "const a = 1;".to_string(),
         },
         MatchRange {
             replacement_index: 1,
             match_index: 0,
             start: 26, // "const c = 3;"
             end: 38,
-            matched_text: "const c = 3;".to_string(),
         },
     ];
 
@@ -91,7 +88,6 @@ fn test_parameter_reconstruction_simple() -> Result<()> {
         match_index: 0,
         start: 11, // Start of "const y=2;"
         end: 21,   // End of "const y=2;"
-        matched_text: "const y=2;".to_string(),
     }];
 
     let stable_ranges = extract_stable_ranges(original_content, &matches);
@@ -129,7 +125,6 @@ fn test_parameter_reconstruction_failure() -> Result<()> {
         match_index: 0,
         start: 22, // Start of "// Comment"
         end: 32,   // End of "// Comment"
-        matched_text: "// Comment".to_string(),
     }];
 
     let stable_ranges = extract_stable_ranges(original_content, &matches);
@@ -304,25 +299,34 @@ async fn test_write_file_with_format_on_save() -> Result<()> {
 /// Test replace_in_file tool with format-on-save
 #[tokio::test]
 async fn test_replace_in_file_with_format_on_save() -> Result<()> {
-    // Create test files
+    // Create test files (already formatted TOML)
     let mut files = HashMap::new();
     files.insert(
         PathBuf::from("./root/config.toml"),
-        "[package]\nname=\"test\"\nversion=\"0.1.0\"".to_string(),
+        "[package]\nname = \"test\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1.0\""
+            .to_string(),
     );
 
-    // Mock command executor for TOML formatting
+    // Mock command executor for TOML formatting (success)
     let command_responses = vec![Ok(CommandOutput {
         success: true,
         output: String::new(),
     })];
 
     let command_executor = MockCommandExecutor::new(command_responses);
-    let explorer = MockExplorer::new(files, None);
+
+    // Provide formatted outputs after applying replacements (format normalizes spaces around '=')
+    let mut formatted_map = HashMap::new();
+    formatted_map.insert(
+        PathBuf::from("./root/config.toml"),
+        "[package]\nname = \"test\"\nversion = \"0.2.0\"\n[dependencies]\nserde = \"2.0\""
+            .to_string(),
+    );
+    let explorer = MockExplorer::new_with_formatting(files, formatted_map, None);
 
     // Create project with format-on-save configuration for TOML files
     let mut format_on_save = HashMap::new();
-    format_on_save.insert("*.toml".to_string(), "taplo format".to_string());
+    format_on_save.insert("*.toml".to_string(), "taplo format {path}".to_string());
 
     let project = Project {
         path: PathBuf::from("./root"),
@@ -342,12 +346,23 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
         working_memory: Some(&mut working_memory),
     };
 
-    // Test replacing content in a TOML file
+    // Diff has two SEARCH/REPLACE blocks; replacements are unformatted (missing spaces around '=')
     let mut input = ReplaceInFileInput {
         project: "test-project".to_string(),
         path: "config.toml".to_string(),
-        diff: "<<<<<<< SEARCH\nversion=\"0.1.0\"\n=======\nversion=\"0.2.0\"\n>>>>>>> REPLACE"
-            .to_string(),
+        diff: concat!(
+            "<<<<<<< SEARCH\n",
+            "version = \"0.1.0\"\n",
+            "=======\n",
+            "version=\"0.2.0\"\n",
+            ">>>>>>> REPLACE\n",
+            "<<<<<<< SEARCH\n",
+            "serde = \"1.0\"\n",
+            "=======\n",
+            "serde=\"2.0\"\n",
+            ">>>>>>> REPLACE",
+        )
+        .to_string(),
     };
 
     let tool = ReplaceInFileTool;
@@ -356,8 +371,26 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
     // Should succeed
     assert!(result.error.is_none());
 
-    // Note: ReplaceInFileTool doesn't currently implement format-on-save
-    // This test verifies the tool still works with format-on-save configuration
+    // Verify that the formatter was called with the file path
+    let captured = command_executor.get_captured_commands();
+    assert_eq!(captured.len(), 1);
+    assert!(captured[0]
+        .command_line
+        .contains("taplo format config.toml"));
+
+    // Verify that the diff input was updated to reflect formatted replacements
+    // Expect spaces around '=' in the updated REPLACE parts
+    assert!(input.diff.contains("version = \"0.2.0\""));
+    assert!(input.diff.contains("serde = \"2.0\""));
+
+    // Verify that working memory contains the final formatted content
+    let key = ("test-project".to_string(), PathBuf::from("config.toml"));
+    if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&key) {
+        assert!(content.contains("version = \"0.2.0\""));
+        assert!(content.contains("serde = \"2.0\""));
+    } else {
+        panic!("Expected file in working memory");
+    }
 
     Ok(())
 }

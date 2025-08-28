@@ -4,10 +4,9 @@ use crate::tools::core::{
 use crate::types::{FileReplacement, LoadedResource};
 use crate::utils::FileUpdaterError;
 use anyhow::{anyhow, Result};
-use glob::Pattern;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // Input type for the edit tool
 #[derive(Deserialize, Serialize)]
@@ -71,22 +70,6 @@ impl ToolResult for EditOutput {
     fn is_success(&self) -> bool {
         self.error.is_none()
     }
-}
-
-// Helper function to check if a file should be formatted on save
-fn should_format_file(project_config: &crate::types::Project, file_path: &Path) -> Option<String> {
-    if let Some(format_patterns) = &project_config.format_on_save {
-        let file_name = file_path.to_string_lossy();
-
-        for (pattern, command) in format_patterns {
-            if let Ok(glob_pattern) = Pattern::new(pattern) {
-                if glob_pattern.matches(&file_name) {
-                    return Some(command.clone());
-                }
-            }
-        }
-    }
-    None
 }
 
 // Tool implementation
@@ -187,29 +170,22 @@ impl Tool for EditTool {
             replace_all: input.replace_all.unwrap_or(false),
         };
 
-        // Check if this file should be formatted on save
-        let format_result =
-            if let Some(format_command_template) = should_format_file(&project_config, &path) {
-                // Build the format command from template with optional {path} placeholder
-                let format_command =
-                    crate::utils::command::build_format_command(&format_command_template, &path);
-
-                // Use format-aware replacement
-                explorer
-                    .apply_replacements_with_formatting(
-                        &full_path,
-                        &[replacement.clone()],
-                        &format_command,
-                        context.command_executor,
-                    )
-                    .await
-            } else {
-                // Use regular replacement
-                match explorer.apply_replacements(&full_path, &[replacement]) {
-                    Ok(content) => Ok((content, None)),
-                    Err(e) => Err(e),
-                }
-            };
+        // Apply with or without formatting, based on project configuration
+        let format_result = if let Some(format_command) = project_config.format_command_for(&path) {
+            explorer
+                .apply_replacements_with_formatting(
+                    &full_path,
+                    &[replacement.clone()],
+                    &format_command,
+                    context.command_executor,
+                )
+                .await
+        } else {
+            match explorer.apply_replacements(&full_path, &[replacement]) {
+                Ok(content) => Ok((content, None)),
+                Err(e) => Err(e),
+            }
+        };
 
         match format_result {
             Ok((new_content, updated_replacements)) => {

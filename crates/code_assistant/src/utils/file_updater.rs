@@ -14,10 +14,10 @@ pub enum FileUpdaterError {
 #[derive(Debug, Clone)]
 pub struct MatchRange {
     pub replacement_index: usize,
+    #[allow(dead_code)]
     pub match_index: usize, // For replace_all cases where one replacement has multiple matches
     pub start: usize,
     pub end: usize,
-    pub matched_text: String,
 }
 
 /// Represents a range of stable (unchanged) content between matches
@@ -104,7 +104,6 @@ pub fn find_replacement_matches(
                 match_index,
                 start,
                 end: start + matched_text.len(),
-                matched_text: matched_text.to_string(),
             });
         }
     }
@@ -261,22 +260,35 @@ pub fn reconstruct_formatted_replacements(
             let before_stable = stable_ranges.iter().find(|sr| sr.end == match_range.start);
             let after_stable = stable_ranges.iter().find(|sr| sr.start == match_range.end);
 
-            // Require both anchors for conservative update
-            let (Some(before), Some(after)) = (before_stable, after_stable) else {
-                continue; // Skip update if we don't have both sides
+            // Compute formatted boundaries using available anchors; fall back to file boundaries
+            let formatted_start = if let Some(before) = before_stable {
+                if let Some(idx) = stable_ranges.iter().position(|sr| sr.start == before.start) {
+                    if idx < stable_positions.len() {
+                        stable_positions[idx].1
+                    } else {
+                        // Anchor index out of range, skip update
+                        continue;
+                    }
+                } else {
+                    // Could not locate this stable range; skip update
+                    continue;
+                }
+            } else {
+                0
             };
 
-            // Find corresponding positions in formatted content
-            let formatted_start = if let Some(idx) = stable_ranges.iter().position(|sr| sr.start == before.start) {
-                if idx < stable_positions.len() { stable_positions[idx].1 } else { continue }
+            let formatted_end = if let Some(after) = after_stable {
+                if let Some(idx) = stable_ranges.iter().position(|sr| sr.start == after.start) {
+                    if idx < stable_positions.len() {
+                        stable_positions[idx].0
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
             } else {
-                continue
-            };
-
-            let formatted_end = if let Some(idx) = stable_ranges.iter().position(|sr| sr.start == after.start) {
-                if idx < stable_positions.len() { stable_positions[idx].0 } else { continue }
-            } else {
-                continue
+                normalized_formatted.len()
             };
 
             // Extract the formatted replacement text and compare ignoring whitespace
@@ -284,7 +296,8 @@ pub fn reconstruct_formatted_replacements(
                 let formatted_replace =
                     normalized_formatted[formatted_start..formatted_end].to_string();
                 let formatted_norm = strip_whitespace(&formatted_replace);
-                let original_norm = strip_whitespace(&original_replacements[replacement_index].replace);
+                let original_norm =
+                    strip_whitespace(&original_replacements[replacement_index].replace);
 
                 // Only update if the formatted slice is equivalent modulo whitespace
                 if formatted_norm == original_norm {
@@ -322,7 +335,6 @@ fn test_extract_stable_ranges() -> Result<(), anyhow::Error> {
         match_index: 0,
         start: 21, // Start of "console.log('hello');" (after the 4 spaces)
         end: 42,   // End of "console.log('hello');"
-        matched_text: "console.log('hello');".to_string(),
     }];
 
     let stable_ranges = extract_stable_ranges(content, &matches);
@@ -354,7 +366,6 @@ fn test_reconstruct_formatted_replacements() -> Result<(), anyhow::Error> {
         match_index: 0,
         start: 13, // Start of "const y=2;"
         end: 23,   // End of that section
-        matched_text: "const y=2;".to_string(),
     }];
 
     let stable_ranges = extract_stable_ranges(original_content, &matches);
