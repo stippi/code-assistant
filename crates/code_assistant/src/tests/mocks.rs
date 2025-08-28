@@ -255,6 +255,8 @@ impl UserInterface for MockUI {
 pub struct MockExplorer {
     files: Arc<Mutex<HashMap<PathBuf, String>>>,
     file_tree: Arc<Mutex<Option<FileTreeEntry>>>,
+    // Optional map of formatted results to apply after a formatting command runs
+    formatted_after: Arc<Mutex<HashMap<PathBuf, String>>>,
 }
 
 impl MockExplorer {
@@ -262,19 +264,23 @@ impl MockExplorer {
         Self {
             files: Arc::new(Mutex::new(files)),
             file_tree: Arc::new(Mutex::new(file_tree)),
+            formatted_after: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Create a MockExplorer that simulates formatting by using a separate set of formatted files
+    /// Create a MockExplorer that simulates formatting by applying provided formatted content
+    /// after a formatting command is executed. The initial file contents are used for edits,
+    /// then when a formatting command is run, the content for that path is replaced with
+    /// the provided formatted content (if present in the map).
     pub fn new_with_formatting(
         initial_files: HashMap<PathBuf, String>,
         formatted_files: HashMap<PathBuf, String>,
         file_tree: Option<FileTreeEntry>,
     ) -> Self {
-        // For now, just start with the formatted files since our tests will check the final state
         Self {
-            files: Arc::new(Mutex::new(formatted_files)),
+            files: Arc::new(Mutex::new(initial_files)),
             file_tree: Arc::new(Mutex::new(file_tree)),
+            formatted_after: Arc::new(Mutex::new(formatted_files)),
         }
     }
 
@@ -295,6 +301,7 @@ impl CodeExplorer for MockExplorer {
         Box::new(MockExplorer {
             files: self.files.clone(),
             file_tree: self.file_tree.clone(),
+            formatted_after: self.formatted_after.clone(),
         })
     }
 
@@ -472,9 +479,17 @@ impl CodeExplorer for MockExplorer {
             .execute(format_command, Some(&PathBuf::from("./root")))
             .await?;
 
-        // For testing, return the updated content and None for updated replacements
-        // In a real implementation, this would read the formatted file and potentially
-        // reconstruct the replacement parameters
+        // After formatting command, if we have a formatted version for this path, apply it
+        if let Some(formatted) = self.formatted_after.lock().unwrap().get(path).cloned() {
+            // Replace file contents with the formatted version
+            self.files
+                .lock()
+                .unwrap()
+                .insert(path.to_path_buf(), formatted.clone());
+            return Ok((formatted, None));
+        }
+
+        // Otherwise keep the updated (unformatted) content
         Ok((updated_content, None))
     }
 
