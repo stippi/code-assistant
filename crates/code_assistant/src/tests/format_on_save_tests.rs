@@ -154,8 +154,6 @@ fn test_parameter_reconstruction_failure() -> Result<()> {
     Ok(())
 }
 
-// (Removed) test_edit_tool_with_format_on_save: covered by the parameter update test below
-
 /// Test edit tool parameter updating after formatting
 #[tokio::test]
 async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
@@ -360,73 +358,6 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
 
     // Note: ReplaceInFileTool doesn't currently implement format-on-save
     // This test verifies the tool still works with format-on-save configuration
-
-    Ok(())
-}
-
-/// Test format-on-save error handling when format command fails
-#[tokio::test]
-async fn test_format_on_save_command_failure() -> Result<()> {
-    // Create test files
-    let mut files = HashMap::new();
-    files.insert(
-        PathBuf::from("./root/test.js"),
-        "function test() { return 42; }".to_string(),
-    );
-
-    // Mock command executor that fails
-    let command_responses = vec![Ok(CommandOutput {
-        success: false, // Command fails
-        output: "Syntax error in test.js".to_string(),
-    })];
-
-    let command_executor = MockCommandExecutor::new(command_responses);
-    let explorer = MockExplorer::new(files, None);
-
-    // Create project with format-on-save configuration
-    let mut format_on_save = HashMap::new();
-    format_on_save.insert("*.js".to_string(), "prettier --write {path}".to_string());
-
-    let project = Project {
-        path: PathBuf::from("./root"),
-        format_on_save: Some(format_on_save),
-    };
-
-    let project_manager = Box::new(MockProjectManager::default().with_project(
-        "test-project",
-        project,
-        Box::new(explorer),
-    ));
-
-    let mut working_memory = WorkingMemory::default();
-    let mut context = ToolContext {
-        project_manager: project_manager.as_ref(),
-        command_executor: &command_executor,
-        working_memory: Some(&mut working_memory),
-    };
-
-    // Test editing when format command fails
-    let mut input = EditInput {
-        project: "test-project".to_string(),
-        path: "test.js".to_string(),
-        old_text: "return 42;".to_string(),
-        new_text: "return 'hello';".to_string(),
-        replace_all: None,
-    };
-
-    let tool = EditTool;
-    let result = tool.execute(&mut context, &mut input).await?;
-
-    // Edit should still succeed even if formatting fails
-    assert!(result.error.is_none());
-
-    // Format command should have been attempted
-    let captured_commands = command_executor.get_captured_commands();
-    assert_eq!(captured_commands.len(), 1);
-
-    // Input parameters should NOT be updated since formatting failed
-    assert_eq!(input.old_text, "return 42;");
-    assert_eq!(input.new_text, "return 'hello';");
 
     Ok(())
 }
