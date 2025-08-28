@@ -59,21 +59,21 @@ fn test_stable_range_extraction_multiple_matches() -> Result<()> {
         MatchRange {
             replacement_index: 1,
             match_index: 0,
-            start: 25, // "const c = 3;"
-            end: 37,
+            start: 26, // "const c = 3;"
+            end: 38,
             matched_text: "const c = 3;".to_string(),
         },
     ];
 
     let stable_ranges = extract_stable_ranges(content, &matches);
 
-    // Should have stable ranges before, between, and after the matches
-    assert_eq!(stable_ranges.len(), 2);
+    // Should have one stable range between the two matches
+    assert_eq!(stable_ranges.len(), 1);
 
     // First stable range between matches: "\nconst b = 2;\n"
     assert_eq!(stable_ranges[0].start, 12);
-    assert_eq!(stable_ranges[0].end, 25);
-    assert_eq!(stable_ranges[0].content, "\nconst b = 2;");
+    assert_eq!(stable_ranges[0].end, 26);
+    assert_eq!(stable_ranges[0].content, "\nconst b = 2;\n");
 
     Ok(())
 }
@@ -127,8 +127,8 @@ fn test_parameter_reconstruction_failure() -> Result<()> {
     let matches = vec![MatchRange {
         replacement_index: 0,
         match_index: 0,
-        start: 18, // Start of "// Comment"
-        end: 28,   // End of "// Comment"
+        start: 22, // Start of "// Comment"
+        end: 32,   // End of "// Comment"
         matched_text: "// Comment".to_string(),
     }];
 
@@ -279,7 +279,7 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
 
     // Debug output
     if let Some(ref error) = result.error {
-        println!("Edit error: {:?}", error);
+        println!("Edit error: {error:?}");
     }
 
     // Should succeed
@@ -610,7 +610,7 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
 
     // Both format commands should have been executed
     let captured_commands = command_executor.get_captured_commands();
-    println!("Captured commands: {:?}", captured_commands);
+    println!("Captured commands: {captured_commands:?}");
     assert_eq!(captured_commands.len(), 2);
     assert!(captured_commands[0]
         .command_line
@@ -718,12 +718,8 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
     // Only the Rust files should have been formatted
     let captured_commands = command_executor.get_captured_commands();
     assert_eq!(captured_commands.len(), 2);
-    assert!(captured_commands[0]
-        .command_line
-        .contains("cargo fmt"));
-    assert!(captured_commands[1]
-        .command_line
-        .contains("cargo fmt"));
+    assert!(captured_commands[0].command_line.contains("cargo fmt"));
+    assert!(captured_commands[1].command_line.contains("cargo fmt"));
 
     Ok(())
 }
@@ -782,7 +778,7 @@ async fn test_format_on_save_with_conflicting_matches() -> Result<()> {
 
     // Debug output
     if let Some(ref error) = result.error {
-        println!("Edit error: {:?}", error);
+        println!("Edit error: {error:?}");
     }
 
     // Should succeed even with potential conflicts
