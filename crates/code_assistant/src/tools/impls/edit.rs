@@ -190,8 +190,9 @@ impl Tool for EditTool {
         // Check if this file should be formatted on save
         let format_result =
             if let Some(format_command_template) = should_format_file(&project_config, &path) {
-                // Construct the full format command with the filename
-                let format_command = format!("{} {}", format_command_template, path.display());
+                // Build the format command from template with optional {path} placeholder
+                let format_command =
+                    crate::utils::command::build_format_command(&format_command_template, &path);
 
                 // Use format-aware replacement
                 explorer
