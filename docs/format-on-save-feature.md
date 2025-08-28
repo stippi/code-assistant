@@ -1,218 +1,141 @@
 # Format-on-Save Feature Implementation
 
-This document describes the comprehensive implementation of the format-on-save feature that automatically formats files after they are modified by the code assistant, while maintaining consistency with the LLM's mental model of the code.
+This document describes the implementation of the format-on-save feature that automatically formats files after they are modified by the code assistant and keeps the LLM's mental model synchronized with the formatted code by updating tool inputs when safe to do so.
 
 ## Overview & The Core Problem
 
-When an LLM generates code that gets auto-formatted after saving, the LLM's mental model of the file becomes inconsistent with the actual file contents. This can cause subsequent edits to fail because the LLM expects the code to be in its original (unformatted) state.
+When an LLM generates code and the editor or project tooling auto-formats the file, the LLM's internal picture of the file (based on the tool inputs it just produced) can become stale. Subsequent edits may then fail because the assistant is searching for unformatted text that no longer exists.
 
-**The Solution**:
-1. Run format commands after file modifications
-2. Update the tool parameters in the message history to match the formatted output
-3. Make it appear to the LLM that it generated perfectly formatted code from the beginning
+Solution, at a glance:
+- Run the appropriate formatter after file modifications (based on project configuration)
+- Attempt to reconstruct the formatted replacement(s) and update tool inputs so it appears the LLM produced formatted text from the start
+- Fall back gracefully when not confident (still format, but do not rewrite tool parameters)
 
 ## Configuration
 
-Extended the `Project` struct in `crates/code_assistant/src/types.rs` to include:
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Project {
-    pub path: PathBuf,
-    #[serde(default)]
-    pub format_on_save: Option<HashMap<String, String>>,
-}
-```
-
-Example project configuration in `~/.config/code-assistant/projects.json`:
+Project-level configuration supports format-on-save with simple glob-to-command mappings:
 
 ```json
 {
   "my-rust-project": {
     "path": "/path/to/my/rust/project",
     "format_on_save": {
-      "*.rs": "cargo fmt",
-      "*.toml": "taplo format"
+      "**/*.rs": "cargo fmt"
     }
   },
   "my-js-project": {
     "path": "/path/to/my/js/project",
     "format_on_save": {
-      "*.js": "prettier --write",
-      "*.ts": "prettier --write",
-      "*.json": "prettier --write"
+      "*.js": "prettier --write {path}",
+      "*.ts": "prettier --write {path}",
+      "*.json": "prettier --write {path}"
     }
   }
 }
 ```
 
-## Implementation Progress
+Key points:
+- Optional {path} placeholder: If present, it is replaced with the relative path (quoted appropriately); if absent, the command is executed as-is in the project root
+  - Example: cargo fmt (no file argument), prettier/taplo/rustfmt usually take a file argument and should use {path}
+- Deterministic matching: patterns are matched in sorted order for predictability
 
-### ✅ Phase 1: Enhanced File Updater (COMPLETED)
+Convenience methods on Project:
+- formatter_template_for(path) -> Option<String>
+- format_command_for(path) -> Option<String>, which applies {path} via utils::build_format_command
 
-**File**: `crates/code_assistant/src/utils/file_updater.rs`
+## Implementation Status
 
-**Key Components**:
-- `MatchRange` struct: Represents individual matches with position info
-- `FileUpdaterError`: Extended with `OverlappingMatches` and `AdjacentMatches` variants
-- `find_replacement_matches()`: Finds all matches and detects conflicts
-- `apply_matches()`: Applies replacements using pre-found matches
-- Conflict detection for overlapping/adjacent matches
-- Backward compatibility maintained through existing `apply_replacements_normalized()`
+### ✅ Core text replacement + normalization
+- File: crates/code_assistant/src/utils/file_updater.rs
+- Features:
+  - Split responsibilities: find_replacement_matches (detects overlapping/adjacent), apply_matches (applies matches), and higher-level apply_replacements_normalized
+  - Normalization of content (line endings, trailing whitespace) to make matching robust
 
-**Features**:
-- Split functionality between finding matches and applying them
-- Detects overlapping matches (returns error) and adjacent matches (returns flag)
-- All existing tests pass, new tests added for stable range functionality
+### ✅ Stable range extraction and conservative reconstruction
+- File: crates/code_assistant/src/utils/file_updater.rs
+- StableRange extraction now retains whitespace-only anchors (no trimming) so whitespace doesn’t bleed into replacements
+- reconstruct_formatted_replacements now uses conservative guards:
+  - Locates surrounding stable ranges in the formatted content (falls back to file edges for start/end-of-file matches)
+  - Only updates the replacement text when the formatted slice is equivalent to the original replacement modulo whitespace
+  - Skips updates when anchors cannot be confidently resolved or when matches are adjacent/overlapping
 
-### ✅ Phase 2: Stable Range Extraction (COMPLETED)
+### Tool formatter system
+- File: crates/code_assistant/src/tools/formatter.rs
+- Provides formatters for the different tool syntaxes (Native, XML, Caret)
+- TODO: Handle array parameters correctly!
 
-**File**: `crates/code_assistant/src/utils/file_updater.rs`
+### Tool trait + message history sync
+- Files: crates/code_assistant/src/tools/core/tool.rs, dyn_tool.rs, and agent/runner.rs
+- Tool::execute takes a mutable Self::Input; when a tool updates its input during execution, the agent updates the message history accordingly
+- TODO: Currently works correctly only for ToolSyntax::Native!
+  For XML and Caret syntax, needs to replace the tool block in the assistant message's text at the correct location!
 
-**Key Components**:
-- `StableRange` struct: Represents unchanged content between matches
-- `extract_stable_ranges()`: Identifies content ranges that should remain unchanged after formatting
-- `reconstruct_formatted_replacements()`: Attempts to reconstruct formatted replacement parameters using stable ranges as anchors
+### ✅ Project-centric formatter selection and templating
+- File: crates/code_assistant/src/types.rs (Project methods)
+- Project::formatter_template_for and Project::format_command_for centralize glob matching and {path} templating
+- Tools call project.format_command_for(&rel_path)
 
-**Features**:
-- Graceful failure: Returns `None` if reconstruction fails (allows fallback to leaving replacements unchanged in the LLM history)
-- Handles single matches (non-`replace_all` cases)
-- Uses content normalization for consistent matching
-- Comprehensive test coverage
+### ✅ Tool integration
+- Edit (crates/code_assistant/src/tools/impls/edit.rs)
+  - After applying the edit, runs formatter (if configured)
+  - Attempts reconstruction; on success, updates input.old_text/new_text (typically new_text only)
+  - Updates working memory with the final on-disk content
+- ReplaceInFile (crates/code_assistant/src/tools/impls/replace_in_file.rs)
+  - Integrated format-on-save; calls Explorer’s format-aware apply
+  - If updated replacements are returned, regenerates the diff string to reflect formatted REPLACE text
+  - Supports multiple SEARCH/REPLACE blocks (updates only those it can confidently reconstruct)
+- WriteFile (crates/code_assistant/src/tools/impls/write_file.rs)
+  - After writing, runs formatter (if configured), re-reads the file, and overwrites input.content with the formatted content so follow-up edits align with reality
 
-**Key Insight**: Stable ranges can't contain content that gets modified by formatting (like indentation). Works best when stable ranges contain truly stable content like keywords and structural elements.
-
-### ✅ Phase 3: Tool Formatter System (COMPLETED)
-
-**File**: `crates/code_assistant/src/tools/formatter.rs`
-
-**Key Components**:
-- `ToolFormatter` trait: Formats tool requests into string representation
-- `NativeFormatter`: Handles JSON-based function calls
-- `XmlFormatter`: Handles `<tool:name>` syntax
-- `CaretFormatter`: Handles `^^^tool_name` syntax
-- `get_formatter()`: Factory function for syntax-specific formatters
-
-**Features**:
-- Supports all three tool syntaxes used by the code assistant
-- Clean abstraction for regenerating tool blocks
-- Used for updating message history after formatting
-
-### ✅ Tool Trait Extension (COMPLETED)
-
-**Files**:
-- `crates/code_assistant/src/tools/core/tool.rs`
-- `crates/code_assistant/src/tools/core/dyn_tool.rs`
-- `crates/code_assistant/src/agent/runner.rs`
-
-**Changes**:
-- Modified `Tool::execute()` to take input as mutable Self::Input reference, allowing to return modified input parameters
-- Updated `DynTool::invoke()` to take param as mutable reference, allowing to return modified parameter if the tool modified input
-- Updated agent runner to detect input parameter changes and update message history
-- All tool implementations updated
-
-**Benefits**:
-- Clean detection of parameter changes during tool execution
-- Automatic message history synchronization
-- Maintains backward compatibility
-
-### ⚠️ Phase 3: Explorer Integration (PARTIALLY COMPLETED - BLOCKED)
-
-**Issue Encountered**: Async methods in traits make them not dyn-compatible (can't be used as trait objects like `Box<dyn CodeExplorer>`). The codebase extensively uses trait objects for `CodeExplorer`.
-
-**Files Affected**:
-- `crates/code_assistant/src/types.rs` (CodeExplorer trait)
-- `crates/code_assistant/src/explorer.rs` (Explorer implementation)
-- `crates/code_assistant/src/tests/mocks.rs` (MockExplorer implementation)
-
-**What Was Attempted**:
-- Added `apply_replacements_with_formatting()` async method to `CodeExplorer` trait
-- Implemented format-aware replacement logic in `Explorer`
-- Added mock implementation for testing
-
-**Current State**: Code doesn't compile due to dyn-compatibility issues.
+### ✅ Explorer integration
+- File: crates/code_assistant/src/explorer.rs (real explorer)
+- Mock: crates/code_assistant/src/tests/mocks.rs
+  - MockExplorer simulates formatting by replacing file contents after a format command
+  - On command failure (success == false), returns None for updated replacements (graceful failure)
 
 ## Technical Architecture
 
-### Format-Aware Workflow
-1. **File Modification Detection**: Tools detect when files are modified
-2. **Pattern Matching**: Check if modified file matches format-on-save patterns
-3. **Stable Range Extraction**: Identify unchanged content between replacements
-4. **Format Command Execution**: Run format command in project directory
-5. **Parameter Reconstruction**: Use stable ranges to extract formatted replacement text
-6. **Message History Update**: Update tool parameters in LLM message history
+Format-aware workflow:
+1. Tools compute file modifications (edit, replace blocks, write)
+2. If project.format_command_for(rel_path) returns Some(cmd), run the formatter in project root
+3. When safe: reconstruct formatted replacement text via stable ranges and conservative checks
+4. Update tool inputs (and for replace_in_file, re-render the diff) to match formatted content
+5. Working memory is updated with the final file content
 
-### Conflict Handling
-- **Overlapping matches**: Return error (cannot be safely formatted)
-- **Adjacent matches**: Skip parameter reconstruction, but still apply formatting
-- **Formatting failures**: Preserve original content, skip parameter updates
-- **Reconstruction failures**: Apply formatting but don't update LLM parameters
+Conflict handling and failure modes:
+- Overlapping matches: error (probably not what the LLM intended)
+- Adjacent matches: skip parameter reconstruction (but still apply formatting)
+- Formatting command failure: keep modified content, do not update parameters
+- Reconstruction failures: apply formatting, skip parameter updates
 
-## Remaining Work
+## Tests
 
-### 1. Solve Dyn-Compatibility Issue
-**Priority**: High
-**Options to explore**:
-- Move format-on-save logic directly into individual tools (edit, replace_in_file, write_file)
-- Create a separate formatting service that tools can use
-- Use enum dispatch instead of trait objects
-- Split CodeExplorer into sync and async traits
+Representative tests:
+- Edit with realistic scenario: file starts formatted; replacement text is unformatted; format-on-save normalizes it; input.new_text updated; working memory updated
+- ReplaceInFile with multiple SEARCH/REPLACE blocks: unformatted replacements; formatter normalizes; diff updated for the replacements we’re confident about
+- Glob and command templating tests: prettier with {path}, cargo fmt without file arguments
 
-### 2. Tool Integration
-**Files to modify**:
-- `crates/code_assistant/src/tools/impls/edit.rs`
-- `crates/code_assistant/src/tools/impls/replace_in_file.rs`
-- `crates/code_assistant/src/tools/impls/write_file.rs`
-
-**Tasks**:
-- Integrate format-on-save detection using project configuration
-- Use stable range extraction for parameter reconstruction
-- Handle edge cases and error conditions
-- Update tool input parameters when formatting succeeds
-
-### 3. Message History Updates for XML/Caret Syntax
-**Priority**: Medium
-**Current limitation**: Only handles native (JSON) tool syntax properly
-**Need**: Store text offsets during parsing to enable precise replacement of tool blocks in assistant messages
-
-### 4. Enhanced Section Extraction
-**Priority**: Medium
-**Current limitation**: Simplified section extraction for `edit` and `replace_in_file` tools
-**Need**: More sophisticated logic to handle complex formatting scenarios
-
-### 5. Testing & Integration
-**Tasks**:
-- End-to-end testing with real format commands
-- Integration tests with different tool syntaxes
-- Performance testing with large files
-- Error handling validation
-
-## Key Files Modified
-
-### Core Implementation
-- `crates/code_assistant/src/types.rs` - Extended Project struct
-- `crates/code_assistant/src/utils/file_updater.rs` - Core formatting logic
-- `crates/code_assistant/src/tools/formatter.rs` - Tool syntax formatters
-- `crates/code_assistant/src/format_on_save.rs` - Main handler (partially used)
-
-### Tool System
-- `crates/code_assistant/src/tools/core/tool.rs` - Modified trait signature
-- `crates/code_assistant/src/tools/core/dyn_tool.rs` - Updated trait object handling
-- `crates/code_assistant/src/agent/runner.rs` - Parameter change detection
-
-### Configuration & Testing
-- `crates/code_assistant/src/config.rs` - Updated Project initialization
-- `crates/code_assistant/src/tests/mocks.rs` - Updated mock implementations
-- Various tool implementation files - Updated to return tuples
+## Key Files
+- Project and configuration: crates/code_assistant/src/types.rs, crates/code_assistant/src/config.rs
+- File updater and reconstruction: crates/code_assistant/src/utils/file_updater.rs
+- Command templating and quoting: crates/code_assistant/src/utils/command.rs (build_format_command)
+- Tools: crates/code_assistant/src/tools/impls/{edit.rs, replace_in_file.rs, write_file.rs}
+- Explorer and mocks: crates/code_assistant/src/explorer.rs, crates/code_assistant/src/tests/mocks.rs
+- Tool formatting and history updates: crates/code_assistant/src/tools/formatter.rs, crates/code_assistant/src/agent/runner.rs
 
 ## Design Principles
+- Always format when configured
+- Conservative parameter updates: only when confident
+- Graceful degradation: formatting never blocks the write/edit; parameter updates can be skipped
+- Deterministic behavior: glob matching order is stable
 
-1. **Always format when configured**: User expectations must be met
-2. **Graceful degradation**: Skip parameter updates if reconstruction fails, but still format
-3. **LLM recovery**: LLM can recover from failed edits by re-reading files
-4. **Backward compatibility**: Existing functionality must continue working
-5. **Performance**: Minimize overhead for projects without format-on-save
+## Remaining Work / Next Steps
+- Replace-all reconstruction: explore safe heuristics for updating REPLACE_ALL blocks
+- Message history updates for XML/Caret syntax: prefer span-based updates rather than appending; re-render exact tool block text
+- Specificity/precedence for overlapping formatter patterns: consider most-specific match (e.g., fewer wildcards or longest match)
+- Unit tests for Project::formatter_template_for and format_command_for
+- Broader integration tests across languages/formatters
 
-## Next Steps
-
-The most critical next step is resolving the async trait object compatibility issue. Once that's solved, the remaining integration work should be straightforward given the solid foundation already implemented in Phases 1 and 2.
+## Notes
+- Security: formatter commands are user-configured and executed on the user’s machine. Broader sandboxing and access control are out of scope for this feature but may be addressed at the agent level.
+- Concurrency/races: handling concurrent external edits/formatters is a known risk; outside current scope.
