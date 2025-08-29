@@ -62,13 +62,17 @@ Convenience methods on Project:
 ### Tool formatter system
 - File: crates/code_assistant/src/tools/formatter.rs
 - Provides formatters for the different tool syntaxes (Native, XML, Caret)
-- TODO: Handle array parameters correctly!
+- Important TODOs:
+  - Translate array parameters correctly into the respective syntax!
+  - Omit rendering optional parameters when they have default values (use the tool's spec)!
 
 ### Tool trait + message history sync
 - Files: crates/code_assistant/src/tools/core/tool.rs, dyn_tool.rs, and agent/runner.rs
 - Tool::execute takes a mutable Self::Input; when a tool updates its input during execution, the agent updates the message history accordingly
 - TODO: Currently works correctly only for ToolSyntax::Native!
   For XML and Caret syntax, needs to replace the tool block in the assistant message's text at the correct location!
+  The tool block parsing system needs to be extended to also return the offsets of the detected block.
+  The tool request needs to store these offsets so it can be replaced with the re-rendered block.
 
 ### ✅ Project-centric formatter selection and templating
 - File: crates/code_assistant/src/types.rs (Project methods)
