@@ -9,7 +9,7 @@ When an LLM generates code and the editor or project tooling auto-formats the fi
 Solution, at a glance:
 - Run the appropriate formatter after file modifications (based on project configuration)
 - Attempt to reconstruct the formatted replacement(s) and update tool inputs so it appears the LLM produced formatted text from the start
-- Fall back gracefully when not confident (still format, but do not rewrite tool parameters)
+- Fall back gracefully when not confident in replacement reconstruction (still format, but do not rewrite tool parameters)
 
 ## Configuration
 
