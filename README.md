@@ -16,6 +16,8 @@ An AI coding assistant built in Rust that provides both command-line and graphic
 
 **Intelligent Project Exploration**: Autonomously builds understanding of codebases through working memory that tracks file structures, dependencies, and project context.
 
+**Auto-Loaded Repository Guidance**: Automatically includes `AGENTS.md` (or `CLAUDE.md` fallback) from the project root in the assistant's system context to align behavior with repo-specific instructions.
+
 ## Installation
 
 ```bash

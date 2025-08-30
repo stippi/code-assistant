@@ -13,6 +13,7 @@ use llm::{
     StreamingChunk,
 };
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
@@ -619,10 +620,58 @@ impl Agent {
             system_message = format!("{system_message}\n{project_info}");
         }
 
+        // Append repository guidance file if present (AGENTS.md preferred, else CLAUDE.md)
+        let guidance = self.read_repository_guidance();
+        if let Some((file_name, content)) = guidance {
+            let mut guidance_section = String::new();
+            guidance_section.push_str("\n\n# Repository Guidance\n\n");
+            guidance_section.push_str(&format!("Loaded from `{}`.\n\n", file_name));
+            guidance_section.push_str(&content);
+            system_message.push_str(&guidance_section);
+        }
+
         // Cache the system message
         let _ = self.cached_system_message.set(system_message.clone());
 
         system_message
+    }
+
+    /// Attempt to read AGENTS.md or CLAUDE.md from the initial project root.
+    /// Prefers AGENTS.md when both exist. Returns (file_name, content) on success.
+    fn read_repository_guidance(&self) -> Option<(String, String)> {
+        // Determine search root
+        let root_path = if !self.initial_project.is_empty() {
+            PathBuf::from(&self.initial_project)
+        } else {
+            std::env::current_dir().ok()?
+        };
+
+        // Candidate files in priority order
+        let candidates = ["AGENTS.md", "CLAUDE.md"];
+
+        for file in candidates.iter() {
+            let path = root_path.join(file);
+            if path.exists() {
+                match fs::read_to_string(&path) {
+                    Ok(mut content) => {
+                        // Guard against excessively large files (truncate politely)
+                        const MAX_LEN: usize = 64 * 1024; // 64KB
+                        if content.len() > MAX_LEN {
+                            content.truncate(MAX_LEN);
+                            content.push_str(
+                                "\n\n[... truncated to keep context size reasonable ...]",
+                            );
+                        }
+                        return Some((file.to_string(), content));
+                    }
+                    Err(e) => {
+                        warn!("Failed to read guidance file {}: {}", path.display(), e);
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Invalidate the cached system message to force regeneration
