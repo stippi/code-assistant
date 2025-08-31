@@ -165,7 +165,6 @@ enum ResponseInputItem {
 enum ResponseContentItem {
     InputText { text: String },
     InputImage { image_url: String },
-    OutputText { text: String },
 }
 
 /// Response structure from the Responses API
@@ -383,7 +382,8 @@ impl OpenAIResponsesClient {
         for block in blocks {
             match block {
                 ContentBlock::Text { text } => {
-                    content_items.push(ResponseContentItem::OutputText { text });
+                    // All text content in input should be InputText, regardless of role
+                    content_items.push(ResponseContentItem::InputText { text });
                 }
                 ContentBlock::Image { media_type, data } => {
                     let image_url = format!("data:{media_type};base64,{data}");
@@ -400,8 +400,8 @@ impl OpenAIResponsesClient {
                     });
                 }
                 ContentBlock::Thinking { thinking, .. } => {
-                    // Convert thinking to regular text content
-                    content_items.push(ResponseContentItem::OutputText { text: thinking });
+                    // Convert thinking to regular text content - all input text should be InputText
+                    content_items.push(ResponseContentItem::InputText { text: thinking });
                 }
                 ContentBlock::RedactedThinking { data } => {
                     // Convert redacted thinking to reasoning input item
@@ -795,7 +795,7 @@ impl LLMProvider for OpenAIResponsesClient {
             parallel_tool_calls: false,
             reasoning: Some(ReasoningConfig {
                 effort: "medium".to_string(),
-                summary: "enabled".to_string(),
+                summary: "concise".to_string(),
             }),
             store,
             stream: streaming_callback.is_some(),
@@ -1012,10 +1012,10 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::InputText { text } => {
                         assert_eq!(text, "2+2 equals 4.");
                     }
-                    _ => panic!("Expected OutputText"),
+                    _ => panic!("Expected InputText"),
                 }
             }
             _ => panic!("Expected assistant message"),
@@ -1076,10 +1076,10 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
+                    ResponseContentItem::InputText { text } => {
                         assert_eq!(text, "Based on my reasoning, here's the answer.");
                     }
-                    _ => panic!("Expected OutputText"),
+                    _ => panic!("Expected InputText"),
                 }
             }
             _ => panic!("Expected Message"),
