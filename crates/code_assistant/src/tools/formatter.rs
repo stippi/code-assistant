@@ -70,8 +70,46 @@ impl ToolFormatter for XmlFormatter {
                     }
                 }
 
-                // Format the parameter value based on its type
-                let param_value = format_parameter_value_for_xml(key, value, properties)?;
+                // Check if this is an array parameter and handle it specially
+                if let Some(param_schema) = properties.get(key) {
+                    if let Some(param_type) = param_schema.get("type").and_then(|t| t.as_str()) {
+                        if param_type == "array" {
+                            // For arrays in XML, we repeat the parameter tag for each item
+                            if let Value::Array(items) = value {
+                                for item in items {
+                                    let item_str = match item {
+                                        Value::String(s) => s.clone(),
+                                        _ => serde_json::to_string(item)?,
+                                    };
+
+                                    // Use singular form of the parameter name for XML tags
+                                    let singular_name = if key.ends_with('s') && key.len() > 1 {
+                                        &key[..key.len() - 1]
+                                    } else {
+                                        key
+                                    };
+
+                                    if is_multiline_param(key) {
+                                        formatted.push_str(&format!(
+                                            "<param:{singular_name}>\n{item_str}\n</param:{singular_name}>\n"
+                                        ));
+                                    } else {
+                                        formatted.push_str(&format!(
+                                            "<param:{singular_name}>{item_str}</param:{singular_name}>\n"
+                                        ));
+                                    }
+                                }
+                            }
+                            continue; // Skip the normal parameter processing for arrays
+                        }
+                    }
+                }
+
+                // For non-array parameters, use normal formatting
+                let param_value = match value {
+                    Value::String(s) => s.clone(),
+                    _ => serde_json::to_string(value)?,
+                };
 
                 if is_multiline_param(key) {
                     formatted.push_str(&format!("<param:{key}>\n{param_value}\n</param:{key}>\n"));
@@ -145,55 +183,6 @@ impl ToolFormatter for CaretFormatter {
 
         formatted.push_str("^^^\n");
         Ok(formatted)
-    }
-}
-
-/// Format a parameter value for XML syntax based on its schema type
-fn format_parameter_value_for_xml(
-    key: &str,
-    value: &Value,
-    properties: &serde_json::Map<String, Value>,
-) -> Result<String> {
-    // Check if this is an array parameter
-    if let Some(param_schema) = properties.get(key) {
-        if let Some(param_type) = param_schema.get("type").and_then(|t| t.as_str()) {
-            if param_type == "array" {
-                // For arrays in XML, we repeat the parameter tag for each item
-                if let Value::Array(items) = value {
-                    let mut result = String::new();
-                    for item in items {
-                        let item_str = match item {
-                            Value::String(s) => s.clone(),
-                            _ => serde_json::to_string(item)?,
-                        };
-
-                        // Use singular form of the parameter name for XML tags
-                        let singular_name = if key.ends_with('s') && key.len() > 1 {
-                            &key[..key.len() - 1]
-                        } else {
-                            key
-                        };
-
-                        if is_multiline_param(key) {
-                            result.push_str(&format!(
-                                "<param:{singular_name}>\n{item_str}\n</param:{singular_name}>\n"
-                            ));
-                        } else {
-                            result.push_str(&format!(
-                                "<param:{singular_name}>{item_str}</param:{singular_name}>\n"
-                            ));
-                        }
-                    }
-                    return Ok(result.trim_end().to_string());
-                }
-            }
-        }
-    }
-
-    // For non-array parameters, use the value as-is
-    match value {
-        Value::String(s) => Ok(s.clone()),
-        _ => Ok(serde_json::to_string(value)?),
     }
 }
 
