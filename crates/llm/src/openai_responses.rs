@@ -598,6 +598,8 @@ impl OpenAIResponsesClient {
             request_builder = request_builder.header("Accept", "text/event-stream");
         }
 
+        debug!("Sending request: {request_json}");
+
         let response = request_builder
             .json(&request_json)
             .send()
@@ -659,8 +661,6 @@ impl OpenAIResponsesClient {
         rate_limits: ResponsesRateLimitInfo,
     ) -> Result<(LLMResponse, ResponsesRateLimitInfo)> {
         let mut content_blocks = Vec::new();
-        let mut current_text = String::new();
-        let mut current_reasoning = String::new();
         let mut line_buffer = String::new();
         let mut usage = Usage::zero();
         let mut byte_buffer = Vec::new();
@@ -680,8 +680,6 @@ impl OpenAIResponsesClient {
                                 self.process_sse_line(
                                     &line_buffer,
                                     &mut content_blocks,
-                                    &mut current_text,
-                                    &mut current_reasoning,
                                     &mut usage,
                                     &mut active_function_calls,
                                     callback,
@@ -706,8 +704,6 @@ impl OpenAIResponsesClient {
                                     self.process_sse_line(
                                         &line_buffer,
                                         &mut content_blocks,
-                                        &mut current_text,
-                                        &mut current_reasoning,
                                         &mut usage,
                                         &mut active_function_calls,
                                         callback,
@@ -737,23 +733,10 @@ impl OpenAIResponsesClient {
             self.process_sse_line(
                 &line_buffer,
                 &mut content_blocks,
-                &mut current_text,
-                &mut current_reasoning,
                 &mut usage,
                 &mut active_function_calls,
                 callback,
             )?;
-        }
-
-        // Finalize any remaining content
-        if !current_text.is_empty() {
-            content_blocks.push(ContentBlock::Text { text: current_text });
-        }
-        if !current_reasoning.is_empty() {
-            content_blocks.push(ContentBlock::Thinking {
-                thinking: current_reasoning,
-                signature: String::new(),
-            });
         }
 
         callback(&StreamingChunk::StreamingComplete)?;
@@ -772,13 +755,13 @@ impl OpenAIResponsesClient {
         &self,
         line: &str,
         content_blocks: &mut Vec<ContentBlock>,
-        current_text: &mut String,
-        current_reasoning: &mut String,
         usage: &mut Usage,
         active_function_calls: &mut std::collections::HashMap<String, (String, String)>,
         callback: &StreamingCallback,
     ) -> Result<()> {
         if let Some(data) = line.strip_prefix("data: ") {
+            debug!("received event: {data}");
+
             let event: StreamEvent = serde_json::from_str(data)
                 .map_err(|e| anyhow::anyhow!("Failed to parse SSE event: {e}"))?;
 
@@ -816,13 +799,16 @@ impl OpenAIResponsesClient {
                 }
                 "response.output_text.delta" => {
                     if let Some(delta) = event.delta {
-                        current_text.push_str(&delta);
                         callback(&StreamingChunk::Text(delta))?;
                     }
                 }
                 "response.reasoning_text.delta" => {
                     if let Some(delta) = event.delta {
-                        current_reasoning.push_str(&delta);
+                        callback(&StreamingChunk::Thinking(delta))?;
+                    }
+                }
+                "response.reasoning_summary_text.delta" => {
+                    if let Some(delta) = event.delta {
                         callback(&StreamingChunk::Thinking(delta))?;
                     }
                 }
@@ -907,7 +893,8 @@ impl LLMProvider for OpenAIResponsesClient {
 
         // Configure for stateless mode with encrypted reasoning
         let store = false;
-        let include = if tools.is_some() {
+        // Always request encrypted reasoning content when operating statelessly
+        let include = if !store {
             vec!["reasoning.encrypted_content".to_string()]
         } else {
             vec![]
