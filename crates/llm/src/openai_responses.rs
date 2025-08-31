@@ -664,6 +664,8 @@ impl OpenAIResponsesClient {
         let mut line_buffer = String::new();
         let mut usage = Usage::zero();
         let mut byte_buffer = Vec::new();
+        let mut active_function_calls: std::collections::HashMap<String, (String, String)> =
+            std::collections::HashMap::new(); // item_id -> (tool_name, call_id)
 
         while let Some(chunk) = response.chunk().await? {
             byte_buffer.extend_from_slice(&chunk);
@@ -681,6 +683,7 @@ impl OpenAIResponsesClient {
                                     &mut current_text,
                                     &mut current_reasoning,
                                     &mut usage,
+                                    &mut active_function_calls,
                                     callback,
                                 )?;
                             }
@@ -706,6 +709,7 @@ impl OpenAIResponsesClient {
                                         &mut current_text,
                                         &mut current_reasoning,
                                         &mut usage,
+                                        &mut active_function_calls,
                                         callback,
                                     )?;
                                 }
@@ -736,6 +740,7 @@ impl OpenAIResponsesClient {
                 &mut current_text,
                 &mut current_reasoning,
                 &mut usage,
+                &mut active_function_calls,
                 callback,
             )?;
         }
@@ -770,6 +775,7 @@ impl OpenAIResponsesClient {
         current_text: &mut String,
         current_reasoning: &mut String,
         usage: &mut Usage,
+        active_function_calls: &mut std::collections::HashMap<String, (String, String)>,
         callback: &StreamingCallback,
     ) -> Result<()> {
         if let Some(data) = line.strip_prefix("data: ") {
@@ -777,6 +783,37 @@ impl OpenAIResponsesClient {
                 .map_err(|e| anyhow::anyhow!("Failed to parse SSE event: {e}"))?;
 
             match event.event_type.as_str() {
+                "response.output_item.added" => {
+                    if let Some(item_data) = event.item {
+                        if let Ok(item_type) =
+                            serde_json::from_value::<serde_json::Value>(item_data.clone())
+                        {
+                            if let Some(item_type_str) =
+                                item_type.get("type").and_then(|v| v.as_str())
+                            {
+                                if item_type_str == "function_call" {
+                                    let item_id = item_type
+                                        .get("id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let call_id = item_type
+                                        .get("call_id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let name = item_type
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+
+                                    active_function_calls.insert(item_id, (name, call_id));
+                                }
+                            }
+                        }
+                    }
+                }
                 "response.output_text.delta" => {
                     if let Some(delta) = event.delta {
                         current_text.push_str(&delta);
@@ -791,10 +828,19 @@ impl OpenAIResponsesClient {
                 }
                 "response.function_call_arguments.delta" => {
                     if let Some(delta) = event.delta {
+                        let (tool_name, tool_id) = if let Some(item_id) = &event.item_id {
+                            active_function_calls
+                                .get(item_id)
+                                .map(|(name, call_id)| (Some(name.clone()), Some(call_id.clone())))
+                                .unwrap_or((None, None))
+                        } else {
+                            (None, None)
+                        };
+
                         callback(&StreamingChunk::InputJson {
                             content: delta,
-                            tool_name: None,
-                            tool_id: event.item_id,
+                            tool_name,
+                            tool_id,
                         })?;
                     }
                 }
