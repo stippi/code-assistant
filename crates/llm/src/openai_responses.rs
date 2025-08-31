@@ -155,6 +155,7 @@ enum ResponseInputItem {
         output: String,
     },
     Reasoning {
+        id: String,
         encrypted_content: String,
     },
 }
@@ -165,6 +166,7 @@ enum ResponseInputItem {
 enum ResponseContentItem {
     InputText { text: String },
     InputImage { image_url: String },
+    OutputText { text: String },
 }
 
 /// Response structure from the Responses API
@@ -381,10 +383,14 @@ impl OpenAIResponsesClient {
 
         for block in blocks {
             match block {
-                ContentBlock::Text { text } => {
-                    // All text content in input should be InputText, regardless of role
-                    content_items.push(ResponseContentItem::InputText { text });
-                }
+                ContentBlock::Text { text } => match role {
+                    MessageRole::User => {
+                        content_items.push(ResponseContentItem::InputText { text });
+                    }
+                    MessageRole::Assistant => {
+                        content_items.push(ResponseContentItem::OutputText { text });
+                    }
+                },
                 ContentBlock::Image { media_type, data } => {
                     let image_url = format!("data:{media_type};base64,{data}");
                     content_items.push(ResponseContentItem::InputImage { image_url });
@@ -399,13 +405,24 @@ impl OpenAIResponsesClient {
                         output: content,
                     });
                 }
-                ContentBlock::Thinking { thinking, .. } => {
-                    // Convert thinking to regular text content - all input text should be InputText
-                    content_items.push(ResponseContentItem::InputText { text: thinking });
-                }
+                ContentBlock::Thinking { thinking, .. } => match role {
+                    MessageRole::User => {
+                        content_items.push(ResponseContentItem::InputText { text: thinking });
+                    }
+                    MessageRole::Assistant => {
+                        content_items.push(ResponseContentItem::OutputText { text: thinking });
+                    }
+                },
                 ContentBlock::RedactedThinking { data } => {
                     // Convert redacted thinking to reasoning input item
                     additional_items.push(ResponseInputItem::Reasoning {
+                        id: format!(
+                            "reasoning_{}",
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_nanos()
+                        ),
                         encrypted_content: data,
                     });
                 }
@@ -624,25 +641,67 @@ impl OpenAIResponsesClient {
         let mut current_reasoning = String::new();
         let mut line_buffer = String::new();
         let mut usage = Usage::zero();
+        let mut byte_buffer = Vec::new();
 
         while let Some(chunk) = response.chunk().await? {
-            let chunk_str = std::str::from_utf8(&chunk)?;
+            byte_buffer.extend_from_slice(&chunk);
 
-            for c in chunk_str.chars() {
-                if c == '\n' {
-                    if !line_buffer.is_empty() {
-                        self.process_sse_line(
-                            &line_buffer,
-                            &mut content_blocks,
-                            &mut current_text,
-                            &mut current_reasoning,
-                            &mut usage,
-                            callback,
-                        )?;
+            // Try to decode as much as possible
+            match std::str::from_utf8(&byte_buffer) {
+                Ok(chunk_str) => {
+                    // Successfully decoded all bytes
+                    for c in chunk_str.chars() {
+                        if c == '\n' {
+                            if !line_buffer.is_empty() {
+                                self.process_sse_line(
+                                    &line_buffer,
+                                    &mut content_blocks,
+                                    &mut current_text,
+                                    &mut current_reasoning,
+                                    &mut usage,
+                                    callback,
+                                )?;
+                            }
+                            line_buffer.clear();
+                        } else {
+                            line_buffer.push(c);
+                        }
                     }
-                    line_buffer.clear();
-                } else {
-                    line_buffer.push(c);
+                    byte_buffer.clear();
+                }
+                Err(e) => {
+                    // Check if this is just an incomplete sequence at the end
+                    let valid_up_to = e.valid_up_to();
+                    if valid_up_to > 0 {
+                        // Process the valid part
+                        let valid_str = std::str::from_utf8(&byte_buffer[..valid_up_to])?;
+                        for c in valid_str.chars() {
+                            if c == '\n' {
+                                if !line_buffer.is_empty() {
+                                    self.process_sse_line(
+                                        &line_buffer,
+                                        &mut content_blocks,
+                                        &mut current_text,
+                                        &mut current_reasoning,
+                                        &mut usage,
+                                        callback,
+                                    )?;
+                                }
+                                line_buffer.clear();
+                            } else {
+                                line_buffer.push(c);
+                            }
+                        }
+                        // Keep the incomplete bytes for the next chunk
+                        byte_buffer.drain(..valid_up_to);
+                    } else {
+                        // This shouldn't happen with properly encoded UTF-8
+                        debug!(
+                            "UTF-8 decode error: {e}, buffer length: {}",
+                            byte_buffer.len()
+                        );
+                        return Err(anyhow::anyhow!("UTF-8 decode error: {e}"));
+                    }
                 }
             }
         }
@@ -795,7 +854,7 @@ impl LLMProvider for OpenAIResponsesClient {
             parallel_tool_calls: false,
             reasoning: Some(ReasoningConfig {
                 effort: "medium".to_string(),
-                summary: "concise".to_string(),
+                summary: "detailed".to_string(),
             }),
             store,
             stream: streaming_callback.is_some(),
@@ -1012,10 +1071,10 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::InputText { text } => {
+                    ResponseContentItem::OutputText { text } => {
                         assert_eq!(text, "2+2 equals 4.");
                     }
-                    _ => panic!("Expected InputText"),
+                    _ => panic!("Expected OutputText"),
                 }
             }
             _ => panic!("Expected assistant message"),
@@ -1023,7 +1082,11 @@ mod tests {
 
         // Third: Encrypted reasoning preserved
         match &converted[2] {
-            ResponseInputItem::Reasoning { encrypted_content } => {
+            ResponseInputItem::Reasoning {
+                id,
+                encrypted_content,
+            } => {
+                assert!(id.starts_with("reasoning_"));
                 assert_eq!(encrypted_content, "encrypted_math_reasoning");
             }
             _ => panic!("Expected Reasoning item"),
@@ -1076,10 +1139,10 @@ mod tests {
                 assert_eq!(role, "assistant");
                 assert_eq!(content.len(), 1);
                 match &content[0] {
-                    ResponseContentItem::InputText { text } => {
+                    ResponseContentItem::OutputText { text } => {
                         assert_eq!(text, "Based on my reasoning, here's the answer.");
                     }
-                    _ => panic!("Expected InputText"),
+                    _ => panic!("Expected OutputText"),
                 }
             }
             _ => panic!("Expected Message"),
@@ -1087,7 +1150,11 @@ mod tests {
 
         // Second should be the encrypted reasoning
         match &converted[1] {
-            ResponseInputItem::Reasoning { encrypted_content } => {
+            ResponseInputItem::Reasoning {
+                id,
+                encrypted_content,
+            } => {
+                assert!(id.starts_with("reasoning_"));
                 assert_eq!(encrypted_content, "encrypted_reasoning_data");
             }
             _ => panic!("Expected Reasoning item"),
