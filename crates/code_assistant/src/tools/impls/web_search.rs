@@ -10,7 +10,12 @@ use web::{WebClient, WebSearchResult};
 #[derive(Deserialize, Serialize)]
 pub struct WebSearchInput {
     pub query: String,
+    #[serde(default = "default_page_number")]
     pub hits_page_number: u32,
+}
+
+fn default_page_number() -> u32 {
+    1
 }
 
 // Output type with search results
@@ -92,10 +97,11 @@ impl Tool for WebSearchTool {
                     "hits_page_number": {
                         "type": "integer",
                         "description": "Page number for pagination (1-based)",
-                        "minimum": 1
+                        "minimum": 1,
+                        "default": 1
                     }
                 },
-                "required": ["query", "hits_page_number"]
+                "required": ["query"]
             }),
             annotations: Some(json!({
                 "readOnlyHint": true,
@@ -186,5 +192,29 @@ mod tests {
         let rendered = output.render(&mut tracker);
 
         assert!(rendered.contains("Search failed: Connection failed"));
+    }
+
+    #[test]
+    fn test_default_page_number_deserialization() {
+        use serde_json::json;
+
+        // Test with hits_page_number provided
+        let input_with_page: WebSearchInput = serde_json::from_value(json!({
+            "query": "test query",
+            "hits_page_number": 2
+        }))
+        .unwrap();
+
+        assert_eq!(input_with_page.query, "test query");
+        assert_eq!(input_with_page.hits_page_number, 2);
+
+        // Test with hits_page_number omitted (should use default)
+        let input_default: WebSearchInput = serde_json::from_value(json!({
+            "query": "test query"
+        }))
+        .unwrap();
+
+        assert_eq!(input_default.query, "test query");
+        assert_eq!(input_default.hits_page_number, 1); // Should use default
     }
 }
