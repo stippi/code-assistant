@@ -53,7 +53,7 @@ Create `~/.config/code-assistant/projects.json` to define available projects:
 
 ### Format-on-Save Feature
 
-The `format_on_save` field allows automatic formatting of files after modifications. It maps file patterns (using glob syntax) to shell commands:
+The _optional_ `format_on_save` field allows automatic formatting of files after modifications. It maps file patterns (using glob syntax) to shell commands:
 - Files matching the patterns will be automatically formatted after being modified by the assistant
 - The tool parameters are updated to reflect the formatted content, keeping the LLM's mental model in sync
 - This prevents edit conflicts caused by auto-formatting
