@@ -2,7 +2,7 @@ use crate::auth::TokenManager;
 use crate::config::{AiCoreConfig, DeploymentConfig};
 use crate::{
     AiCoreClient, AnthropicClient, CerebrasClient, GroqClient, LLMProvider, MistralAiClient,
-    OllamaClient, OpenAIClient, OpenRouterClient, VertexClient,
+    OllamaClient, OpenAIClient, OpenAIResponsesClient, OpenRouterClient, VertexClient,
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -17,6 +17,7 @@ pub enum LLMProviderType {
     MistralAI,
     Ollama,
     OpenAI,
+    OpenAIResponses,
     OpenRouter,
     Vertex,
 }
@@ -203,6 +204,19 @@ pub async fn create_llm_client(config: LLMClientConfig) -> Result<Box<dyn LLMPro
             let base_url = config.base_url.unwrap_or(OpenAIClient::default_base_url());
 
             Ok(Box::new(OpenAIClient::new(api_key, model_name, base_url)))
+        }
+
+        LLMProviderType::OpenAIResponses => {
+            let api_key = std::env::var("OPENAI_API_KEY")
+                .context("OPENAI_API_KEY environment variable not set")?;
+            let model_name = config.model.unwrap_or_else(|| "gpt-5".to_string());
+            let base_url = config
+                .base_url
+                .unwrap_or(OpenAIResponsesClient::default_base_url());
+
+            Ok(Box::new(OpenAIResponsesClient::new(
+                api_key, model_name, base_url,
+            )))
         }
 
         LLMProviderType::Vertex => {
