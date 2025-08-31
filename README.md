@@ -44,8 +44,8 @@ Create `~/.config/code-assistant/projects.json` to define available projects:
   "my-project": {
     "path": "/Users/<username>/workspace/my-project",
     "format_on_save": {
-      "*.js": "prettier --write",
-      "*.ts": "prettier --write"
+      "*.js": "prettier --write {path}",
+      "*.ts": "prettier --write {path}"
     }
   }
 }
