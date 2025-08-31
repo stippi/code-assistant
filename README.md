@@ -32,20 +32,18 @@ The binary will be available at `target/release/code-assistant`.
 
 Create `~/.config/code-assistant/projects.json` to define available projects:
 
-```json
+```jsonc
 {
   "code-assistant": {
     "path": "/Users/<username>/workspace/code-assistant",
     "format_on_save": {
-      "*.rs": "cargo fmt",
-      "*.toml": "taplo format"
+      "**/*.rs": "cargo fmt" // Formats all files in project, so make sure files are already formatted
     }
   },
   "my-project": {
     "path": "/Users/<username>/workspace/my-project",
     "format_on_save": {
-      "*.js": "prettier --write {path}",
-      "*.ts": "prettier --write {path}"
+      "**/*.ts": "prettier --write {path}" // If the formatter accepts a path, provide "{path}"
     }
   }
 }
@@ -54,7 +52,7 @@ Create `~/.config/code-assistant/projects.json` to define available projects:
 ### Format-on-Save Feature
 
 The _optional_ `format_on_save` field allows automatic formatting of files after modifications. It maps file patterns (using glob syntax) to shell commands:
-- Files matching the patterns will be automatically formatted after being modified by the assistant
+- Files matching the glob patterns will be automatically formatted after being modified by the assistant
 - The tool parameters are updated to reflect the formatted content, keeping the LLM's mental model in sync
 - This prevents edit conflicts caused by auto-formatting
 
@@ -216,6 +214,3 @@ Below are some topics that are likely the next focus.
 - **Edit user messages**: Editing a user message should create a new branch in the session.
   The user should still be able to toggle the active banches.
 - **Select in messages**: Allow to copy/paste from any message in the session.
-
-
-

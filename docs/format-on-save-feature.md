@@ -26,9 +26,9 @@ Project-level configuration supports format-on-save with simple glob-to-command 
   "my-js-project": {
     "path": "/path/to/my/js/project",
     "format_on_save": {
-      "*.js": "prettier --write {path}",
-      "*.ts": "prettier --write {path}",
-      "*.json": "prettier --write {path}"
+      "**/*.js": "prettier --write {path}",
+      "**/*.ts": "prettier --write {path}",
+      "**/*.json": "prettier --write {path}"
     }
   }
 }
