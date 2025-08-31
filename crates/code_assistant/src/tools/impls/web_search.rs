@@ -7,7 +7,7 @@ use serde_json::json;
 use web::{WebClient, WebSearchResult};
 
 // Input type for the web_search tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct WebSearchInput {
     pub query: String,
     pub hits_page_number: u32,
@@ -114,14 +114,14 @@ impl Tool for WebSearchTool {
     async fn execute<'a>(
         &self,
         _context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Create new client for each request
         let client = match WebClient::new().await {
             Ok(client) => client,
             Err(e) => {
                 return Ok(WebSearchOutput {
-                    query: input.query,
+                    query: input.query.clone(),
                     results: vec![],
                     error: Some(format!("Failed to create web client: {e}")),
                 });
@@ -131,12 +131,12 @@ impl Tool for WebSearchTool {
         // Execute search
         match client.search(&input.query, input.hits_page_number).await {
             Ok(results) => Ok(WebSearchOutput {
-                query: input.query,
+                query: input.query.clone(),
                 results,
                 error: None,
             }),
             Err(e) => Ok(WebSearchOutput {
-                query: input.query,
+                query: input.query.clone(),
                 results: vec![],
                 error: Some(e.to_string()),
             }),

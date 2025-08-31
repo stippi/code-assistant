@@ -7,7 +7,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the delete_files tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct DeleteFilesInput {
     pub project: String,
     pub paths: Vec<String>,
@@ -113,7 +113,7 @@ impl Tool for DeleteFilesTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
@@ -131,7 +131,7 @@ impl Tool for DeleteFilesTool {
         let mut failed = Vec::new();
 
         // Process each path
-        for path_str in input.paths {
+        for path_str in input.paths.clone() {
             let path = PathBuf::from(&path_str);
 
             // Check for absolute paths
@@ -163,7 +163,7 @@ impl Tool for DeleteFilesTool {
         }
 
         Ok(DeleteFilesOutput {
-            project: input.project,
+            project: input.project.clone(),
             deleted,
             failed,
         })
@@ -217,7 +217,7 @@ mod tests {
         let explorer = MockExplorer::new(files, None);
 
         // Create a mock project manager
-        let project_manager = MockProjectManager::default().with_project(
+        let project_manager = MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -247,14 +247,14 @@ mod tests {
         };
 
         // Create input
-        let input = DeleteFilesInput {
+        let mut input = DeleteFilesInput {
             project: "test-project".to_string(),
             paths: vec!["file1.txt".to_string()],
         };
 
         // Execute tool
         let tool = DeleteFilesTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify result
         assert_eq!(result.deleted.len(), 1);
@@ -286,7 +286,7 @@ mod tests {
         let explorer = MockExplorer::new(files, None);
 
         // Create a mock project manager
-        let project_manager = MockProjectManager::default().with_project(
+        let project_manager = MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -303,7 +303,7 @@ mod tests {
         };
 
         // Create input with both existing and non-existing files
-        let input = DeleteFilesInput {
+        let mut input = DeleteFilesInput {
             project: "test-project".to_string(),
             paths: vec![
                 "existing.txt".to_string(),
@@ -314,7 +314,7 @@ mod tests {
 
         // Execute tool
         let tool = DeleteFilesTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify result
         assert_eq!(result.deleted.len(), 1);

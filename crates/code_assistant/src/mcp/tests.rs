@@ -50,7 +50,7 @@ async fn setup_test_environment() -> Result<(TempDir, Arc<Mutex<Vec<String>>>, M
     let explorer = Explorer::new(temp_path.to_path_buf());
 
     // Create the MockProjectManager that uses the real Explorer
-    let project_manager = Box::new(MockProjectManager::default().with_project(
+    let project_manager = Box::new(MockProjectManager::default().with_project_path(
         "test-project",
         temp_path.to_path_buf(),
         Box::new(explorer),

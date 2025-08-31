@@ -11,6 +11,9 @@ pub mod system_message;
 // Tool use filtering system
 pub mod tool_use_filter;
 
+// Tool formatter system
+pub mod formatter;
+
 // New trait-based tools implementation
 pub mod core;
 pub mod impls;

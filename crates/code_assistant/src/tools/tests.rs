@@ -49,7 +49,7 @@ async fn test_read_files_tool() -> Result<()> {
     let explorer = MockExplorer::new(files, file_tree);
 
     // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project(
+    let project_manager = MockProjectManager::default().with_project_path(
         "test-project",
         PathBuf::from("./root"),
         Box::new(explorer),
@@ -73,13 +73,13 @@ async fn test_read_files_tool() -> Result<()> {
             .expect("read_files tool should be registered");
 
         // Parameters for read_files
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "paths": ["test.txt"]
         });
 
         // Execute the tool
-        let result = read_files_tool.invoke(&mut context, params).await?;
+        let result = read_files_tool.invoke(&mut context, &mut params).await?;
 
         // Format the output
         let mut tracker = ResourcesTracker::new();
@@ -101,13 +101,13 @@ async fn test_read_files_tool() -> Result<()> {
             .expect("read_files tool should be registered");
 
         // Parameters for read_files with line range
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "paths": ["test.txt:2-3"]
         });
 
         // Execute the tool
-        let result = read_files_tool.invoke(&mut context, params).await?;
+        let result = read_files_tool.invoke(&mut context, &mut params).await?;
 
         // Format the output
         let mut tracker = ResourcesTracker::new();
@@ -163,7 +163,7 @@ async fn test_write_file_tool() -> Result<()> {
     let explorer = MockExplorer::new(files.clone(), file_tree);
 
     // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project(
+    let project_manager = MockProjectManager::default().with_project_path(
         "test-project",
         PathBuf::from("./root"),
         Box::new(explorer),
@@ -187,7 +187,7 @@ async fn test_write_file_tool() -> Result<()> {
             .expect("write_file tool should be registered");
 
         // Parameters for write_file
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "path": "new_file.txt",
             "content": "This is new content",
@@ -195,7 +195,7 @@ async fn test_write_file_tool() -> Result<()> {
         });
 
         // Execute the tool
-        let result = write_file_tool.invoke(&mut context, params).await?;
+        let result = write_file_tool.invoke(&mut context, &mut params).await?;
 
         // Format the output
         let mut tracker = ResourcesTracker::new();
@@ -214,7 +214,7 @@ async fn test_write_file_tool() -> Result<()> {
             .expect("write_file tool should be registered");
 
         // Parameters for write_file
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "path": "existing.txt",
             "content": "This is replacement content",
@@ -222,7 +222,7 @@ async fn test_write_file_tool() -> Result<()> {
         });
 
         // Execute the tool
-        let result = write_file_tool.invoke(&mut context, params).await?;
+        let result = write_file_tool.invoke(&mut context, &mut params).await?;
 
         // Format the output
         let mut tracker = ResourcesTracker::new();
@@ -241,7 +241,7 @@ async fn test_write_file_tool() -> Result<()> {
             .expect("write_file tool should be registered");
 
         // Parameters for write_file
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "path": "existing.txt",
             "content": "\nAppended content",
@@ -249,7 +249,7 @@ async fn test_write_file_tool() -> Result<()> {
         });
 
         // Execute the tool
-        let result = write_file_tool.invoke(&mut context, params).await?;
+        let result = write_file_tool.invoke(&mut context, &mut params).await?;
 
         // Format the output
         let mut tracker = ResourcesTracker::new();
@@ -296,7 +296,7 @@ async fn test_replace_in_file_tool() -> Result<()> {
     let explorer = MockExplorer::new(files, None);
 
     // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project(
+    let project_manager = MockProjectManager::default().with_project_path(
         "test-project",
         PathBuf::from("./root"),
         Box::new(explorer),
@@ -337,14 +337,16 @@ async fn test_replace_in_file_tool() -> Result<()> {
         );
 
         // Parameters for replace_in_file
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "path": "source.txt",
             "diff": diff
         });
 
         // Execute the tool
-        let result = replace_in_file_tool.invoke(&mut context, params).await?;
+        let result = replace_in_file_tool
+            .invoke(&mut context, &mut params)
+            .await?;
 
         // Format the output
         let mut tracker = ResourcesTracker::new();
@@ -381,14 +383,16 @@ async fn test_replace_in_file_tool() -> Result<()> {
         );
 
         // Parameters for replace_in_file
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "path": "source.txt",
             "diff": diff
         });
 
         // Execute the tool
-        let result = replace_in_file_tool.invoke(&mut context, params).await?;
+        let result = replace_in_file_tool
+            .invoke(&mut context, &mut params)
+            .await?;
 
         // Format the output
         let mut tracker = ResourcesTracker::new();
@@ -414,7 +418,7 @@ async fn test_execute_command_tool() -> Result<()> {
     let explorer = MockExplorer::default();
 
     // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project(
+    let project_manager = MockProjectManager::default().with_project_path(
         "test-project",
         PathBuf::from("./root"),
         Box::new(explorer),
@@ -441,14 +445,16 @@ async fn test_execute_command_tool() -> Result<()> {
             .expect("execute_command tool should be registered");
 
         // Parameters for execute_command
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "command_line": "ls -la",
             "working_dir": "src"
         });
 
         // Execute the tool
-        let result = execute_command_tool.invoke(&mut context, params).await?;
+        let result = execute_command_tool
+            .invoke(&mut context, &mut params)
+            .await?;
 
         // Format the output
         let mut tracker = ResourcesTracker::new();
@@ -481,13 +487,15 @@ async fn test_execute_command_tool() -> Result<()> {
             .expect("execute_command tool should be registered");
 
         // Parameters for execute_command
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "command_line": "invalid-command"
         });
 
         // Execute the tool
-        let result = execute_command_tool.invoke(&mut context, params).await?;
+        let result = execute_command_tool
+            .invoke(&mut context, &mut params)
+            .await?;
 
         // Format the output
         let mut tracker = ResourcesTracker::new();
@@ -542,7 +550,7 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
     let explorer = MockExplorer::new(files, file_tree);
 
     // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project(
+    let project_manager = MockProjectManager::default().with_project_path(
         "test-project",
         PathBuf::from("./root"),
         Box::new(explorer),
@@ -566,10 +574,10 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
             .expect("list_projects tool should be registered");
 
         // Parameters for list_projects (empty object)
-        let params = json!({});
+        let mut params = json!({});
 
         // Execute the tool
-        let result = list_projects_tool.invoke(&mut context, params).await?;
+        let result = list_projects_tool.invoke(&mut context, &mut params).await?;
 
         // Format the output
         let mut tracker = crate::tools::core::ResourcesTracker::new();
@@ -588,13 +596,13 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
             .expect("read_files tool should be registered");
 
         // Parameters for read_files
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "paths": ["test.txt", "test.txt:10-20"]
         });
 
         // Execute the tool
-        let result = read_files_tool.invoke(&mut context, params).await?;
+        let result = read_files_tool.invoke(&mut context, &mut params).await?;
 
         // Format the output
         let mut tracker = crate::tools::core::ResourcesTracker::new();
@@ -613,7 +621,7 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
             .expect("write_file tool should be registered");
 
         // Parameters for write_file
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "path": "new_test.txt",
             "content": "This is a test content",
@@ -621,7 +629,7 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
         });
 
         // Execute the tool
-        let result = write_file_tool.invoke(&mut context, params).await?;
+        let result = write_file_tool.invoke(&mut context, &mut params).await?;
 
         // Format the output
         let mut tracker = crate::tools::core::ResourcesTracker::new();
@@ -640,14 +648,14 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
             .expect("list_files tool should be registered");
 
         // Parameters for list_files
-        let params = json!({
+        let mut params = json!({
             "project": "test-project",
             "paths": ["."],
             "max_depth": 2
         });
 
         // Execute the tool
-        let result = list_files_tool.invoke(&mut context, params).await?;
+        let result = list_files_tool.invoke(&mut context, &mut params).await?;
 
         // Format the output
         let mut tracker = crate::tools::core::ResourcesTracker::new();

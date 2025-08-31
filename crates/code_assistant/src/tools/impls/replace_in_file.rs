@@ -9,7 +9,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the replace_in_file tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ReplaceInFileInput {
     pub project: String,
     pub path: String,
@@ -51,6 +51,12 @@ impl Render for ReplaceInFileOutput {
                         "Found {count} occurrences of SEARCH block with index {idx}\nA SEARCH block must match exactly one location. Try enlarging the section to replace."
                     )
                 }
+                crate::utils::FileUpdaterError::OverlappingMatches(index1, index2) => {
+                    format!("Overlapping SEARCH blocks detected (blocks {index1} and {index2})")
+                }
+                crate::utils::FileUpdaterError::AdjacentMatches(index1, index2) => {
+                    format!("Adjacent SEARCH blocks detected (blocks {index1} and {index2})")
+                }
                 crate::utils::FileUpdaterError::Other(msg) => {
                     format!(
                         "Failed to replace in file '{}': {}",
@@ -73,6 +79,29 @@ impl ToolResult for ReplaceInFileOutput {
     fn is_success(&self) -> bool {
         self.error.is_none()
     }
+}
+
+fn render_diff_from_replacements(replacements: &[crate::types::FileReplacement]) -> String {
+    let mut out = String::new();
+    for (i, r) in replacements.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if r.replace_all {
+            out.push_str("<<<<<<< SEARCH_ALL\n");
+            out.push_str(&r.search);
+            out.push_str("\n=======\n");
+            out.push_str(&r.replace);
+            out.push_str("\n>>>>>>> REPLACE_ALL");
+        } else {
+            out.push_str("<<<<<<< SEARCH\n");
+            out.push_str(&r.search);
+            out.push_str("\n=======\n");
+            out.push_str(&r.replace);
+            out.push_str("\n>>>>>>> REPLACE");
+        }
+    }
+    out
 }
 
 // Tool implementation
@@ -122,7 +151,7 @@ impl Tool for ReplaceInFileTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
@@ -136,12 +165,18 @@ impl Tool for ReplaceInFileTool {
                 )
             })?;
 
+        // Load project configuration
+        let project_config = context
+            .project_manager
+            .get_project(&input.project)?
+            .ok_or_else(|| anyhow!("Project not found: {}", input.project))?;
+
         // Parse the replacements from the diff
         let replacements = match parse_search_replace_blocks(&input.diff) {
             Ok(replacements) => replacements,
             Err(e) => {
                 return Ok(ReplaceInFileOutput {
-                    project: input.project,
+                    project: input.project.clone(),
                     path: PathBuf::from(&input.path),
                     error: Some(crate::utils::FileUpdaterError::Other(format!(
                         "Failed to parse replacements: {e}"
@@ -154,7 +189,7 @@ impl Tool for ReplaceInFileTool {
         let path = PathBuf::from(&input.path);
         if path.is_absolute() {
             return Ok(ReplaceInFileOutput {
-                project: input.project,
+                project: input.project.clone(),
                 path,
                 error: Some(crate::utils::FileUpdaterError::Other(
                     "Absolute paths are not allowed".to_string(),
@@ -165,12 +200,31 @@ impl Tool for ReplaceInFileTool {
         // Join with root_dir to get full path
         let full_path = explorer.root_dir().join(&path);
 
-        // Apply the replacements
-        match explorer.apply_replacements(&full_path, &replacements) {
-            Ok(new_content) => {
-                // If we have a working memory reference, update it with the modified file
+        // If format-on-save applies, use format-aware path
+        let result = if let Some(command_line) = project_config.format_command_for(&path) {
+            explorer
+                .apply_replacements_with_formatting(
+                    &full_path,
+                    &replacements,
+                    &command_line,
+                    context.command_executor,
+                )
+                .await
+        } else {
+            match explorer.apply_replacements(&full_path, &replacements) {
+                Ok(content) => Ok((content, None)),
+                Err(e) => Err(e),
+            }
+        };
+
+        match result {
+            Ok((new_content, updated_replacements)) => {
+                // If we have updated replacements (after formatting), update the diff text
+                if let Some(updated) = updated_replacements {
+                    input.diff = render_diff_from_replacements(&updated);
+                }
+
                 if let Some(working_memory) = &mut context.working_memory {
-                    // Add the file with new content to working memory
                     working_memory.loaded_resources.insert(
                         (input.project.clone(), path.clone()),
                         LoadedResource::File(new_content.clone()),
@@ -178,13 +232,12 @@ impl Tool for ReplaceInFileTool {
                 }
 
                 Ok(ReplaceInFileOutput {
-                    project: input.project,
+                    project: input.project.clone(),
                     path,
                     error: None,
                 })
             }
             Err(e) => {
-                // Extract FileUpdaterError if present
                 let error =
                     if let Some(file_err) = e.downcast_ref::<crate::utils::FileUpdaterError>() {
                         file_err.clone()
@@ -193,7 +246,7 @@ impl Tool for ReplaceInFileTool {
                     };
 
                 Ok(ReplaceInFileOutput {
-                    project: input.project,
+                    project: input.project.clone(),
                     path,
                     error: Some(error),
                 })
@@ -263,7 +316,7 @@ mod tests {
 
         let explorer = MockExplorer::new(files, None);
 
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -283,7 +336,7 @@ mod tests {
         };
 
         // Create input for a valid replacement
-        let input = ReplaceInFileInput {
+        let mut input = ReplaceInFileInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             diff: "<<<<<<< SEARCH\nfn original() {\n    println!(\"Original\");\n}\n=======\nfn renamed() {\n    println!(\"Updated\");\n}\n>>>>>>> REPLACE".to_string(),
@@ -291,7 +344,7 @@ mod tests {
 
         // Execute the tool
         let tool = ReplaceInFileTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify the result
         assert!(result.error.is_none());
@@ -322,7 +375,7 @@ mod tests {
 
         let explorer = MockExplorer::new(files, None);
 
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -339,7 +392,7 @@ mod tests {
         };
 
         // Test case with multiple matches
-        let input_multiple = ReplaceInFileInput {
+        let mut input_multiple = ReplaceInFileInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             diff: "<<<<<<< SEARCH\nconsole.log\n=======\nconsole.debug\n>>>>>>> REPLACE"
@@ -348,7 +401,7 @@ mod tests {
 
         // Execute the tool - should fail with multiple matches
         let tool = ReplaceInFileTool;
-        let result = tool.execute(&mut context, input_multiple).await?;
+        let result = tool.execute(&mut context, &mut input_multiple).await?;
 
         // Verify error for multiple matches
         assert!(result.error.is_some());
@@ -359,7 +412,7 @@ mod tests {
         }
 
         // Test case with missing content
-        let input_missing = ReplaceInFileInput {
+        let mut input_missing = ReplaceInFileInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             diff: "<<<<<<< SEARCH\nnon_existent_content\n=======\nreplacement\n>>>>>>> REPLACE"
@@ -367,7 +420,7 @@ mod tests {
         };
 
         // Execute the tool - should fail with content not found
-        let result = tool.execute(&mut context, input_missing).await?;
+        let result = tool.execute(&mut context, &mut input_missing).await?;
 
         // Verify error for missing content
         assert!(result.error.is_some());

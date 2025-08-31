@@ -255,6 +255,8 @@ impl UserInterface for MockUI {
 pub struct MockExplorer {
     files: Arc<Mutex<HashMap<PathBuf, String>>>,
     file_tree: Arc<Mutex<Option<FileTreeEntry>>>,
+    // Optional map of formatted results to apply after a formatting command runs
+    formatted_after: Arc<Mutex<HashMap<PathBuf, String>>>,
 }
 
 impl MockExplorer {
@@ -262,6 +264,23 @@ impl MockExplorer {
         Self {
             files: Arc::new(Mutex::new(files)),
             file_tree: Arc::new(Mutex::new(file_tree)),
+            formatted_after: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Create a MockExplorer that simulates formatting by applying provided formatted content
+    /// after a formatting command is executed. The initial file contents are used for edits,
+    /// then when a formatting command is run, the content for that path is replaced with
+    /// the provided formatted content (if present in the map).
+    pub fn new_with_formatting(
+        initial_files: HashMap<PathBuf, String>,
+        formatted_files: HashMap<PathBuf, String>,
+        file_tree: Option<FileTreeEntry>,
+    ) -> Self {
+        Self {
+            files: Arc::new(Mutex::new(initial_files)),
+            file_tree: Arc::new(Mutex::new(file_tree)),
+            formatted_after: Arc::new(Mutex::new(formatted_files)),
         }
     }
 
@@ -276,11 +295,13 @@ impl MockExplorer {
     }
 }
 
+#[async_trait::async_trait]
 impl CodeExplorer for MockExplorer {
     fn clone_box(&self) -> Box<dyn CodeExplorer> {
         Box::new(MockExplorer {
             files: self.files.clone(),
             file_tree: self.file_tree.clone(),
+            formatted_after: self.formatted_after.clone(),
         })
     }
 
@@ -441,6 +462,66 @@ impl CodeExplorer for MockExplorer {
         files.insert(path.to_path_buf(), updated_content.clone());
 
         Ok(updated_content)
+    }
+
+    async fn apply_replacements_with_formatting(
+        &self,
+        path: &Path,
+        replacements: &[FileReplacement],
+        format_command: &str,
+        command_executor: &dyn crate::utils::CommandExecutor,
+    ) -> Result<(String, Option<Vec<FileReplacement>>)> {
+        use crate::utils::file_updater::{
+            extract_stable_ranges, find_replacement_matches, reconstruct_formatted_replacements,
+        };
+
+        // Capture original content
+        let original_content = self.read_file(path)?;
+
+        // Find matches and detect adjacency/overlap
+        let (matches, has_conflicts) = find_replacement_matches(&original_content, replacements)?;
+
+        // Apply replacements first
+        let updated_content = self.apply_replacements(path, replacements)?;
+
+        // Execute the format command to simulate formatting
+        let output = command_executor
+            .execute(format_command, Some(&PathBuf::from("./root")))
+            .await?;
+
+        // If formatting failed, do not attempt to reconstruct replacements
+        if !output.success {
+            return Ok((updated_content, None));
+        }
+
+        // After formatting command, if we have a formatted version for this path, apply it
+        let final_content =
+            if let Some(formatted) = self.formatted_after.lock().unwrap().get(path).cloned() {
+                // Replace file contents with the formatted version
+                self.files
+                    .lock()
+                    .unwrap()
+                    .insert(path.to_path_buf(), formatted.clone());
+                formatted
+            } else {
+                updated_content.clone()
+            };
+
+        // Try to reconstruct updated replacements if there are no conflicts
+        let updated_replacements = if has_conflicts {
+            None
+        } else {
+            let stable_ranges = extract_stable_ranges(&original_content, &matches);
+            reconstruct_formatted_replacements(
+                &original_content,
+                &final_content,
+                &stable_ranges,
+                &matches,
+                replacements,
+            )
+        };
+
+        Ok((final_content, updated_replacements))
     }
 
     fn search(
@@ -720,7 +801,7 @@ impl MockProjectManager {
             projects: HashMap::new(),
         };
         // Add default project
-        empty.with_project(
+        empty.with_project_path(
             "test",
             PathBuf::from("./root"),
             Box::new(create_explorer_mock()),
@@ -728,13 +809,30 @@ impl MockProjectManager {
     }
 
     // Helper to add a custom project and explorer
-    pub fn with_project(
-        mut self,
+    pub fn with_project_path(
+        self,
         name: &str,
         path: PathBuf,
         explorer: Box<dyn CodeExplorer>,
     ) -> Self {
-        self.projects.insert(name.to_string(), Project { path });
+        self.with_project(
+            name,
+            Project {
+                path,
+                format_on_save: None,
+            },
+            explorer,
+        )
+    }
+
+    // Helper to add a custom project and explorer
+    pub fn with_project(
+        mut self,
+        name: &str,
+        project: Project,
+        explorer: Box<dyn CodeExplorer>,
+    ) -> Self {
+        self.projects.insert(name.to_string(), project);
         self.explorers.insert(name.to_string(), explorer);
         self
     }
@@ -746,8 +844,13 @@ impl ProjectManager for MockProjectManager {
         let project_name = "temp_project".to_string();
 
         // Add the project
-        self.projects
-            .insert(project_name.clone(), Project { path: path.clone() });
+        self.projects.insert(
+            project_name.clone(),
+            Project {
+                path: path.clone(),
+                format_on_save: None,
+            },
+        );
 
         // Add a default explorer for it
         self.explorers

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use web::{PerplexityCitation, PerplexityClient, PerplexityMessage};
 
 // Input type for the perplexity_ask tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct PerplexityAskInput {
     pub messages: Vec<PerplexityMessage>,
 }
@@ -122,7 +122,7 @@ impl Tool for PerplexityAskTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Check if the API key exists
         let api_key = std::env::var("PERPLEXITY_API_KEY").ok();

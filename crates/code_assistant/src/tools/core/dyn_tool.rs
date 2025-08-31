@@ -46,11 +46,10 @@ pub trait DynTool: Send + Sync + 'static {
     async fn invoke<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        params: Value,
+        params: &mut Value,
     ) -> Result<Box<dyn AnyOutput>>;
 
     /// Deserialize a JSON value into this tool's output type
-    #[allow(dead_code)]
     fn deserialize_output(&self, json: Value) -> Result<Box<dyn AnyOutput>>;
 }
 
@@ -69,16 +68,20 @@ where
     async fn invoke<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        params: Value,
+        params: &mut Value,
     ) -> Result<Box<dyn AnyOutput>> {
         // Deserialize input
-        let input: T::Input = serde_json::from_value(params).map_err(|e| {
+        let mut input: T::Input = serde_json::from_value(params.clone()).map_err(|e| {
             // Convert Serde error to ToolError::ParseError
             ToolError::ParseError(format!("Failed to parse parameters: {e}"))
         })?;
 
         // Execute the tool
-        let output = self.execute(context, input).await?;
+        let output = self.execute(context, &mut input).await?;
+
+        // Serialize the potentially updated input back to JSON
+        *params = serde_json::to_value(input)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize updated input: {}", e))?;
 
         // Box the output as AnyOutput
         Ok(Box::new(output) as Box<dyn AnyOutput>)

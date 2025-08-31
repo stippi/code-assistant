@@ -3,7 +3,7 @@ mod tests;
 
 pub mod persistence;
 pub mod runner;
-mod types;
+pub mod types;
 
 pub use crate::types::ToolSyntax;
 // pub use persistence::FileStatePersistence;

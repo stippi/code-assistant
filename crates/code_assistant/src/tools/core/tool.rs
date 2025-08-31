@@ -19,7 +19,7 @@ pub struct ToolContext<'a> {
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync + 'static {
     /// Input type for this tool, must be deserializable from JSON
-    type Input: DeserializeOwned + Send;
+    type Input: DeserializeOwned + Serialize + Send;
 
     /// Output type for this tool, must implement Render, ToolResult and Serialize/Deserialize
     type Output: Render + ToolResult + Serialize + for<'de> Deserialize<'de> + Send + Sync;
@@ -28,10 +28,11 @@ pub trait Tool: Send + Sync + 'static {
     fn spec(&self) -> ToolSpec;
 
     /// Execute the tool with the given context and input
+    /// The input may be modified during execution (e.g., for format-on-save)
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output>;
 
     /// Deserialize a JSON value into this tool's output type

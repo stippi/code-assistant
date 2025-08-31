@@ -9,14 +9,14 @@ use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the edit tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct EditInput {
     pub project: String,
     pub path: String,
     pub old_text: String,
     pub new_text: String,
-    #[serde(default)]
-    pub replace_all: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace_all: bool,
 }
 
 // Output type
@@ -48,6 +48,12 @@ impl Render for EditOutput {
                     format!(
                         "Found {count} occurrences of old_text\nIt must match exactly one location. Try enlarging old_text to make it unique or use replace_all to replace all occurrences."
                     )
+                }
+                FileUpdaterError::OverlappingMatches(index1, index2) => {
+                    format!("Overlapping replacements detected (blocks {index1} and {index2})")
+                }
+                FileUpdaterError::AdjacentMatches(index1, index2) => {
+                    format!("Adjacent replacements detected (blocks {index1} and {index2})")
                 }
                 FileUpdaterError::Other(msg) => {
                     format!("Failed to edit file '{}': {}", self.path.display(), msg)
@@ -122,7 +128,7 @@ impl Tool for EditTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
@@ -136,11 +142,17 @@ impl Tool for EditTool {
                 )
             })?;
 
+        // Get project configuration for format-on-save
+        let project_config = context
+            .project_manager
+            .get_project(&input.project)?
+            .ok_or_else(|| anyhow!("Project not found: {}", input.project))?;
+
         // Check for absolute path
         let path = PathBuf::from(&input.path);
         if path.is_absolute() {
             return Ok(EditOutput {
-                project: input.project,
+                project: input.project.clone(),
                 path,
                 error: Some(FileUpdaterError::Other(
                     "Absolute paths are not allowed".to_string(),
@@ -153,14 +165,39 @@ impl Tool for EditTool {
 
         // Create a FileReplacement from the input
         let replacement = FileReplacement {
-            search: input.old_text,
-            replace: input.new_text,
-            replace_all: input.replace_all.unwrap_or(false),
+            search: input.old_text.clone(),
+            replace: input.new_text.clone(),
+            replace_all: input.replace_all,
         };
 
-        // Apply the replacements using the explorer
-        match explorer.apply_replacements(&full_path, &[replacement]) {
-            Ok(new_content) => {
+        // Apply with or without formatting, based on project configuration
+        let format_result = if let Some(format_command) = project_config.format_command_for(&path) {
+            explorer
+                .apply_replacements_with_formatting(
+                    &full_path,
+                    &[replacement.clone()],
+                    &format_command,
+                    context.command_executor,
+                )
+                .await
+        } else {
+            match explorer.apply_replacements(&full_path, &[replacement]) {
+                Ok(content) => Ok((content, None)),
+                Err(e) => Err(e),
+            }
+        };
+
+        match format_result {
+            Ok((new_content, updated_replacements)) => {
+                // If formatting updated the replacement parameters, update our input
+                if let Some(updated) = updated_replacements {
+                    if let Some(updated_replacement) = updated.first() {
+                        input.old_text = updated_replacement.search.clone();
+                        input.new_text = updated_replacement.replace.clone();
+                        input.replace_all = updated_replacement.replace_all;
+                    }
+                }
+
                 // If we have a working memory reference, update it with the modified file
                 if let Some(working_memory) = &mut context.working_memory {
                     // Add the file with new content to working memory
@@ -171,7 +208,7 @@ impl Tool for EditTool {
                 }
 
                 Ok(EditOutput {
-                    project: input.project,
+                    project: input.project.clone(),
                     path,
                     error: None,
                 })
@@ -185,7 +222,7 @@ impl Tool for EditTool {
                 };
 
                 Ok(EditOutput {
-                    project: input.project,
+                    project: input.project.clone(),
                     path,
                     error: Some(error),
                 })
@@ -257,7 +294,7 @@ mod tests {
 
         let explorer = MockExplorer::new(files, None);
 
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -277,17 +314,17 @@ mod tests {
         };
 
         // Create input for a valid replacement
-        let input = EditInput {
+        let mut input = EditInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             old_text: "fn original() {\n    println!(\"Original\");\n}".to_string(),
             new_text: "fn renamed() {\n    println!(\"Updated\");\n}".to_string(),
-            replace_all: None,
+            replace_all: false,
         };
 
         // Execute the tool
         let tool = EditTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify the result
         assert!(result.error.is_none());
@@ -318,7 +355,7 @@ mod tests {
 
         let explorer = MockExplorer::new(files, None);
 
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -338,17 +375,17 @@ mod tests {
         };
 
         // Create input for replace all
-        let input = EditInput {
+        let mut input = EditInput {
             project: "test-project".to_string(),
             path: "test.js".to_string(),
             old_text: "console.log(".to_string(),
             new_text: "logger.debug(".to_string(),
-            replace_all: Some(true),
+            replace_all: true,
         };
 
         // Execute the tool
         let tool = EditTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify the result
         assert!(result.error.is_none());
@@ -378,7 +415,7 @@ mod tests {
 
         let explorer = MockExplorer::new(files, None);
 
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -395,17 +432,17 @@ mod tests {
         };
 
         // Test case with multiple matches but replace_all = false
-        let input_multiple = EditInput {
+        let mut input_multiple = EditInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             old_text: "console.log".to_string(),
             new_text: "console.debug".to_string(),
-            replace_all: None, // defaults to false
+            replace_all: false,
         };
 
         // Execute the tool - should fail with multiple matches
         let tool = EditTool;
-        let result = tool.execute(&mut context, input_multiple).await?;
+        let result = tool.execute(&mut context, &mut input_multiple).await?;
 
         // Verify error for multiple matches
         assert!(result.error.is_some());
@@ -416,16 +453,16 @@ mod tests {
         }
 
         // Test case with missing content
-        let input_missing = EditInput {
+        let mut input_missing = EditInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             old_text: "non_existent_content".to_string(),
             new_text: "replacement".to_string(),
-            replace_all: None,
+            replace_all: false,
         };
 
         // Execute the tool - should fail with content not found
-        let result = tool.execute(&mut context, input_missing).await?;
+        let result = tool.execute(&mut context, &mut input_missing).await?;
 
         // Verify error for missing content
         assert!(result.error.is_some());
@@ -449,7 +486,7 @@ mod tests {
 
         let explorer = MockExplorer::new(files, None);
 
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -465,16 +502,16 @@ mod tests {
         };
 
         // Delete the TODO comment
-        let input = EditInput {
+        let mut input = EditInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             old_text: "    // TODO: Remove this comment\n".to_string(),
             new_text: "".to_string(),
-            replace_all: None,
+            replace_all: false,
         };
 
         let tool = EditTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify the result
         assert!(result.error.is_none());
@@ -503,7 +540,7 @@ mod tests {
 
         let explorer = MockExplorer::new(files, None);
 
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -519,16 +556,16 @@ mod tests {
         };
 
         // Use LF endings in search text, should still match CRLF in file
-        let input = EditInput {
+        let mut input = EditInput {
             project: "test-project".to_string(),
             path: "test.rs".to_string(),
             old_text: "function test() {\n  console.log('test');\n}".to_string(), // LF endings
             new_text: "function answer() {\n  return 42;\n}".to_string(),
-            replace_all: None,
+            replace_all: false,
         };
 
         let tool = EditTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // Verify the result
         assert!(result.error.is_none());
