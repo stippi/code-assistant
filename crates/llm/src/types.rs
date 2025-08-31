@@ -95,7 +95,11 @@ pub enum ContentBlock {
     Thinking { thinking: String, signature: String },
 
     #[serde(rename = "redacted_thinking")]
-    RedactedThinking { data: String },
+    RedactedThinking {
+        id: String,
+        summary: Vec<serde_json::Value>,
+        data: String,
+    },
 
     #[serde(rename = "text")]
     Text { text: String },

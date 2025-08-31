@@ -55,7 +55,7 @@ impl fmt::Display for ContentBlock {
                 writeln!(f, "Thinking: signature={signature}")?;
                 writeln!(f, "  Content: {}", thinking.replace('\n', "\n  "))
             }
-            ContentBlock::RedactedThinking { data } => {
+            ContentBlock::RedactedThinking { data, .. } => {
                 writeln!(f, "RedactedThinking")?;
                 writeln!(f, "  Data: {}", data.replace('\n', "\n  "))
             }

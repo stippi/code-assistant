@@ -414,17 +414,11 @@ impl OpenAIResponsesClient {
                         content_items.push(ResponseContentItem::OutputText { text: thinking });
                     }
                 },
-                ContentBlock::RedactedThinking { data } => {
+                ContentBlock::RedactedThinking { id, summary, data } => {
                     // Convert redacted thinking to reasoning input item
                     additional_items.push(ResponseInputItem::Reasoning {
-                        id: format!(
-                            "reasoning_{}",
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_nanos()
-                        ),
-                        summary: vec![], // Empty summary for encrypted reasoning
+                        id,
+                        summary,
                         encrypted_content: data,
                     });
                 }
@@ -466,13 +460,26 @@ impl OpenAIResponsesClient {
                     }
                 }
                 ResponseOutputItem::Reasoning {
+                    id,
                     summary,
                     content,
                     encrypted_content,
-                    ..
                 } => {
                     if let Some(encrypted) = encrypted_content {
-                        blocks.push(ContentBlock::RedactedThinking { data: encrypted });
+                        let summary_json: Vec<serde_json::Value> = summary
+                            .into_iter()
+                            .map(|s| match s {
+                                ReasoningSummary::SummaryText { text } => {
+                                    serde_json::json!({"type": "summary_text", "text": text})
+                                }
+                            })
+                            .collect();
+
+                        blocks.push(ContentBlock::RedactedThinking {
+                            id,
+                            summary: summary_json,
+                            data: encrypted,
+                        });
                     } else {
                         // Convert reasoning content to thinking blocks
                         for reasoning_item in content {
@@ -996,8 +1003,10 @@ mod tests {
         );
 
         let output = vec![ResponseOutputItem::Reasoning {
-            id: "reasoning_1".to_string(),
-            summary: vec![],
+            id: "rs_12345".to_string(),
+            summary: vec![ReasoningSummary::SummaryText {
+                text: "Test summary".to_string(),
+            }],
             content: vec![],
             encrypted_content: Some("encrypted_data".to_string()),
         }];
@@ -1006,7 +1015,9 @@ mod tests {
         assert_eq!(converted.len(), 1);
 
         match &converted[0] {
-            ContentBlock::RedactedThinking { data } => {
+            ContentBlock::RedactedThinking { id, summary, data } => {
+                assert_eq!(id, "rs_12345");
+                assert_eq!(summary.len(), 1);
                 assert_eq!(data, "encrypted_data");
             }
             _ => panic!("Expected RedactedThinking block"),
@@ -1038,6 +1049,10 @@ mod tests {
                 role: MessageRole::Assistant,
                 content: MessageContent::Structured(vec![
                     ContentBlock::RedactedThinking {
+                        id: "rs_12345".to_string(),
+                        summary: vec![
+                            serde_json::json!({"type": "summary_text", "text": "Math reasoning"}),
+                        ],
                         data: "encrypted_math_reasoning".to_string(),
                     },
                     ContentBlock::Text {
@@ -1089,8 +1104,8 @@ mod tests {
                 summary,
                 encrypted_content,
             } => {
-                assert!(id.starts_with("reasoning_"));
-                assert!(summary.is_empty());
+                assert_eq!(id, "rs_12345");
+                assert_eq!(summary.len(), 1);
                 assert_eq!(encrypted_content, "encrypted_math_reasoning");
             }
             _ => panic!("Expected Reasoning item"),
@@ -1124,6 +1139,10 @@ mod tests {
             role: MessageRole::Assistant,
             content: MessageContent::Structured(vec![
                 ContentBlock::RedactedThinking {
+                    id: "rs_67890".to_string(),
+                    summary: vec![
+                        serde_json::json!({"type": "summary_text", "text": "Previous reasoning"}),
+                    ],
                     data: "encrypted_reasoning_data".to_string(),
                 },
                 ContentBlock::Text {
@@ -1159,8 +1178,8 @@ mod tests {
                 summary,
                 encrypted_content,
             } => {
-                assert!(id.starts_with("reasoning_"));
-                assert!(summary.is_empty());
+                assert_eq!(id, "rs_67890");
+                assert_eq!(summary.len(), 1);
                 assert_eq!(encrypted_content, "encrypted_reasoning_data");
             }
             _ => panic!("Expected Reasoning item"),

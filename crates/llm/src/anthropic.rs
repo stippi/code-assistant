@@ -166,7 +166,7 @@ impl DefaultMessageConverter {
                                         signature,
                                     },
                                 ),
-                                ContentBlock::RedactedThinking { data } => {
+                                ContentBlock::RedactedThinking { data, .. } => {
                                     ("redacted_thinking".to_string(), {
                                         AnthropicBlockContent::RedactedThinking { data }
                                     })
@@ -850,6 +850,8 @@ impl AnthropicClient {
                                             current_content.push_str(&data);
                                         }
                                         ContentBlock::RedactedThinking {
+                                            id: String::new(),
+                                            summary: vec![],
                                             data: current_content.clone(),
                                         }
                                     }
