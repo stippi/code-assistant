@@ -142,6 +142,8 @@ fn parse_json_response(
                 id: id.clone(),
                 name: name.clone(),
                 input: input.clone(),
+                start_offset: None,
+                end_offset: None,
             };
             tool_requests.push(tool_request);
         }

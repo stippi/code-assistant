@@ -625,7 +625,7 @@ impl Agent {
         if let Some((file_name, content)) = guidance {
             let mut guidance_section = String::new();
             guidance_section.push_str("\n\n# Repository Guidance\n\n");
-            guidance_section.push_str(&format!("Loaded from `{}`.\n\n", file_name));
+            guidance_section.push_str(&format!("Loaded from `{file_name}`.\n\n"));
             guidance_section.push_str(&content);
             system_message.push_str(&guidance_section);
         }
@@ -1138,6 +1138,8 @@ impl Agent {
                         id: tool_request.id.clone(),
                         name: tool_request.name.clone(),
                         input: input.clone(),
+                        start_offset: tool_request.start_offset,
+                        end_offset: tool_request.end_offset,
                     }
                 } else {
                     tool_request.clone()
@@ -1256,24 +1258,59 @@ impl Agent {
     }
 
     /// Static helper to update tool call in text (to avoid borrowing issues)
-    fn update_tool_call_in_text_static(
+    pub fn update_tool_call_in_text_static(
         text: &str,
         updated_request: &ToolRequest,
         tool_syntax: ToolSyntax,
     ) -> Result<String> {
         use crate::tools::formatter::get_formatter;
 
-        // Generate the new formatted tool call
+        // Check if we have offset information for precise replacement
+        if let (Some(start_offset), Some(end_offset)) =
+            (updated_request.start_offset, updated_request.end_offset)
+        {
+            // Validate offsets are within bounds
+            if start_offset <= text.len() && end_offset <= text.len() && start_offset <= end_offset
+            {
+                // Generate the new formatted tool call
+                let formatter = get_formatter(tool_syntax);
+                let new_tool_call = formatter.format_tool_request(updated_request)?;
+
+                // Replace the tool block at the exact location
+                let mut updated_text = String::new();
+                updated_text.push_str(&text[..start_offset]);
+                updated_text.push_str(&new_tool_call);
+                updated_text.push_str(&text[end_offset..]);
+
+                debug!(
+                    "Replaced tool call {} at offsets {}..{} in text message",
+                    updated_request.id, start_offset, end_offset
+                );
+                return Ok(updated_text);
+            } else {
+                warn!(
+                    "Invalid offsets for tool call {}: start={}, end={}, text_len={}",
+                    updated_request.id,
+                    start_offset,
+                    end_offset,
+                    text.len()
+                );
+            }
+        }
+
+        // Fallback: append the updated tool call as a comment (for Native mode or when offsets are missing)
         let formatter = get_formatter(tool_syntax);
         let new_tool_call = formatter.format_tool_request(updated_request)?;
 
-        // For now, we'll implement a simple approach that appends a comment
-        // A more sophisticated implementation would parse and replace the specific tool call
         let updated_text = format!(
             "{}\n\n<!-- Tool call {} was updated after auto-formatting -->\n{}",
             text, updated_request.id, new_tool_call
         );
 
+        debug!(
+            "Appended updated tool call {} to text message (fallback mode)",
+            updated_request.id
+        );
         Ok(updated_text)
     }
 }

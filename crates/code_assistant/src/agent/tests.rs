@@ -1289,3 +1289,153 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
+    use crate::agent::runner::Agent;
+    use crate::agent::ToolSyntax;
+    use crate::tools::ToolRequest;
+    use serde_json::json;
+
+    // Test XML syntax with offset replacement
+    let original_text = concat!(
+        "I'll read some files for you.\n",
+        "\n",
+        "<tool:read_files>\n",
+        "<param:project>old-project</param:project>\n",
+        "<param:path>old-file.txt</param:path>\n",
+        "</tool:read_files>\n",
+        "\n",
+        "Let me know if you need anything else."
+    );
+
+    let updated_request = ToolRequest {
+        id: "tool-123-1".to_string(),
+        name: "read_files".to_string(),
+        input: json!({
+            "project": "new-project",
+            "paths": ["new-file1.txt", "new-file2.txt"]
+        }),
+        start_offset: Some(30), // Position of "<tool:read_files>"
+        end_offset: Some(106),  // Position after "</tool:read_files>"
+    };
+
+    let result =
+        Agent::update_tool_call_in_text_static(original_text, &updated_request, ToolSyntax::Xml)?;
+
+    // Should have replaced the tool block exactly
+    assert!(result.contains("I'll read some files for you."));
+    assert!(result.contains("Let me know if you need anything else."));
+    assert!(result.contains("<tool:read_files>"));
+    assert!(result.contains("<param:project>new-project</param:project>"));
+    assert!(result.contains("<param:path>new-file1.txt</param:path>"));
+    assert!(result.contains("<param:path>new-file2.txt</param:path>"));
+    assert!(result.contains("</tool:read_files>"));
+
+    // Should not contain the old content
+    assert!(!result.contains("old-project"));
+    assert!(!result.contains("old-file.txt"));
+
+    Ok(())
+}
+
+#[test]
+fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
+    use crate::agent::runner::Agent;
+    use crate::agent::ToolSyntax;
+    use crate::tools::ToolRequest;
+    use serde_json::json;
+
+    // Test Caret syntax with offset replacement
+    let original_text = concat!(
+        "Let me write a file for you.\n",
+        "\n",
+        "^^^write_file\n",
+        "project: old-project\n",
+        "path: old-file.txt\n",
+        "content: old content\n",
+        "^^^\n",
+        "\n",
+        "Done!"
+    );
+
+    // Calculate the correct offsets
+    let prefix = "Let me write a file for you.\n\n";
+    let tool_block = concat!(
+        "^^^write_file\n",
+        "project: old-project\n",
+        "path: old-file.txt\n",
+        "content: old content\n",
+        "^^^"
+    );
+    let start_offset = prefix.len();
+    let end_offset = start_offset + tool_block.len();
+
+    let updated_request = ToolRequest {
+        id: "tool-456-1".to_string(),
+        name: "write_file".to_string(),
+        input: json!({
+            "project": "new-project",
+            "path": "new-file.txt",
+            "content": "new content here"
+        }),
+        start_offset: Some(start_offset),
+        end_offset: Some(end_offset),
+    };
+
+    let result =
+        Agent::update_tool_call_in_text_static(original_text, &updated_request, ToolSyntax::Caret)?;
+
+    // Should have replaced the tool block exactly
+    assert!(result.contains("Let me write a file for you."));
+    assert!(result.contains("Done!"));
+    assert!(result.contains("^^^write_file"));
+    assert!(result.contains("project: new-project"));
+    assert!(result.contains("path: new-file.txt"));
+    assert!(result.contains("content ---"));
+    assert!(result.contains("new content here"));
+    assert!(result.contains("--- content"));
+    assert!(result.contains("^^^"));
+
+    // Should not contain the old content
+    assert!(!result.contains("old-project"));
+    assert!(!result.contains("old-file.txt"));
+    assert!(!result.contains("old content"));
+
+    Ok(())
+}
+
+#[test]
+fn test_update_tool_call_in_text_fallback_mode() -> Result<()> {
+    use crate::agent::runner::Agent;
+    use crate::agent::ToolSyntax;
+    use crate::tools::ToolRequest;
+    use serde_json::json;
+
+    // Test fallback mode when offsets are missing
+    let original_text = "Here's some original text with a tool call.";
+
+    let updated_request = ToolRequest {
+        id: "tool-789-1".to_string(),
+        name: "read_files".to_string(),
+        input: json!({
+            "project": "test-project",
+            "paths": ["test-file.txt"]
+        }),
+        start_offset: None, // No offset information
+        end_offset: None,
+    };
+
+    let result =
+        Agent::update_tool_call_in_text_static(original_text, &updated_request, ToolSyntax::Xml)?;
+
+    // Should have appended the updated tool call
+    assert!(result.contains(original_text));
+    assert!(result.contains("<!-- Tool call tool-789-1 was updated after auto-formatting -->"));
+    assert!(result.contains("<tool:read_files>"));
+    assert!(result.contains("<param:project>test-project</param:project>"));
+    assert!(result.contains("<param:path>test-file.txt</param:path>"));
+    assert!(result.contains("</tool:read_files>"));
+
+    Ok(())
+}

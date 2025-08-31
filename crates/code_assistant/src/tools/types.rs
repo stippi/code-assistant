@@ -35,6 +35,12 @@ pub struct ToolRequest {
     pub id: String,
     pub name: String,
     pub input: Value,
+    /// Start position of the tool block in the original text (for custom syntaxes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_offset: Option<usize>,
+    /// End position of the tool block in the original text (for custom syntaxes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_offset: Option<usize>,
 }
 
 impl From<&llm::ContentBlock> for ToolRequest {
@@ -44,6 +50,8 @@ impl From<&llm::ContentBlock> for ToolRequest {
                 id: id.clone(),
                 name: name.clone(),
                 input: input.clone(),
+                start_offset: None,
+                end_offset: None,
             }
         } else {
             panic!("Cannot convert non-ToolUse ContentBlock to ToolRequest")
