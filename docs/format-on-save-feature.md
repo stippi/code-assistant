@@ -59,20 +59,13 @@ Convenience methods on Project:
   - Only updates the replacement text when the formatted slice is equivalent to the original replacement modulo whitespace
   - Skips updates when anchors cannot be confidently resolved or when matches are adjacent/overlapping
 
-### Tool formatter system
+### ✅ Tool formatter system
 - File: crates/code_assistant/src/tools/formatter.rs
 - Provides formatters for the different tool syntaxes (Native, XML, Caret)
-- Important TODOs:
-  - Translate array parameters correctly into the respective syntax!
-  - Omit rendering optional parameters when they have default values (use the tool's spec)!
 
-### Tool trait + message history sync
+### ✅ Tool trait + message history sync
 - Files: crates/code_assistant/src/tools/core/tool.rs, dyn_tool.rs, and agent/runner.rs
 - Tool::execute takes a mutable Self::Input; when a tool updates its input during execution, the agent updates the message history accordingly
-- TODO: Currently works correctly only for ToolSyntax::Native!
-  For XML and Caret syntax, needs to replace the tool block in the assistant message's text at the correct location!
-  The tool block parsing system needs to be extended to also return the offsets of the detected block.
-  The tool request needs to store these offsets so it can be replaced with the re-rendered block.
 
 ### ✅ Project-centric formatter selection and templating
 - File: crates/code_assistant/src/types.rs (Project methods)
@@ -135,7 +128,6 @@ Representative tests:
 
 ## Remaining Work / Next Steps
 - Replace-all reconstruction: explore safe heuristics for updating REPLACE_ALL blocks
-- Message history updates for XML/Caret syntax: prefer span-based updates rather than appending; re-render exact tool block text
 - Specificity/precedence for overlapping formatter patterns: consider most-specific match (e.g., fewer wildcards or longest match)
 - Unit tests for Project::formatter_template_for and format_command_for
 - Broader integration tests across languages/formatters
