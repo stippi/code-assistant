@@ -908,7 +908,7 @@ impl LLMProvider for OpenAIResponsesClient {
             tool_choice: Some("auto".to_string()),
             parallel_tool_calls: false,
             reasoning: Some(ReasoningConfig {
-                effort: "medium".to_string(),
+                effort: "low".to_string(),
                 summary: "detailed".to_string(),
             }),
             store,
