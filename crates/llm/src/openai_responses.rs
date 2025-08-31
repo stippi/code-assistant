@@ -639,8 +639,8 @@ impl OpenAIResponsesClient {
                             &mut usage,
                             callback,
                         )?;
-                        line_buffer.clear();
                     }
+                    line_buffer.clear();
                 } else {
                     line_buffer.push(c);
                 }
@@ -692,10 +692,6 @@ impl OpenAIResponsesClient {
         callback: &StreamingCallback,
     ) -> Result<()> {
         if let Some(data) = line.strip_prefix("data: ") {
-            if data == "[DONE]" {
-                return Ok(());
-            }
-
             let event: StreamEvent = serde_json::from_str(data)
                 .map_err(|e| anyhow::anyhow!("Failed to parse SSE event: {e}"))?;
 
