@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 // Input type
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct NameSessionInput {
     pub title: String,
 }
@@ -70,7 +70,7 @@ impl Tool for NameSessionTool {
     async fn execute<'a>(
         &self,
         _context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Basic validation and cleanup
         let title = input.title.trim().to_string();
@@ -107,11 +107,11 @@ mod tests {
             working_memory: None,
         };
 
-        let input = NameSessionInput {
+        let mut input = NameSessionInput {
             title: "Test Session Title".to_string(),
         };
 
-        let result = tool.execute(&mut context, input).await.unwrap();
+        let result = tool.execute(&mut context, &mut input).await.unwrap();
         assert_eq!(result.title, "Test Session Title");
         assert!(result.is_success());
     }
@@ -127,11 +127,11 @@ mod tests {
             working_memory: None,
         };
 
-        let input = NameSessionInput {
+        let mut input = NameSessionInput {
             title: "   ".to_string(), // Only whitespace
         };
 
-        let result = tool.execute(&mut context, input).await;
+        let result = tool.execute(&mut context, &mut input).await;
         assert!(result.is_err());
     }
 
@@ -147,9 +147,9 @@ mod tests {
         };
 
         let long_title = "A".repeat(150);
-        let input = NameSessionInput { title: long_title };
+        let mut input = NameSessionInput { title: long_title };
 
-        let result = tool.execute(&mut context, input).await.unwrap();
+        let result = tool.execute(&mut context, &mut input).await.unwrap();
         assert!(result.title.len() <= 100);
         assert!(result.title.ends_with("..."));
         assert!(result.is_success());

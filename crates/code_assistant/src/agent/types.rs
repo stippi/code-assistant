@@ -41,6 +41,8 @@ impl ToolExecution {
             id: tool_id,
             name: "parse_error".to_string(),
             input: Value::Null,
+            start_offset: None,
+            end_offset: None,
         };
 
         Self {

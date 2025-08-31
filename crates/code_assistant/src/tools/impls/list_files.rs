@@ -8,11 +8,11 @@ use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the list_files tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ListFilesInput {
     pub project: String,
     pub paths: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<u64>,
 }
 
@@ -165,7 +165,7 @@ impl Tool for ListFilesTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let mut explorer = match context
@@ -193,7 +193,7 @@ impl Tool for ListFilesTool {
         // Convert max_depth from u64 to usize if present
         let max_depth = input.max_depth.map(|d| d as usize);
 
-        for path_str in input.paths {
+        for path_str in input.paths.clone() {
             let path = PathBuf::from(&path_str);
 
             // Check if path is absolute and handle it properly

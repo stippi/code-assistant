@@ -8,7 +8,7 @@ use serde_json::json;
 use std::collections::HashMap;
 
 // Input type (empty for this tool)
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ListProjectsInput {}
 
 // Output type
@@ -80,7 +80,7 @@ impl Tool for ListProjectsTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        _input: Self::Input,
+        _input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Load projects using the ProjectManager from the context
         let projects = context.project_manager.get_projects()?;
@@ -101,6 +101,7 @@ mod tests {
             "test-project".to_string(),
             Project {
                 path: std::path::PathBuf::from("/path/to/test-project"),
+                format_on_save: None,
             },
         );
 

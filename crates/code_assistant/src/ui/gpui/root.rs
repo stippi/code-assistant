@@ -353,35 +353,45 @@ impl RootView {
                         .rounded_lg()
                         .shadow_lg()
                         .flex()
-                        .items_center()
+                        .items_start() // Align items to top for multi-line text
                         .gap_2()
                         .max_w(px(600.)) // Limit width for long error messages
+                        .min_w(px(200.)) // Ensure minimum width
                         .child(
-                            svg()
-                                .size(px(14.))
-                                .path(SharedString::from("icons/circle_stop.svg"))
-                                .text_color(text_color),
+                            div()
+                                .flex_none()
+                                .mt(px(1.)) // Slight top margin to align with first line of text
+                                .child(
+                                    svg()
+                                        .size(px(14.))
+                                        .path(SharedString::from("icons/circle_stop.svg"))
+                                        .text_color(text_color),
+                                ),
                         )
                         .child(
                             div()
                                 .text_color(text_color)
                                 .text_size(px(11.))
                                 .font_weight(gpui::FontWeight(500.0))
+                                .flex_grow()
+                                .whitespace_normal() // Enable text wrapping
+                                .line_height(px(14.)) // Set line height for better readability
                                 .child(error_message),
                         )
                         .child(
                             // Add a close button
                             div()
-                                .size(px(16.))
+                                .flex_none()
+                                .size(px(20.))
                                 .rounded_sm()
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .cursor_pointer()
-                                .hover(|s| s.bg(rgba(0xFFFFFF20))) // Light overlay on hover
+                                .hover(|s| s.bg(cx.theme().muted.opacity(0.3))) // Match other icon button hover effects
                                 .child(
                                     svg()
-                                        .size(px(10.))
+                                        .size(px(12.))
                                         .path(SharedString::from("icons/close.svg"))
                                         .text_color(text_color),
                                 )

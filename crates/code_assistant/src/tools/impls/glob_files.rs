@@ -7,7 +7,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the glob_files tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct GlobFilesInput {
     pub project: String,
     pub pattern: String,
@@ -101,7 +101,7 @@ impl Tool for GlobFilesTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
@@ -132,8 +132,8 @@ impl Tool for GlobFilesTool {
         }
 
         Ok(GlobFilesOutput {
-            project: input.project,
-            pattern: input.pattern,
+            project: input.project.clone(),
+            pattern: input.pattern.clone(),
             files: relative_files,
         })
     }
@@ -262,7 +262,7 @@ mod tests {
         let explorer = create_explorer_mock();
 
         // Create a mock project manager
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -279,14 +279,14 @@ mod tests {
         };
 
         // Create input for the glob
-        let input = GlobFilesInput {
+        let mut input = GlobFilesInput {
             project: "test-project".to_string(),
             pattern: "*.rs".to_string(),
         };
 
         // Execute the glob
         let tool = GlobFilesTool;
-        let result = tool.execute(&mut context, input).await;
+        let result = tool.execute(&mut context, &mut input).await;
 
         // The execution may fail because the mock explorer's root directory doesn't exist
         // But we can still test that the tool is properly structured

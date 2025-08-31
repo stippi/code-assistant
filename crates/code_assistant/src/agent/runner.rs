@@ -13,6 +13,7 @@ use llm::{
     StreamingChunk,
 };
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
@@ -619,10 +620,58 @@ impl Agent {
             system_message = format!("{system_message}\n{project_info}");
         }
 
+        // Append repository guidance file if present (AGENTS.md preferred, else CLAUDE.md)
+        let guidance = self.read_repository_guidance();
+        if let Some((file_name, content)) = guidance {
+            let mut guidance_section = String::new();
+            guidance_section.push_str("\n\n# Repository Guidance\n\n");
+            guidance_section.push_str(&format!("Loaded from `{file_name}`.\n\n"));
+            guidance_section.push_str(&content);
+            system_message.push_str(&guidance_section);
+        }
+
         // Cache the system message
         let _ = self.cached_system_message.set(system_message.clone());
 
         system_message
+    }
+
+    /// Attempt to read AGENTS.md or CLAUDE.md from the initial project root.
+    /// Prefers AGENTS.md when both exist. Returns (file_name, content) on success.
+    fn read_repository_guidance(&self) -> Option<(String, String)> {
+        // Determine search root
+        let root_path = if !self.initial_project.is_empty() {
+            PathBuf::from(&self.initial_project)
+        } else {
+            std::env::current_dir().ok()?
+        };
+
+        // Candidate files in priority order
+        let candidates = ["AGENTS.md", "CLAUDE.md"];
+
+        for file in candidates.iter() {
+            let path = root_path.join(file);
+            if path.exists() {
+                match fs::read_to_string(&path) {
+                    Ok(mut content) => {
+                        // Guard against excessively large files (truncate politely)
+                        const MAX_LEN: usize = 64 * 1024; // 64KB
+                        if content.len() > MAX_LEN {
+                            content.truncate(MAX_LEN);
+                            content.push_str(
+                                "\n\n[... truncated to keep context size reasonable ...]",
+                            );
+                        }
+                        return Some((file.to_string(), content));
+                    }
+                    Err(e) => {
+                        warn!("Failed to read guidance file {}: {}", path.display(), e);
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Invalidate the cached system message to force regeneration
@@ -1049,10 +1098,14 @@ impl Agent {
         };
 
         // Execute the tool - could fail with ParseError or other errors
-        let result = match tool.invoke(&mut context, tool_request.input.clone()).await {
+        let mut input = tool_request.input.clone();
+        let result = match tool.invoke(&mut context, &mut input).await {
             Ok(result) => {
                 // Tool executed successfully (but may have failed functionally)
                 let success = result.is_success();
+
+                // Check if input parameters were modified during execution
+                let input_modified = input != tool_request.input;
 
                 // Determine UI status based on result
                 let status = if success {
@@ -1078,14 +1131,40 @@ impl Agent {
                     })
                     .await?;
 
+                // Create the tool request with potentially updated input
+                let final_tool_request = if input_modified {
+                    debug!("Tool input was modified during execution");
+                    ToolRequest {
+                        id: tool_request.id.clone(),
+                        name: tool_request.name.clone(),
+                        input: input.clone(),
+                        start_offset: tool_request.start_offset,
+                        end_offset: tool_request.end_offset,
+                    }
+                } else {
+                    tool_request.clone()
+                };
+
                 // Create and store the ToolExecution record
                 let tool_execution = ToolExecution {
-                    tool_request: tool_request.clone(),
+                    tool_request: final_tool_request.clone(),
                     result,
                 };
 
                 // Store the execution record
                 self.tool_executions.push(tool_execution);
+
+                // Update message history if input was modified
+                if input_modified {
+                    if let Err(e) =
+                        self.update_message_history_with_formatted_tool(&final_tool_request)
+                    {
+                        warn!(
+                            "Failed to update message history after input modification: {}",
+                            e
+                        );
+                    }
+                }
 
                 Ok(success)
             }
@@ -1129,5 +1208,109 @@ impl Agent {
         };
 
         result
+    }
+
+    /// Update message history to reflect formatted tool parameters
+    fn update_message_history_with_formatted_tool(
+        &mut self,
+        updated_request: &ToolRequest,
+    ) -> Result<()> {
+        // Find the most recent assistant message that contains the tool call
+        for message in self.message_history.iter_mut().rev() {
+            if message.role == MessageRole::Assistant {
+                match &mut message.content {
+                    MessageContent::Structured(blocks) => {
+                        // Look for the ToolUse block with matching ID
+                        for block in blocks {
+                            if let ContentBlock::ToolUse { id, name, input } = block {
+                                if *id == updated_request.id && *name == updated_request.name {
+                                    *input = updated_request.input.clone();
+                                    debug!("Updated tool call {} in message history", id);
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                    MessageContent::Text(text) => {
+                        // For text content, we need to update the tool call in the text
+                        // This is more complex and depends on the tool syntax
+                        if let Ok(updated_text) = Self::update_tool_call_in_text_static(
+                            text,
+                            updated_request,
+                            self.tool_syntax,
+                        ) {
+                            *text = updated_text;
+                            debug!("Updated tool call {} in text message", updated_request.id);
+                            return Ok(());
+                        }
+                    }
+                }
+                // Only check the most recent assistant message
+                break;
+            }
+        }
+
+        warn!(
+            "Could not find tool call {} to update in message history",
+            updated_request.id
+        );
+        Ok(())
+    }
+
+    /// Static helper to update tool call in text (to avoid borrowing issues)
+    pub fn update_tool_call_in_text_static(
+        text: &str,
+        updated_request: &ToolRequest,
+        tool_syntax: ToolSyntax,
+    ) -> Result<String> {
+        use crate::tools::formatter::get_formatter;
+
+        // Check if we have offset information for precise replacement
+        if let (Some(start_offset), Some(end_offset)) =
+            (updated_request.start_offset, updated_request.end_offset)
+        {
+            // Validate offsets are within bounds
+            if start_offset <= text.len() && end_offset <= text.len() && start_offset <= end_offset
+            {
+                // Generate the new formatted tool call
+                let formatter = get_formatter(tool_syntax);
+                let new_tool_call = formatter.format_tool_request(updated_request)?;
+
+                // Replace the tool block at the exact location
+                let mut updated_text = String::new();
+                updated_text.push_str(&text[..start_offset]);
+                updated_text.push_str(&new_tool_call);
+                updated_text.push_str(&text[end_offset..]);
+
+                debug!(
+                    "Replaced tool call {} at offsets {}..{} in text message",
+                    updated_request.id, start_offset, end_offset
+                );
+                return Ok(updated_text);
+            } else {
+                warn!(
+                    "Invalid offsets for tool call {}: start={}, end={}, text_len={}",
+                    updated_request.id,
+                    start_offset,
+                    end_offset,
+                    text.len()
+                );
+            }
+        }
+
+        // Fallback: append the updated tool call as a comment (for Native mode or when offsets are missing)
+        let formatter = get_formatter(tool_syntax);
+        let new_tool_call = formatter.format_tool_request(updated_request)?;
+
+        let updated_text = format!(
+            "{}\n\n<!-- Tool call {} was updated after auto-formatting -->\n{}",
+            text, updated_request.id, new_tool_call
+        );
+
+        debug!(
+            "Appended updated tool call {} to text message (fallback mode)",
+            updated_request.id
+        );
+        Ok(updated_text)
     }
 }

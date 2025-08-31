@@ -119,8 +119,12 @@ pub fn parse_caret_tool_invocations(
 
     let mut remaining_text = text;
     let mut truncation_pos = text.len(); // Default to end of text
+    let mut current_offset = 0; // Track position in original text
 
     while let Some(tool_match) = tool_regex.find(remaining_text) {
+        // Calculate absolute positions in original text
+        let tool_start_abs = current_offset + tool_match.start();
+
         // Extract tool name
         let tool_name = tool_regex
             .captures(&remaining_text[tool_match.start()..])
@@ -146,14 +150,16 @@ pub fn parse_caret_tool_invocations(
         let tool_start = tool_match.end();
         let remaining_after_tool = &remaining_text[tool_start..];
 
-        let (tool_content, tool_end_pos) =
+        let (tool_content, tool_end_pos, tool_end_abs) =
             if let Some(end_match) = tool_end_regex.find(remaining_after_tool) {
                 let content = &remaining_after_tool[..end_match.start()];
                 let end_pos = tool_start + end_match.end();
-                (content, Some(end_pos))
+                let end_abs = current_offset + end_pos;
+                (content, Some(end_pos), end_abs)
             } else {
                 // No end found, treat rest as tool content
-                (remaining_after_tool, None)
+                let end_abs = text.len();
+                (remaining_after_tool, None, end_abs)
             };
 
         // Parse parameters from tool content (returns raw HashMap)
@@ -179,11 +185,13 @@ pub fn parse_caret_tool_invocations(
         // Generate a unique tool ID: tool-<request_id>-<tool_index_in_request>
         let tool_id = format!("tool-{request_id}-{tool_index}");
 
-        // Create a ToolRequest
+        // Create a ToolRequest with offset information
         let tool_request = ToolRequest {
             id: tool_id,
             name: tool_name.to_string(),
             input: tool_params,
+            start_offset: Some(tool_start_abs),
+            end_offset: Some(tool_end_abs),
         };
 
         tool_requests.push(tool_request);
@@ -192,7 +200,7 @@ pub fn parse_caret_tool_invocations(
         if let Some(end_pos) = tool_end_pos {
             // Always update truncation position after each successfully processed tool
             // This ensures we can truncate cleanly after the last allowed tool
-            let absolute_tool_end = text.len() - remaining_text.len() + end_pos;
+            let absolute_tool_end = current_offset + end_pos;
             truncation_pos = absolute_tool_end;
 
             // Check if we should allow content after this tool
@@ -203,6 +211,7 @@ pub fn parse_caret_tool_invocations(
                 }
             }
 
+            current_offset += end_pos;
             remaining_text = &remaining_text[end_pos..];
         } else {
             // No tool end found, stop processing
@@ -795,11 +804,13 @@ pub fn parse_xml_tool_invocations(
                             let tool_index = tool_requests.len() + 1;
                             let tool_id = format!("tool-{request_id}-{tool_index}");
 
-                            // Create a ToolRequest
+                            // Create a ToolRequest with offset information
                             let tool_request = ToolRequest {
                                 id: tool_id,
                                 name: parsed_tool_name.clone(),
                                 input: tool_params,
+                                start_offset: Some(*start_pos),
+                                end_offset: Some(abs_tag_end + 1),
                             };
 
                             tool_requests.push(tool_request);
@@ -1002,13 +1013,13 @@ mod tests {
         async fn execute<'a>(
             &self,
             _context: &mut ToolContext<'a>,
-            _input: Self::Input,
+            _input: &mut Self::Input,
         ) -> Result<Self::Output> {
             unimplemented!()
         }
     }
 
-    #[derive(serde::Deserialize)]
+    #[derive(serde::Deserialize, serde::Serialize)]
     struct TestInput {
         string_param: String,
         #[serde(default)]
@@ -1679,6 +1690,85 @@ mod tests {
         // Integer parameters should be converted to numbers
         assert!(result[0].input["max_depth"].is_number());
         assert_eq!(result[0].input["max_depth"].as_u64().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_parse_caret_tool_invocations_with_offsets() {
+        let text = concat!(
+            "Here's some text before the tool.\n",
+            "^^^list_files\n",
+            "project: test\n",
+            "paths: [\n",
+            "src\n",
+            "]\n",
+            "^^^\n",
+            "And some text after the tool."
+        );
+
+        let (tool_requests, truncated_text) =
+            parse_caret_tool_invocations(text, 123, 0, None).unwrap();
+
+        assert_eq!(tool_requests.len(), 1);
+        let tool_request = &tool_requests[0];
+
+        // Check that offsets are correctly set
+        assert!(tool_request.start_offset.is_some());
+        assert!(tool_request.end_offset.is_some());
+
+        let start = tool_request.start_offset.unwrap();
+        let end = tool_request.end_offset.unwrap();
+
+        // The tool block should start after "Here's some text before the tool.\n"
+        let expected_start = "Here's some text before the tool.\n".len();
+        assert_eq!(start, expected_start);
+
+        // Extract the tool block using the offsets
+        let tool_block_text = &text[start..end];
+        assert!(tool_block_text.starts_with("^^^list_files"));
+        assert!(tool_block_text.ends_with("^^^"));
+
+        // Verify the truncated text includes the tool
+        assert!(truncated_text.contains("^^^list_files"));
+        assert!(truncated_text.contains("^^^"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_xml_tool_invocations_with_offsets() {
+        let text = concat!(
+            "Some introductory text.\n",
+            "<tool:read_files>\n",
+            "<param:project>test-project</param:project>\n",
+            "<param:path>file1.txt</param:path>\n",
+            "<param:path>file2.txt</param:path>\n",
+            "</tool:read_files>\n",
+            "Some concluding text."
+        );
+
+        let (tool_requests, truncated_text) =
+            parse_xml_tool_invocations(text, 456, 0, None).unwrap();
+
+        assert_eq!(tool_requests.len(), 1);
+        let tool_request = &tool_requests[0];
+
+        // Check that offsets are correctly set
+        assert!(tool_request.start_offset.is_some());
+        assert!(tool_request.end_offset.is_some());
+
+        let start = tool_request.start_offset.unwrap();
+        let end = tool_request.end_offset.unwrap();
+
+        // The tool block should start after "Some introductory text.\n"
+        let expected_start = "Some introductory text.\n".len();
+        assert_eq!(start, expected_start);
+
+        // Extract the tool block using the offsets
+        let tool_block_text = &text[start..end];
+        assert!(tool_block_text.starts_with("<tool:read_files>"));
+        assert!(tool_block_text.ends_with("</tool:read_files>"));
+
+        // Verify the truncated text includes the tool
+        assert!(truncated_text.contains("<tool:read_files>"));
+        assert!(truncated_text.contains("</tool:read_files>"));
     }
 
     #[tokio::test]

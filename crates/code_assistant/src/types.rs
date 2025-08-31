@@ -8,6 +8,41 @@ use web::{WebPage, WebSearchResult};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Project {
     pub path: PathBuf,
+    #[serde(default)]
+    pub format_on_save: Option<HashMap<String, String>>,
+}
+
+impl Project {
+    /// Returns the formatter command template configured for the given relative path, if any.
+    /// Iteration over patterns is deterministic (sorted by pattern string).
+    pub fn formatter_template_for(&self, rel_path: &Path) -> Option<String> {
+        let mapping = self.format_on_save.as_ref()?;
+        let file_name = rel_path.to_string_lossy();
+
+        // Sort patterns deterministically to avoid HashMap ordering
+        let mut entries: Vec<(&String, &String)> = mapping.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+
+        for (pattern, command) in entries {
+            if let Ok(glob) = glob::Pattern::new(pattern) {
+                if glob.matches(&file_name) {
+                    return Some(command.clone());
+                }
+            } else {
+                // Fallback: simple substring match if glob pattern failed to parse
+                if file_name.contains(pattern) {
+                    return Some(command.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Builds a formatter command for the given relative path using the optional {path} placeholder.
+    pub fn format_command_for(&self, rel_path: &Path) -> Option<String> {
+        self.formatter_template_for(rel_path)
+            .map(|template| crate::utils::build_format_command(&template, rel_path))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -253,6 +288,7 @@ impl ValueEnum for ToolSyntax {
     }
 }
 
+#[async_trait::async_trait]
 pub trait CodeExplorer: Send + Sync {
     fn root_dir(&self) -> PathBuf;
     /// Reads the content of a file
@@ -272,6 +308,14 @@ pub trait CodeExplorer: Send + Sync {
     fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry>;
     /// Applies FileReplacements to a file
     fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String>;
+    /// Applies FileReplacements to a file with formatting support
+    async fn apply_replacements_with_formatting(
+        &self,
+        path: &Path,
+        replacements: &[FileReplacement],
+        format_command: &str,
+        command_executor: &dyn crate::utils::CommandExecutor,
+    ) -> Result<(String, Option<Vec<FileReplacement>>)>;
     /// Search for text in files with advanced options
     fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>>;
     /// Create a cloned box of this explorer

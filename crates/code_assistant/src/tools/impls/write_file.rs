@@ -8,12 +8,12 @@ use serde_json::json;
 use std::path::PathBuf;
 
 // Input type for the write_file tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct WriteFileInput {
     pub project: String,
     pub path: String,
     pub content: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub append: bool,
 }
 
@@ -119,7 +119,7 @@ impl Tool for WriteFileTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = match context
@@ -139,6 +139,12 @@ impl Tool for WriteFileTool {
             }
         };
 
+        // Load project configuration
+        let project_config = context
+            .project_manager
+            .get_project(&input.project)?
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {}", input.project))?;
+
         // Check for absolute path
         let path = PathBuf::from(&input.path);
         if path.is_absolute() {
@@ -152,13 +158,26 @@ impl Tool for WriteFileTool {
         // Join with root_dir to get full path
         let full_path = explorer.root_dir().join(&path);
 
-        // Write the file
+        // Write the file first
         match explorer.write_file(&full_path, &input.content, input.append) {
-            Ok(full_content) => {
-                // If we have a working memory reference, update it with the written file
+            Ok(mut full_content) => {
+                // If format-on-save applies, run the formatter
+                if let Some(command_line) = project_config.format_command_for(&path) {
+                    let _ = context
+                        .command_executor
+                        .execute(&command_line, Some(&explorer.root_dir()))
+                        .await;
+
+                    // Regardless of formatter success, try to re-read the file content
+                    if let Ok(updated) = explorer.read_file(&full_path) {
+                        full_content = updated;
+                        // Update the input content to the formatted content so the LLM sees it
+                        input.content = full_content.clone();
+                    }
+                }
+
+                // Update working memory if present
                 if let Some(working_memory) = &mut context.working_memory {
-                    // Always update the working memory with the complete content
-                    // For both new files and append operations
                     working_memory.loaded_resources.insert(
                         (input.project.clone(), path.clone()),
                         LoadedResource::File(full_content.clone()),
@@ -167,7 +186,7 @@ impl Tool for WriteFileTool {
 
                 Ok(WriteFileOutput {
                     path,
-                    content: input.content,
+                    content: input.content.clone(),
                     error: None,
                 })
             }
@@ -226,7 +245,7 @@ mod tests {
         let explorer = MockExplorer::new(files, None);
 
         // Create a mock project manager with our test files
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -246,7 +265,7 @@ mod tests {
         };
 
         // Parameters for write_file
-        let input = WriteFileInput {
+        let mut input = WriteFileInput {
             project: "test-project".to_string(),
             path: "test.txt".to_string(),
             content: "Test content".to_string(),
@@ -254,7 +273,7 @@ mod tests {
         };
 
         // Execute the tool
-        let result = write_file_tool.execute(&mut context, input).await?;
+        let result = write_file_tool.execute(&mut context, &mut input).await?;
 
         // Check the result
         assert!(result.error.is_none());
@@ -294,7 +313,7 @@ mod tests {
         let explorer = MockExplorer::new(files, None);
 
         // Create a mock project manager with our test files
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -314,7 +333,7 @@ mod tests {
         };
 
         // Parameters for write_file with append=true
-        let input = WriteFileInput {
+        let mut input = WriteFileInput {
             project: "test-project".to_string(),
             path: "test.txt".to_string(),
             content: "Test content".to_string(),
@@ -322,7 +341,7 @@ mod tests {
         };
 
         // Execute the tool
-        let result = write_file_tool.execute(&mut context, input).await?;
+        let result = write_file_tool.execute(&mut context, &mut input).await?;
 
         // Check the result
         assert!(result.error.is_none());

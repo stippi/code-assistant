@@ -1289,3 +1289,201 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
+    use crate::agent::runner::Agent;
+    use crate::agent::ToolSyntax;
+    use crate::tools::ToolRequest;
+    use serde_json::json;
+
+    // Test XML syntax with offset replacement
+    let original_text = concat!(
+        "I'll write the file for you.\n",
+        "\n",
+        "<tool:write_file>\n",
+        "<param:project>test-project</param:project>\n",
+        "<param:path>some_file.ts</param:path>\n",
+        "<param:content>\n",
+        "console.log('result:',1+1);\n",
+        "</param:content>\n",
+        "</tool:write_file>\n",
+        "\n",
+        "Let me know if you need anything else."
+    );
+
+    // Parse the original text using the XML parser to extract the actual tool block with offsets
+    use crate::tools::parser_registry::ParserRegistry;
+    use llm::{ContentBlock, LLMResponse, Usage};
+
+    let parser = ParserRegistry::get(ToolSyntax::Xml);
+    let llm_response = LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: original_text.to_string(),
+        }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let (parsed_tools, _) = parser.extract_requests(&llm_response, 123, 0)?;
+    assert_eq!(parsed_tools.len(), 1);
+
+    let parsed_tool = &parsed_tools[0];
+    assert_eq!(parsed_tool.name, "write_file");
+    assert!(parsed_tool.start_offset.is_some());
+    assert!(parsed_tool.end_offset.is_some());
+
+    // Create an updated request using the parsed tool's ID and offsets, but with new input
+    let updated_request = ToolRequest {
+        id: parsed_tool.id.clone(),
+        name: parsed_tool.name.clone(),
+        input: json!({
+            "project": "test-project",
+            "path": "some_file.ts",
+            // Simulate content has been formatted on save
+            "content": "console.log(\"result:\", 1 + 1)",
+        }),
+        start_offset: parsed_tool.start_offset,
+        end_offset: parsed_tool.end_offset,
+    };
+
+    // Build expected text by simulating what the formatter would produce
+    // The XML formatter adds a trailing newline after </tool:name>, which creates an extra newline
+    let expected_text = concat!(
+        "I'll write the file for you.\n",
+        "\n",
+        "<tool:write_file>\n",
+        "<param:project>test-project</param:project>\n",
+        "<param:path>some_file.ts</param:path>\n",
+        "<param:content>\n",
+        "console.log(\"result:\", 1 + 1)\n",
+        "</param:content>\n",
+        "</tool:write_file>\n", // Formatter adds this newline
+        "\n",                   // Original newline from text
+        "\n",                   // This creates an extra newline due to formatter
+        "Let me know if you need anything else."
+    );
+
+    let result =
+        Agent::update_tool_call_in_text_static(original_text, &updated_request, ToolSyntax::Xml)?;
+
+    // Should have replaced the tool block exactly
+    assert_eq!(expected_text, result);
+
+    Ok(())
+}
+
+#[test]
+fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
+    use crate::agent::runner::Agent;
+    use crate::agent::ToolSyntax;
+    use crate::tools::ToolRequest;
+    use serde_json::json;
+
+    // Test Caret syntax with offset replacement
+    let original_text = concat!(
+        "Let me write a file for you.\n",
+        "\n",
+        "^^^write_file\n",
+        "project: old-project\n",
+        "path: old-file.txt\n",
+        "content: old content\n",
+        "^^^\n",
+        "\n",
+        "Done!"
+    );
+
+    // Parse the original text using the Caret parser to extract the actual tool block with offsets
+    use crate::tools::parser_registry::ParserRegistry;
+    use llm::{ContentBlock, LLMResponse, Usage};
+
+    let parser = ParserRegistry::get(ToolSyntax::Caret);
+    let llm_response = LLMResponse {
+        content: vec![ContentBlock::Text {
+            text: original_text.to_string(),
+        }],
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let (parsed_tools, _) = parser.extract_requests(&llm_response, 456, 0)?;
+    assert_eq!(parsed_tools.len(), 1);
+
+    let parsed_tool = &parsed_tools[0];
+    assert_eq!(parsed_tool.name, "write_file");
+    assert!(parsed_tool.start_offset.is_some());
+    assert!(parsed_tool.end_offset.is_some());
+
+    // Create an updated request using the parsed tool's ID and offsets, but with new input
+    let updated_request = ToolRequest {
+        id: parsed_tool.id.clone(),
+        name: parsed_tool.name.clone(),
+        input: json!({
+            "project": "new-project",
+            "path": "new-file.txt",
+            "content": "new content here"
+        }),
+        start_offset: parsed_tool.start_offset,
+        end_offset: parsed_tool.end_offset,
+    };
+
+    // Build expected text by simulating what the formatter would produce
+    // The Caret formatter adds a trailing newline after ^^^, which creates an extra newline
+    let expected_text = concat!(
+        "Let me write a file for you.\n",
+        "\n",
+        "^^^write_file\n",
+        "project: new-project\n",
+        "path: new-file.txt\n",
+        "content ---\n",
+        "new content here\n",
+        "--- content\n",
+        "^^^\n", // Formatter adds this newline
+        "\n",    // Original newline from text
+        "\n",    // This creates an extra newline due to formatter
+        "Done!"
+    );
+
+    let result =
+        Agent::update_tool_call_in_text_static(original_text, &updated_request, ToolSyntax::Caret)?;
+
+    // Should have replaced the tool block exactly
+    assert_eq!(expected_text, result);
+
+    Ok(())
+}
+
+#[test]
+fn test_update_tool_call_in_text_fallback_mode() -> Result<()> {
+    use crate::agent::runner::Agent;
+    use crate::agent::ToolSyntax;
+    use crate::tools::ToolRequest;
+    use serde_json::json;
+
+    // Test fallback mode when offsets are missing
+    let original_text = "Here's some original text with a tool call.";
+
+    let updated_request = ToolRequest {
+        id: "tool-789-1".to_string(),
+        name: "read_files".to_string(),
+        input: json!({
+            "project": "test-project",
+            "paths": ["test-file.txt"]
+        }),
+        start_offset: None, // No offset information
+        end_offset: None,
+    };
+
+    let result =
+        Agent::update_tool_call_in_text_static(original_text, &updated_request, ToolSyntax::Xml)?;
+
+    // Should have appended the updated tool call
+    assert!(result.contains(original_text));
+    assert!(result.contains("<!-- Tool call tool-789-1 was updated after auto-formatting -->"));
+    assert!(result.contains("<tool:read_files>"));
+    assert!(result.contains("<param:project>test-project</param:project>"));
+    assert!(result.contains("<param:path>test-file.txt</param:path>"));
+    assert!(result.contains("</tool:read_files>"));
+
+    Ok(())
+}

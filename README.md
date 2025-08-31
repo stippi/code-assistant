@@ -16,6 +16,8 @@ An AI coding assistant built in Rust that provides both command-line and graphic
 
 **Intelligent Project Exploration**: Autonomously builds understanding of codebases through working memory that tracks file structures, dependencies, and project context.
 
+**Auto-Loaded Repository Guidance**: Automatically includes `AGENTS.md` (or `CLAUDE.md` fallback) from the project root in the assistant's system context to align behavior with repo-specific instructions.
+
 ## Installation
 
 ```bash
@@ -33,13 +35,30 @@ Create `~/.config/code-assistant/projects.json` to define available projects:
 ```json
 {
   "code-assistant": {
-    "path": "/Users/<username>/workspace/code-assistant"
+    "path": "/Users/<username>/workspace/code-assistant",
+    "format_on_save": {
+      "*.rs": "cargo fmt",
+      "*.toml": "taplo format"
+    }
   },
   "my-project": {
-    "path": "/Users/<username>/workspace/my-project"
+    "path": "/Users/<username>/workspace/my-project",
+    "format_on_save": {
+      "*.js": "prettier --write",
+      "*.ts": "prettier --write"
+    }
   }
 }
 ```
+
+### Format-on-Save Feature
+
+The `format_on_save` field allows automatic formatting of files after modifications. It maps file patterns (using glob syntax) to shell commands:
+- Files matching the patterns will be automatically formatted after being modified by the assistant
+- The tool parameters are updated to reflect the formatted content, keeping the LLM's mental model in sync
+- This prevents edit conflicts caused by auto-formatting
+
+See [docs/format-on-save-feature.md](docs/format-on-save-feature.md) for detailed documentation.
 
 **Important Notes:**
 - When launching from a folder not in this configuration, a temporary project is created automatically

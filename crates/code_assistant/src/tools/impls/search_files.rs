@@ -8,11 +8,11 @@ use serde_json::json;
 use std::collections::HashMap;
 
 // Input type for the search_files tool
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct SearchFilesInput {
     pub project: String,
     pub regex: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<String>>,
 }
 
@@ -279,7 +279,7 @@ impl Tool for SearchFilesTool {
     async fn execute<'a>(
         &self,
         context: &mut ToolContext<'a>,
-        input: Self::Input,
+        input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Get explorer for the specified project
         let explorer = context
@@ -375,8 +375,8 @@ impl Tool for SearchFilesTool {
         };
 
         Ok(SearchFilesOutput {
-            project: input.project,
-            regex: input.regex,
+            project: input.project.clone(),
+            regex: input.regex.clone(),
             results,
             total_matches: total_files,
             truncated,
@@ -467,7 +467,7 @@ mod tests {
         let explorer = create_explorer_mock();
 
         // Create a mock project manager
-        let project_manager = Box::new(MockProjectManager::default().with_project(
+        let project_manager = Box::new(MockProjectManager::default().with_project_path(
             "test-project",
             PathBuf::from("./root"),
             Box::new(explorer),
@@ -484,7 +484,7 @@ mod tests {
         };
 
         // Create input for the search
-        let input = SearchFilesInput {
+        let mut input = SearchFilesInput {
             project: "test-project".to_string(),
             regex: "searchable".to_string(),
             paths: None,
@@ -492,7 +492,7 @@ mod tests {
 
         // Execute the search
         let tool = SearchFilesTool;
-        let result = tool.execute(&mut context, input).await?;
+        let result = tool.execute(&mut context, &mut input).await?;
 
         // In a real test, we would verify the results
         // However, our mock explorer's search method would need to be enhanced
