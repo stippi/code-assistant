@@ -150,6 +150,11 @@ enum ResponseInputItem {
         role: String,
         content: Vec<ResponseContentItem>,
     },
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
     FunctionCallOutput {
         call_id: String,
         output: String,
@@ -422,9 +427,17 @@ impl OpenAIResponsesClient {
                         encrypted_content: data,
                     });
                 }
-                ContentBlock::ToolUse { .. } => {
-                    // Tool use blocks are handled as output items, not input content
-                    warn!("ToolUse blocks should not appear in input messages");
+                ContentBlock::ToolUse { id, name, input } => {
+                    // Convert tool use to function call input item
+                    if role != MessageRole::Assistant {
+                        warn!("ToolUse blocks should only appear in assistant messages");
+                    }
+                    additional_items.push(ResponseInputItem::FunctionCall {
+                        call_id: id,
+                        name,
+                        arguments: serde_json::to_string(&input)
+                            .unwrap_or_else(|_| input.to_string()),
+                    });
                 }
             }
         }
