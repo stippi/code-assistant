@@ -156,6 +156,7 @@ enum ResponseInputItem {
     },
     Reasoning {
         id: String,
+        summary: Vec<serde_json::Value>,
         encrypted_content: String,
     },
 }
@@ -423,6 +424,7 @@ impl OpenAIResponsesClient {
                                 .unwrap()
                                 .as_nanos()
                         ),
+                        summary: vec![], // Empty summary for encrypted reasoning
                         encrypted_content: data,
                     });
                 }
@@ -1084,9 +1086,11 @@ mod tests {
         match &converted[2] {
             ResponseInputItem::Reasoning {
                 id,
+                summary,
                 encrypted_content,
             } => {
                 assert!(id.starts_with("reasoning_"));
+                assert!(summary.is_empty());
                 assert_eq!(encrypted_content, "encrypted_math_reasoning");
             }
             _ => panic!("Expected Reasoning item"),
@@ -1152,9 +1156,11 @@ mod tests {
         match &converted[1] {
             ResponseInputItem::Reasoning {
                 id,
+                summary,
                 encrypted_content,
             } => {
                 assert!(id.starts_with("reasoning_"));
+                assert!(summary.is_empty());
                 assert_eq!(encrypted_content, "encrypted_reasoning_data");
             }
             _ => panic!("Expected Reasoning item"),
