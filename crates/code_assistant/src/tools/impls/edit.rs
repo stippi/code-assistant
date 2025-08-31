@@ -111,7 +111,8 @@ impl Tool for EditTool {
                     },
                     "replace_all": {
                         "type": "boolean",
-                        "description": "Optional. If true, replace all occurrences of old_text. If false or omitted, old_text must match exactly one location (default: false)."
+                        "description": "Optional. If true, replace all occurrences of old_text. If false or omitted, old_text must match exactly one location (default: false).",
+                        "default": false
                     }
                 },
                 "required": ["project", "path", "old_text", "new_text"]

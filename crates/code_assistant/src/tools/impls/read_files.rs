@@ -102,7 +102,7 @@ impl Tool for ReadFilesTool {
 
     fn spec(&self) -> ToolSpec {
         let description = concat!(
-          "Load files into working memory. You can specify line ranges by appending them to the file path using a colon.\n",
+          "Read files in a project. You can specify line ranges by appending them to the file path using a colon.\n",
           "\n",
           "Examples:\n",
           "- file.txt - Read the entire file. Prefer this form unless you are absolutely sure you need only a section of the file.\n",
