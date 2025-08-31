@@ -1320,21 +1320,23 @@ fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
         end_offset: Some(106),  // Position after "</tool:read_files>"
     };
 
+    let expected_text = concat!(
+        "I'll read some files for you.\n",
+        "\n",
+        "<tool:read_files>\n",
+        "<param:project>new-project</param:project>\n",
+        "<param:path>new-file1.txt</param:path>\n",
+        "<param:path>new-file2.txt</param:path>\n",
+        "</tool:read_files>\n",
+        "\n",
+        "Let me know if you need anything else."
+    );
+
     let result =
         Agent::update_tool_call_in_text_static(original_text, &updated_request, ToolSyntax::Xml)?;
 
     // Should have replaced the tool block exactly
-    assert!(result.contains("I'll read some files for you."));
-    assert!(result.contains("Let me know if you need anything else."));
-    assert!(result.contains("<tool:read_files>"));
-    assert!(result.contains("<param:project>new-project</param:project>"));
-    assert!(result.contains("<param:path>new-file1.txt</param:path>"));
-    assert!(result.contains("<param:path>new-file2.txt</param:path>"));
-    assert!(result.contains("</tool:read_files>"));
-
-    // Should not contain the old content
-    assert!(!result.contains("old-project"));
-    assert!(!result.contains("old-file.txt"));
+    assert_eq!(expected_text, result);
 
     Ok(())
 }
@@ -1366,7 +1368,7 @@ fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
         "project: old-project\n",
         "path: old-file.txt\n",
         "content: old content\n",
-        "^^^"
+        "^^^\n"
     );
     let start_offset = prefix.len();
     let end_offset = start_offset + tool_block.len();
@@ -1383,24 +1385,25 @@ fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
         end_offset: Some(end_offset),
     };
 
+    let expected_text = concat!(
+        "Let me write a file for you.\n",
+        "\n",
+        "^^^write_file\n",
+        "project: new-project\n",
+        "path: new-file.txt\n",
+        "content ---\n",
+        "new content here\n",
+        "--- content\n",
+        "^^^\n",
+        "\n",
+        "Done!"
+    );
+
     let result =
         Agent::update_tool_call_in_text_static(original_text, &updated_request, ToolSyntax::Caret)?;
 
     // Should have replaced the tool block exactly
-    assert!(result.contains("Let me write a file for you."));
-    assert!(result.contains("Done!"));
-    assert!(result.contains("^^^write_file"));
-    assert!(result.contains("project: new-project"));
-    assert!(result.contains("path: new-file.txt"));
-    assert!(result.contains("content ---"));
-    assert!(result.contains("new content here"));
-    assert!(result.contains("--- content"));
-    assert!(result.contains("^^^"));
-
-    // Should not contain the old content
-    assert!(!result.contains("old-project"));
-    assert!(!result.contains("old-file.txt"));
-    assert!(!result.contains("old content"));
+    assert_eq!(expected_text, result);
 
     Ok(())
 }
