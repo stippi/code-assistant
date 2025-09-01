@@ -96,13 +96,10 @@ impl RequestCustomizer for DefaultRequestCustomizer {
     }
 
     fn get_additional_headers(&self) -> Vec<(String, String)> {
-        vec![
-            ("Content-Type".to_string(), "application/json".to_string()),
-            (
-                "OpenAI-Beta".to_string(),
-                "responses=experimental".to_string(),
-            ),
-        ]
+        vec![(
+            "OpenAI-Beta".to_string(),
+            "responses=experimental".to_string(),
+        )]
     }
 
     fn customize_url(&self, base_url: &str, _streaming: bool) -> String {
@@ -588,6 +585,7 @@ impl OpenAIResponsesClient {
         for (key, value) in auth_headers {
             request_builder = request_builder.header(key, value);
         }
+        request_builder = request_builder.header("Content-Type", "application/json");
 
         // Add additional headers
         for (key, value) in self.request_customizer.get_additional_headers() {
