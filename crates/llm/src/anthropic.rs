@@ -952,19 +952,35 @@ impl AnthropicClient {
                                 }
                             }
                             StreamEvent::ContentBlockStop { .. } => {
+                                let now = SystemTime::now();
                                 match blocks.last_mut().unwrap() {
-                                    ContentBlock::Thinking { thinking, .. } => {
+                                    ContentBlock::Thinking {
+                                        thinking, end_time, ..
+                                    } => {
                                         *thinking = current_content.clone();
+                                        *end_time = Some(now);
                                     }
-                                    ContentBlock::Text { text, .. } => {
+                                    ContentBlock::Text { text, end_time, .. } => {
                                         *text = current_content.clone();
+                                        *end_time = Some(now);
                                     }
-                                    ContentBlock::ToolUse { input, .. } => {
+                                    ContentBlock::ToolUse {
+                                        input, end_time, ..
+                                    } => {
                                         if let Ok(json) = serde_json::from_str(current_content) {
                                             *input = json;
                                         }
+                                        *end_time = Some(now);
                                     }
-                                    _ => {}
+                                    ContentBlock::RedactedThinking { end_time, .. } => {
+                                        *end_time = Some(now);
+                                    }
+                                    ContentBlock::Image { end_time, .. } => {
+                                        *end_time = Some(now);
+                                    }
+                                    ContentBlock::ToolResult { end_time, .. } => {
+                                        *end_time = Some(now);
+                                    }
                                 }
                             }
                             _ => {}
@@ -992,17 +1008,25 @@ impl AnthropicClient {
 
                         // Finalize the current block with any accumulated content
                         if !blocks.is_empty() && !current_content.is_empty() {
+                            let now = SystemTime::now();
                             match blocks.last_mut().unwrap() {
-                                ContentBlock::Thinking { thinking, .. } => {
+                                ContentBlock::Thinking {
+                                    thinking, end_time, ..
+                                } => {
                                     *thinking = current_content.clone();
+                                    *end_time = Some(now);
                                 }
-                                ContentBlock::Text { text, .. } => {
+                                ContentBlock::Text { text, end_time, .. } => {
                                     *text = current_content.clone();
+                                    *end_time = Some(now);
                                 }
-                                ContentBlock::ToolUse { input, .. } => {
+                                ContentBlock::ToolUse {
+                                    input, end_time, ..
+                                } => {
                                     if let Ok(json) = serde_json::from_str(&current_content) {
                                         *input = json;
                                     }
+                                    *end_time = Some(now);
                                 }
                                 _ => {}
                             }
@@ -1025,6 +1049,23 @@ impl AnthropicClient {
                     callback,
                     &self.recorder,
                 )?;
+            }
+
+            // Ensure any incomplete blocks have end times set
+            let now = SystemTime::now();
+            for block in blocks.iter_mut() {
+                match block {
+                    ContentBlock::Thinking { end_time, .. }
+                    | ContentBlock::RedactedThinking { end_time, .. }
+                    | ContentBlock::Text { end_time, .. }
+                    | ContentBlock::Image { end_time, .. }
+                    | ContentBlock::ToolUse { end_time, .. }
+                    | ContentBlock::ToolResult { end_time, .. } => {
+                        if end_time.is_none() {
+                            *end_time = Some(now);
+                        }
+                    }
+                }
             }
 
             // Send StreamingComplete to indicate streaming has finished

@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tracing::{debug, trace, warn};
 
 #[derive(Debug, Serialize)]
@@ -484,6 +484,21 @@ impl VertexClient {
         let mut line_buffer = String::new();
         let mut tool_counter = 0;
 
+        let finish_last_block = |blocks: &mut Vec<ContentBlock>| {
+            // Complete the previous block if it exists
+            let now = std::time::SystemTime::now();
+            if let Some(
+                ContentBlock::Text { end_time, .. }
+                | ContentBlock::Thinking { end_time, .. }
+                | ContentBlock::ToolUse { end_time, .. },
+            ) = blocks.last_mut()
+            {
+                if end_time.is_none() {
+                    *end_time = Some(now);
+                }
+            }
+        };
+
         // Helper function to process SSE lines
         let process_sse_line = |line: &str,
                                 blocks: &mut Vec<ContentBlock>,
@@ -525,6 +540,9 @@ impl VertexClient {
                                             }
                                         }
                                         _ => {
+                                            // Complete the previous block if it exists
+                                            finish_last_block(blocks);
+
                                             // Create new thinking block
                                             blocks.push(ContentBlock::Thinking {
                                                 thinking: text.clone(),
@@ -532,7 +550,7 @@ impl VertexClient {
                                                     .thought_signature
                                                     .clone()
                                                     .unwrap_or_default(),
-                                                start_time: None,
+                                                start_time: Some(SystemTime::now()),
                                                 end_time: None,
                                             });
                                         }
@@ -549,10 +567,12 @@ impl VertexClient {
                                             last_text.push_str(text);
                                         }
                                         _ => {
+                                            finish_last_block(blocks);
+
                                             // Create new text block
                                             blocks.push(ContentBlock::Text {
                                                 text: text.clone(),
-                                                start_time: None,
+                                                start_time: Some(SystemTime::now()),
                                                 end_time: None,
                                             });
                                         }
@@ -565,12 +585,14 @@ impl VertexClient {
                                 *tool_counter += 1;
                                 let tool_id = format!("tool-{}-{}", request_id, *tool_counter);
 
+                                finish_last_block(blocks);
+
                                 // Always create a new tool use block (they don't get extended)
                                 blocks.push(ContentBlock::ToolUse {
                                     id: tool_id.clone(),
                                     name: function_call.name.clone(),
                                     input: function_call.args.clone(),
-                                    start_time: None,
+                                    start_time: Some(SystemTime::now()),
                                     end_time: None,
                                 });
 
@@ -616,6 +638,8 @@ impl VertexClient {
                             Err(e) if e.to_string().contains("Tool limit reached") => {
                                 debug!("Tool limit reached, stopping streaming early. Collected {} blocks so far", content_blocks.len());
 
+                                finish_last_block(&mut content_blocks);
+
                                 line_buffer.clear(); // Make sure we stop processing
                                 break; // Exit chunk processing loop early
                             }
@@ -640,6 +664,8 @@ impl VertexClient {
                 &self.recorder,
             )?;
         }
+
+        finish_last_block(&mut content_blocks);
 
         // Send StreamingComplete to indicate streaming has finished
         streaming_callback(&StreamingChunk::StreamingComplete)?;

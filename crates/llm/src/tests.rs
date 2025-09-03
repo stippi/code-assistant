@@ -667,9 +667,11 @@ async fn run_provider_tests<T: MockResponseGenerator + Clone + 'static>(
         // Test non-streaming
         let response = client.send_message(case.request.clone(), None).await?;
 
-        assert_eq!(
-            response.content, case.expected_response.content,
-            "Non-streaming content mismatch"
+        assert!(
+            response.content_eq_ignore_timestamps(&case.expected_response.content),
+            "Non-streaming content mismatch\n  left: {:?}\n right: {:?}",
+            response.content,
+            case.expected_response.content
         );
         assert_eq!(
             response.usage, case.expected_response.usage,
@@ -684,9 +686,11 @@ async fn run_provider_tests<T: MockResponseGenerator + Clone + 'static>(
             .send_message(case.request.clone(), Some(&callback))
             .await?;
 
-        assert_eq!(
-            response.content, case.expected_response.content,
-            "Streaming content mismatch"
+        assert!(
+            response.content_eq_ignore_timestamps(&case.expected_response.content),
+            "Streaming content mismatch\n  left: {:?}\n right: {:?}",
+            response.content,
+            case.expected_response.content
         );
         assert_eq!(
             collector.get_chunks(),
@@ -839,7 +843,9 @@ async fn test_anthropic_rate_limit_retry() -> Result<()> {
     let response = client.send_message(request, None).await?;
 
     // Verify we got the success response
-    assert_eq!(
+    assert!(
+        response.content_eq_ignore_timestamps(&[ContentBlock::new_text("Success after retry!")]),
+        "Retry response content mismatch\n  left: {:?}\n right: {:?}",
         response.content,
         vec![ContentBlock::new_text("Success after retry!")]
     );

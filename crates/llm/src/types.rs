@@ -215,6 +215,24 @@ impl LLMResponse {
             }
         }
     }
+
+    /// Compare this LLMResponse content with another, ignoring timestamps
+    /// Useful for testing where timestamps may vary
+    pub fn content_eq_ignore_timestamps(&self, other: &[ContentBlock]) -> bool {
+        content_blocks_eq_ignore_timestamps(&self.content, other)
+    }
+}
+
+/// Compare two slices of ContentBlocks, ignoring timestamps
+/// Useful for testing where timestamps may vary
+pub fn content_blocks_eq_ignore_timestamps(a: &[ContentBlock], b: &[ContentBlock]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
+    a.iter()
+        .zip(b.iter())
+        .all(|(block_a, block_b)| block_a.eq_ignore_timestamps(block_b))
 }
 
 /// Common error types for all LLM providers
@@ -365,7 +383,7 @@ impl ContentBlock {
     }
 
     /// Set the start time of this content block
-    pub fn set_start_time(&mut self, time: SystemTime) {
+    pub fn set_start_time(&mut self, time: SystemTime) -> &mut Self {
         match self {
             ContentBlock::Thinking { start_time, .. } => *start_time = Some(time),
             ContentBlock::RedactedThinking { start_time, .. } => *start_time = Some(time),
@@ -374,10 +392,11 @@ impl ContentBlock {
             ContentBlock::ToolUse { start_time, .. } => *start_time = Some(time),
             ContentBlock::ToolResult { start_time, .. } => *start_time = Some(time),
         }
+        self
     }
 
     /// Set the end time of this content block
-    pub fn set_end_time(&mut self, time: SystemTime) {
+    pub fn set_end_time(&mut self, time: SystemTime) -> &mut Self {
         match self {
             ContentBlock::Thinking { end_time, .. } => *end_time = Some(time),
             ContentBlock::RedactedThinking { end_time, .. } => *end_time = Some(time),
@@ -386,12 +405,32 @@ impl ContentBlock {
             ContentBlock::ToolUse { end_time, .. } => *end_time = Some(time),
             ContentBlock::ToolResult { end_time, .. } => *end_time = Some(time),
         }
+        self
     }
 
     /// Set both start and end times of this content block
-    pub fn set_timestamps(&mut self, start_time: SystemTime, end_time: SystemTime) {
+    pub fn set_timestamps(&mut self, start_time: SystemTime, end_time: SystemTime) -> &mut Self {
         self.set_start_time(start_time);
         self.set_end_time(end_time);
+        self
+    }
+
+    /// Set the start time of this content block (consuming version for chaining)
+    pub fn with_start_time(mut self, time: SystemTime) -> Self {
+        self.set_start_time(time);
+        self
+    }
+
+    /// Set the end time of this content block (consuming version for chaining)
+    pub fn with_end_time(mut self, time: SystemTime) -> Self {
+        self.set_end_time(time);
+        self
+    }
+
+    /// Set both start and end times of this content block (consuming version for chaining)
+    pub fn with_timestamps(mut self, start_time: SystemTime, end_time: SystemTime) -> Self {
+        self.set_timestamps(start_time, end_time);
+        self
     }
 
     /// Get the duration of this content block if both timestamps are available
@@ -399,6 +438,81 @@ impl ContentBlock {
         match (self.start_time(), self.end_time()) {
             (Some(start), Some(end)) => end.duration_since(start).ok(),
             _ => None,
+        }
+    }
+
+    /// Compare this ContentBlock with another, ignoring timestamps
+    /// Useful for testing where timestamps may vary
+    pub fn eq_ignore_timestamps(&self, other: &ContentBlock) -> bool {
+        match (self, other) {
+            (ContentBlock::Text { text: a, .. }, ContentBlock::Text { text: b, .. }) => a == b,
+            (
+                ContentBlock::Image {
+                    media_type: a_type,
+                    data: a_data,
+                    ..
+                },
+                ContentBlock::Image {
+                    media_type: b_type,
+                    data: b_data,
+                    ..
+                },
+            ) => a_type == b_type && a_data == b_data,
+            (
+                ContentBlock::Thinking {
+                    thinking: a_thinking,
+                    signature: a_sig,
+                    ..
+                },
+                ContentBlock::Thinking {
+                    thinking: b_thinking,
+                    signature: b_sig,
+                    ..
+                },
+            ) => a_thinking == b_thinking && a_sig == b_sig,
+            (
+                ContentBlock::RedactedThinking {
+                    id: a_id,
+                    summary: a_summary,
+                    data: a_data,
+                    ..
+                },
+                ContentBlock::RedactedThinking {
+                    id: b_id,
+                    summary: b_summary,
+                    data: b_data,
+                    ..
+                },
+            ) => a_id == b_id && a_summary == b_summary && a_data == b_data,
+            (
+                ContentBlock::ToolUse {
+                    id: a_id,
+                    name: a_name,
+                    input: a_input,
+                    ..
+                },
+                ContentBlock::ToolUse {
+                    id: b_id,
+                    name: b_name,
+                    input: b_input,
+                    ..
+                },
+            ) => a_id == b_id && a_name == b_name && a_input == b_input,
+            (
+                ContentBlock::ToolResult {
+                    tool_use_id: a_id,
+                    content: a_content,
+                    is_error: a_error,
+                    ..
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: b_id,
+                    content: b_content,
+                    is_error: b_error,
+                    ..
+                },
+            ) => a_id == b_id && a_content == b_content && a_error == b_error,
+            _ => false, // Different variants
         }
     }
 }
