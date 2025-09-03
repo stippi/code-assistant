@@ -980,19 +980,21 @@ impl OpenAIClient {
                                                 curr_func.arguments =
                                                     Some(prev_args.clone() + args);
 
-                                                // Update the tool block with incremental arguments
+                                                // Try to parse the accumulated arguments as JSON
+                                                // Only update the tool block if it's valid JSON
                                                 if let Some(ContentBlock::ToolUse {
                                                     input, ..
                                                 }) = content_blocks.last_mut()
                                                 {
                                                     let full_args =
                                                         &curr_func.arguments.as_ref().unwrap();
-                                                    *input = serde_json::from_str(full_args)
-                                                        .unwrap_or_else(|_| {
-                                                            serde_json::Value::String(
-                                                                full_args.to_string(),
-                                                            )
-                                                        });
+                                                    if let Ok(parsed_json) =
+                                                        serde_json::from_str(full_args)
+                                                    {
+                                                        *input = parsed_json;
+                                                    }
+                                                    // If JSON is invalid, keep the previous valid state
+                                                    // Don't update input with partial/invalid JSON
                                                 }
 
                                                 // Stream the JSON input to the callback
