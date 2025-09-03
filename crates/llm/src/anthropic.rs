@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use std::str::{self};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
 /// Trait for providing authentication headers
@@ -127,10 +127,12 @@ impl DefaultMessageConverter {
                         .enumerate()
                         .map(|(block_index, block)| {
                             let (block_type, content) = match block {
-                                ContentBlock::Text { text } => {
+                                ContentBlock::Text { text, .. } => {
                                     ("text".to_string(), AnthropicBlockContent::Text { text })
                                 }
-                                ContentBlock::Image { media_type, data } => (
+                                ContentBlock::Image {
+                                    media_type, data, ..
+                                } => (
                                     "image".to_string(),
                                     AnthropicBlockContent::Image {
                                         source: AnthropicImageSource {
@@ -140,7 +142,9 @@ impl DefaultMessageConverter {
                                         },
                                     },
                                 ),
-                                ContentBlock::ToolUse { id, name, input } => (
+                                ContentBlock::ToolUse {
+                                    id, name, input, ..
+                                } => (
                                     "tool_use".to_string(),
                                     AnthropicBlockContent::ToolUse { id, name, input },
                                 ),
@@ -148,6 +152,7 @@ impl DefaultMessageConverter {
                                     tool_use_id,
                                     content,
                                     is_error,
+                                    ..
                                 } => (
                                     "tool_result".to_string(),
                                     AnthropicBlockContent::ToolResult {
@@ -159,6 +164,7 @@ impl DefaultMessageConverter {
                                 ContentBlock::Thinking {
                                     thinking,
                                     signature,
+                                    ..
                                 } => (
                                     "thinking".to_string(),
                                     AnthropicBlockContent::Thinking {
@@ -843,6 +849,8 @@ impl AnthropicClient {
                                         ContentBlock::Thinking {
                                             thinking: current_content.clone(),
                                             signature: content_block.signature.unwrap_or_default(),
+                                            start_time: Some(SystemTime::now()),
+                                            end_time: None,
                                         }
                                     }
                                     "redacted_thinking" => {
@@ -853,6 +861,8 @@ impl AnthropicClient {
                                             id: String::new(),
                                             summary: vec![],
                                             data: current_content.clone(),
+                                            start_time: Some(SystemTime::now()),
+                                            end_time: None,
                                         }
                                     }
                                     "text" => {
@@ -861,6 +871,8 @@ impl AnthropicClient {
                                         }
                                         ContentBlock::Text {
                                             text: current_content.clone(),
+                                            start_time: Some(SystemTime::now()),
+                                            end_time: None,
                                         }
                                     }
                                     "tool_use" => {
@@ -883,10 +895,14 @@ impl AnthropicClient {
                                             id: tool_id,
                                             name: tool_name,
                                             input: input_json,
+                                            start_time: Some(SystemTime::now()),
+                                            end_time: None,
                                         }
                                     }
                                     _ => ContentBlock::Text {
                                         text: String::new(),
+                                        start_time: Some(SystemTime::now()),
+                                        end_time: None,
                                     },
                                 };
                                 blocks.push(block);
@@ -940,7 +956,7 @@ impl AnthropicClient {
                                     ContentBlock::Thinking { thinking, .. } => {
                                         *thinking = current_content.clone();
                                     }
-                                    ContentBlock::Text { text } => {
+                                    ContentBlock::Text { text, .. } => {
                                         *text = current_content.clone();
                                     }
                                     ContentBlock::ToolUse { input, .. } => {
@@ -980,7 +996,7 @@ impl AnthropicClient {
                                 ContentBlock::Thinking { thinking, .. } => {
                                     *thinking = current_content.clone();
                                 }
-                                ContentBlock::Text { text } => {
+                                ContentBlock::Text { text, .. } => {
                                     *text = current_content.clone();
                                 }
                                 ContentBlock::ToolUse { input, .. } => {
@@ -1159,8 +1175,18 @@ impl LLMProvider for AnthropicClient {
         self.request_customizer
             .customize_request(&mut anthropic_request)?;
 
-        self.send_with_retry(&anthropic_request, streaming_callback, 3)
-            .await
+        let request_start = std::time::SystemTime::now();
+        let mut response = self
+            .send_with_retry(&anthropic_request, streaming_callback, 3)
+            .await?;
+        let response_end = std::time::SystemTime::now();
+
+        // For non-streaming responses, distribute timestamps across blocks
+        if streaming_callback.is_none() {
+            response.set_distributed_timestamps(request_start, response_end);
+        }
+
+        Ok(response)
     }
 }
 
@@ -1285,11 +1311,15 @@ mod tests {
                 content: MessageContent::Structured(vec![
                     ContentBlock::Text {
                         text: "Using tool".to_string(),
+                        start_time: None,
+                        end_time: None,
                     },
                     ContentBlock::ToolUse {
                         id: id.to_string(),
                         name: "test_tool".to_string(),
                         input: json!({"param": "value"}),
+                        start_time: None,
+                        end_time: None,
                     },
                 ]),
                 request_id: None,
@@ -1305,6 +1335,8 @@ mod tests {
                     tool_use_id: tool_id.to_string(),
                     content: content.to_string(),
                     is_error: Some(false),
+                    start_time: None,
+                    end_time: None,
                 }]),
                 request_id: None,
                 usage: None,
@@ -1473,11 +1505,15 @@ mod tests {
             content: MessageContent::Structured(vec![
                 ContentBlock::Text {
                     text: "I'll help you analyze the data using the appropriate tools.".to_string(),
+                    start_time: None,
+                    end_time: None,
                 },
                 ContentBlock::ToolUse {
                     id: "analysis_tool_1".to_string(),
                     name: "data_analyzer".to_string(),
                     input: json!({"dataset": "user_data.csv", "analysis_type": "statistical"}),
+                    start_time: None,
+                    end_time: None,
                 },
             ]),
             request_id: None,
@@ -1491,6 +1527,8 @@ mod tests {
                 tool_use_id: "analysis_tool_1".to_string(),
                 content: "Analysis complete: Mean=45.2, StdDev=12.8, Outliers=3".to_string(),
                 is_error: Some(false),
+                start_time: None,
+                end_time: None,
             }]),
             request_id: None,
             usage: None,
@@ -1510,11 +1548,15 @@ mod tests {
                 content: MessageContent::Structured(vec![
                     ContentBlock::Text {
                         text: format!("Let me help with question {i}."),
+                        start_time: None,
+                        end_time: None,
                     },
                     ContentBlock::ToolUse {
                         id: format!("tool_{i}"),
                         name: "helper_tool".to_string(),
                         input: json!({"query": format!("query_{}", i), "context": "analysis"}),
+                        start_time: None,
+                        end_time: None,
                     },
                 ]),
                 request_id: None,
@@ -1527,6 +1569,8 @@ mod tests {
                     tool_use_id: format!("tool_{i}"),
                     content: format!("Tool result for query {i}"),
                     is_error: Some(false),
+                    start_time: None,
+                    end_time: None,
                 }]),
                 request_id: None,
                 usage: None,
@@ -1661,11 +1705,15 @@ mod tests {
             content: MessageContent::Structured(vec![
                 ContentBlock::Text {
                     text: "I'll try that operation.".to_string(),
+                    start_time: None,
+                    end_time: None,
                 },
                 ContentBlock::ToolUse {
                     id: "risky_tool".to_string(),
                     name: "risky_operation".to_string(),
                     input: json!({"operation": "dangerous_task", "safety": false}),
+                    start_time: None,
+                    end_time: None,
                 },
             ]),
             request_id: None,
@@ -1678,6 +1726,8 @@ mod tests {
                 tool_use_id: "risky_tool".to_string(),
                 content: "ERROR: Operation failed due to safety constraints".to_string(),
                 is_error: Some(true),
+                start_time: None,
+                end_time: None,
             }]),
             request_id: None,
             usage: None,

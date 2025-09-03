@@ -4,10 +4,12 @@ use std::fmt;
 impl fmt::Display for ContentBlock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ContentBlock::Text { text } => {
+            ContentBlock::Text { text, .. } => {
                 writeln!(f, "Text: {}", text.replace('\n', "\n    "))
             }
-            ContentBlock::Image { media_type, data } => {
+            ContentBlock::Image {
+                media_type, data, ..
+            } => {
                 let data_preview = if data.len() > 50 {
                     format!("{}...", &data[..50])
                 } else {
@@ -21,7 +23,9 @@ impl fmt::Display for ContentBlock {
                     data_preview
                 )
             }
-            ContentBlock::ToolUse { id, name, input } => {
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => {
                 writeln!(f, "ToolUse: id={id}, name={name}")?;
                 writeln!(
                     f,
@@ -35,6 +39,7 @@ impl fmt::Display for ContentBlock {
                 tool_use_id,
                 content,
                 is_error,
+                ..
             } => {
                 let error_suffix = if let Some(is_err) = is_error {
                     if *is_err {
@@ -51,6 +56,7 @@ impl fmt::Display for ContentBlock {
             ContentBlock::Thinking {
                 thinking,
                 signature,
+                ..
             } => {
                 writeln!(f, "Thinking: signature={signature}")?;
                 writeln!(f, "  Content: {}", thinking.replace('\n', "\n  "))

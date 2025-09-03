@@ -246,13 +246,15 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                         ContentBlock::Thinking { thinking, .. } => {
                             fragments.push(DisplayFragment::ThinkingText(thinking.clone()));
                         }
-                        ContentBlock::Text { text } => {
+                        ContentBlock::Text { text, .. } => {
                             // Process text for any thinking tags
                             fragments.extend(
                                 self.extract_fragments_from_text(text, message.request_id)?,
                             );
                         }
-                        ContentBlock::ToolUse { id, name, input } => {
+                        ContentBlock::ToolUse {
+                            id, name, input, ..
+                        } => {
                             // Check if tool is hidden
                             let tool_hidden =
                                 ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
@@ -295,7 +297,9 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                         ContentBlock::RedactedThinking { .. } => {
                             // Redacted thinking blocks are not displayed
                         }
-                        ContentBlock::Image { media_type, data } => {
+                        ContentBlock::Image {
+                            media_type, data, ..
+                        } => {
                             // Images in assistant messages - preserve for display
                             fragments.push(DisplayFragment::Image {
                                 media_type: media_type.clone(),

@@ -446,11 +446,13 @@ impl OpenAIClient {
 
         for block in blocks {
             match block {
-                ContentBlock::Text { text } => content_parts.push(serde_json::json!({
+                ContentBlock::Text { text, .. } => content_parts.push(serde_json::json!({
                     "type": "text",
                     "text": text
                 })),
-                ContentBlock::Image { media_type, data } => {
+                ContentBlock::Image {
+                    media_type, data, ..
+                } => {
                     images.push(serde_json::json!({
                         "type": "image_url",
                         "image_url": {
@@ -458,7 +460,9 @@ impl OpenAIClient {
                         }
                     }));
                 }
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     tool_calls.push(OpenAIToolCall {
                         id: id.clone(),
                         call_type: "function".to_string(),
@@ -550,8 +554,10 @@ impl OpenAIClient {
                         tool_call_id: Some(tool_use_id.clone()),
                     });
                 }
-                ContentBlock::Text { text } => current_content.push(text.clone()),
-                ContentBlock::Image { media_type, data } => {
+                ContentBlock::Text { text, .. } => current_content.push(text.clone()),
+                ContentBlock::Image {
+                    media_type, data, ..
+                } => {
                     current_images.push(serde_json::json!({
                         "type": "image_url",
                         "image_url": {
@@ -713,6 +719,8 @@ impl OpenAIClient {
                             if !text.is_empty() {
                                 blocks.push(ContentBlock::Text {
                                     text: text.to_string(),
+                                    start_time: None,
+                                    end_time: None,
                                 });
                             }
                         }
@@ -731,6 +739,8 @@ impl OpenAIClient {
                                 id: call.id.clone(),
                                 name: call.function.name.clone(),
                                 input,
+                                start_time: None,
+                                end_time: None,
                             });
                         }
                     }
@@ -988,7 +998,11 @@ impl OpenAIClient {
 
         let mut content = Vec::new();
         if let Some(text) = accumulated_content {
-            content.push(ContentBlock::Text { text });
+            content.push(ContentBlock::Text {
+                text,
+                start_time: None,
+                end_time: None,
+            });
         }
         content.extend(accumulated_tool_calls);
 
@@ -1031,6 +1045,8 @@ impl OpenAIClient {
             name,
             input: serde_json::from_str(&args)
                 .map_err(|e| anyhow::anyhow!("Invalid JSON in arguments: {}", e))?,
+            start_time: None,
+            end_time: None,
         })
     }
 }
@@ -1084,8 +1100,18 @@ impl LLMProvider for OpenAIClient {
             }),
         };
 
-        self.send_with_retry(&openai_request, streaming_callback, 3)
-            .await
+        let request_start = std::time::SystemTime::now();
+        let mut response = self
+            .send_with_retry(&openai_request, streaming_callback, 3)
+            .await?;
+        let response_end = std::time::SystemTime::now();
+
+        // For non-streaming responses, distribute timestamps across blocks
+        if streaming_callback.is_none() {
+            response.set_distributed_timestamps(request_start, response_end);
+        }
+
+        Ok(response)
     }
 }
 

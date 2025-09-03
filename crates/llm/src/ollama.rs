@@ -122,7 +122,7 @@ impl OllamaClient {
 
         for block in blocks {
             match block {
-                ContentBlock::Text { text } => content_parts.push(text.clone()),
+                ContentBlock::Text { text, .. } => content_parts.push(text.clone()),
                 ContentBlock::Image { data, .. } => images.push(data.clone()),
                 ContentBlock::ToolUse { name, input, .. } => {
                     tool_calls.push(OllamaToolCall {
@@ -196,7 +196,7 @@ impl OllamaClient {
                         tool_calls: None,
                     });
                 }
-                ContentBlock::Text { text } => current_content.push(text.clone()),
+                ContentBlock::Text { text, .. } => current_content.push(text.clone()),
                 ContentBlock::Image { data, .. } => current_images.push(data.clone()),
                 ContentBlock::Thinking { thinking, .. } => current_content.push(thinking.clone()),
                 ContentBlock::RedactedThinking { .. } => {
@@ -269,6 +269,8 @@ impl OllamaClient {
         if !ollama_response.message.content.is_empty() {
             content.push(ContentBlock::Text {
                 text: ollama_response.message.content,
+                start_time: None,
+                end_time: None,
             });
         }
 
@@ -278,6 +280,8 @@ impl OllamaClient {
                     id: format!("tool-{}-{}", request_id, index + 1),
                     name: tool_call.function.name,
                     input: tool_call.function.arguments,
+                    start_time: None,
+                    end_time: None,
                 });
             }
         }
@@ -406,6 +410,8 @@ impl OllamaClient {
         if !accumulated_content.is_empty() {
             content.push(ContentBlock::Text {
                 text: accumulated_content,
+                start_time: None,
+                end_time: None,
             });
         }
 
@@ -415,6 +421,8 @@ impl OllamaClient {
                 id: format!("tool-{}-{}", request_id, index + 1),
                 name: tool_call.function.name,
                 input: tool_call.function.arguments,
+                start_time: None,
+                end_time: None,
             });
         }
 
@@ -481,12 +489,21 @@ impl LLMProvider for OllamaClient {
 
         let request_id = request.request_id;
 
-        if let Some(callback) = streaming_callback {
+        let request_start = std::time::SystemTime::now();
+        let mut response = if let Some(callback) = streaming_callback {
             ollama_request.stream = true;
             self.try_send_request_streaming(&ollama_request, request_id, callback)
-                .await
+                .await?
         } else {
-            self.try_send_request(&ollama_request, request_id).await
+            self.try_send_request(&ollama_request, request_id).await?
+        };
+        let response_end = std::time::SystemTime::now();
+
+        // For non-streaming responses, distribute timestamps across blocks
+        if streaming_callback.is_none() {
+            response.set_distributed_timestamps(request_start, response_end);
         }
+
+        Ok(response)
     }
 }

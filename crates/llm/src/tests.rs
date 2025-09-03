@@ -42,6 +42,8 @@ impl TestCase {
             expected_response: LLMResponse {
                 content: vec![ContentBlock::Text {
                     text: "Hi! How can I help you today?".to_string(),
+                    start_time: None,
+                    end_time: None,
                 }],
                 usage: Usage {
                     input_tokens: 10,
@@ -93,6 +95,8 @@ impl TestCase {
                     id: tool_id,
                     name: "get_weather".to_string(),
                     input: json!({"location": "current"}),
+                    start_time: None,
+                    end_time: None,
                 }],
                 usage: Usage {
                     input_tokens: 15,
@@ -837,9 +841,7 @@ async fn test_anthropic_rate_limit_retry() -> Result<()> {
     // Verify we got the success response
     assert_eq!(
         response.content,
-        vec![ContentBlock::Text {
-            text: "Success after retry!".to_string()
-        }]
+        vec![ContentBlock::new_text("Success after retry!")]
     );
 
     Ok(())
@@ -852,7 +854,9 @@ async fn test_image_content_blocks() -> Result<()> {
     let image_block = ContentBlock::new_image("image/png", raw_image_data);
 
     match image_block {
-        ContentBlock::Image { media_type, data } => {
+        ContentBlock::Image {
+            media_type, data, ..
+        } => {
             assert_eq!(media_type, "image/png");
             // Verify base64 encoding
             use base64::Engine as _;
@@ -867,7 +871,9 @@ async fn test_image_content_blocks() -> Result<()> {
     let image_block = ContentBlock::new_image_base64("image/jpeg", base64_data);
 
     match image_block {
-        ContentBlock::Image { media_type, data } => {
+        ContentBlock::Image {
+            media_type, data, ..
+        } => {
             assert_eq!(media_type, "image/jpeg");
             assert_eq!(data, base64_data);
         }
@@ -900,13 +906,8 @@ async fn test_openai_message_conversion() -> Result<()> {
     let mixed_message = Message {
         role: MessageRole::User,
         content: MessageContent::Structured(vec![
-            ContentBlock::Text {
-                text: "What do you see in this image?".to_string(),
-            },
-            ContentBlock::Image {
-                media_type: "image/png".to_string(),
-                data: image_data.to_string(),
-            },
+            ContentBlock::new_text("What do you see in this image?"),
+            ContentBlock::new_image_base64("image/png", image_data),
         ]),
         request_id: None,
         usage: None,
@@ -942,14 +943,12 @@ async fn test_openai_message_conversion() -> Result<()> {
     let assistant_message = Message {
         role: MessageRole::Assistant,
         content: MessageContent::Structured(vec![
-            ContentBlock::Text {
-                text: "I'll help you with that.".to_string(),
-            },
-            ContentBlock::ToolUse {
-                id: "tool_123".to_string(),
-                name: "get_weather".to_string(),
-                input: serde_json::json!({"location": "Berlin"}),
-            },
+            ContentBlock::new_text("I'll help you with that."),
+            ContentBlock::new_tool_use(
+                "tool_123",
+                "get_weather",
+                serde_json::json!({"location": "Berlin"}),
+            ),
         ]),
         request_id: None,
         usage: None,
@@ -972,17 +971,9 @@ async fn test_openai_message_conversion() -> Result<()> {
     let user_with_tool_result = Message {
         role: MessageRole::User,
         content: MessageContent::Structured(vec![
-            ContentBlock::Text {
-                text: "Here's some context.".to_string(),
-            },
-            ContentBlock::ToolResult {
-                tool_use_id: "tool_123".to_string(),
-                content: "Weather is sunny, 25°C".to_string(),
-                is_error: None,
-            },
-            ContentBlock::Text {
-                text: "What should I wear?".to_string(),
-            },
+            ContentBlock::new_text("Here's some context."),
+            ContentBlock::new_tool_result("tool_123", "Weather is sunny, 25°C"),
+            ContentBlock::new_text("What should I wear?"),
         ]),
         request_id: None,
         usage: None,

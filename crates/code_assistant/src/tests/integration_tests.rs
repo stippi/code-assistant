@@ -204,7 +204,7 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
 
     // Verify the response contains the complete text up to and including the tool
     assert_eq!(response.content.len(), 1);
-    if let ContentBlock::Text { text } = &response.content[0] {
+    if let ContentBlock::Text { text, .. } = &response.content[0] {
         println!("Final LLM response text: '{text}'");
         println!("Text length: {}", text.len());
 
@@ -251,6 +251,7 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
                 // Check the truncated response
                 if let ContentBlock::Text {
                     text: truncated_text,
+                    ..
                 } = &truncated_response.content[0]
                 {
                     println!("Truncated text: '{truncated_text}'");

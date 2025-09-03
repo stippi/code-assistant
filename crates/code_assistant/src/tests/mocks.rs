@@ -93,14 +93,8 @@ pub fn create_test_response(
 ) -> LLMResponse {
     LLMResponse {
         content: vec![
-            ContentBlock::Text {
-                text: reasoning.to_string(),
-            },
-            ContentBlock::ToolUse {
-                id: tool_id.to_string(),
-                name: tool_name.to_string(),
-                input: tool_input,
-            },
+            ContentBlock::new_text(reasoning),
+            ContentBlock::new_tool_use(tool_id, tool_name, tool_input),
         ],
         usage: Usage::zero(),
         rate_limit_info: None,
@@ -109,9 +103,7 @@ pub fn create_test_response(
 
 pub fn create_test_response_text(text: &str) -> LLMResponse {
     LLMResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     }

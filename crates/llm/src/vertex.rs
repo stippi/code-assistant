@@ -235,6 +235,7 @@ impl VertexClient {
                     ContentBlock::Thinking {
                         thinking,
                         signature,
+                        ..
                     } => Some(VertexPart {
                         text: Some(thinking.clone()),
                         inline_data: None,
@@ -243,7 +244,7 @@ impl VertexClient {
                         function_call: None,
                         function_response: None,
                     }),
-                    ContentBlock::Text { text } => Some(VertexPart {
+                    ContentBlock::Text { text, .. } => Some(VertexPart {
                         text: Some(text.clone()),
                         inline_data: None,
                         thought: None,
@@ -251,7 +252,9 @@ impl VertexClient {
                         function_call: None,
                         function_response: None,
                     }),
-                    ContentBlock::Image { media_type, data } => Some(VertexPart {
+                    ContentBlock::Image {
+                        media_type, data, ..
+                    } => Some(VertexPart {
                         text: None,
                         inline_data: Some(VertexInlineData {
                             mime_type: media_type.clone(),
@@ -403,6 +406,8 @@ impl VertexClient {
                                     id: tool_id,
                                     name: function_call.name,
                                     input: function_call.args,
+                                    start_time: None,
+                                    end_time: None,
                                 }
                             } else if let Some(text) = part.text {
                                 // Check if this is a thinking part
@@ -410,14 +415,22 @@ impl VertexClient {
                                     ContentBlock::Thinking {
                                         thinking: text,
                                         signature: part.thought_signature.unwrap_or_default(),
+                                        start_time: None,
+                                        end_time: None,
                                     }
                                 } else {
-                                    ContentBlock::Text { text }
+                                    ContentBlock::Text {
+                                        text,
+                                        start_time: None,
+                                        end_time: None,
+                                    }
                                 }
                             } else {
                                 // Fallback if neither function_call nor text is present
                                 ContentBlock::Text {
                                     text: "Empty response part".to_string(),
+                                    start_time: None,
+                                    end_time: None,
                                 }
                             }
                         })
@@ -502,6 +515,7 @@ impl VertexClient {
                                         Some(ContentBlock::Thinking {
                                             thinking,
                                             signature,
+                                            ..
                                         }) => {
                                             // Extend existing thinking block
                                             thinking.push_str(text);
@@ -518,6 +532,8 @@ impl VertexClient {
                                                     .thought_signature
                                                     .clone()
                                                     .unwrap_or_default(),
+                                                start_time: None,
+                                                end_time: None,
                                             });
                                         }
                                     }
@@ -526,13 +542,19 @@ impl VertexClient {
                                 } else {
                                     // Check if we can extend the last text block or need to create a new one
                                     match blocks.last_mut() {
-                                        Some(ContentBlock::Text { text: last_text }) => {
+                                        Some(ContentBlock::Text {
+                                            text: last_text, ..
+                                        }) => {
                                             // Extend existing text block
                                             last_text.push_str(text);
                                         }
                                         _ => {
                                             // Create new text block
-                                            blocks.push(ContentBlock::Text { text: text.clone() });
+                                            blocks.push(ContentBlock::Text {
+                                                text: text.clone(),
+                                                start_time: None,
+                                                end_time: None,
+                                            });
                                         }
                                     }
                                     // Regular text content
@@ -548,6 +570,8 @@ impl VertexClient {
                                     id: tool_id.clone(),
                                     name: function_call.name.clone(),
                                     input: function_call.args.clone(),
+                                    start_time: None,
+                                    end_time: None,
                                 });
 
                                 // Stream the JSON input for tools
@@ -687,8 +711,18 @@ impl LLMProvider for VertexClient {
 
         let request_id = request.request_id;
 
-        self.send_with_retry(&vertex_request, request_id, streaming_callback, 3)
-            .await
+        let request_start = std::time::SystemTime::now();
+        let mut response = self
+            .send_with_retry(&vertex_request, request_id, streaming_callback, 3)
+            .await?;
+        let response_end = std::time::SystemTime::now();
+
+        // For non-streaming responses, distribute timestamps across blocks
+        if streaming_callback.is_none() {
+            response.set_distributed_timestamps(request_start, response_end);
+        }
+
+        Ok(response)
     }
 }
 

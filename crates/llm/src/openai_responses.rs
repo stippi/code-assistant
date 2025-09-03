@@ -386,7 +386,7 @@ impl OpenAIResponsesClient {
 
         for block in blocks {
             match block {
-                ContentBlock::Text { text } => match role {
+                ContentBlock::Text { text, .. } => match role {
                     MessageRole::User => {
                         content_items.push(ResponseContentItem::InputText { text });
                     }
@@ -394,7 +394,9 @@ impl OpenAIResponsesClient {
                         content_items.push(ResponseContentItem::OutputText { text });
                     }
                 },
-                ContentBlock::Image { media_type, data } => {
+                ContentBlock::Image {
+                    media_type, data, ..
+                } => {
                     let image_url = format!("data:{media_type};base64,{data}");
                     content_items.push(ResponseContentItem::InputImage { image_url });
                 }
@@ -416,7 +418,9 @@ impl OpenAIResponsesClient {
                         content_items.push(ResponseContentItem::OutputText { text: thinking });
                     }
                 },
-                ContentBlock::RedactedThinking { id, summary, data } => {
+                ContentBlock::RedactedThinking {
+                    id, summary, data, ..
+                } => {
                     // Convert redacted thinking to reasoning input item
                     additional_items.push(ResponseInputItem::Reasoning {
                         id,
@@ -424,7 +428,9 @@ impl OpenAIResponsesClient {
                         encrypted_content: data,
                     });
                 }
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     // Convert tool use to function call input item
                     if role != MessageRole::Assistant {
                         warn!("ToolUse blocks should only appear in assistant messages");
@@ -464,7 +470,11 @@ impl OpenAIResponsesClient {
                     for content_item in content {
                         match content_item {
                             ResponseOutputContent::OutputText { text } => {
-                                blocks.push(ContentBlock::Text { text });
+                                blocks.push(ContentBlock::Text {
+                                    text,
+                                    start_time: None,
+                                    end_time: None,
+                                });
                             }
                         }
                     }
@@ -489,6 +499,8 @@ impl OpenAIResponsesClient {
                             id,
                             summary: summary_json,
                             data: encrypted,
+                            start_time: None,
+                            end_time: None,
                         });
                     } else {
                         // Convert reasoning content to thinking blocks
@@ -505,6 +517,8 @@ impl OpenAIResponsesClient {
                                     blocks.push(ContentBlock::Thinking {
                                         thinking: text,
                                         signature,
+                                        start_time: None,
+                                        end_time: None,
                                     });
                                 }
                             }
@@ -524,6 +538,8 @@ impl OpenAIResponsesClient {
                         id: call_id,
                         name,
                         input,
+                        start_time: None,
+                        end_time: None,
                     });
                 }
             }
@@ -664,6 +680,8 @@ impl OpenAIResponsesClient {
         let mut byte_buffer = Vec::new();
         let mut active_function_calls: std::collections::HashMap<String, (String, String)> =
             std::collections::HashMap::new(); // item_id -> (tool_name, call_id)
+        let mut block_start_times: std::collections::HashMap<String, std::time::SystemTime> =
+            std::collections::HashMap::new(); // item_id -> start_time
 
         while let Some(chunk) = response.chunk().await? {
             byte_buffer.extend_from_slice(&chunk);
@@ -680,6 +698,7 @@ impl OpenAIResponsesClient {
                                     &mut content_blocks,
                                     &mut usage,
                                     &mut active_function_calls,
+                                    &mut block_start_times,
                                     callback,
                                 )?;
                             }
@@ -704,6 +723,7 @@ impl OpenAIResponsesClient {
                                         &mut content_blocks,
                                         &mut usage,
                                         &mut active_function_calls,
+                                        &mut block_start_times,
                                         callback,
                                     )?;
                                 }
@@ -733,6 +753,7 @@ impl OpenAIResponsesClient {
                 &mut content_blocks,
                 &mut usage,
                 &mut active_function_calls,
+                &mut block_start_times,
                 callback,
             )?;
         }
@@ -755,6 +776,7 @@ impl OpenAIResponsesClient {
         content_blocks: &mut Vec<ContentBlock>,
         usage: &mut Usage,
         active_function_calls: &mut std::collections::HashMap<String, (String, String)>,
+        block_start_times: &mut std::collections::HashMap<String, std::time::SystemTime>,
         callback: &StreamingCallback,
     ) -> Result<()> {
         if let Some(data) = line.strip_prefix("data: ") {
@@ -765,6 +787,7 @@ impl OpenAIResponsesClient {
 
             match event.event_type.as_str() {
                 "response.output_item.added" => {
+                    let now = std::time::SystemTime::now();
                     if let Some(item_data) = event.item {
                         if let Ok(item_type) =
                             serde_json::from_value::<serde_json::Value>(item_data.clone())
@@ -772,12 +795,16 @@ impl OpenAIResponsesClient {
                             if let Some(item_type_str) =
                                 item_type.get("type").and_then(|v| v.as_str())
                             {
+                                let item_id = item_type
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+
+                                // Record start time for this item
+                                block_start_times.insert(item_id.clone(), now);
+
                                 if item_type_str == "function_call" {
-                                    let item_id = item_type
-                                        .get("id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
                                     let call_id = item_type
                                         .get("call_id")
                                         .and_then(|v| v.as_str())
@@ -829,9 +856,29 @@ impl OpenAIResponsesClient {
                     }
                 }
                 "response.output_item.done" => {
+                    let now = std::time::SystemTime::now();
                     if let Some(item_data) = event.item {
-                        let output_item: ResponseOutputItem = serde_json::from_value(item_data)?;
-                        let converted = self.convert_output(vec![output_item]);
+                        let output_item: ResponseOutputItem =
+                            serde_json::from_value(item_data.clone())?;
+
+                        // Get the item ID for timestamp lookup
+                        let item_id = item_data
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let start_time = block_start_times.get(&item_id).copied();
+
+                        let mut converted = self.convert_output(vec![output_item]);
+
+                        // Set timestamps on the converted blocks
+                        for block in &mut converted {
+                            if let Some(start) = start_time {
+                                block.set_timestamps(start, now);
+                            }
+                        }
+
                         content_blocks.extend(converted);
                     }
                 }
@@ -915,8 +962,18 @@ impl LLMProvider for OpenAIResponsesClient {
             prompt_cache_key: Some(request.session_id),
         };
 
-        self.send_with_retry(&responses_request, streaming_callback, 3)
-            .await
+        let request_start = std::time::SystemTime::now();
+        let mut response = self
+            .send_with_retry(&responses_request, streaming_callback, 3)
+            .await?;
+        let response_end = std::time::SystemTime::now();
+
+        // For non-streaming responses, distribute timestamps across blocks
+        if streaming_callback.is_none() {
+            response.set_distributed_timestamps(request_start, response_end);
+        }
+
+        Ok(response)
     }
 }
 
@@ -971,6 +1028,8 @@ mod tests {
                 tool_use_id: "test_id".to_string(),
                 content: "Tool output".to_string(),
                 is_error: Some(false),
+                start_time: None,
+                end_time: None,
             }]),
             request_id: None,
             usage: None,
@@ -1023,6 +1082,7 @@ mod tests {
             ContentBlock::Thinking {
                 thinking,
                 signature,
+                ..
             } => {
                 assert_eq!(thinking, "Thinking...");
                 assert_eq!(signature, "Summary");
@@ -1031,7 +1091,7 @@ mod tests {
         }
 
         match &converted[1] {
-            ContentBlock::Text { text } => {
+            ContentBlock::Text { text, .. } => {
                 assert_eq!(text, "Hello!");
             }
             _ => panic!("Expected Text block"),
@@ -1059,7 +1119,9 @@ mod tests {
         assert_eq!(converted.len(), 1);
 
         match &converted[0] {
-            ContentBlock::RedactedThinking { id, summary, data } => {
+            ContentBlock::RedactedThinking {
+                id, summary, data, ..
+            } => {
                 assert_eq!(id, "rs_12345");
                 assert_eq!(summary.len(), 1);
                 assert_eq!(data, "encrypted_data");
@@ -1098,9 +1160,13 @@ mod tests {
                             serde_json::json!({"type": "summary_text", "text": "Math reasoning"}),
                         ],
                         data: "encrypted_math_reasoning".to_string(),
+                        start_time: None,
+                        end_time: None,
                     },
                     ContentBlock::Text {
                         text: "2+2 equals 4.".to_string(),
+                        start_time: None,
+                        end_time: None,
                     },
                 ]),
                 request_id: None,
@@ -1188,9 +1254,13 @@ mod tests {
                         serde_json::json!({"type": "summary_text", "text": "Previous reasoning"}),
                     ],
                     data: "encrypted_reasoning_data".to_string(),
+                    start_time: None,
+                    end_time: None,
                 },
                 ContentBlock::Text {
                     text: "Based on my reasoning, here's the answer.".to_string(),
+                    start_time: None,
+                    end_time: None,
                 },
             ]),
             request_id: None,

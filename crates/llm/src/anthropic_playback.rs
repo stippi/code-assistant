@@ -487,7 +487,11 @@ fn build_content_blocks(session: &RecordingSession) -> Result<Vec<ContentBlock>>
             match block_type.as_str() {
                 "text" => {
                     if let Some(text) = current_texts.get(&index) {
-                        blocks.push(ContentBlock::Text { text: text.clone() });
+                        blocks.push(ContentBlock::Text {
+                            text: text.clone(),
+                            start_time: None,
+                            end_time: None,
+                        });
                     }
                 }
                 "thinking" => {
@@ -495,6 +499,8 @@ fn build_content_blocks(session: &RecordingSession) -> Result<Vec<ContentBlock>>
                         blocks.push(ContentBlock::Thinking {
                             thinking: thinking.clone(),
                             signature: String::new(),
+                            start_time: None,
+                            end_time: None,
                         });
                     }
                 }
@@ -511,6 +517,8 @@ fn build_content_blocks(session: &RecordingSession) -> Result<Vec<ContentBlock>>
                                 id: id.clone(),
                                 name: name.clone(),
                                 input,
+                                start_time: None,
+                                end_time: None,
                             });
                         }
                     }
@@ -518,7 +526,11 @@ fn build_content_blocks(session: &RecordingSession) -> Result<Vec<ContentBlock>>
                 _ => {
                     // Unknown block type, add as plain text
                     if let Some(text) = current_texts.get(&index) {
-                        blocks.push(ContentBlock::Text { text: text.clone() });
+                        blocks.push(ContentBlock::Text {
+                            text: text.clone(),
+                            start_time: None,
+                            end_time: None,
+                        });
                     }
                 }
             }
@@ -529,6 +541,8 @@ fn build_content_blocks(session: &RecordingSession) -> Result<Vec<ContentBlock>>
     if blocks.is_empty() {
         blocks.push(ContentBlock::Text {
             text: "No content was found in the recorded session".to_string(),
+            start_time: None,
+            end_time: None,
         });
     }
 

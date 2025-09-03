@@ -313,14 +313,8 @@ mod tests {
         let message = llm::Message {
             role: llm::MessageRole::Assistant,
             content: llm::MessageContent::Structured(vec![
-                llm::ContentBlock::Text {
-                    text: "I'll search the files.".to_string(),
-                },
-                llm::ContentBlock::ToolUse {
-                    id: "search_456".to_string(),
-                    name: "search_files".to_string(),
-                    input: tool_input,
-                },
+                llm::ContentBlock::new_text("I'll search the files."),
+                llm::ContentBlock::new_tool_use("search_456", "search_files", tool_input),
             ]),
             request_id: Some(1u64),
             usage: None,
@@ -362,21 +356,16 @@ mod tests {
         let message = llm::Message {
             role: llm::MessageRole::Assistant,
             content: llm::MessageContent::Structured(vec![
-                llm::ContentBlock::Thinking {
-                    thinking: "I should write a file.".to_string(),
-                    signature: "sig".to_string(),
-                },
-                llm::ContentBlock::Text {
-                    text: "Let me create the file. <thinking>What content should I write?</thinking> I'll write something useful.".to_string()
-                },
-                llm::ContentBlock::ToolUse {
-                    id: "write_789".to_string(),
-                    name: "write_file".to_string(),
-                    input: serde_json::json!({
+                llm::ContentBlock::new_thinking("I should write a file.", "sig"),
+                llm::ContentBlock::new_text("Let me create the file. <thinking>What content should I write?</thinking> I'll write something useful."),
+                llm::ContentBlock::new_tool_use(
+                    "write_789",
+                    "write_file",
+                    serde_json::json!({
                         "path": "test.txt",
                         "content": "Hello XML world!"
-                    }),
-                },
+                    })
+                ),
             ]),
             request_id: Some(1u64),
             usage: None,

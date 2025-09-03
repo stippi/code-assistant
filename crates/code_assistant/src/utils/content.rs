@@ -1,5 +1,6 @@
 use crate::persistence::DraftAttachment;
 use llm::ContentBlock;
+use std::time::SystemTime;
 
 pub fn content_blocks_from(message: &str, attachments: &[DraftAttachment]) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
@@ -14,6 +15,8 @@ pub fn content_blocks_from(message: &str, attachments: &[DraftAttachment]) -> Ve
                 blocks.push(ContentBlock::Image {
                     media_type: mime_type.clone(),
                     data: content.clone(),
+                    start_time: Some(SystemTime::now()),
+                    end_time: None,
                 });
             }
             DraftAttachment::Text { content } => {

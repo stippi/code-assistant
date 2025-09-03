@@ -124,7 +124,7 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                     let mut combined_text = String::new();
                     for block in blocks {
                         match block {
-                            llm::ContentBlock::Text { text } => {
+                            llm::ContentBlock::Text { text, .. } => {
                                 combined_text.push_str(text);
                             }
                             llm::ContentBlock::ToolResult { content, .. } => {
@@ -152,13 +152,15 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                             llm::ContentBlock::Thinking { thinking, .. } => {
                                 fragments.push(DisplayFragment::ThinkingText(thinking.clone()));
                             }
-                            llm::ContentBlock::Text { text } => {
+                            llm::ContentBlock::Text { text, .. } => {
                                 // Process text for caret syntax
                                 fragments.extend(
                                     self.extract_fragments_from_text(text, message.request_id)?,
                                 );
                             }
-                            llm::ContentBlock::ToolUse { id, name, input } => {
+                            llm::ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } => {
                                 // Check if tool is hidden
                                 let tool_hidden =
                                     ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
@@ -197,7 +199,9 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                             llm::ContentBlock::RedactedThinking { .. } => {
                                 // Redacted thinking blocks are not displayed
                             }
-                            llm::ContentBlock::Image { media_type, data } => {
+                            llm::ContentBlock::Image {
+                                media_type, data, ..
+                            } => {
                                 // Images in assistant messages - preserve for display
                                 fragments.push(DisplayFragment::Image {
                                     media_type: media_type.clone(),

@@ -45,7 +45,10 @@ pub struct ToolRequest {
 
 impl From<&llm::ContentBlock> for ToolRequest {
     fn from(block: &llm::ContentBlock) -> Self {
-        if let llm::ContentBlock::ToolUse { id, name, input } = block {
+        if let llm::ContentBlock::ToolUse {
+            id, name, input, ..
+        } = block
+        {
             Self {
                 id: id.clone(),
                 name: name.clone(),
