@@ -484,15 +484,33 @@ impl MessageContainer {
 
     /// Update reasoning summary for the most recent thinking block
     pub fn update_reasoning_summary(&self, id: String, delta: String, cx: &mut Context<Self>) {
-        let elements = self.elements.lock().unwrap();
+        let mut elements = self.elements.lock().unwrap();
+
         if let Some(last) = elements.last() {
+            let mut was_updated = false;
+
             last.update(cx, |view, cx| {
                 if let Some(thinking_block) = view.block.as_thinking_mut() {
-                    thinking_block.update_reasoning_summary(id, delta);
+                    thinking_block.update_reasoning_summary(id.clone(), delta.clone());
+                    was_updated = true;
                     cx.notify();
                 }
             });
+
+            if was_updated {
+                return;
+            }
         }
+
+        // If we reach here, we need to add a new thinking block
+        let request_id = *self.current_request_id.lock().unwrap();
+        let mut new_thinking_block = ThinkingBlock::new(String::new());
+        new_thinking_block.update_reasoning_summary(id, delta);
+
+        let block = BlockData::ThinkingBlock(new_thinking_block);
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        elements.push(view);
+        cx.notify();
     }
 
     /// Complete reasoning for the most recent thinking block
