@@ -60,7 +60,6 @@ struct ReasoningState {
     current_item_content: String,
     completed_items: Vec<ReasoningSummaryItem>,
     reasoning_block_id: Option<String>, // Track the actual reasoning item ID from OpenAI
-    #[allow(dead_code)]
     received_completed_reasoning: bool, // Track if we got a completed reasoning item from API
 }
 
@@ -791,7 +790,10 @@ impl OpenAIResponsesClient {
         }
 
         // Create a RedactedThinking block from collected reasoning items if any
-        if !reasoning_state.completed_items.is_empty() {
+        // Only do this if we didn't receive a completed reasoning item from the API
+        if !reasoning_state.completed_items.is_empty()
+            && !reasoning_state.received_completed_reasoning
+        {
             // Create backward-compatible summary format
             let summary_json: Vec<serde_json::Value> = reasoning_state
                 .completed_items
@@ -971,6 +973,13 @@ impl OpenAIResponsesClient {
                         for block in &mut converted {
                             if let Some(start) = start_time {
                                 block.set_timestamps(start, now);
+                            }
+                        }
+
+                        // Check if this is a reasoning item to avoid duplicate creation
+                        for block in &converted {
+                            if matches!(block, ContentBlock::RedactedThinking { .. }) {
+                                reasoning_state.received_completed_reasoning = true;
                             }
                         }
 
