@@ -59,6 +59,9 @@ struct ReasoningState {
     current_item_id: Option<String>,
     current_item_content: String,
     completed_items: Vec<ReasoningSummaryItem>,
+    reasoning_block_id: Option<String>, // Track the actual reasoning item ID from OpenAI
+    #[allow(dead_code)]
+    received_completed_reasoning: bool, // Track if we got a completed reasoning item from API
 }
 
 /// Trait for providing authentication headers
@@ -497,7 +500,8 @@ impl OpenAIResponsesClient {
                         // Convert summary items to structured format first
                         let summary_items: Vec<ReasoningSummaryItem> = summary
                             .iter()
-                            .map(|s| match s {
+                            .enumerate()
+                            .map(|(_index, s)| match s {
                                 ReasoningSummary::SummaryText { text } => {
                                     let title = Self::parse_title_from_content(text)
                                         .unwrap_or_else(|| "Summary".to_string());
@@ -804,7 +808,9 @@ impl OpenAIResponsesClient {
                 .collect();
 
             content_blocks.push(ContentBlock::RedactedThinking {
-                id: "reasoning_stream".to_string(),
+                id: reasoning_state
+                    .reasoning_block_id
+                    .unwrap_or_else(|| "reasoning_stream".to_string()),
                 summary: summary_json,
                 summary_items: reasoning_state.completed_items.clone(),
                 data: "".to_string(), // No encrypted data for streaming
@@ -873,6 +879,9 @@ impl OpenAIResponsesClient {
                                         .to_string();
 
                                     active_function_calls.insert(item_id, (name, call_id));
+                                } else if item_type_str == "reasoning" {
+                                    // Track the reasoning item ID for proper round-trip preservation
+                                    reasoning_state.reasoning_block_id = Some(item_id);
                                 }
                             }
                         }
