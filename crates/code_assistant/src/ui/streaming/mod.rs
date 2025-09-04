@@ -38,6 +38,10 @@ pub enum DisplayFragment {
     },
     /// End of a tool invocation
     ToolEnd { id: String },
+    /// OpenAI reasoning summary item delta with ID for tracking
+    ReasoningSummary { id: String, delta: String },
+    /// Mark reasoning as completed
+    ReasoningComplete,
 }
 
 /// Common trait for stream processors

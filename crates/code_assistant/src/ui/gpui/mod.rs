@@ -921,6 +921,24 @@ impl Gpui {
                 // Refresh UI to hide the error popover
                 cx.refresh().expect("Failed to refresh windows");
             }
+            UiEvent::UpdateReasoningSummary { id, delta } => {
+                let queue = self.message_queue.lock().unwrap();
+                if let Some(last) = queue.last() {
+                    cx.update_entity(last, |message, cx| {
+                        message.update_reasoning_summary(id, delta, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
+            UiEvent::CompleteReasoning => {
+                let queue = self.message_queue.lock().unwrap();
+                if let Some(last) = queue.last() {
+                    cx.update_entity(last, |message, cx| {
+                        message.complete_reasoning(cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
         }
     }
 
@@ -970,6 +988,18 @@ impl Gpui {
                 DisplayFragment::Image { media_type, data } => {
                     cx.update_entity(container, |container, cx| {
                         container.add_image_block(media_type, data, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ReasoningSummary { id, delta } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.update_reasoning_summary(id, delta, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ReasoningComplete => {
+                    cx.update_entity(container, |container, cx| {
+                        container.complete_reasoning(cx);
                     })
                     .expect("Failed to update entity");
                 }
@@ -1280,6 +1310,15 @@ impl UserInterface for Gpui {
                     media_type: media_type.clone(),
                     data: data.clone(),
                 });
+            }
+            DisplayFragment::ReasoningSummary { id, delta } => {
+                self.push_event(UiEvent::UpdateReasoningSummary {
+                    id: id.clone(),
+                    delta: delta.clone(),
+                });
+            }
+            DisplayFragment::ReasoningComplete => {
+                self.push_event(UiEvent::CompleteReasoning);
             }
         }
 

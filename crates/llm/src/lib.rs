@@ -66,6 +66,10 @@ pub enum StreamingChunk {
     RateLimitClear,
     /// Indicates that streaming from the LLM has completed
     StreamingComplete,
+    /// OpenAI reasoning summary item delta with ID for tracking
+    ReasoningSummary { id: String, delta: String },
+    /// Indicates reasoning block is complete
+    ReasoningComplete,
 }
 
 pub type StreamingCallback = Box<dyn Fn(&StreamingChunk) -> Result<()> + Send + Sync>;

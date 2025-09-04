@@ -220,6 +220,15 @@ impl UserInterface for MockUI {
                     .push(format!("  {name}: {value}"));
             }
             crate::ui::DisplayFragment::ToolEnd { .. } => {}
+            crate::ui::DisplayFragment::ReasoningSummary { delta, .. } => {
+                self.streaming.lock().unwrap().push(delta.clone());
+            }
+            crate::ui::DisplayFragment::ReasoningComplete => {
+                self.streaming
+                    .lock()
+                    .unwrap()
+                    .push("\n• Reasoning Complete".to_string());
+            }
         }
         Ok(())
     }

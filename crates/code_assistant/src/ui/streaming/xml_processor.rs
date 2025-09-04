@@ -132,6 +132,17 @@ impl StreamProcessorTrait for XmlStreamProcessor {
 
             // For text chunks, we need to parse for tags
             StreamingChunk::Text(text) => self.process_text_with_tags(text),
+
+            StreamingChunk::ReasoningSummary { id, delta } => {
+                self.emit_fragment(DisplayFragment::ReasoningSummary {
+                    id: id.clone(),
+                    delta: delta.clone(),
+                })
+            }
+
+            StreamingChunk::ReasoningComplete => {
+                self.emit_fragment(DisplayFragment::ReasoningComplete)
+            }
         }
     }
 
@@ -226,8 +237,27 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                             ContentBlock::ToolResult { .. } => {
                                 // Tool results are typically not part of assistant messages
                             }
-                            ContentBlock::RedactedThinking { .. } => {
-                                // Redacted thinking blocks are not displayed
+                            ContentBlock::RedactedThinking { summary_items, .. } => {
+                                // Generate reasoning summary fragments for each item
+                                for (index, item) in summary_items.iter().enumerate() {
+                                    let synthetic_id = format!("history_{index}");
+                                    let content = format!(
+                                        "**{}**{}",
+                                        item.title,
+                                        item.content
+                                            .as_ref()
+                                            .map(|c| format!(": {c}"))
+                                            .unwrap_or_default()
+                                    );
+                                    fragments.push(DisplayFragment::ReasoningSummary {
+                                        id: synthetic_id,
+                                        delta: content,
+                                    });
+                                }
+                                // End with reasoning complete if we had items
+                                if !summary_items.is_empty() {
+                                    fragments.push(DisplayFragment::ReasoningComplete);
+                                }
                             }
                             ContentBlock::Image {
                                 media_type, data, ..
@@ -700,6 +730,24 @@ impl XmlStreamProcessor {
                     }
                     DisplayFragment::Image { .. } => {
                         // Image - buffer it
+                        if let StreamingState::BufferingAfterTool {
+                            buffered_fragments, ..
+                        } = &mut self.streaming_state
+                        {
+                            buffered_fragments.push(fragment);
+                        }
+                    }
+                    DisplayFragment::ReasoningSummary { .. } => {
+                        // Reasoning summary - buffer it
+                        if let StreamingState::BufferingAfterTool {
+                            buffered_fragments, ..
+                        } = &mut self.streaming_state
+                        {
+                            buffered_fragments.push(fragment);
+                        }
+                    }
+                    DisplayFragment::ReasoningComplete => {
+                        // Reasoning complete - buffer it
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..
                         } = &mut self.streaming_state

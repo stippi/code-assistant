@@ -363,6 +363,15 @@ impl UserInterface for TerminalTuiUI {
                     data: data.clone(),
                 });
             }
+            DisplayFragment::ReasoningSummary { id: _, delta } => {
+                // For terminal UI, treat reasoning summary as thinking text
+                self.push_event(UiEvent::AppendToThinkingBlock {
+                    content: delta.clone(),
+                });
+            }
+            DisplayFragment::ReasoningComplete => {
+                // For terminal UI, no specific action needed for reasoning completion
+            }
         }
 
         Ok(())

@@ -98,6 +98,19 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                 // Emit any remaining buffered fragments since no more content is coming
                 self.flush_buffered_content()?;
             }
+            StreamingChunk::ReasoningSummary { id, delta } => {
+                // Pass through reasoning summary chunks directly
+                self.ui
+                    .display_fragment(&DisplayFragment::ReasoningSummary {
+                        id: id.clone(),
+                        delta: delta.clone(),
+                    })?;
+            }
+            StreamingChunk::ReasoningComplete => {
+                // Pass through reasoning complete
+                self.ui
+                    .display_fragment(&DisplayFragment::ReasoningComplete)?;
+            }
             _ => {
                 // Other chunk types are not handled by caret processor
             }
@@ -196,8 +209,27 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                             llm::ContentBlock::ToolResult { .. } => {
                                 // Tool results are typically not part of assistant messages
                             }
-                            llm::ContentBlock::RedactedThinking { .. } => {
-                                // Redacted thinking blocks are not displayed
+                            llm::ContentBlock::RedactedThinking { summary_items, .. } => {
+                                // Generate reasoning summary fragments for each item
+                                for (index, item) in summary_items.iter().enumerate() {
+                                    let synthetic_id = format!("history_{index}");
+                                    let content = format!(
+                                        "**{}**{}",
+                                        item.title,
+                                        item.content
+                                            .as_ref()
+                                            .map(|c| format!(": {c}"))
+                                            .unwrap_or_default()
+                                    );
+                                    fragments.push(DisplayFragment::ReasoningSummary {
+                                        id: synthetic_id,
+                                        delta: content,
+                                    });
+                                }
+                                // End with reasoning complete if we had items
+                                if !summary_items.is_empty() {
+                                    fragments.push(DisplayFragment::ReasoningComplete);
+                                }
                             }
                             llm::ContentBlock::Image {
                                 media_type, data, ..
@@ -861,6 +893,24 @@ impl CaretStreamProcessor {
                     }
                     DisplayFragment::Image { .. } => {
                         // Image - buffer it until we know if next tool is allowed
+                        if let StreamingState::BufferingAfterTool {
+                            buffered_fragments, ..
+                        } = &mut self.streaming_state
+                        {
+                            buffered_fragments.push(fragment);
+                        }
+                    }
+                    DisplayFragment::ReasoningSummary { .. } => {
+                        // Reasoning summary - buffer it until we know if next tool is allowed
+                        if let StreamingState::BufferingAfterTool {
+                            buffered_fragments, ..
+                        } = &mut self.streaming_state
+                        {
+                            buffered_fragments.push(fragment);
+                        }
+                    }
+                    DisplayFragment::ReasoningComplete => {
+                        // Reasoning complete - buffer it until we know if next tool is allowed
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..
                         } = &mut self.streaming_state

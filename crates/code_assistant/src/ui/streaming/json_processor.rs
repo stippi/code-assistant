@@ -225,6 +225,18 @@ impl StreamProcessorTrait for JsonStreamProcessor {
             }
 
             StreamingChunk::Text(text) => self.process_text_with_thinking_tags(text),
+
+            StreamingChunk::ReasoningSummary { id, delta } => {
+                self.ui
+                    .display_fragment(&DisplayFragment::ReasoningSummary {
+                        id: id.clone(),
+                        delta: delta.clone(),
+                    })
+            }
+
+            StreamingChunk::ReasoningComplete => self
+                .ui
+                .display_fragment(&DisplayFragment::ReasoningComplete),
         }
     }
 
@@ -294,8 +306,27 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                             // Tool results are typically not part of assistant messages
                             // but we could handle them if needed
                         }
-                        ContentBlock::RedactedThinking { .. } => {
-                            // Redacted thinking blocks are not displayed
+                        ContentBlock::RedactedThinking { summary_items, .. } => {
+                            // Generate reasoning summary fragments for each item
+                            for (index, item) in summary_items.iter().enumerate() {
+                                let synthetic_id = format!("history_{index}");
+                                let content = format!(
+                                    "**{}**{}",
+                                    item.title,
+                                    item.content
+                                        .as_ref()
+                                        .map(|c| format!(": {c}"))
+                                        .unwrap_or_default()
+                                );
+                                fragments.push(DisplayFragment::ReasoningSummary {
+                                    id: synthetic_id,
+                                    delta: content,
+                                });
+                            }
+                            // End with reasoning complete if we had items
+                            if !summary_items.is_empty() {
+                                fragments.push(DisplayFragment::ReasoningComplete);
+                            }
                         }
                         ContentBlock::Image {
                             media_type, data, ..

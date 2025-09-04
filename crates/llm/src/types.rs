@@ -2,6 +2,13 @@ use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
+/// OpenAI reasoning summary item
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+pub struct ReasoningSummaryItem {
+    pub title: String,
+    pub content: Option<String>,
+}
+
 /// Tracks token usage for a request/response pair
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
 pub struct Usage {
@@ -104,7 +111,9 @@ pub enum ContentBlock {
     #[serde(rename = "redacted_thinking")]
     RedactedThinking {
         id: String,
-        summary: Vec<serde_json::Value>,
+        summary: Vec<serde_json::Value>, // Keep for backward compatibility
+        #[serde(default)]
+        summary_items: Vec<ReasoningSummaryItem>, // New structured field
         data: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         start_time: Option<SystemTime>,

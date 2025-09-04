@@ -102,4 +102,8 @@ pub enum UiEvent {
     DisplayError { message: String },
     /// Clear the current error display
     ClearError,
+    /// Update reasoning summary with ID and delta
+    UpdateReasoningSummary { id: String, delta: String },
+    /// Complete reasoning block
+    CompleteReasoning,
 }

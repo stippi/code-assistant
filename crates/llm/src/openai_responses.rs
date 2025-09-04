@@ -53,6 +53,14 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, warn};
 
+/// State tracking for reasoning during streaming
+#[derive(Debug, Default)]
+struct ReasoningState {
+    current_item_id: Option<String>,
+    current_item_content: String,
+    completed_items: Vec<ReasoningSummaryItem>,
+}
+
 /// Trait for providing authentication headers
 #[async_trait]
 pub trait AuthProvider: Send + Sync {
@@ -486,6 +494,21 @@ impl OpenAIResponsesClient {
                     encrypted_content,
                 } => {
                     if let Some(encrypted) = encrypted_content {
+                        // Convert summary items to structured format first
+                        let summary_items: Vec<ReasoningSummaryItem> = summary
+                            .iter()
+                            .map(|s| match s {
+                                ReasoningSummary::SummaryText { text } => {
+                                    let title = Self::parse_title_from_content(text)
+                                        .unwrap_or_else(|| "Summary".to_string());
+                                    ReasoningSummaryItem {
+                                        title,
+                                        content: Some(text.clone()),
+                                    }
+                                }
+                            })
+                            .collect();
+
                         let summary_json: Vec<serde_json::Value> = summary
                             .into_iter()
                             .map(|s| match s {
@@ -498,6 +521,7 @@ impl OpenAIResponsesClient {
                         blocks.push(ContentBlock::RedactedThinking {
                             id,
                             summary: summary_json,
+                            summary_items,
                             data: encrypted,
                             start_time: None,
                             end_time: None,
@@ -682,6 +706,7 @@ impl OpenAIResponsesClient {
             std::collections::HashMap::new(); // item_id -> (tool_name, call_id)
         let mut block_start_times: std::collections::HashMap<String, std::time::SystemTime> =
             std::collections::HashMap::new(); // item_id -> start_time
+        let mut reasoning_state = ReasoningState::default();
 
         while let Some(chunk) = response.chunk().await? {
             byte_buffer.extend_from_slice(&chunk);
@@ -699,6 +724,7 @@ impl OpenAIResponsesClient {
                                     &mut usage,
                                     &mut active_function_calls,
                                     &mut block_start_times,
+                                    &mut reasoning_state,
                                     callback,
                                 )?;
                             }
@@ -724,6 +750,7 @@ impl OpenAIResponsesClient {
                                         &mut usage,
                                         &mut active_function_calls,
                                         &mut block_start_times,
+                                        &mut reasoning_state,
                                         callback,
                                     )?;
                                 }
@@ -754,8 +781,36 @@ impl OpenAIResponsesClient {
                 &mut usage,
                 &mut active_function_calls,
                 &mut block_start_times,
+                &mut reasoning_state,
                 callback,
             )?;
+        }
+
+        // Create a RedactedThinking block from collected reasoning items if any
+        if !reasoning_state.completed_items.is_empty() {
+            // Create backward-compatible summary format
+            let summary_json: Vec<serde_json::Value> = reasoning_state
+                .completed_items
+                .iter()
+                .map(|item| {
+                    serde_json::json!({
+                        "type": "summary_text",
+                        "text": format!("**{}**: {}",
+                            item.title,
+                            item.content.as_deref().unwrap_or("")
+                        )
+                    })
+                })
+                .collect();
+
+            content_blocks.push(ContentBlock::RedactedThinking {
+                id: "reasoning_stream".to_string(),
+                summary: summary_json,
+                summary_items: reasoning_state.completed_items.clone(),
+                data: "".to_string(), // No encrypted data for streaming
+                start_time: None,
+                end_time: None,
+            });
         }
 
         callback(&StreamingChunk::StreamingComplete)?;
@@ -777,6 +832,7 @@ impl OpenAIResponsesClient {
         usage: &mut Usage,
         active_function_calls: &mut std::collections::HashMap<String, (String, String)>,
         block_start_times: &mut std::collections::HashMap<String, std::time::SystemTime>,
+        reasoning_state: &mut ReasoningState,
         callback: &StreamingCallback,
     ) -> Result<()> {
         if let Some(data) = line.strip_prefix("data: ") {
@@ -834,7 +890,37 @@ impl OpenAIResponsesClient {
                 }
                 "response.reasoning_summary_text.delta" => {
                     if let Some(delta) = event.delta {
-                        callback(&StreamingChunk::Thinking(delta))?;
+                        // Use item_id from the event to track different summary items
+                        let item_id = event.item_id.unwrap_or_else(|| "default".to_string());
+
+                        // Check if this is a new item
+                        if reasoning_state.current_item_id.as_ref() != Some(&item_id) {
+                            // If we had a previous item, finalize it
+                            if let Some(_prev_id) = &reasoning_state.current_item_id {
+                                // Try to parse title from the content we've accumulated
+                                let title = Self::parse_title_from_content(
+                                    &reasoning_state.current_item_content,
+                                )
+                                .unwrap_or_else(|| {
+                                    format!("Summary {}", reasoning_state.completed_items.len() + 1)
+                                });
+
+                                reasoning_state.completed_items.push(ReasoningSummaryItem {
+                                    title,
+                                    content: Some(reasoning_state.current_item_content.clone()),
+                                });
+                            }
+
+                            // Start tracking the new item
+                            reasoning_state.current_item_id = Some(item_id.clone());
+                            reasoning_state.current_item_content.clear();
+                        }
+
+                        // Append the delta to the current item content
+                        reasoning_state.current_item_content.push_str(&delta);
+
+                        // Emit the reasoning summary chunk
+                        callback(&StreamingChunk::ReasoningSummary { id: item_id, delta })?;
                     }
                 }
                 "response.function_call_arguments.delta" => {
@@ -883,6 +969,28 @@ impl OpenAIResponsesClient {
                     }
                 }
                 "response.completed" => {
+                    // Finalize any remaining reasoning item
+                    if let Some(_current_id) = &reasoning_state.current_item_id {
+                        let title =
+                            Self::parse_title_from_content(&reasoning_state.current_item_content)
+                                .unwrap_or_else(|| {
+                                    format!("Summary {}", reasoning_state.completed_items.len() + 1)
+                                });
+
+                        reasoning_state.completed_items.push(ReasoningSummaryItem {
+                            title,
+                            content: Some(reasoning_state.current_item_content.clone()),
+                        });
+
+                        reasoning_state.current_item_id = None;
+                        reasoning_state.current_item_content.clear();
+                    }
+
+                    // Emit reasoning complete if we had any reasoning items
+                    if !reasoning_state.completed_items.is_empty() {
+                        callback(&StreamingChunk::ReasoningComplete)?;
+                    }
+
                     if let Some(response_data) = event.response {
                         if let Ok(usage_data) = serde_json::from_value::<ResponsesUsage>(
                             response_data
@@ -905,6 +1013,32 @@ impl OpenAIResponsesClient {
             }
         }
         Ok(())
+    }
+
+    /// Parse title from reasoning content in format "**title**: content"
+    fn parse_title_from_content(content: &str) -> Option<String> {
+        // Look for markdown bold pattern: **title**:
+        if let Some(start) = content.find("**") {
+            if let Some(end) = content[start + 2..].find("**") {
+                let title_end = start + 2 + end;
+                if content.len() > title_end + 2 && content.chars().nth(title_end + 2) == Some(':')
+                {
+                    let title = content[start + 2..title_end].trim();
+                    if !title.is_empty() {
+                        return Some(title.to_string());
+                    }
+                }
+            }
+        }
+
+        // Fallback: use the first line or first few words
+        let first_line = content.lines().next().unwrap_or(content);
+        let words: Vec<&str> = first_line.split_whitespace().take(5).collect();
+        if !words.is_empty() {
+            Some(words.join(" "))
+        } else {
+            None
+        }
     }
 }
 
@@ -1159,6 +1293,10 @@ mod tests {
                         summary: vec![
                             serde_json::json!({"type": "summary_text", "text": "Math reasoning"}),
                         ],
+                        summary_items: vec![ReasoningSummaryItem {
+                            title: "Math reasoning".to_string(),
+                            content: Some("2+2 equals 4".to_string()),
+                        }],
                         data: "encrypted_math_reasoning".to_string(),
                         start_time: None,
                         end_time: None,
@@ -1253,6 +1391,10 @@ mod tests {
                     summary: vec![
                         serde_json::json!({"type": "summary_text", "text": "Previous reasoning"}),
                     ],
+                    summary_items: vec![ReasoningSummaryItem {
+                        title: "Previous reasoning".to_string(),
+                        content: Some("Based on my reasoning, here's the answer.".to_string()),
+                    }],
                     data: "encrypted_reasoning_data".to_string(),
                     start_time: None,
                     end_time: None,
