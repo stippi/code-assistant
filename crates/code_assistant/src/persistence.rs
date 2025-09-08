@@ -492,11 +492,6 @@ impl DraftStorage {
         let draft_json = serde_json::to_string_pretty(&draft)?;
         std::fs::write(&file_path, draft_json)?;
 
-        debug!(
-            "Saved draft with {} attachments for session: {}",
-            attachments.len(),
-            session_id
-        );
         Ok(())
     }
 
@@ -527,12 +522,6 @@ impl DraftStorage {
         let json_content = std::fs::read_to_string(&file_path)?;
         let draft: SessionDraft = serde_json::from_str(&json_content)?;
 
-        let message = draft.get_message();
-        debug!(
-            "Loaded draft for session {}: {} characters",
-            session_id,
-            message.len()
-        );
         Ok(Some(draft))
     }
 
