@@ -121,7 +121,7 @@ pub async fn create_llm_client(config: LLMClientConfig) -> Result<Box<dyn LLMPro
                 deployment_uuid
             );
 
-            let mut client = if let Some(path) = config.record_path {
+            let client = if let Some(path) = config.record_path {
                 AiCoreClient::new_with_recorder(token_manager, api_url, path)
             } else {
                 AiCoreClient::new(token_manager, api_url)
@@ -149,9 +149,7 @@ pub async fn create_llm_client(config: LLMClientConfig) -> Result<Box<dyn LLMPro
 
             // Inject playback if provided
             if let Some(state) = playback_state {
-                // Add a helper if/when AnthropicClient supports playback state (future work)
-                // For now, Anthropic still uses network + recorder
-                let _ = state;
+                client = client.with_playback(state);
             }
 
             Ok(Box::new(client))

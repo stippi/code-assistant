@@ -44,7 +44,7 @@
 //! be automatically included in subsequent requests to maintain reasoning context in stateless mode.
 
 use crate::{
-    recording::{APIRecorder, PlaybackState, RecordedChunk, RecordingSession},
+    recording::{APIRecorder, PlaybackState},
     types::*,
     utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
 };
@@ -327,6 +327,8 @@ pub struct OpenAIResponsesClient {
     model: String,
     auth_provider: Box<dyn AuthProvider>,
     request_customizer: Box<dyn RequestCustomizer>,
+    recorder: Option<APIRecorder>,
+    playback: Option<PlaybackState>,
 }
 
 impl OpenAIResponsesClient {
@@ -341,6 +343,8 @@ impl OpenAIResponsesClient {
             model,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
+            recorder: None,
+            playback: None,
         }
     }
 
@@ -356,7 +360,21 @@ impl OpenAIResponsesClient {
             model,
             auth_provider,
             request_customizer,
+            recorder: None,
+            playback: None,
         }
+    }
+
+    /// Add recording capability to the client
+    pub fn with_recorder<P: AsRef<std::path::Path>>(mut self, path: P) -> Self {
+        self.recorder = Some(APIRecorder::new(path));
+        self
+    }
+
+    /// Add playback capability to the client
+    pub fn with_playback(mut self, playback_state: PlaybackState) -> Self {
+        self.playback = Some(playback_state);
+        self
     }
 
     fn get_url(&self, streaming: bool) -> String {
@@ -584,6 +602,11 @@ impl OpenAIResponsesClient {
         streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
     ) -> Result<LLMResponse> {
+        // If playback is enabled, skip HTTP and use recorded data
+        if self.playback.is_some() {
+            return self.playback_request(request, streaming_callback).await;
+        }
+
         let mut attempts = 0;
 
         loop {
@@ -610,6 +633,123 @@ impl OpenAIResponsesClient {
         }
     }
 
+    async fn playback_request(
+        &mut self,
+        _request: &ResponsesRequest,
+        streaming_callback: Option<&StreamingCallback>,
+    ) -> Result<LLMResponse> {
+        let playback = self.playback.as_ref().unwrap();
+
+        // Get the next session from the recording
+        let session = playback
+            .next_session()
+            .ok_or_else(|| anyhow::anyhow!("No more recorded sessions available"))?;
+
+        debug!("Playing back session with {} chunks", session.chunks.len());
+
+        if let Some(callback) = streaming_callback {
+            // Stream the recorded chunks
+            let mut content_blocks = Vec::new();
+            let mut usage = Usage::zero();
+            let mut active_function_calls: std::collections::HashMap<String, (String, String)> =
+                std::collections::HashMap::new();
+            let mut block_start_times: std::collections::HashMap<String, std::time::SystemTime> =
+                std::collections::HashMap::new();
+            let mut reasoning_state = ReasoningState::default();
+
+            let start_time = Instant::now();
+
+            for chunk in &session.chunks {
+                // Handle timing - either fast playback or respect original timing
+                if !playback.fast {
+                    let elapsed = start_time.elapsed();
+                    let expected_time = Duration::from_millis(chunk.timestamp_ms);
+
+                    if elapsed < expected_time {
+                        let sleep_duration = expected_time - elapsed;
+                        sleep(sleep_duration).await;
+                    }
+                } else {
+                    // Fast playback - small delay to simulate streaming
+                    sleep(Duration::from_millis(17)).await; // ~60fps
+                }
+
+                // Process the recorded SSE line through the same parser
+                self.process_sse_line(
+                    &format!("data: {}", chunk.data),
+                    &mut content_blocks,
+                    &mut usage,
+                    &mut active_function_calls,
+                    &mut block_start_times,
+                    &mut reasoning_state,
+                    callback,
+                )?;
+            }
+
+            // Create a RedactedThinking block from collected reasoning items if any
+            if !reasoning_state.completed_items.is_empty()
+                && !reasoning_state.received_completed_reasoning
+            {
+                let summary_json: Vec<serde_json::Value> = reasoning_state
+                    .completed_items
+                    .iter()
+                    .map(|item| {
+                        serde_json::json!({
+                            "type": "summary_text",
+                            "text": format!("**{}**: {}",
+                                item.title,
+                                item.content.as_deref().unwrap_or("")
+                            )
+                        })
+                    })
+                    .collect();
+
+                content_blocks.push(ContentBlock::RedactedThinking {
+                    id: reasoning_state
+                        .reasoning_block_id
+                        .unwrap_or_else(|| "reasoning_stream".to_string()),
+                    summary: summary_json,
+                    summary_items: reasoning_state.completed_items.clone(),
+                    data: "".to_string(),
+                    start_time: None,
+                    end_time: None,
+                });
+            }
+
+            callback(&StreamingChunk::StreamingComplete)?;
+
+            Ok(LLMResponse {
+                content: content_blocks,
+                usage,
+                rate_limit_info: None,
+            })
+        } else {
+            // Non-streaming playback - parse the request from the session
+            let responses_response: ResponsesResponse =
+                serde_json::from_value(session.request.clone())
+                    .map_err(|e| anyhow::anyhow!("Failed to parse recorded response: {e}"))?;
+
+            let content = self.convert_output(responses_response.output);
+            let usage = responses_response
+                .usage
+                .map_or_else(Usage::zero, |u| Usage {
+                    input_tokens: u.input_tokens,
+                    output_tokens: u.output_tokens,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: u
+                        .input_tokens_details
+                        .map(|d| d.cached_tokens)
+                        .unwrap_or(0),
+                });
+
+            Ok(LLMResponse {
+                content,
+                usage,
+                rate_limit_info: None,
+            })
+        }
+    }
+
     async fn try_send_request(
         &mut self,
         request: &ResponsesRequest,
@@ -620,6 +760,11 @@ impl OpenAIResponsesClient {
         // Allow request customizer to modify the request
         self.request_customizer
             .customize_request(&mut request_json)?;
+
+        // Start recording if recorder is available
+        if let Some(recorder) = &self.recorder {
+            recorder.start_recording(request_json.clone())?;
+        }
 
         // Get auth headers
         let auth_headers = self.auth_provider.get_auth_headers().await?;
@@ -653,13 +798,22 @@ impl OpenAIResponsesClient {
         let response = utils::check_response_error::<ResponsesRateLimitInfo>(response).await?;
         let rate_limits = ResponsesRateLimitInfo::from_response(&response);
 
-        if let Some(callback) = streaming_callback {
+        let result = if let Some(callback) = streaming_callback {
             self.handle_streaming_response(response, callback, rate_limits)
                 .await
         } else {
             self.handle_non_streaming_response(response, rate_limits)
                 .await
+        };
+
+        // End recording on completion (success or failure)
+        if let Some(recorder) = &self.recorder {
+            if let Err(e) = recorder.end_recording() {
+                warn!("Failed to end recording: {e}");
+            }
         }
+
+        result
     }
 
     async fn handle_non_streaming_response(
@@ -671,6 +825,13 @@ impl OpenAIResponsesClient {
             .text()
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+
+        // Record the entire response for non-streaming if recorder is available
+        if let Some(recorder) = &self.recorder {
+            if let Err(e) = recorder.record_chunk(&response_text) {
+                warn!("Failed to record non-streaming response: {e}");
+            }
+        }
 
         let responses_response: ResponsesResponse = serde_json::from_str(&response_text)
             .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {e}")))?;
@@ -724,6 +885,13 @@ impl OpenAIResponsesClient {
                     for c in chunk_str.chars() {
                         if c == '\n' {
                             if !line_buffer.is_empty() {
+                                // Record the SSE line if recorder is available
+                                if let Some(recorder) = &self.recorder {
+                                    if let Err(e) = recorder.record_chunk(&line_buffer) {
+                                        warn!("Failed to record chunk: {e}");
+                                    }
+                                }
+
                                 self.process_sse_line(
                                     &line_buffer,
                                     &mut content_blocks,
@@ -750,6 +918,13 @@ impl OpenAIResponsesClient {
                         for c in valid_str.chars() {
                             if c == '\n' {
                                 if !line_buffer.is_empty() {
+                                    // Record the SSE line if recorder is available
+                                    if let Some(recorder) = &self.recorder {
+                                        if let Err(e) = recorder.record_chunk(&line_buffer) {
+                                            warn!("Failed to record chunk: {e}");
+                                        }
+                                    }
+
                                     self.process_sse_line(
                                         &line_buffer,
                                         &mut content_blocks,
@@ -781,6 +956,13 @@ impl OpenAIResponsesClient {
 
         // Process any remaining data
         if !line_buffer.is_empty() {
+            // Record the final SSE line if recorder is available
+            if let Some(recorder) = &self.recorder {
+                if let Err(e) = recorder.record_chunk(&line_buffer) {
+                    warn!("Failed to record final chunk: {e}");
+                }
+            }
+
             self.process_sse_line(
                 &line_buffer,
                 &mut content_blocks,

@@ -62,18 +62,22 @@ Work Plan
    - If playback_path provided: load PlaybackState and pass to the provider (OpenAI Responses for now). If record_path provided: attach recorder.
    - Left TODOs for AiCore/Anthropic/Vertex to adopt the same pattern.
 
-4) Provider retrofit: OpenAI Responses (IN PROGRESS)
+4) Provider retrofit: OpenAI Responses (DONE)
    - Imports updated to include APIRecorder and PlaybackState (DONE).
-   - Next steps:
-     - Add fields to OpenAIResponsesClient: recorder: Option<APIRecorder>, playback: Option<PlaybackState>.
-     - Add builders: with_recorder(path), with_playback(state).
-     - In send_with_retry: if playback is Some, call playback_request() and skip HTTP (no retries).
-     - Implement playback_request(): pull next session, iterate chunks, optionally sleep by (delta or 17ms), and feed each as "data: ..." lines into the existing process_sse_line(), emitting StreamingChunk callbacks.
-     - In try_send_request(): when streaming, call recorder.start_recording(request_json.clone()); during streaming, recorder.record_chunk(data) for each SSE line, and end recorder on completion.
-     - Ensure non-streaming path is unchanged except for recorder lifecycle.
+   - Added fields to OpenAIResponsesClient: recorder: Option<APIRecorder>, playback: Option<PlaybackState> (DONE).
+   - Added builder methods: with_recorder(path), with_playback(state) (DONE).
+   - In send_with_retry: if playback is Some, call playback_request() and skip HTTP (DONE).
+   - Implemented playback_request(): pulls next session, iterates chunks, optionally sleeps (17ms for fast mode or respects original timing), feeds chunks as "data: ..." lines into existing process_sse_line(), emitting StreamingChunk callbacks (DONE).
+   - In try_send_request(): added recorder.start_recording(request_json.clone()) before HTTP; during streaming, recorder.record_chunk(data) for each SSE line; recorder.end_recording() on completion (DONE).
+   - Non-streaming path updated to record entire response body and handle recorder lifecycle (DONE).
+   - All existing tests pass, validating backward compatibility (DONE).
 
-5) Remove anthropic_playback.rs (TODO)
+5) Remove anthropic_playback.rs (DONE)
    - After AnthropicClient has playback_state and we validate parity using the Anthropic provider’s own SSE parser, delete anthropic_playback.rs and route playback through the client itself.
+
+   - AnthropicClient extended with playback support using the same pattern as OpenAI Responses (DONE).
+   - Factory integration updated to wire playback_state to AnthropicClient (DONE).
+   - anthropic_playback.rs removed successfully (DONE).
 
 6) Extend to other providers (TODO)
    - VertexClient, AiCoreClient: mirror the same recorder and playback behavior.
@@ -95,6 +99,8 @@ Open Questions / Notes
 
 Current Status Snapshot
 - recording.rs: PlaybackState implemented; APIRecorder unchanged.
-- factory.rs: accepts playback_path/fast_playback; wires PlaybackState + recorder to OpenAI Responses; leaves TODOs for others.
-- openai_responses.rs: imports updated; next steps are to add fields, builder methods, playback_request(), and recorder hooks inside streaming path.
+- factory.rs: accepts playback_path/fast_playback; wires PlaybackState + recorder to OpenAI Responses and AnthropicClient; leaves TODOs for VertexClient and AiCoreClient.
+- openai_responses.rs: fully implemented with recording and playback support - fields, builder methods, playback_request(), and recorder hooks in both streaming and non-streaming paths.
+- anthropic.rs: fully implemented with playback support using the same pattern - fields, builder methods, playback_request(), and simplified playback chunk processor.
+- anthropic_playback.rs: removed (deprecated in favor of provider-integrated playback).
 - No UI changes yet.

@@ -1,6 +1,8 @@
 use crate::{
-    recording::APIRecorder, types::*, utils, ApiError, ApiErrorContext, LLMProvider,
-    RateLimitHandler, StreamingCallback, StreamingChunk,
+    recording::{APIRecorder, PlaybackState},
+    types::*,
+    utils, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
+    StreamingChunk,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -543,6 +545,7 @@ pub struct AnthropicClient {
     base_url: String,
     model: String,
     recorder: Option<APIRecorder>,
+    playback: Option<PlaybackState>,
 
     // Customization points
     auth_provider: Box<dyn AuthProvider>,
@@ -573,6 +576,7 @@ impl AnthropicClient {
             base_url,
             model,
             recorder: None,
+            playback: None,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
             message_converter: Box::new(DefaultMessageConverter::new()),
@@ -591,6 +595,7 @@ impl AnthropicClient {
             base_url,
             model,
             recorder: Some(APIRecorder::new(recording_path)),
+            playback: None,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
             message_converter: Box::new(DefaultMessageConverter::new()),
@@ -610,6 +615,7 @@ impl AnthropicClient {
             base_url,
             model,
             recorder: None,
+            playback: None,
             auth_provider,
             request_customizer,
             message_converter,
@@ -619,6 +625,12 @@ impl AnthropicClient {
     /// Set recorder for existing client
     pub fn with_recorder<P: AsRef<std::path::Path>>(mut self, recording_path: P) -> Self {
         self.recorder = Some(APIRecorder::new(recording_path));
+        self
+    }
+
+    /// Add playback capability to the client
+    pub fn with_playback(mut self, playback_state: PlaybackState) -> Self {
+        self.playback = Some(playback_state);
         self
     }
 
@@ -633,6 +645,11 @@ impl AnthropicClient {
         streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
     ) -> Result<LLMResponse> {
+        // If playback is enabled, skip HTTP and use recorded data
+        if self.playback.is_some() {
+            return self.playback_request(request, streaming_callback).await;
+        }
+
         let mut attempts = 0;
 
         loop {
@@ -658,6 +675,233 @@ impl AnthropicClient {
                 }
             }
         }
+    }
+
+    async fn playback_request(
+        &mut self,
+        _request: &serde_json::Value,
+        streaming_callback: Option<&StreamingCallback>,
+    ) -> Result<LLMResponse> {
+        use std::time::{Duration, Instant};
+        use tokio::time::sleep;
+
+        let playback = self.playback.as_ref().unwrap();
+
+        // Get the next session from the recording
+        let session = playback
+            .next_session()
+            .ok_or_else(|| anyhow::anyhow!("No more recorded sessions available"))?;
+
+        debug!("Playing back session with {} chunks", session.chunks.len());
+
+        if let Some(callback) = streaming_callback {
+            // Stream the recorded chunks
+            let mut content_blocks = Vec::new();
+            let mut usage = AnthropicUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            };
+            let mut current_content = String::new();
+
+            let start_time = Instant::now();
+
+            for chunk in &session.chunks {
+                // Handle timing - either fast playback or respect original timing
+                if !playback.fast {
+                    let elapsed = start_time.elapsed();
+                    let expected_time = Duration::from_millis(chunk.timestamp_ms);
+
+                    if elapsed < expected_time {
+                        let sleep_duration = expected_time - elapsed;
+                        sleep(sleep_duration).await;
+                    }
+                } else {
+                    // Fast playback - small delay to simulate streaming
+                    sleep(Duration::from_millis(17)).await; // ~60fps
+                }
+
+                // Process the recorded SSE line for playback
+                self.process_playback_chunk(
+                    &chunk.data,
+                    &mut content_blocks,
+                    &mut usage,
+                    &mut current_content,
+                    callback,
+                )?;
+            }
+
+            callback(&StreamingChunk::StreamingComplete)?;
+
+            Ok(LLMResponse {
+                content: content_blocks,
+                usage: Usage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                    cache_read_input_tokens: usage.cache_read_input_tokens,
+                },
+                rate_limit_info: None,
+            })
+        } else {
+            // Non-streaming playback - parse the request from the session
+            // For Anthropic, the recorded data should be the final response
+            let anthropic_response: AnthropicResponse =
+                serde_json::from_value(session.request.clone())
+                    .map_err(|e| anyhow::anyhow!("Failed to parse recorded response: {e}"))?;
+
+            let content = anthropic_response.content;
+            let usage = Usage {
+                input_tokens: anthropic_response.usage.input_tokens,
+                output_tokens: anthropic_response.usage.output_tokens,
+                cache_creation_input_tokens: anthropic_response.usage.cache_creation_input_tokens,
+                cache_read_input_tokens: anthropic_response.usage.cache_read_input_tokens,
+            };
+
+            Ok(LLMResponse {
+                content,
+                usage,
+                rate_limit_info: None,
+            })
+        }
+    }
+
+    /// Process a single recorded chunk for playback (simplified version of the streaming parser)
+    fn process_playback_chunk(
+        &self,
+        data: &str,
+        blocks: &mut Vec<ContentBlock>,
+        usage: &mut AnthropicUsage,
+        current_content: &mut String,
+        callback: &StreamingCallback,
+    ) -> Result<()> {
+        debug!("Processing playback chunk: {}", data);
+
+        if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
+            match event {
+                StreamEvent::ContentBlockStart { content_block, .. } => {
+                    current_content.clear();
+                    let block = match content_block.block_type.as_str() {
+                        "thinking" => {
+                            if let Some(thinking) = content_block.thinking {
+                                current_content.push_str(&thinking);
+                            }
+                            ContentBlock::Thinking {
+                                thinking: current_content.clone(),
+                                signature: content_block.signature.unwrap_or_default(),
+                                start_time: Some(SystemTime::now()),
+                                end_time: None,
+                            }
+                        }
+                        "text" => {
+                            if let Some(text) = content_block.text {
+                                current_content.push_str(&text);
+                            }
+                            ContentBlock::Text {
+                                text: current_content.clone(),
+                                start_time: Some(SystemTime::now()),
+                                end_time: None,
+                            }
+                        }
+                        "tool_use" => {
+                            let input_json = if let Some(input) = &content_block.input {
+                                input.clone()
+                            } else {
+                                serde_json::Value::Null
+                            };
+
+                            ContentBlock::ToolUse {
+                                id: content_block.id.unwrap_or_default(),
+                                name: content_block.name.unwrap_or_default(),
+                                input: input_json,
+                                start_time: Some(SystemTime::now()),
+                                end_time: None,
+                            }
+                        }
+                        _ => ContentBlock::Text {
+                            text: String::new(),
+                            start_time: Some(SystemTime::now()),
+                            end_time: None,
+                        },
+                    };
+                    blocks.push(block);
+                }
+                StreamEvent::ContentBlockDelta { delta, .. } => match &delta {
+                    ContentDelta::Thinking {
+                        thinking: delta_text,
+                    } => {
+                        current_content.push_str(delta_text);
+                        callback(&StreamingChunk::Thinking(delta_text.clone()))?;
+                    }
+                    ContentDelta::Text { text: delta_text } => {
+                        current_content.push_str(delta_text);
+                        callback(&StreamingChunk::Text(delta_text.clone()))?;
+                    }
+                    ContentDelta::InputJson { partial_json } => {
+                        let (tool_name, tool_id) = blocks.last().map_or((None, None), |block| {
+                            if let ContentBlock::ToolUse { name, id, .. } = block {
+                                (Some(name.clone()), Some(id.clone()))
+                            } else {
+                                (None, None)
+                            }
+                        });
+
+                        current_content.push_str(partial_json);
+                        callback(&StreamingChunk::InputJson {
+                            content: partial_json.clone(),
+                            tool_name,
+                            tool_id,
+                        })?;
+                    }
+                    _ => {}
+                },
+                StreamEvent::ContentBlockStop { .. } => {
+                    let now = SystemTime::now();
+                    if let Some(block) = blocks.last_mut() {
+                        match block {
+                            ContentBlock::Thinking {
+                                thinking, end_time, ..
+                            } => {
+                                *thinking = current_content.clone();
+                                *end_time = Some(now);
+                            }
+                            ContentBlock::Text { text, end_time, .. } => {
+                                *text = current_content.clone();
+                                *end_time = Some(now);
+                            }
+                            ContentBlock::ToolUse {
+                                input, end_time, ..
+                            } => {
+                                if let Ok(json) = serde_json::from_str(current_content) {
+                                    *input = json;
+                                }
+                                *end_time = Some(now);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                StreamEvent::MessageStart { message } => {
+                    usage.input_tokens = message.usage.input_tokens;
+                    usage.output_tokens = message.usage.output_tokens;
+                    usage.cache_creation_input_tokens = message.usage.cache_creation_input_tokens;
+                    usage.cache_read_input_tokens = message.usage.cache_read_input_tokens;
+                }
+                StreamEvent::MessageDelta { usage: delta_usage } => {
+                    usage.input_tokens = usage.input_tokens.max(delta_usage.input_tokens);
+                    usage.output_tokens = delta_usage.output_tokens;
+                    usage.cache_creation_input_tokens = usage
+                        .cache_creation_input_tokens
+                        .max(delta_usage.cache_creation_input_tokens);
+                    usage.cache_read_input_tokens = usage
+                        .cache_read_input_tokens
+                        .max(delta_usage.cache_read_input_tokens);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     async fn try_send_request(
