@@ -28,6 +28,7 @@ pub mod openai;
 pub mod openai_responses;
 pub mod openrouter;
 pub mod recording;
+pub mod streaming;
 pub mod types;
 pub mod vertex;
 

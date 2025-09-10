@@ -45,6 +45,7 @@
 
 use crate::{
     recording::{APIRecorder, PlaybackState},
+    streaming::{ChunkStream, HttpChunkStream, PlaybackChunkStream},
     types::*,
     utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
 };
@@ -52,8 +53,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
-use tokio::time::sleep;
+use std::time::Duration;
 use tracing::{debug, warn};
 
 /// State tracking for reasoning during streaming
@@ -648,83 +648,16 @@ impl OpenAIResponsesClient {
         debug!("Playing back session with {} chunks", session.chunks.len());
 
         if let Some(callback) = streaming_callback {
-            // Stream the recorded chunks
-            let mut content_blocks = Vec::new();
-            let mut usage = Usage::zero();
-            let mut active_function_calls: std::collections::HashMap<String, (String, String)> =
-                std::collections::HashMap::new();
-            let mut block_start_times: std::collections::HashMap<String, std::time::SystemTime> =
-                std::collections::HashMap::new();
-            let mut reasoning_state = ReasoningState::default();
+            // Create a playback chunk stream
+            let mut chunk_stream = PlaybackChunkStream::new(session.chunks.clone(), playback.fast);
+            let rate_limits = ResponsesRateLimitInfo::default();
 
-            let start_time = Instant::now();
-
-            for chunk in &session.chunks {
-                // Handle timing - either fast playback or respect original timing
-                if !playback.fast {
-                    let elapsed = start_time.elapsed();
-                    let expected_time = Duration::from_millis(chunk.timestamp_ms);
-
-                    if elapsed < expected_time {
-                        let sleep_duration = expected_time - elapsed;
-                        sleep(sleep_duration).await;
-                    }
-                } else {
-                    // Fast playback - small delay to simulate streaming
-                    sleep(Duration::from_millis(17)).await; // ~60fps
-                }
-
-                // Process the recorded SSE line through the same parser
-                self.process_sse_line(
-                    &format!("data: {}", chunk.data),
-                    &mut content_blocks,
-                    &mut usage,
-                    &mut active_function_calls,
-                    &mut block_start_times,
-                    &mut reasoning_state,
-                    callback,
-                )?;
-            }
-
-            // Create a RedactedThinking block from collected reasoning items if any
-            if !reasoning_state.completed_items.is_empty()
-                && !reasoning_state.received_completed_reasoning
-            {
-                let summary_json: Vec<serde_json::Value> = reasoning_state
-                    .completed_items
-                    .iter()
-                    .map(|item| {
-                        serde_json::json!({
-                            "type": "summary_text",
-                            "text": format!("**{}**: {}",
-                                item.title,
-                                item.content.as_deref().unwrap_or("")
-                            )
-                        })
-                    })
-                    .collect();
-
-                content_blocks.push(ContentBlock::RedactedThinking {
-                    id: reasoning_state
-                        .reasoning_block_id
-                        .unwrap_or_else(|| "reasoning_stream".to_string()),
-                    summary: summary_json,
-                    summary_items: reasoning_state.completed_items.clone(),
-                    data: "".to_string(),
-                    start_time: None,
-                    end_time: None,
-                });
-            }
-
-            callback(&StreamingChunk::StreamingComplete)?;
-
-            Ok(LLMResponse {
-                content: content_blocks,
-                usage,
-                rate_limit_info: None,
-            })
+            // Use the same streaming processing logic
+            self.process_chunk_stream(&mut chunk_stream, callback, rate_limits)
+                .await
+                .map(|(response, _)| response)
         } else {
-            // Non-streaming playback - parse the request from the session
+            // Non-streaming playback - parse the recorded response
             let responses_response: ResponsesResponse =
                 serde_json::from_value(session.request.clone())
                     .map_err(|e| anyhow::anyhow!("Failed to parse recorded response: {e}"))?;
@@ -861,7 +794,18 @@ impl OpenAIResponsesClient {
 
     async fn handle_streaming_response(
         &self,
-        mut response: Response,
+        response: Response,
+        callback: &StreamingCallback,
+        rate_limits: ResponsesRateLimitInfo,
+    ) -> Result<(LLMResponse, ResponsesRateLimitInfo)> {
+        let mut chunk_stream = HttpChunkStream::new(response);
+        self.process_chunk_stream(&mut chunk_stream, callback, rate_limits)
+            .await
+    }
+
+    async fn process_chunk_stream(
+        &self,
+        chunk_stream: &mut dyn ChunkStream,
         callback: &StreamingCallback,
         rate_limits: ResponsesRateLimitInfo,
     ) -> Result<(LLMResponse, ResponsesRateLimitInfo)> {
@@ -875,7 +819,7 @@ impl OpenAIResponsesClient {
             std::collections::HashMap::new(); // item_id -> start_time
         let mut reasoning_state = ReasoningState::default();
 
-        while let Some(chunk) = response.chunk().await? {
+        while let Some(chunk) = chunk_stream.next_chunk().await? {
             byte_buffer.extend_from_slice(&chunk);
 
             // Try to decode as much as possible
