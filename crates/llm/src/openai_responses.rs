@@ -44,13 +44,16 @@
 //! be automatically included in subsequent requests to maintain reasoning context in stateless mode.
 
 use crate::{
-    types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
+    recording::{APIRecorder, PlaybackState, RecordedChunk, RecordingSession},
+    types::*,
+    utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
 };
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::time::sleep;
 use tracing::{debug, warn};
 
 /// State tracking for reasoning during streaming
