@@ -235,9 +235,8 @@ impl Tool for ReadFilesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::{MockExplorer, MockProjectManager};
+    use crate::tests::mocks::ToolTestFixture;
     use crate::tools::core::ToolRegistry;
-    use crate::types::WorkingMemory;
 
     #[tokio::test]
     async fn test_read_files_output_rendering() {
@@ -273,33 +272,16 @@ mod tests {
             .get("read_files")
             .expect("read_files tool should be registered");
 
-        // Create test files
-        let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("./root/test.txt"),
-            "Line 1\nLine 2\nLine 3\nLine 4\nLine 5".to_string(),
-        );
-        files.insert(
-            PathBuf::from("./root/test2.txt"),
-            "Another file content".to_string(),
-        );
-
-        // Create a mock explorer with these files
-        let explorer = MockExplorer::new(files, None);
-
-        // Create working memory
-        let mut working_memory = WorkingMemory::default();
-
-        // Create a tool context with working memory
-        let mut context = ToolContext::<'_> {
-            project_manager: &MockProjectManager::default().with_project_path(
-                "test-project",
-                PathBuf::from("./root"),
-                Box::new(explorer),
+        // Create test fixture with files and working memory
+        let mut fixture = ToolTestFixture::with_files(vec![
+            (
+                "test.txt".to_string(),
+                "Line 1\nLine 2\nLine 3\nLine 4\nLine 5".to_string(),
             ),
-            command_executor: &crate::utils::DefaultCommandExecutor,
-            working_memory: Some(&mut working_memory),
-        };
+            ("test2.txt".to_string(), "Another file content".to_string()),
+        ])
+        .with_working_memory();
+        let mut context = fixture.context();
 
         // Parameters for read_files
         let mut params = json!({
@@ -318,6 +300,7 @@ mod tests {
         assert!(output.contains("Successfully loaded"));
 
         // Verify that the files were added to working memory
+        let working_memory = fixture.working_memory().unwrap();
         assert_eq!(working_memory.loaded_resources.len(), 2);
 
         // Check that both files are in the working memory

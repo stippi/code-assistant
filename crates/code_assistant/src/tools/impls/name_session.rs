@@ -93,19 +93,15 @@ impl Tool for NameSessionTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::{MockCommandExecutor, MockProjectManager};
-    use crate::tools::core::ToolContext;
+    use crate::tests::mocks::ToolTestFixture;
 
     #[tokio::test]
     async fn test_name_session_basic() {
         let tool = NameSessionTool;
-        let mut project_manager = MockProjectManager::new();
-        let mut command_executor = MockCommandExecutor::new(vec![]);
-        let mut context = ToolContext {
-            project_manager: &mut project_manager,
-            command_executor: &mut command_executor,
-            working_memory: None,
-        };
+        let mut fixture = ToolTestFixture::new()
+            .with_ui()
+            .with_tool_id("test-tool-1".to_string());
+        let mut context = fixture.context();
 
         let mut input = NameSessionInput {
             title: "Test Session Title".to_string(),
@@ -119,13 +115,10 @@ mod tests {
     #[tokio::test]
     async fn test_name_session_empty_title() {
         let tool = NameSessionTool;
-        let mut project_manager = MockProjectManager::new();
-        let mut command_executor = MockCommandExecutor::new(vec![]);
-        let mut context = ToolContext {
-            project_manager: &mut project_manager,
-            command_executor: &mut command_executor,
-            working_memory: None,
-        };
+        let mut fixture = ToolTestFixture::new()
+            .with_ui()
+            .with_tool_id("test-tool-1".to_string());
+        let mut context = fixture.context();
 
         let mut input = NameSessionInput {
             title: "   ".to_string(), // Only whitespace
@@ -138,13 +131,10 @@ mod tests {
     #[tokio::test]
     async fn test_name_session_long_title() {
         let tool = NameSessionTool;
-        let mut project_manager = MockProjectManager::new();
-        let mut command_executor = MockCommandExecutor::new(vec![]);
-        let mut context = ToolContext {
-            project_manager: &mut project_manager,
-            command_executor: &mut command_executor,
-            working_memory: None,
-        };
+        let mut fixture = ToolTestFixture::new()
+            .with_ui()
+            .with_tool_id("test-tool-1".to_string());
+        let mut context = fixture.context();
 
         let long_title = "A".repeat(150);
         let mut input = NameSessionInput { title: long_title };

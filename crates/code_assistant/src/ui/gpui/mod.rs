@@ -997,6 +997,12 @@ impl Gpui {
                     })
                     .expect("Failed to update entity");
                 }
+                DisplayFragment::ToolOutput { tool_id, chunk } => {
+                    cx.update_entity(container, |container, cx| {
+                        container.append_tool_output(tool_id, chunk, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
                 DisplayFragment::ReasoningComplete => {
                     cx.update_entity(container, |container, cx| {
                         container.complete_reasoning(cx);
@@ -1316,6 +1322,22 @@ impl UserInterface for Gpui {
                     id: id.clone(),
                     delta: delta.clone(),
                 });
+            }
+            DisplayFragment::ToolOutput { tool_id, chunk } => {
+                // For now, we can append this as tool output to the existing tool block
+                // This could be enhanced later to show streaming output in real-time
+                if tool_id.is_empty() {
+                    warn!(
+                        "StreamingProcessor provided empty tool ID for ToolOutput - this is a bug!"
+                    );
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Empty tool ID for ToolOutput".to_string(),
+                    )));
+                }
+
+                // For now, just log the streaming output - we'll implement proper UI streaming later
+                trace!("Tool {} streaming output: {}", tool_id, chunk);
             }
             DisplayFragment::ReasoningComplete => {
                 self.push_event(UiEvent::CompleteReasoning);

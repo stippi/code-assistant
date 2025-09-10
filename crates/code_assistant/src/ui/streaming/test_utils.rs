@@ -157,6 +157,9 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
                     delta.chars().take(50).collect::<String>()
                 )
             }
+            DisplayFragment::ToolOutput { tool_id, chunk } => {
+                println!("  [{i}] ToolOutput(tool_id: {tool_id}, chunk: {chunk:?})")
+            }
             DisplayFragment::ReasoningComplete => println!("  [{i}] ReasoningComplete"),
         }
     }

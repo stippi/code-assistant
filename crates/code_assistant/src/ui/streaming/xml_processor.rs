@@ -746,6 +746,10 @@ impl XmlStreamProcessor {
                             buffered_fragments.push(fragment);
                         }
                     }
+                    DisplayFragment::ToolOutput { .. } => {
+                        // Tool output - emit immediately (we've already decided to allow the tool)
+                        self.ui.display_fragment(&fragment)?;
+                    }
                     DisplayFragment::ReasoningComplete => {
                         // Reasoning complete - buffer it
                         if let StreamingState::BufferingAfterTool {

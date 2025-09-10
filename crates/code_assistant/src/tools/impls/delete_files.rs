@@ -173,9 +173,7 @@ impl Tool for DeleteFilesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::{MockExplorer, MockProjectManager};
-    use crate::types::WorkingMemory;
-    use std::collections::HashMap;
+    use crate::tests::mocks::ToolTestFixture;
 
     #[tokio::test]
     async fn test_delete_files_output_rendering() {
@@ -202,49 +200,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_files_working_memory_update() -> Result<()> {
-        // Create test files
-        let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("./root/file1.txt"),
-            "File 1 content".to_string(),
-        );
-        files.insert(
-            PathBuf::from("./root/file2.txt"),
-            "File 2 content".to_string(),
-        );
+        // Create test fixture with working memory
+        let mut fixture = ToolTestFixture::with_files(vec![
+            ("file1.txt".to_string(), "File 1 content".to_string()),
+            ("file2.txt".to_string(), "File 2 content".to_string()),
+        ])
+        .with_working_memory();
 
-        // Create a mock explorer with these files
-        let explorer = MockExplorer::new(files, None);
+        // Pre-populate working memory with files
+        {
+            let working_memory = fixture.working_memory_mut().unwrap();
+            working_memory.loaded_resources.insert(
+                ("test-project".to_string(), PathBuf::from("file1.txt")),
+                crate::types::LoadedResource::File("File 1 content".to_string()),
+            );
+            working_memory.loaded_resources.insert(
+                ("test-project".to_string(), PathBuf::from("file2.txt")),
+                crate::types::LoadedResource::File("File 2 content".to_string()),
+            );
+        }
 
-        // Create a mock project manager
-        let project_manager = MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(explorer),
-        );
-
-        // Create a command executor
-        let command_executor = crate::utils::DefaultCommandExecutor;
-
-        // Create working memory with loaded resources
-        let mut working_memory = WorkingMemory::default();
-
-        // Add files to working memory
-        working_memory.loaded_resources.insert(
-            ("test-project".to_string(), PathBuf::from("file1.txt")),
-            crate::types::LoadedResource::File("File 1 content".to_string()),
-        );
-        working_memory.loaded_resources.insert(
-            ("test-project".to_string(), PathBuf::from("file2.txt")),
-            crate::types::LoadedResource::File("File 2 content".to_string()),
-        );
-
-        // Create a tool context with working memory
-        let mut context = ToolContext {
-            project_manager: &project_manager,
-            command_executor: &command_executor,
-            working_memory: Some(&mut working_memory),
-        };
+        let mut context = fixture.context();
 
         // Create input
         let mut input = DeleteFilesInput {
@@ -262,6 +238,7 @@ mod tests {
         assert!(result.failed.is_empty());
 
         // Verify working memory updates
+        let working_memory = fixture.working_memory().unwrap();
         assert_eq!(working_memory.loaded_resources.len(), 1);
         assert!(!working_memory
             .loaded_resources
@@ -275,32 +252,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_files_error_handling() -> Result<()> {
-        // Create test files (only one file)
-        let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("./root/existing.txt"),
+        // Create test fixture with one file
+        let mut fixture = ToolTestFixture::with_files(vec![(
+            "existing.txt".to_string(),
             "File content".to_string(),
-        );
-
-        // Create a mock explorer
-        let explorer = MockExplorer::new(files, None);
-
-        // Create a mock project manager
-        let project_manager = MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(explorer),
-        );
-
-        // Create a command executor
-        let command_executor = crate::utils::DefaultCommandExecutor;
-
-        // Create a tool context
-        let mut context = ToolContext {
-            project_manager: &project_manager,
-            command_executor: &command_executor,
-            working_memory: None,
-        };
+        )]);
+        let mut context = fixture.context();
 
         // Create input with both existing and non-existing files
         let mut input = DeleteFilesInput {

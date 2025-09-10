@@ -1,4 +1,5 @@
 use crate::config::ProjectManager;
+use crate::tools::core::tool::ToolContext;
 use crate::types::*;
 use crate::ui::{UIError, UiEvent, UserInterface};
 use crate::utils::{CommandExecutor, CommandOutput};
@@ -160,6 +161,25 @@ impl CommandExecutor for MockCommandExecutor {
             .pop()
             .unwrap_or(Err(anyhow::anyhow!("No more mock responses")))
     }
+
+    async fn execute_streaming(
+        &self,
+        command_line: &str,
+        working_dir: Option<&PathBuf>,
+        callback: Option<&dyn crate::utils::command::StreamingCallback>,
+    ) -> Result<CommandOutput> {
+        // For mock, just call the regular execute and simulate streaming if callback provided
+        let result = self.execute(command_line, working_dir).await?;
+
+        if let Some(callback) = callback {
+            // Simulate streaming by sending the output in chunks
+            for line in result.output.lines() {
+                let _ = callback.on_output_chunk(&format!("{}\n", line));
+            }
+        }
+
+        Ok(result)
+    }
 }
 
 // Create a mock with successful execution
@@ -176,6 +196,23 @@ pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
         success: false,
         output: "Command failed: permission denied".to_string(),
     })])
+}
+
+// Helper to create a test ToolContext with all required fields
+pub fn create_test_tool_context<'a>(
+    project_manager: &'a dyn crate::config::ProjectManager,
+    command_executor: &'a dyn crate::utils::CommandExecutor,
+    working_memory: Option<&'a mut crate::types::WorkingMemory>,
+    ui: Option<&'a dyn crate::ui::UserInterface>,
+    tool_id: Option<String>,
+) -> crate::tools::core::ToolContext<'a> {
+    crate::tools::core::ToolContext {
+        project_manager,
+        command_executor,
+        working_memory,
+        ui,
+        tool_id,
+    }
 }
 
 // Mock UI
@@ -220,6 +257,9 @@ impl UserInterface for MockUI {
                     .push(format!("  {name}: {value}"));
             }
             crate::ui::DisplayFragment::ToolEnd { .. } => {}
+            crate::ui::DisplayFragment::ToolOutput { chunk, .. } => {
+                self.streaming.lock().unwrap().push(chunk.clone());
+            }
             crate::ui::DisplayFragment::ReasoningSummary { delta, .. } => {
                 self.streaming.lock().unwrap().push(delta.clone());
             }
@@ -248,6 +288,12 @@ impl UserInterface for MockUI {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+impl MockUI {
+    pub fn get_streaming_output(&self) -> Vec<String> {
+        self.streaming.lock().unwrap().clone()
     }
 }
 
@@ -873,5 +919,169 @@ impl ProjectManager for MockProjectManager {
             Some(explorer) => Ok(explorer.clone_box()),
             None => Err(anyhow::anyhow!("Project {} not found", name)),
         }
+    }
+}
+
+/// Test fixture that provides a convenient way to create ToolContext instances for tests
+/// while maintaining access to the underlying mocks for assertions
+pub struct ToolTestFixture {
+    project_manager: MockProjectManager,
+    command_executor: MockCommandExecutor,
+    working_memory: Option<WorkingMemory>,
+    ui: Option<MockUI>,
+    tool_id: Option<String>,
+}
+
+impl ToolTestFixture {
+    /// Create a new test fixture with default mocks
+    pub fn new() -> Self {
+        Self {
+            project_manager: MockProjectManager::new(),
+            command_executor: MockCommandExecutor::new(vec![]),
+            working_memory: None,
+            ui: None,
+            tool_id: None,
+        }
+    }
+
+    /// Create a test fixture with specific files in the default project
+    pub fn with_files(files: Vec<(String, String)>) -> Self {
+        let mut file_map = HashMap::new();
+        let mut children = HashMap::new();
+
+        for (path, content) in files {
+            let full_path = PathBuf::from(format!("./root/{}", path));
+            file_map.insert(full_path, content);
+
+            // Add to file tree
+            if path.contains('/') {
+                // Handle nested files in directories
+                let parts: Vec<&str> = path.split('/').collect();
+                if parts.len() > 1 {
+                    let dir_name = parts[0];
+                    if !children.contains_key(dir_name) {
+                        children.insert(
+                            dir_name.to_string(),
+                            FileTreeEntry {
+                                name: dir_name.to_string(),
+                                entry_type: FileSystemEntryType::Directory,
+                                children: HashMap::new(),
+                                is_expanded: true,
+                            },
+                        );
+                    }
+                }
+            } else {
+                // Handle files in root directory
+                children.insert(
+                    path.clone(),
+                    FileTreeEntry {
+                        name: path,
+                        entry_type: FileSystemEntryType::File,
+                        children: HashMap::new(),
+                        is_expanded: false,
+                    },
+                );
+            }
+        }
+
+        let file_tree = Some(FileTreeEntry {
+            name: "./root".to_string(),
+            entry_type: FileSystemEntryType::Directory,
+            children,
+            is_expanded: true,
+        });
+
+        let explorer = MockExplorer::new(file_map, file_tree);
+        let project_manager = MockProjectManager::default().with_project_path(
+            "test-project",
+            PathBuf::from("./root"),
+            Box::new(explorer),
+        );
+
+        Self {
+            project_manager,
+            command_executor: MockCommandExecutor::new(vec![]),
+            working_memory: None,
+            ui: None,
+            tool_id: None,
+        }
+    }
+
+    /// Create a test fixture with specific command responses
+    pub fn with_command_responses(responses: Vec<Result<CommandOutput, anyhow::Error>>) -> Self {
+        Self {
+            project_manager: MockProjectManager::new(),
+            command_executor: MockCommandExecutor::new(responses),
+            working_memory: None,
+            ui: None,
+            tool_id: None,
+        }
+    }
+
+    /// Create a test fixture with both files and command responses
+    #[allow(dead_code)]
+    pub fn with_files_and_commands(
+        files: Vec<(String, String)>,
+        responses: Vec<Result<CommandOutput, anyhow::Error>>,
+    ) -> Self {
+        let mut fixture = Self::with_files(files);
+        fixture.command_executor = MockCommandExecutor::new(responses);
+        fixture
+    }
+
+    /// Enable working memory for this fixture
+    pub fn with_working_memory(mut self) -> Self {
+        self.working_memory = Some(WorkingMemory::default());
+        self
+    }
+
+    /// Add a UI mock to this fixture
+    pub fn with_ui(mut self) -> Self {
+        self.ui = Some(MockUI::default());
+        self
+    }
+
+    /// Set a tool ID for this fixture
+    pub fn with_tool_id(mut self, tool_id: String) -> Self {
+        self.tool_id = Some(tool_id);
+        self
+    }
+
+    /// Create a ToolContext from this fixture
+    pub fn context(&mut self) -> ToolContext {
+        ToolContext {
+            project_manager: &self.project_manager,
+            command_executor: &self.command_executor,
+            working_memory: self.working_memory.as_mut(),
+            ui: self.ui.as_ref().map(|ui| ui as &dyn UserInterface),
+            tool_id: self.tool_id.clone(),
+        }
+    }
+
+    /// Get a reference to the command executor for assertions
+    pub fn command_executor(&self) -> &MockCommandExecutor {
+        &self.command_executor
+    }
+
+    /// Get a reference to the project manager for assertions
+    #[allow(dead_code)]
+    pub fn project_manager(&self) -> &MockProjectManager {
+        &self.project_manager
+    }
+
+    /// Get a reference to the working memory for assertions
+    pub fn working_memory(&self) -> Option<&WorkingMemory> {
+        self.working_memory.as_ref()
+    }
+
+    /// Get a mutable reference to the working memory for modifications
+    pub fn working_memory_mut(&mut self) -> Option<&mut WorkingMemory> {
+        self.working_memory.as_mut()
+    }
+
+    /// Get a reference to the UI mock for assertions
+    pub fn ui(&self) -> Option<&MockUI> {
+        self.ui.as_ref()
     }
 }

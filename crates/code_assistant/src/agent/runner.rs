@@ -1100,6 +1100,8 @@ impl Agent {
             project_manager: self.project_manager.as_ref(),
             command_executor: self.command_executor.as_ref(),
             working_memory: Some(&mut self.working_memory),
+            ui: Some(self.ui.as_ref()),
+            tool_id: Some(tool_request.id.clone()),
         };
 
         // Execute the tool - could fail with ParseError or other errors

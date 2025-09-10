@@ -260,11 +260,13 @@ impl MessageHandler {
                 .get(&params.name)
                 .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", params.name))?;
 
-            // Create a tool context with references
+            // Create a tool context with references (no UI for MCP)
             let mut context = crate::tools::core::ToolContext {
                 project_manager: self.project_manager.as_ref(),
                 command_executor: self.command_executor.as_ref(),
                 working_memory: None,
+                ui: None,
+                tool_id: None,
             };
 
             // Invoke the tool

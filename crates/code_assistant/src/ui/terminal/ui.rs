@@ -2,7 +2,7 @@ use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
 use std::any::Any;
 use std::sync::Arc;
 use tokio::sync::{watch, Mutex};
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use super::renderer::ProductionTerminalRenderer;
 use super::state::AppState;
@@ -368,6 +368,21 @@ impl UserInterface for TerminalTuiUI {
                 self.push_event(UiEvent::AppendToThinkingBlock {
                     content: delta.clone(),
                 });
+            }
+            DisplayFragment::ToolOutput { tool_id, chunk } => {
+                if tool_id.is_empty() {
+                    warn!(
+                        "StreamingProcessor provided empty tool ID for ToolOutput - this is a bug!"
+                    );
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Empty tool ID for ToolOutput".to_string(),
+                    )));
+                }
+
+                // For terminal UI, we can append the streaming output to the tool
+                // For now, just log it - we'll implement proper streaming display later
+                trace!("Tool {} streaming output: {}", tool_id, chunk);
             }
             DisplayFragment::ReasoningComplete => {
                 // For terminal UI, no specific action needed for reasoning completion

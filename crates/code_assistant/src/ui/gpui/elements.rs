@@ -453,6 +453,35 @@ impl MessageContainer {
         }
     }
 
+    // Append streaming output to a tool block
+    pub fn append_tool_output(
+        &self,
+        tool_id: impl Into<String>,
+        chunk: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let tool_id = tool_id.into();
+        let chunk = chunk.into();
+        let elements = self.elements.lock().unwrap();
+
+        // Find the tool and append the output chunk
+        for element in elements.iter() {
+            cx.update_entity(element, |block_view, cx| {
+                if let Some(tool_block) = block_view.block.as_tool_mut() {
+                    if tool_block.id == tool_id {
+                        // Append to existing output or create new output
+                        if let Some(existing_output) = &mut tool_block.output {
+                            existing_output.push_str(&chunk);
+                        } else {
+                            tool_block.output = Some(chunk.clone());
+                        }
+                        cx.notify(); // Trigger re-render
+                    }
+                }
+            }); // Ignore errors from update_entity
+        }
+    }
+
     fn finish_any_thinking_blocks(&self, cx: &mut Context<Self>) {
         let elements = self.elements.lock().unwrap();
 

@@ -763,7 +763,8 @@ impl CaretStreamProcessor {
             match &fragment {
                 DisplayFragment::ToolName { .. }
                 | DisplayFragment::ToolParameter { .. }
-                | DisplayFragment::ToolEnd { .. } => {
+                | DisplayFragment::ToolEnd { .. }
+                | DisplayFragment::ToolOutput { .. } => {
                     // Skip tool-related fragments for hidden tools
                     return Ok(());
                 }
@@ -908,6 +909,10 @@ impl CaretStreamProcessor {
                         {
                             buffered_fragments.push(fragment);
                         }
+                    }
+                    DisplayFragment::ToolOutput { .. } => {
+                        // Tool output - emit immediately (we've already decided to allow the tool)
+                        self.ui.display_fragment(&fragment)?;
                     }
                     DisplayFragment::ReasoningComplete => {
                         // Reasoning complete - buffer it until we know if next tool is allowed
