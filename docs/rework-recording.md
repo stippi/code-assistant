@@ -75,7 +75,8 @@ Work Plan
 5) Remove anthropic_playback.rs (DONE)
    - After AnthropicClient has playback_state and we validate parity using the Anthropic provider’s own SSE parser, delete anthropic_playback.rs and route playback through the client itself.
 
-   - AnthropicClient extended with playback support using the same pattern as OpenAI Responses (DONE).
+   - AnthropicClient extended with playback support using the common streaming infrastructure (DONE).
+   - Eliminated duplicated SSE processing logic by using shared ChunkStream abstraction (DONE).
    - Factory integration updated to wire playback_state to AnthropicClient (DONE).
    - anthropic_playback.rs removed successfully (DONE).
 
@@ -98,9 +99,10 @@ Open Questions / Notes
 - Consider optional metadata in RecordingSession (e.g., provider name, model) for audit clarity.
 
 Current Status Snapshot
+- streaming.rs: common ChunkStream abstraction with HttpChunkStream and PlaybackChunkStream implementations (DONE).
 - recording.rs: PlaybackState implemented; APIRecorder unchanged.
 - factory.rs: accepts playback_path/fast_playback; wires PlaybackState + recorder to OpenAI Responses and AnthropicClient; leaves TODOs for VertexClient and AiCoreClient.
-- openai_responses.rs: fully implemented with recording and playback support - fields, builder methods, playback_request(), and recorder hooks in both streaming and non-streaming paths.
-- anthropic.rs: fully implemented with playback support using the same pattern - fields, builder methods, playback_request(), and simplified playback chunk processor.
+- openai_responses.rs: fully implemented using common streaming infrastructure - no duplicated SSE processing logic.
+- anthropic.rs: fully implemented using common streaming infrastructure - reuses existing SSE processing logic for both live and playback.
 - anthropic_playback.rs: removed (deprecated in favor of provider-integrated playback).
 - No UI changes yet.
