@@ -849,6 +849,7 @@ impl Agent {
         };
 
         // Log messages for debugging
+        /*
         for (i, message) in request.messages.iter().enumerate() {
             debug!("Message {}:", i);
             // Using the Display trait implementation for Message
@@ -861,6 +862,7 @@ impl Agent {
                 .join("\n");
             debug!("{}", indented);
         }
+        */
 
         // Create a StreamProcessor with the UI and request ID
         let parser = ParserRegistry::get(self.tool_syntax);

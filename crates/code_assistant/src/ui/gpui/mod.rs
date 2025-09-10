@@ -907,6 +907,16 @@ impl Gpui {
                     .expect("Failed to update entity");
                 }
             }
+            UiEvent::AppendToolOutput { tool_id, chunk } => {
+                let queue = self.message_queue.lock().unwrap();
+                if let Some(last) = queue.last() {
+                    // Append tool output to the last message container
+                    cx.update_entity(last, |message, cx| {
+                        message.append_tool_output(tool_id, chunk, cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
             UiEvent::DisplayError { message } => {
                 debug!("UI: DisplayError event with message: {}", message);
                 // Store the error message in state
@@ -1324,8 +1334,6 @@ impl UserInterface for Gpui {
                 });
             }
             DisplayFragment::ToolOutput { tool_id, chunk } => {
-                // For now, we can append this as tool output to the existing tool block
-                // This could be enhanced later to show streaming output in real-time
                 if tool_id.is_empty() {
                     warn!(
                         "StreamingProcessor provided empty tool ID for ToolOutput - this is a bug!"
@@ -1336,8 +1344,10 @@ impl UserInterface for Gpui {
                     )));
                 }
 
-                // For now, just log the streaming output - we'll implement proper UI streaming later
-                trace!("Tool {} streaming output: {}", tool_id, chunk);
+                self.push_event(UiEvent::AppendToolOutput {
+                    tool_id: tool_id.clone(),
+                    chunk: chunk.clone(),
+                });
             }
             DisplayFragment::ReasoningComplete => {
                 self.push_event(UiEvent::CompleteReasoning);

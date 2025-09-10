@@ -174,7 +174,7 @@ impl CommandExecutor for MockCommandExecutor {
         if let Some(callback) = callback {
             // Simulate streaming by sending the output in chunks
             for line in result.output.lines() {
-                let _ = callback.on_output_chunk(&format!("{}\n", line));
+                let _ = callback.on_output_chunk(&format!("{line}\n"));
             }
         }
 
@@ -191,6 +191,7 @@ pub fn create_command_executor_mock() -> MockCommandExecutor {
 }
 
 // Create a mock with failed execution
+#[allow(dead_code)]
 pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
     MockCommandExecutor::new(vec![Ok(CommandOutput {
         success: false,
@@ -199,6 +200,7 @@ pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
 }
 
 // Helper to create a test ToolContext with all required fields
+#[allow(dead_code)]
 pub fn create_test_tool_context<'a>(
     project_manager: &'a dyn crate::config::ProjectManager,
     command_executor: &'a dyn crate::utils::CommandExecutor,
@@ -950,7 +952,7 @@ impl ToolTestFixture {
         let mut children = HashMap::new();
 
         for (path, content) in files {
-            let full_path = PathBuf::from(format!("./root/{}", path));
+            let full_path = PathBuf::from(format!("./root/{path}"));
             file_map.insert(full_path, content);
 
             // Add to file tree

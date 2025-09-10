@@ -51,6 +51,8 @@ pub enum UiEvent {
     EndTool { id: String },
     /// Add an image to the message
     AddImage { media_type: String, data: String },
+    /// Append streaming tool output
+    AppendToolOutput { tool_id: String, chunk: String },
     /// Update the working memory view
     UpdateMemory { memory: WorkingMemory },
     /// Set all messages at once (for session loading, clears existing)

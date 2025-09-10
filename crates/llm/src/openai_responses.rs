@@ -499,8 +499,7 @@ impl OpenAIResponsesClient {
                         // Convert summary items to structured format first
                         let summary_items: Vec<ReasoningSummaryItem> = summary
                             .iter()
-                            .enumerate()
-                            .map(|(_index, s)| match s {
+                            .map(|s| match s {
                                 ReasoningSummary::SummaryText { text } => {
                                     let title = Self::parse_title_from_content(text)
                                         .unwrap_or_else(|| "Summary".to_string());

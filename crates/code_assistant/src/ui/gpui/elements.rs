@@ -228,16 +228,26 @@ impl MessageContainer {
                 if let Some(tool) = view.block.as_tool_mut() {
                     if tool.id == tool_id {
                         let was_generating = view.is_generating;
+                        let had_streaming_output =
+                            tool.output.as_ref().map(|o| !o.is_empty()).unwrap_or(false);
 
                         tool.status = status;
                         tool.status_message = message.clone();
-                        tool.output = output.clone();
+
+                        // Set output if provided and we don't already have streaming output
+                        if let Some(ref new_output) = output {
+                            if !had_streaming_output {
+                                tool.output = Some(new_output.clone());
+                            }
+                            // If we had streaming output, keep it (don't overwrite)
+                        }
 
                         // Update generating state based on tool completion
                         if status == ToolStatus::Success || status == ToolStatus::Error {
                             if was_generating {
-                                // Tool is transitioning from generating to not generating - trigger animation
-                                view.set_generating(false);
+                                // Auto-collapse all tools after completion
+                                // This keeps the UI clean regardless of streaming behavior
+                                tool.state = ToolBlockState::Collapsed;
                                 should_animate_collapse = true;
                             }
                             // If already not generating, no automatic state change
@@ -245,7 +255,6 @@ impl MessageContainer {
                             // For pending or in-progress status, ensure it's in generating state
                             if !view.is_generating {
                                 // Tool is transitioning back to generating - trigger animation
-                                view.set_generating(true);
                                 should_animate_expand = true;
                             }
                             // If already generating, no need to animate
@@ -255,6 +264,26 @@ impl MessageContainer {
                     }
                 }
             });
+
+            // Handle generating state changes after the closure
+            if should_animate_collapse || should_animate_expand {
+                element.update(cx, |view, cx| {
+                    if status == ToolStatus::Success || status == ToolStatus::Error {
+                        view.set_generating(false);
+                        if should_animate_collapse {
+                            view.start_expand_collapse_animation(false, cx);
+                        }
+                    } else if should_animate_expand {
+                        view.set_generating(true);
+                        view.start_expand_collapse_animation(true, cx);
+                    }
+                });
+            } else if updated && (status == ToolStatus::Success || status == ToolStatus::Error) {
+                // Just update generating state without animation
+                element.update(cx, |view, _cx| {
+                    view.set_generating(false);
+                });
+            }
 
             // Handle animation in a separate update to avoid borrowing conflicts
             if should_animate_collapse || should_animate_expand {
@@ -500,17 +529,6 @@ impl MessageContainer {
         }
     }
 
-    /// Set the generating state for the most recent block
-    pub fn set_block_generating(&self, generating: bool, cx: &mut Context<Self>) {
-        let elements = self.elements.lock().unwrap();
-        if let Some(last) = elements.last() {
-            last.update(cx, |view, cx| {
-                view.set_generating(generating);
-                cx.notify();
-            });
-        }
-    }
-
     /// Update reasoning summary for the most recent thinking block
     pub fn update_reasoning_summary(&self, id: String, delta: String, cx: &mut Context<Self>) {
         let mut elements = self.elements.lock().unwrap();
@@ -628,11 +646,6 @@ impl BlockView {
     /// Set the generating state of this block
     pub fn set_generating(&mut self, generating: bool) {
         self.is_generating = generating;
-    }
-
-    /// Check if this block is currently generating
-    pub fn is_generating(&self) -> bool {
-        self.is_generating
     }
 
     /// Check if this block can toggle expansion (some blocks can't while generating)
@@ -1217,8 +1230,7 @@ impl Render for BlockView {
                                     let content_height_rc = self.content_height.clone();
                                     let has_expandable_content = !fullwidth_params.is_empty() ||
                                         has_virtual_elements ||
-                                        (!self.is_generating &&
-                                         block.output.as_ref().is_some_and(|o| !o.is_empty()));
+                                        block.output.as_ref().is_some_and(|o| !o.is_empty());
 
                                     if has_expandable_content && (self.is_generating || block.state != ToolBlockState::Collapsed || scale > 0.0) {
                                         elements.push(
@@ -1282,27 +1294,39 @@ impl Render for BlockView {
                                                                 );
                                                             }
 
-                                                            // Output with consistent rendering (only show if not generating)
+                                                            // Smart output rendering based on streaming vs batch
                                                             if let Some(output_content) = &block.output {
-                                                                if !output_content.is_empty() && !self.is_generating {
-                                                                    let output_color =
-                                                                        if block.status == crate::ui::ToolStatus::Error {
-                                                                            cx.theme().danger
-                                                                        } else {
-                                                                            cx.theme().foreground
-                                                                        };
+                                                                if !output_content.is_empty() {
+                                                                    let should_show_output = if self.is_generating {
+                                                                        // While generating: show output only if we have any
+                                                                        // (This means we received ToolOutput fragments)
+                                                                        true
+                                                                    } else {
+                                                                        // After completion: show output only when expanded
+                                                                        // (User can manually expand to see batch output)
+                                                                        block.state == ToolBlockState::Expanded
+                                                                    };
 
-                                                                    expandable_elements.push(
-                                                                        div()
-                                                                            .p_2()
-                                                                            .mt_1()
-                                                                            .w_full()
-                                                                            .text_color(output_color)
-                                                                            .text_size(px(13.))
-                                                                            .whitespace_normal()
-                                                                            .child(output_content.clone())
-                                                                            .into_any(),
-                                                                    );
+                                                                    if should_show_output {
+                                                                        let output_color =
+                                                                            if block.status == crate::ui::ToolStatus::Error {
+                                                                                cx.theme().danger
+                                                                            } else {
+                                                                                cx.theme().foreground
+                                                                            };
+
+                                                                        expandable_elements.push(
+                                                                            div()
+                                                                                .p_2()
+                                                                                .mt_1()
+                                                                                .w_full()
+                                                                                .text_color(output_color)
+                                                                                .text_size(px(13.))
+                                                                                .whitespace_normal()
+                                                                                .child(output_content.clone())
+                                                                                .into_any(),
+                                                                        );
+                                                                    }
                                                                 }
                                                             }
 
