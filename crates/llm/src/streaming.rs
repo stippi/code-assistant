@@ -83,9 +83,9 @@ impl ChunkStream for PlaybackChunkStream {
             tokio::time::sleep(Duration::from_millis(17)).await; // ~60fps
         }
 
-        let sse_line = format!("data: {}\n", chunk.data);
+        let line = format!("{}\n", chunk.data);
         self.current_index += 1;
 
-        Ok(Some(sse_line.into_bytes()))
+        Ok(Some(line.into_bytes()))
     }
 }

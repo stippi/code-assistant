@@ -788,6 +788,16 @@ impl AnthropicClient {
                 .await
                 .map_err(|e| ApiError::NetworkError(e.to_string()))?;
 
+            // Record full non-streaming response body
+            if let Some(recorder) = &self.recorder {
+                if let Err(e) = recorder.record_chunk(&response_text) {
+                    warn!("Failed to record non-streaming response: {e}");
+                }
+                if let Err(e) = recorder.end_recording() {
+                    warn!("Failed to end recording: {e}");
+                }
+            }
+
             let anthropic_response: AnthropicResponse = serde_json::from_str(&response_text)
                 .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {e}")))?;
 
@@ -891,9 +901,9 @@ impl AnthropicClient {
         ) -> Result<()> {
             if let Some(data) = line.strip_prefix("data: ") {
                 debug!("Received stream event: {}", data);
-                // Record the chunk if recorder is available
+                // Record the raw SSE line if recorder is available
                 if let Some(recorder) = &recorder {
-                    recorder.record_chunk(data)?;
+                    recorder.record_chunk(line)?;
                 }
                 if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
                     // Handle error events immediately
