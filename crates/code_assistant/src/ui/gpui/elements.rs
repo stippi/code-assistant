@@ -1614,6 +1614,15 @@ impl ThinkingBlock {
 
     /// Complete reasoning and finalize any remaining items
     pub fn complete_reasoning(&mut self) {
+        use tracing::debug;
+
+        debug!(
+            "ThinkingBlock::complete_reasoning called - current_id: {:?}, current_content: {:?}, existing_items: {}",
+            self.current_reasoning_item_id,
+            self.current_generating_content.as_ref().map(|c| c.len()),
+            self.reasoning_summary_items.len()
+        );
+
         // Finalize current item if any
         if let Some(_current_id) = &self.current_reasoning_item_id {
             if let Some(content) = &self.current_generating_content {
@@ -1621,6 +1630,10 @@ impl ThinkingBlock {
                     .push(llm::ReasoningSummaryItem::SummaryText {
                         text: content.clone(),
                     });
+                debug!(
+                    "Added final reasoning item, total items: {}",
+                    self.reasoning_summary_items.len()
+                );
             }
 
             // Clear current state
@@ -1628,6 +1641,29 @@ impl ThinkingBlock {
             self.current_generating_title = None;
             self.current_generating_content = None;
         }
+
+        // Ensure we have content to display - if we have reasoning items but no fallback content,
+        // populate the fallback content with the joined reasoning content
+        if !self.reasoning_summary_items.is_empty() && self.content.is_empty() {
+            self.content = self
+                .reasoning_summary_items
+                .iter()
+                .map(|item| match item {
+                    llm::ReasoningSummaryItem::SummaryText { text } => text.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            debug!(
+                "Populated fallback content with reasoning items, content_len: {}",
+                self.content.len()
+            );
+        }
+
+        debug!(
+            "ThinkingBlock::complete_reasoning finished - total items: {}, content_len: {}",
+            self.reasoning_summary_items.len(),
+            self.content.len()
+        );
     }
 
     /// Get display title based on generating state
@@ -1646,30 +1682,64 @@ impl ThinkingBlock {
 
     /// Get expanded content based on generating state
     pub fn get_expanded_content(&self, is_generating: bool) -> String {
-        if is_generating {
+        use tracing::debug;
+
+        let result = if is_generating {
             // While generating, show current item content
-            self.current_generating_content
+            let content = self
+                .current_generating_content
                 .as_deref()
                 .unwrap_or(&self.content)
-                .to_string()
+                .to_string();
+            debug!(
+                "get_expanded_content(generating=true): current_content_len={}, fallback_content_len={}",
+                self.current_generating_content.as_ref().map(|c| c.len()).unwrap_or(0),
+                self.content.len()
+            );
+            content
         } else if self.is_reasoning_block() {
             // When completed with reasoning, show all summary items as raw content
-            self.reasoning_summary_items
+            let reasoning_content = self
+                .reasoning_summary_items
                 .iter()
                 .map(|item| match item {
                     llm::ReasoningSummaryItem::SummaryText { text } => text.clone(),
                 })
                 .collect::<Vec<_>>()
-                .join("\n\n")
+                .join("\n\n");
+
+            debug!(
+                "get_expanded_content(generating=false, is_reasoning=true): items={}, reasoning_content_len={}, fallback_content_len={}",
+                self.reasoning_summary_items.len(),
+                reasoning_content.len(),
+                self.content.len()
+            );
+
+            // Fallback: if reasoning_summary_items is empty but we had content,
+            // there might have been a timing issue during completion
+            if reasoning_content.is_empty() && !self.content.is_empty() {
+                self.content.clone()
+            } else {
+                reasoning_content
+            }
         } else {
             // Traditional thinking block
+            debug!(
+                "get_expanded_content(generating=false, is_reasoning=false): content_len={}",
+                self.content.len()
+            );
             self.content.clone()
-        }
+        };
+
+        debug!("get_expanded_content final result_len={}", result.len());
+        result
     }
 
     /// Check if this is a reasoning block (has reasoning summary items)
     pub fn is_reasoning_block(&self) -> bool {
-        !self.reasoning_summary_items.is_empty() || self.current_reasoning_item_id.is_some()
+        !self.reasoning_summary_items.is_empty()
+            || self.current_reasoning_item_id.is_some()
+            || self.current_generating_content.is_some()
     }
 
     /// Parse title from reasoning content in OpenAI format "**title**\n\ncontent"
