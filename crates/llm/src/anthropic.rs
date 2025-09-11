@@ -990,8 +990,7 @@ impl AnthropicClient {
                                     }
                                     ContentBlock::RedactedThinking {
                                         id: String::new(),
-                                        summary: vec![],
-                                        summary_items: vec![], // Empty for Anthropic
+                                        summary: vec![], // Empty for Anthropic
                                         data: current_content.clone(),
                                         start_time: Some(SystemTime::now()),
                                         end_time: None,

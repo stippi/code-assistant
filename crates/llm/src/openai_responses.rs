@@ -452,10 +452,19 @@ impl OpenAIResponsesClient {
                 ContentBlock::RedactedThinking {
                     id, summary, data, ..
                 } => {
-                    // Convert redacted thinking to reasoning input item
+                    // Convert structured summary items back to API format for input
+                    let summary_json: Vec<serde_json::Value> = summary
+                        .into_iter()
+                        .map(|item| match item {
+                            ReasoningSummaryItem::SummaryText { text } => {
+                                serde_json::json!({"type": "summary_text", "text": text})
+                            }
+                        })
+                        .collect();
+
                     additional_items.push(ResponseInputItem::Reasoning {
                         id,
-                        summary,
+                        summary: summary_json,
                         encrypted_content: data,
                     });
                 }
@@ -517,35 +526,19 @@ impl OpenAIResponsesClient {
                     encrypted_content,
                 } => {
                     if let Some(encrypted) = encrypted_content {
-                        // Convert summary items to structured format first
+                        // Convert summary items to structured format matching API
                         let summary_items: Vec<ReasoningSummaryItem> = summary
-                            .iter()
-                            .enumerate()
-                            .map(|(_index, s)| match s {
-                                ReasoningSummary::SummaryText { text } => {
-                                    let title = Self::parse_title_from_content(text)
-                                        .unwrap_or_else(|| "Summary".to_string());
-                                    ReasoningSummaryItem {
-                                        title,
-                                        content: Some(text.clone()),
-                                    }
-                                }
-                            })
-                            .collect();
-
-                        let summary_json: Vec<serde_json::Value> = summary
                             .into_iter()
                             .map(|s| match s {
                                 ReasoningSummary::SummaryText { text } => {
-                                    serde_json::json!({"type": "summary_text", "text": text})
+                                    ReasoningSummaryItem::SummaryText { text }
                                 }
                             })
                             .collect();
 
                         blocks.push(ContentBlock::RedactedThinking {
                             id,
-                            summary: summary_json,
-                            summary_items,
+                            summary: summary_items,
                             data: encrypted,
                             start_time: None,
                             end_time: None,
@@ -923,27 +916,11 @@ impl OpenAIResponsesClient {
         if !reasoning_state.completed_items.is_empty()
             && !reasoning_state.received_completed_reasoning
         {
-            // Create backward-compatible summary format
-            let summary_json: Vec<serde_json::Value> = reasoning_state
-                .completed_items
-                .iter()
-                .map(|item| {
-                    serde_json::json!({
-                        "type": "summary_text",
-                        "text": format!("**{}**: {}",
-                            item.title,
-                            item.content.as_deref().unwrap_or("")
-                        )
-                    })
-                })
-                .collect();
-
             content_blocks.push(ContentBlock::RedactedThinking {
                 id: reasoning_state
                     .reasoning_block_id
                     .unwrap_or_else(|| "reasoning_stream".to_string()),
-                summary: summary_json,
-                summary_items: reasoning_state.completed_items.clone(),
+                summary: reasoning_state.completed_items.clone(),
                 data: "".to_string(), // No encrypted data for streaming
                 start_time: None,
                 end_time: None,
@@ -1037,18 +1014,11 @@ impl OpenAIResponsesClient {
                         if reasoning_state.current_item_id.as_ref() != Some(&item_id) {
                             // If we had a previous item, finalize it
                             if let Some(_prev_id) = &reasoning_state.current_item_id {
-                                // Try to parse title from the content we've accumulated
-                                let title = Self::parse_title_from_content(
-                                    &reasoning_state.current_item_content,
-                                )
-                                .unwrap_or_else(|| {
-                                    format!("Summary {}", reasoning_state.completed_items.len() + 1)
-                                });
-
-                                reasoning_state.completed_items.push(ReasoningSummaryItem {
-                                    title,
-                                    content: Some(reasoning_state.current_item_content.clone()),
-                                });
+                                reasoning_state.completed_items.push(
+                                    ReasoningSummaryItem::SummaryText {
+                                        text: reasoning_state.current_item_content.clone(),
+                                    },
+                                );
                             }
 
                             // Start tracking the new item
@@ -1059,7 +1029,7 @@ impl OpenAIResponsesClient {
                         // Append the delta to the current item content
                         reasoning_state.current_item_content.push_str(&delta);
 
-                        // Emit the reasoning summary chunk
+                        // Emit the reasoning summary chunk with raw content delta
                         callback(&StreamingChunk::ReasoningSummary { id: item_id, delta })?;
                     }
                 }
@@ -1118,16 +1088,11 @@ impl OpenAIResponsesClient {
                 "response.completed" => {
                     // Finalize any remaining reasoning item
                     if let Some(_current_id) = &reasoning_state.current_item_id {
-                        let title =
-                            Self::parse_title_from_content(&reasoning_state.current_item_content)
-                                .unwrap_or_else(|| {
-                                    format!("Summary {}", reasoning_state.completed_items.len() + 1)
-                                });
-
-                        reasoning_state.completed_items.push(ReasoningSummaryItem {
-                            title,
-                            content: Some(reasoning_state.current_item_content.clone()),
-                        });
+                        reasoning_state
+                            .completed_items
+                            .push(ReasoningSummaryItem::SummaryText {
+                                text: reasoning_state.current_item_content.clone(),
+                            });
 
                         reasoning_state.current_item_id = None;
                         reasoning_state.current_item_content.clear();
@@ -1160,32 +1125,6 @@ impl OpenAIResponsesClient {
             }
         }
         Ok(())
-    }
-
-    /// Parse title from reasoning content in format "**title**: content"
-    fn parse_title_from_content(content: &str) -> Option<String> {
-        // Look for markdown bold pattern: **title**:
-        if let Some(start) = content.find("**") {
-            if let Some(end) = content[start + 2..].find("**") {
-                let title_end = start + 2 + end;
-                if content.len() > title_end + 2 && content.chars().nth(title_end + 2) == Some(':')
-                {
-                    let title = content[start + 2..title_end].trim();
-                    if !title.is_empty() {
-                        return Some(title.to_string());
-                    }
-                }
-            }
-        }
-
-        // Fallback: use the first line or first few words
-        let first_line = content.lines().next().unwrap_or(content);
-        let words: Vec<&str> = first_line.split_whitespace().take(5).collect();
-        if !words.is_empty() {
-            Some(words.join(" "))
-        } else {
-            None
-        }
     }
 }
 
@@ -1405,6 +1344,11 @@ mod tests {
             } => {
                 assert_eq!(id, "rs_12345");
                 assert_eq!(summary.len(), 1);
+                match &summary[0] {
+                    ReasoningSummaryItem::SummaryText { text } => {
+                        assert_eq!(text, "Test summary");
+                    }
+                }
                 assert_eq!(data, "encrypted_data");
             }
             _ => panic!("Expected RedactedThinking block"),
@@ -1437,12 +1381,8 @@ mod tests {
                 content: MessageContent::Structured(vec![
                     ContentBlock::RedactedThinking {
                         id: "rs_12345".to_string(),
-                        summary: vec![
-                            serde_json::json!({"type": "summary_text", "text": "Math reasoning"}),
-                        ],
-                        summary_items: vec![ReasoningSummaryItem {
-                            title: "Math reasoning".to_string(),
-                            content: Some("2+2 equals 4".to_string()),
+                        summary: vec![ReasoningSummaryItem::SummaryText {
+                            text: "Math reasoning".to_string(),
                         }],
                         data: "encrypted_math_reasoning".to_string(),
                         start_time: None,
@@ -1501,6 +1441,11 @@ mod tests {
             } => {
                 assert_eq!(id, "rs_12345");
                 assert_eq!(summary.len(), 1);
+                // Verify the JSON format is correct
+                assert_eq!(
+                    summary[0],
+                    serde_json::json!({"type": "summary_text", "text": "Math reasoning"})
+                );
                 assert_eq!(encrypted_content, "encrypted_math_reasoning");
             }
             _ => panic!("Expected Reasoning item"),
@@ -1535,12 +1480,8 @@ mod tests {
             content: MessageContent::Structured(vec![
                 ContentBlock::RedactedThinking {
                     id: "rs_67890".to_string(),
-                    summary: vec![
-                        serde_json::json!({"type": "summary_text", "text": "Previous reasoning"}),
-                    ],
-                    summary_items: vec![ReasoningSummaryItem {
-                        title: "Previous reasoning".to_string(),
-                        content: Some("Based on my reasoning, here's the answer.".to_string()),
+                    summary: vec![ReasoningSummaryItem::SummaryText {
+                        text: "Previous reasoning".to_string(),
                     }],
                     data: "encrypted_reasoning_data".to_string(),
                     start_time: None,
@@ -1583,6 +1524,10 @@ mod tests {
             } => {
                 assert_eq!(id, "rs_67890");
                 assert_eq!(summary.len(), 1);
+                assert_eq!(
+                    summary[0],
+                    serde_json::json!({"type": "summary_text", "text": "Previous reasoning"})
+                );
                 assert_eq!(encrypted_content, "encrypted_reasoning_data");
             }
             _ => panic!("Expected Reasoning item"),

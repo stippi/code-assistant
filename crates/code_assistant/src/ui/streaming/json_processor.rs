@@ -306,25 +306,22 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                             // Tool results are typically not part of assistant messages
                             // but we could handle them if needed
                         }
-                        ContentBlock::RedactedThinking { summary_items, .. } => {
-                            // Generate reasoning summary fragments for each item
-                            for (index, item) in summary_items.iter().enumerate() {
+                        ContentBlock::RedactedThinking { summary, .. } => {
+                            // Generate reasoning summary fragments for each item, emitting raw content
+                            // exactly as it would come from streaming API
+                            for (index, item) in summary.iter().enumerate() {
                                 let synthetic_id = format!("history_{index}");
-                                let content = format!(
-                                    "**{}**{}",
-                                    item.title,
-                                    item.content
-                                        .as_ref()
-                                        .map(|c| format!(": {c}"))
-                                        .unwrap_or_default()
-                                );
-                                fragments.push(DisplayFragment::ReasoningSummary {
-                                    id: synthetic_id,
-                                    delta: content,
-                                });
+                                match item {
+                                    llm::ReasoningSummaryItem::SummaryText { text } => {
+                                        fragments.push(DisplayFragment::ReasoningSummary {
+                                            id: synthetic_id,
+                                            delta: text.clone(), // Emit raw text content
+                                        });
+                                    }
+                                }
                             }
                             // End with reasoning complete if we had items
-                            if !summary_items.is_empty() {
+                            if !summary.is_empty() {
                                 fragments.push(DisplayFragment::ReasoningComplete);
                             }
                         }
@@ -1127,5 +1124,77 @@ impl JsonStreamProcessor {
         }
 
         Ok(fragments)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llm::{MessageRole, ReasoningSummaryItem};
+
+    #[test]
+    fn test_redacted_thinking_streaming_consistency() {
+        use crate::ui::streaming::test_utils::TestUI;
+
+        let ui = Arc::new(TestUI::new());
+        let mut processor = JsonStreamProcessor::new(ui, 1);
+
+        // Create a RedactedThinking block with summary items (as would be stored in session)
+        let redacted_thinking = ContentBlock::RedactedThinking {
+            id: "rs_12345".to_string(),
+            summary: vec![
+                ReasoningSummaryItem::SummaryText {
+                    text: "**Planning response approach**\n\nThe user is asking a general question about what I can do in this environment.".to_string(),
+                },
+                ReasoningSummaryItem::SummaryText {
+                    text: "**Considering next steps**\n\nI need to respond by outlining what I plan to do first.".to_string(),
+                },
+            ],
+            data: "encrypted_data".to_string(),
+            start_time: None,
+            end_time: None,
+        };
+
+        let message = Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Structured(vec![redacted_thinking]),
+            request_id: Some(1),
+            usage: None,
+        };
+
+        // Extract fragments from the complete message (as would happen when loading a session)
+        let fragments = processor.extract_fragments_from_message(&message).unwrap();
+
+        // Verify we get the expected fragments
+        let mut reasoning_fragments = Vec::new();
+        let mut has_reasoning_complete = false;
+
+        for fragment in &fragments {
+            match fragment {
+                DisplayFragment::ReasoningSummary { id: _, delta } => {
+                    reasoning_fragments.push(delta.clone());
+                }
+                DisplayFragment::ReasoningComplete => {
+                    has_reasoning_complete = true;
+                }
+                _ => {}
+            }
+        }
+
+        // Should have 2 reasoning summary fragments (one per summary item)
+        assert_eq!(reasoning_fragments.len(), 2);
+
+        // Content should match the raw text from summary items
+        assert_eq!(
+            reasoning_fragments[0],
+            "**Planning response approach**\n\nThe user is asking a general question about what I can do in this environment."
+        );
+        assert_eq!(
+            reasoning_fragments[1],
+            "**Considering next steps**\n\nI need to respond by outlining what I plan to do first."
+        );
+
+        // Should end with ReasoningComplete
+        assert!(has_reasoning_complete);
     }
 }
