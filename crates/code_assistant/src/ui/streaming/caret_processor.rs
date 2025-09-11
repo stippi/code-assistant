@@ -209,25 +209,22 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                             llm::ContentBlock::ToolResult { .. } => {
                                 // Tool results are typically not part of assistant messages
                             }
-                            llm::ContentBlock::RedactedThinking { summary_items, .. } => {
-                                // Generate reasoning summary fragments for each item
-                                for (index, item) in summary_items.iter().enumerate() {
+                            llm::ContentBlock::RedactedThinking { summary, .. } => {
+                                // Generate reasoning summary fragments for each item, emitting raw content
+                                // exactly as it would come from streaming API
+                                for (index, item) in summary.iter().enumerate() {
                                     let synthetic_id = format!("history_{index}");
-                                    let content = format!(
-                                        "**{}**{}",
-                                        item.title,
-                                        item.content
-                                            .as_ref()
-                                            .map(|c| format!(": {c}"))
-                                            .unwrap_or_default()
-                                    );
-                                    fragments.push(DisplayFragment::ReasoningSummary {
-                                        id: synthetic_id,
-                                        delta: content,
-                                    });
+                                    match item {
+                                        llm::ReasoningSummaryItem::SummaryText { text } => {
+                                            fragments.push(DisplayFragment::ReasoningSummary {
+                                                id: synthetic_id,
+                                                delta: text.clone(), // Emit raw text content
+                                            });
+                                        }
+                                    }
                                 }
                                 // End with reasoning complete if we had items
-                                if !summary_items.is_empty() {
+                                if !summary.is_empty() {
                                     fragments.push(DisplayFragment::ReasoningComplete);
                                 }
                             }

@@ -3,7 +3,7 @@ use crate::tools::core::{ToolRegistry, ToolScope};
 use crate::tools::tool_use_filter::{SmartToolFilter, ToolUseFilter};
 use crate::ui::{UIError, UserInterface};
 use anyhow::Result;
-use llm::{ContentBlock, Message, MessageContent, StreamingChunk};
+use llm::{ContentBlock, Message, MessageContent, ReasoningSummaryItem, StreamingChunk};
 use std::sync::Arc;
 use tracing::warn;
 
@@ -237,25 +237,22 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                             ContentBlock::ToolResult { .. } => {
                                 // Tool results are typically not part of assistant messages
                             }
-                            ContentBlock::RedactedThinking { summary_items, .. } => {
-                                // Generate reasoning summary fragments for each item
-                                for (index, item) in summary_items.iter().enumerate() {
+                            ContentBlock::RedactedThinking { summary, .. } => {
+                                // Generate reasoning summary fragments for each item, emitting raw content
+                                // exactly as it would come from streaming API
+                                for (index, item) in summary.iter().enumerate() {
                                     let synthetic_id = format!("history_{index}");
-                                    let content = format!(
-                                        "**{}**{}",
-                                        item.title,
-                                        item.content
-                                            .as_ref()
-                                            .map(|c| format!(": {c}"))
-                                            .unwrap_or_default()
-                                    );
-                                    fragments.push(DisplayFragment::ReasoningSummary {
-                                        id: synthetic_id,
-                                        delta: content,
-                                    });
+                                    match item {
+                                        ReasoningSummaryItem::SummaryText { text } => {
+                                            fragments.push(DisplayFragment::ReasoningSummary {
+                                                id: synthetic_id,
+                                                delta: text.clone(), // Emit raw text content
+                                            });
+                                        }
+                                    }
                                 }
                                 // End with reasoning complete if we had items
-                                if !summary_items.is_empty() {
+                                if !summary.is_empty() {
                                     fragments.push(DisplayFragment::ReasoningComplete);
                                 }
                             }

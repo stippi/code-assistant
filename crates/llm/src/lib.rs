@@ -16,7 +16,6 @@ mod utils;
 //pub mod aicore_converse;
 pub mod aicore_invoke;
 pub mod anthropic;
-pub mod anthropic_playback;
 pub mod auth;
 pub mod cerebras;
 pub mod config;
@@ -29,6 +28,7 @@ pub mod openai;
 pub mod openai_responses;
 pub mod openrouter;
 pub mod recording;
+pub mod streaming;
 pub mod types;
 pub mod vertex;
 

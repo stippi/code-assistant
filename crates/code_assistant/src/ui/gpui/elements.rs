@@ -9,7 +9,7 @@ use gpui::{
 };
 use gpui::{prelude::*, FontWeight};
 use gpui_component::{label::Label, ActiveTheme};
-use llm::ReasoningSummaryItem;
+
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -1531,7 +1531,7 @@ pub struct ThinkingBlock {
     pub start_time: std::time::Instant,
     pub end_time: std::time::Instant,
     // NEW: OpenAI reasoning fields
-    pub reasoning_summary_items: Vec<ReasoningSummaryItem>,
+    pub reasoning_summary_items: Vec<llm::ReasoningSummaryItem>,
     pub current_generating_title: Option<String>,
     pub current_generating_content: Option<String>,
     pub current_reasoning_item_id: Option<String>,
@@ -1587,11 +1587,11 @@ impl ThinkingBlock {
         if self.current_reasoning_item_id.as_ref() != Some(&id) {
             // If we had a previous item, finalize it
             if let Some(_prev_id) = &self.current_reasoning_item_id {
-                if let Some(title) = &self.current_generating_title {
-                    self.reasoning_summary_items.push(ReasoningSummaryItem {
-                        title: title.clone(),
-                        content: self.current_generating_content.clone(),
-                    });
+                if let Some(content) = &self.current_generating_content {
+                    self.reasoning_summary_items
+                        .push(llm::ReasoningSummaryItem::SummaryText {
+                            text: content.clone(),
+                        });
                 }
             }
 
@@ -1616,11 +1616,11 @@ impl ThinkingBlock {
     pub fn complete_reasoning(&mut self) {
         // Finalize current item if any
         if let Some(_current_id) = &self.current_reasoning_item_id {
-            if let Some(title) = &self.current_generating_title {
-                self.reasoning_summary_items.push(ReasoningSummaryItem {
-                    title: title.clone(),
-                    content: self.current_generating_content.clone(),
-                });
+            if let Some(content) = &self.current_generating_content {
+                self.reasoning_summary_items
+                    .push(llm::ReasoningSummaryItem::SummaryText {
+                        text: content.clone(),
+                    });
             }
 
             // Clear current state
@@ -1653,18 +1653,11 @@ impl ThinkingBlock {
                 .unwrap_or(&self.content)
                 .to_string()
         } else if self.is_reasoning_block() {
-            // When completed with reasoning, show all summary items as markdown
+            // When completed with reasoning, show all summary items as raw content
             self.reasoning_summary_items
                 .iter()
-                .map(|item| {
-                    format!(
-                        "**{}**{}",
-                        item.title,
-                        item.content
-                            .as_ref()
-                            .map(|c| format!(": {c}"))
-                            .unwrap_or_default()
-                    )
+                .map(|item| match item {
+                    llm::ReasoningSummaryItem::SummaryText { text } => text.clone(),
                 })
                 .collect::<Vec<_>>()
                 .join("\n\n")
@@ -1679,18 +1672,15 @@ impl ThinkingBlock {
         !self.reasoning_summary_items.is_empty() || self.current_reasoning_item_id.is_some()
     }
 
-    /// Parse title from reasoning content in format "**title**: content"
+    /// Parse title from reasoning content in OpenAI format "**title**\n\ncontent"
     fn parse_title_from_content(content: &str) -> Option<String> {
-        // Look for markdown bold pattern: **title**:
+        // Look for markdown bold pattern: **title** followed by newlines
         if let Some(start) = content.find("**") {
             if let Some(end) = content[start + 2..].find("**") {
                 let title_end = start + 2 + end;
-                if content.len() > title_end + 2 && content.chars().nth(title_end + 2) == Some(':')
-                {
-                    let title = content[start + 2..title_end].trim();
-                    if !title.is_empty() {
-                        return Some(title.to_string());
-                    }
+                let title = content[start + 2..title_end].trim();
+                if !title.is_empty() {
+                    return Some(title.to_string());
                 }
             }
         }

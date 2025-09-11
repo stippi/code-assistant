@@ -1,8 +1,9 @@
 use crate::auth::TokenManager;
 use crate::config::{AiCoreConfig, DeploymentConfig};
 use crate::{
-    AiCoreClient, AnthropicClient, CerebrasClient, GroqClient, LLMProvider, MistralAiClient,
-    OllamaClient, OpenAIClient, OpenAIResponsesClient, OpenRouterClient, VertexClient,
+    recording::PlaybackState, AiCoreClient, AnthropicClient, CerebrasClient, GroqClient,
+    LLMProvider, MistralAiClient, OllamaClient, OpenAIClient, OpenAIResponsesClient,
+    OpenRouterClient, VertexClient,
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -36,26 +37,18 @@ pub struct LLMClientConfig {
 }
 
 pub async fn create_llm_client(config: LLMClientConfig) -> Result<Box<dyn LLMProvider>> {
-    // If playback is specified, use the recording player regardless of provider
-    if let Some(path) = config.playback_path {
-        use crate::anthropic_playback::RecordingPlayer;
-        let player = RecordingPlayer::from_file(path)?;
-
-        if player.session_count() == 0 {
+    // Build optional playback state once
+    let playback_state = if let Some(path) = &config.playback_path {
+        let state = PlaybackState::from_file(path, config.fast_playback)?;
+        if state.session_count() == 0 {
             return Err(anyhow::anyhow!("Recording file contains no sessions"));
         }
+        Some(state)
+    } else {
+        None
+    };
 
-        let mut provider = player.create_provider()?;
-
-        // Configure timing simulation based on command line flag
-        if config.fast_playback {
-            provider.set_simulate_timing(false);
-        }
-
-        return Ok(Box::new(provider));
-    }
-
-    // Otherwise continue with normal provider setup
+    // Create normal providers but inject playback/recording where supported
     match config.provider {
         LLMProviderType::AiCore => {
             // Try new config file first, fallback to keyring
@@ -128,15 +121,14 @@ pub async fn create_llm_client(config: LLMClientConfig) -> Result<Box<dyn LLMPro
                 deployment_uuid
             );
 
-            if let Some(path) = config.record_path {
-                Ok(Box::new(AiCoreClient::new_with_recorder(
-                    token_manager,
-                    api_url,
-                    path,
-                )))
+            let client = if let Some(path) = config.record_path {
+                AiCoreClient::new_with_recorder(token_manager, api_url, path)
             } else {
-                Ok(Box::new(AiCoreClient::new(token_manager, api_url)))
-            }
+                AiCoreClient::new(token_manager, api_url)
+            };
+
+            // TODO: add playback integration to AiCoreClient similar to others
+            Ok(Box::new(client))
         }
 
         LLMProviderType::Anthropic => {
@@ -149,15 +141,18 @@ pub async fn create_llm_client(config: LLMClientConfig) -> Result<Box<dyn LLMPro
                 .base_url
                 .unwrap_or(AnthropicClient::default_base_url());
 
-            if let Some(path) = config.record_path {
-                Ok(Box::new(AnthropicClient::new_with_recorder(
-                    api_key, model_name, base_url, path,
-                )))
+            let mut client = if let Some(path) = config.record_path {
+                AnthropicClient::new_with_recorder(api_key, model_name, base_url, path)
             } else {
-                Ok(Box::new(AnthropicClient::new(
-                    api_key, model_name, base_url,
-                )))
+                AnthropicClient::new(api_key, model_name, base_url)
+            };
+
+            // Inject playback if provided
+            if let Some(state) = playback_state {
+                client = client.with_playback(state);
             }
+
+            Ok(Box::new(client))
         }
 
         LLMProviderType::Cerebras => {
@@ -214,9 +209,18 @@ pub async fn create_llm_client(config: LLMClientConfig) -> Result<Box<dyn LLMPro
                 .base_url
                 .unwrap_or(OpenAIResponsesClient::default_base_url());
 
-            Ok(Box::new(OpenAIResponsesClient::new(
-                api_key, model_name, base_url,
-            )))
+            let mut client = OpenAIResponsesClient::new(api_key, model_name, base_url);
+
+            // Inject playback state into OpenAI Responses provider (implemented below)
+            if let Some(state) = playback_state {
+                client = client.with_playback(state);
+            }
+            // Attach recorder if requested (implemented below)
+            if let Some(path) = config.record_path {
+                client = client.with_recorder(path);
+            }
+
+            Ok(Box::new(client))
         }
 
         LLMProviderType::Vertex => {

@@ -44,7 +44,10 @@
 //! be automatically included in subsequent requests to maintain reasoning context in stateless mode.
 
 use crate::{
-    types::*, utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
+    recording::{APIRecorder, PlaybackState},
+    streaming::{ChunkStream, HttpChunkStream, PlaybackChunkStream},
+    types::*,
+    utils, ApiError, LLMProvider, RateLimitHandler, StreamingCallback, StreamingChunk,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -324,6 +327,8 @@ pub struct OpenAIResponsesClient {
     model: String,
     auth_provider: Box<dyn AuthProvider>,
     request_customizer: Box<dyn RequestCustomizer>,
+    recorder: Option<APIRecorder>,
+    playback: Option<PlaybackState>,
 }
 
 impl OpenAIResponsesClient {
@@ -338,6 +343,8 @@ impl OpenAIResponsesClient {
             model,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
+            recorder: None,
+            playback: None,
         }
     }
 
@@ -353,7 +360,21 @@ impl OpenAIResponsesClient {
             model,
             auth_provider,
             request_customizer,
+            recorder: None,
+            playback: None,
         }
+    }
+
+    /// Add recording capability to the client
+    pub fn with_recorder<P: AsRef<std::path::Path>>(mut self, path: P) -> Self {
+        self.recorder = Some(APIRecorder::new(path));
+        self
+    }
+
+    /// Add playback capability to the client
+    pub fn with_playback(mut self, playback_state: PlaybackState) -> Self {
+        self.playback = Some(playback_state);
+        self
     }
 
     fn get_url(&self, streaming: bool) -> String {
@@ -431,10 +452,19 @@ impl OpenAIResponsesClient {
                 ContentBlock::RedactedThinking {
                     id, summary, data, ..
                 } => {
-                    // Convert redacted thinking to reasoning input item
+                    // Convert structured summary items back to API format for input
+                    let summary_json: Vec<serde_json::Value> = summary
+                        .into_iter()
+                        .map(|item| match item {
+                            ReasoningSummaryItem::SummaryText { text } => {
+                                serde_json::json!({"type": "summary_text", "text": text})
+                            }
+                        })
+                        .collect();
+
                     additional_items.push(ResponseInputItem::Reasoning {
                         id,
-                        summary,
+                        summary: summary_json,
                         encrypted_content: data,
                     });
                 }
@@ -496,34 +526,19 @@ impl OpenAIResponsesClient {
                     encrypted_content,
                 } => {
                     if let Some(encrypted) = encrypted_content {
-                        // Convert summary items to structured format first
+                        // Convert summary items to structured format matching API
                         let summary_items: Vec<ReasoningSummaryItem> = summary
-                            .iter()
-                            .map(|s| match s {
-                                ReasoningSummary::SummaryText { text } => {
-                                    let title = Self::parse_title_from_content(text)
-                                        .unwrap_or_else(|| "Summary".to_string());
-                                    ReasoningSummaryItem {
-                                        title,
-                                        content: Some(text.clone()),
-                                    }
-                                }
-                            })
-                            .collect();
-
-                        let summary_json: Vec<serde_json::Value> = summary
                             .into_iter()
                             .map(|s| match s {
                                 ReasoningSummary::SummaryText { text } => {
-                                    serde_json::json!({"type": "summary_text", "text": text})
+                                    ReasoningSummaryItem::SummaryText { text }
                                 }
                             })
                             .collect();
 
                         blocks.push(ContentBlock::RedactedThinking {
                             id,
-                            summary: summary_json,
-                            summary_items,
+                            summary: summary_items,
                             data: encrypted,
                             start_time: None,
                             end_time: None,
@@ -580,6 +595,11 @@ impl OpenAIResponsesClient {
         streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
     ) -> Result<LLMResponse> {
+        // If playback is enabled, skip HTTP and use recorded data
+        if self.playback.is_some() {
+            return self.playback_request(request, streaming_callback).await;
+        }
+
         let mut attempts = 0;
 
         loop {
@@ -606,6 +626,56 @@ impl OpenAIResponsesClient {
         }
     }
 
+    async fn playback_request(
+        &mut self,
+        _request: &ResponsesRequest,
+        streaming_callback: Option<&StreamingCallback>,
+    ) -> Result<LLMResponse> {
+        let playback = self.playback.as_ref().unwrap();
+
+        // Get the next session from the recording
+        let session = playback
+            .next_session()
+            .ok_or_else(|| anyhow::anyhow!("No more recorded sessions available"))?;
+
+        debug!("Playing back session with {} chunks", session.chunks.len());
+
+        if let Some(callback) = streaming_callback {
+            // Create a playback chunk stream
+            let mut chunk_stream = PlaybackChunkStream::new(session.chunks.clone(), playback.fast);
+            let rate_limits = ResponsesRateLimitInfo::default();
+
+            // Use the same streaming processing logic
+            self.process_chunk_stream(&mut chunk_stream, callback, rate_limits)
+                .await
+                .map(|(response, _)| response)
+        } else {
+            // Non-streaming playback - parse the recorded response
+            let responses_response: ResponsesResponse =
+                serde_json::from_value(session.request.clone())
+                    .map_err(|e| anyhow::anyhow!("Failed to parse recorded response: {e}"))?;
+
+            let content = self.convert_output(responses_response.output);
+            let usage = responses_response
+                .usage
+                .map_or_else(Usage::zero, |u| Usage {
+                    input_tokens: u.input_tokens,
+                    output_tokens: u.output_tokens,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: u
+                        .input_tokens_details
+                        .map(|d| d.cached_tokens)
+                        .unwrap_or(0),
+                });
+
+            Ok(LLMResponse {
+                content,
+                usage,
+                rate_limit_info: None,
+            })
+        }
+    }
+
     async fn try_send_request(
         &mut self,
         request: &ResponsesRequest,
@@ -616,6 +686,11 @@ impl OpenAIResponsesClient {
         // Allow request customizer to modify the request
         self.request_customizer
             .customize_request(&mut request_json)?;
+
+        // Start recording if recorder is available
+        if let Some(recorder) = &self.recorder {
+            recorder.start_recording(request_json.clone())?;
+        }
 
         // Get auth headers
         let auth_headers = self.auth_provider.get_auth_headers().await?;
@@ -649,13 +724,22 @@ impl OpenAIResponsesClient {
         let response = utils::check_response_error::<ResponsesRateLimitInfo>(response).await?;
         let rate_limits = ResponsesRateLimitInfo::from_response(&response);
 
-        if let Some(callback) = streaming_callback {
+        let result = if let Some(callback) = streaming_callback {
             self.handle_streaming_response(response, callback, rate_limits)
                 .await
         } else {
             self.handle_non_streaming_response(response, rate_limits)
                 .await
+        };
+
+        // End recording on completion (success or failure)
+        if let Some(recorder) = &self.recorder {
+            if let Err(e) = recorder.end_recording() {
+                warn!("Failed to end recording: {e}");
+            }
         }
+
+        result
     }
 
     async fn handle_non_streaming_response(
@@ -667,6 +751,13 @@ impl OpenAIResponsesClient {
             .text()
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+
+        // Record the entire response for non-streaming if recorder is available
+        if let Some(recorder) = &self.recorder {
+            if let Err(e) = recorder.record_chunk(&response_text) {
+                warn!("Failed to record non-streaming response: {e}");
+            }
+        }
 
         let responses_response: ResponsesResponse = serde_json::from_str(&response_text)
             .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {e}")))?;
@@ -696,7 +787,18 @@ impl OpenAIResponsesClient {
 
     async fn handle_streaming_response(
         &self,
-        mut response: Response,
+        response: Response,
+        callback: &StreamingCallback,
+        rate_limits: ResponsesRateLimitInfo,
+    ) -> Result<(LLMResponse, ResponsesRateLimitInfo)> {
+        let mut chunk_stream = HttpChunkStream::new(response);
+        self.process_chunk_stream(&mut chunk_stream, callback, rate_limits)
+            .await
+    }
+
+    async fn process_chunk_stream(
+        &self,
+        chunk_stream: &mut dyn ChunkStream,
         callback: &StreamingCallback,
         rate_limits: ResponsesRateLimitInfo,
     ) -> Result<(LLMResponse, ResponsesRateLimitInfo)> {
@@ -710,7 +812,7 @@ impl OpenAIResponsesClient {
             std::collections::HashMap::new(); // item_id -> start_time
         let mut reasoning_state = ReasoningState::default();
 
-        while let Some(chunk) = response.chunk().await? {
+        while let Some(chunk) = chunk_stream.next_chunk().await? {
             byte_buffer.extend_from_slice(&chunk);
 
             // Try to decode as much as possible
@@ -720,6 +822,13 @@ impl OpenAIResponsesClient {
                     for c in chunk_str.chars() {
                         if c == '\n' {
                             if !line_buffer.is_empty() {
+                                // Record the SSE line if recorder is available
+                                if let Some(recorder) = &self.recorder {
+                                    if let Err(e) = recorder.record_chunk(&line_buffer) {
+                                        warn!("Failed to record chunk: {e}");
+                                    }
+                                }
+
                                 self.process_sse_line(
                                     &line_buffer,
                                     &mut content_blocks,
@@ -746,6 +855,13 @@ impl OpenAIResponsesClient {
                         for c in valid_str.chars() {
                             if c == '\n' {
                                 if !line_buffer.is_empty() {
+                                    // Record the SSE line if recorder is available
+                                    if let Some(recorder) = &self.recorder {
+                                        if let Err(e) = recorder.record_chunk(&line_buffer) {
+                                            warn!("Failed to record chunk: {e}");
+                                        }
+                                    }
+
                                     self.process_sse_line(
                                         &line_buffer,
                                         &mut content_blocks,
@@ -777,6 +893,13 @@ impl OpenAIResponsesClient {
 
         // Process any remaining data
         if !line_buffer.is_empty() {
+            // Record the final SSE line if recorder is available
+            if let Some(recorder) = &self.recorder {
+                if let Err(e) = recorder.record_chunk(&line_buffer) {
+                    warn!("Failed to record final chunk: {e}");
+                }
+            }
+
             self.process_sse_line(
                 &line_buffer,
                 &mut content_blocks,
@@ -793,27 +916,11 @@ impl OpenAIResponsesClient {
         if !reasoning_state.completed_items.is_empty()
             && !reasoning_state.received_completed_reasoning
         {
-            // Create backward-compatible summary format
-            let summary_json: Vec<serde_json::Value> = reasoning_state
-                .completed_items
-                .iter()
-                .map(|item| {
-                    serde_json::json!({
-                        "type": "summary_text",
-                        "text": format!("**{}**: {}",
-                            item.title,
-                            item.content.as_deref().unwrap_or("")
-                        )
-                    })
-                })
-                .collect();
-
             content_blocks.push(ContentBlock::RedactedThinking {
                 id: reasoning_state
                     .reasoning_block_id
                     .unwrap_or_else(|| "reasoning_stream".to_string()),
-                summary: summary_json,
-                summary_items: reasoning_state.completed_items.clone(),
+                summary: reasoning_state.completed_items.clone(),
                 data: "".to_string(), // No encrypted data for streaming
                 start_time: None,
                 end_time: None,
@@ -907,18 +1014,11 @@ impl OpenAIResponsesClient {
                         if reasoning_state.current_item_id.as_ref() != Some(&item_id) {
                             // If we had a previous item, finalize it
                             if let Some(_prev_id) = &reasoning_state.current_item_id {
-                                // Try to parse title from the content we've accumulated
-                                let title = Self::parse_title_from_content(
-                                    &reasoning_state.current_item_content,
-                                )
-                                .unwrap_or_else(|| {
-                                    format!("Summary {}", reasoning_state.completed_items.len() + 1)
-                                });
-
-                                reasoning_state.completed_items.push(ReasoningSummaryItem {
-                                    title,
-                                    content: Some(reasoning_state.current_item_content.clone()),
-                                });
+                                reasoning_state.completed_items.push(
+                                    ReasoningSummaryItem::SummaryText {
+                                        text: reasoning_state.current_item_content.clone(),
+                                    },
+                                );
                             }
 
                             // Start tracking the new item
@@ -929,7 +1029,7 @@ impl OpenAIResponsesClient {
                         // Append the delta to the current item content
                         reasoning_state.current_item_content.push_str(&delta);
 
-                        // Emit the reasoning summary chunk
+                        // Emit the reasoning summary chunk with raw content delta
                         callback(&StreamingChunk::ReasoningSummary { id: item_id, delta })?;
                     }
                 }
@@ -988,16 +1088,11 @@ impl OpenAIResponsesClient {
                 "response.completed" => {
                     // Finalize any remaining reasoning item
                     if let Some(_current_id) = &reasoning_state.current_item_id {
-                        let title =
-                            Self::parse_title_from_content(&reasoning_state.current_item_content)
-                                .unwrap_or_else(|| {
-                                    format!("Summary {}", reasoning_state.completed_items.len() + 1)
-                                });
-
-                        reasoning_state.completed_items.push(ReasoningSummaryItem {
-                            title,
-                            content: Some(reasoning_state.current_item_content.clone()),
-                        });
+                        reasoning_state
+                            .completed_items
+                            .push(ReasoningSummaryItem::SummaryText {
+                                text: reasoning_state.current_item_content.clone(),
+                            });
 
                         reasoning_state.current_item_id = None;
                         reasoning_state.current_item_content.clear();
@@ -1030,32 +1125,6 @@ impl OpenAIResponsesClient {
             }
         }
         Ok(())
-    }
-
-    /// Parse title from reasoning content in format "**title**: content"
-    fn parse_title_from_content(content: &str) -> Option<String> {
-        // Look for markdown bold pattern: **title**:
-        if let Some(start) = content.find("**") {
-            if let Some(end) = content[start + 2..].find("**") {
-                let title_end = start + 2 + end;
-                if content.len() > title_end + 2 && content.chars().nth(title_end + 2) == Some(':')
-                {
-                    let title = content[start + 2..title_end].trim();
-                    if !title.is_empty() {
-                        return Some(title.to_string());
-                    }
-                }
-            }
-        }
-
-        // Fallback: use the first line or first few words
-        let first_line = content.lines().next().unwrap_or(content);
-        let words: Vec<&str> = first_line.split_whitespace().take(5).collect();
-        if !words.is_empty() {
-            Some(words.join(" "))
-        } else {
-            None
-        }
     }
 }
 
@@ -1275,6 +1344,11 @@ mod tests {
             } => {
                 assert_eq!(id, "rs_12345");
                 assert_eq!(summary.len(), 1);
+                match &summary[0] {
+                    ReasoningSummaryItem::SummaryText { text } => {
+                        assert_eq!(text, "Test summary");
+                    }
+                }
                 assert_eq!(data, "encrypted_data");
             }
             _ => panic!("Expected RedactedThinking block"),
@@ -1307,12 +1381,8 @@ mod tests {
                 content: MessageContent::Structured(vec![
                     ContentBlock::RedactedThinking {
                         id: "rs_12345".to_string(),
-                        summary: vec![
-                            serde_json::json!({"type": "summary_text", "text": "Math reasoning"}),
-                        ],
-                        summary_items: vec![ReasoningSummaryItem {
-                            title: "Math reasoning".to_string(),
-                            content: Some("2+2 equals 4".to_string()),
+                        summary: vec![ReasoningSummaryItem::SummaryText {
+                            text: "Math reasoning".to_string(),
                         }],
                         data: "encrypted_math_reasoning".to_string(),
                         start_time: None,
@@ -1371,6 +1441,11 @@ mod tests {
             } => {
                 assert_eq!(id, "rs_12345");
                 assert_eq!(summary.len(), 1);
+                // Verify the JSON format is correct
+                assert_eq!(
+                    summary[0],
+                    serde_json::json!({"type": "summary_text", "text": "Math reasoning"})
+                );
                 assert_eq!(encrypted_content, "encrypted_math_reasoning");
             }
             _ => panic!("Expected Reasoning item"),
@@ -1405,12 +1480,8 @@ mod tests {
             content: MessageContent::Structured(vec![
                 ContentBlock::RedactedThinking {
                     id: "rs_67890".to_string(),
-                    summary: vec![
-                        serde_json::json!({"type": "summary_text", "text": "Previous reasoning"}),
-                    ],
-                    summary_items: vec![ReasoningSummaryItem {
-                        title: "Previous reasoning".to_string(),
-                        content: Some("Based on my reasoning, here's the answer.".to_string()),
+                    summary: vec![ReasoningSummaryItem::SummaryText {
+                        text: "Previous reasoning".to_string(),
                     }],
                     data: "encrypted_reasoning_data".to_string(),
                     start_time: None,
@@ -1453,6 +1524,10 @@ mod tests {
             } => {
                 assert_eq!(id, "rs_67890");
                 assert_eq!(summary.len(), 1);
+                assert_eq!(
+                    summary[0],
+                    serde_json::json!({"type": "summary_text", "text": "Previous reasoning"})
+                );
                 assert_eq!(encrypted_content, "encrypted_reasoning_data");
             }
             _ => panic!("Expected Reasoning item"),
