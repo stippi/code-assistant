@@ -702,10 +702,11 @@ impl AnthropicClient {
                 .await
                 .map(|(response, _)| response)
         } else {
-            // Non-streaming playback - parse the recorded response
-            let anthropic_response: AnthropicResponse =
-                serde_json::from_value(session.request.clone())
-                    .map_err(|e| anyhow::anyhow!("Failed to parse recorded response: {e}"))?;
+            // Non-streaming playback - parse the recorded response body from chunks
+            let body: String = session.chunks.iter().map(|c| c.data.as_str()).collect();
+
+            let anthropic_response: AnthropicResponse = serde_json::from_str(&body)
+                .map_err(|e| anyhow::anyhow!("Failed to parse recorded response body: {e}"))?;
 
             let content = anthropic_response.content;
             let usage = Usage {

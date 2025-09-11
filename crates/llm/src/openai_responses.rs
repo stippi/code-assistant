@@ -650,10 +650,11 @@ impl OpenAIResponsesClient {
                 .await
                 .map(|(response, _)| response)
         } else {
-            // Non-streaming playback - parse the recorded response
-            let responses_response: ResponsesResponse =
-                serde_json::from_value(session.request.clone())
-                    .map_err(|e| anyhow::anyhow!("Failed to parse recorded response: {e}"))?;
+            // Non-streaming playback - parse the recorded response body from chunks
+            let body: String = session.chunks.iter().map(|c| c.data.as_str()).collect();
+
+            let responses_response: ResponsesResponse = serde_json::from_str(&body)
+                .map_err(|e| anyhow::anyhow!("Failed to parse recorded response body: {e}"))?;
 
             let content = self.convert_output(responses_response.output);
             let usage = responses_response

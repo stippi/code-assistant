@@ -168,3 +168,49 @@ impl PlaybackState {
         Some(session)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn playback_state_sequences_sessions() {
+        // Prepare a temporary file with two sessions
+        let tmp_path = std::env::temp_dir().join("llm_playback_test.json");
+        let json = r#"[
+  {
+    "request": {"foo": 1},
+    "timestamp": "2024-01-01T00:00:00Z",
+    "chunks": [
+      {"data": "{\"a\":1}", "timestamp_ms": 0}
+    ]
+  },
+  {
+    "request": {"bar": 2},
+    "timestamp": "2024-01-01T00:00:01Z",
+    "chunks": [
+      {"data": "{\"b\":2}", "timestamp_ms": 10}
+    ]
+  }
+]
+"#;
+        fs::write(&tmp_path, json).unwrap();
+
+        let state = PlaybackState::from_file(&tmp_path, true).unwrap();
+        assert_eq!(state.session_count(), 2);
+
+        let s1 = state.next_session().unwrap();
+        assert_eq!(s1.request["foo"], 1);
+        assert_eq!(s1.chunks.len(), 1);
+
+        let s2 = state.next_session().unwrap();
+        assert_eq!(s2.request["bar"], 2);
+
+        let none = state.next_session();
+        assert!(none.is_none());
+
+        // Cleanup
+        let _ = fs::remove_file(&tmp_path);
+    }
+}
