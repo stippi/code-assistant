@@ -512,6 +512,7 @@ impl MessageContainer {
     }
 
     fn finish_any_thinking_blocks(&self, cx: &mut Context<Self>) {
+        use tracing::warn;
         let elements = self.elements.lock().unwrap();
 
         // Mark any previous thinking blocks as completed and not generating
@@ -519,9 +520,26 @@ impl MessageContainer {
             element.update(cx, |view, cx| {
                 if let Some(thinking_block) = view.block.as_thinking_mut() {
                     if !thinking_block.is_completed {
+                        warn!(
+                            "Finishing thinking block - is_reasoning: {}, current_id: {:?}, items: {}",
+                            thinking_block.is_reasoning_block(),
+                            thinking_block.current_reasoning_item_id,
+                            thinking_block.reasoning_summary_items.len()
+                        );
+
+                        // Finalize any reasoning content before marking as completed
+                        thinking_block.complete_reasoning();
+
+                        let items_after = thinking_block.reasoning_summary_items.len();
                         thinking_block.is_completed = true;
                         thinking_block.end_time = std::time::Instant::now();
                         view.set_generating(false);
+
+                        warn!(
+                            "Finished thinking block - items after: {}",
+                            items_after
+                        );
+
                         cx.notify();
                     }
                 }
@@ -562,15 +580,36 @@ impl MessageContainer {
 
     /// Complete reasoning for the most recent thinking block
     pub fn complete_reasoning(&self, cx: &mut Context<Self>) {
+        use tracing::warn;
         let elements = self.elements.lock().unwrap();
+        warn!(
+            "MessageContainer::complete_reasoning called, elements: {}",
+            elements.len()
+        );
+
         if let Some(last) = elements.last() {
             last.update(cx, |view, cx| {
                 if let Some(thinking_block) = view.block.as_thinking_mut() {
+                    warn!(
+                        "About to complete reasoning - current_id: {:?}, items: {}, generating: {}",
+                        thinking_block.current_reasoning_item_id,
+                        thinking_block.reasoning_summary_items.len(),
+                        view.is_generating
+                    );
                     thinking_block.complete_reasoning();
+                    let items_after = thinking_block.reasoning_summary_items.len();
                     view.set_generating(false);
+                    warn!(
+                        "After completing reasoning - items: {}, generating: {}",
+                        items_after, view.is_generating
+                    );
                     cx.notify();
+                } else {
+                    warn!("Last element is not a thinking block");
                 }
             });
+        } else {
+            warn!("No elements found");
         }
     }
 }
@@ -983,23 +1022,8 @@ impl Render for BlockView {
                                                 ))
                                                 .into_any()
                                         } else {
-                                            // If collapsed, show a preview of the first line
-                                            let content =
-                                                block.get_expanded_content(self.is_generating);
-                                            let first_line =
-                                                content.lines().next().unwrap_or("").to_string();
-                                            div()
-                                                .pt_1()
-                                                .text_size(px(14.))
-                                                .italic()
-                                                .text_color(text_color)
-                                                .opacity(0.7)
-                                                .text_ellipsis()
-                                                .child(gpui_component::text::TextView::markdown(
-                                                    "thinking-preview",
-                                                    first_line + "...",
-                                                ))
-                                                .into_any()
+                                            // If collapsed, don't show any preview content
+                                            div().into_any()
                                         }),
                                 )
                                 .into_any()
@@ -1586,7 +1610,7 @@ impl ThinkingBlock {
         // Check if this is a new item
         if self.current_reasoning_item_id.as_ref() != Some(&id) {
             // If we had a previous item, finalize it
-            if let Some(_prev_id) = &self.current_reasoning_item_id {
+            if self.current_reasoning_item_id.is_some() {
                 if let Some(content) = &self.current_generating_content {
                     self.reasoning_summary_items
                         .push(llm::ReasoningSummaryItem::SummaryText {
@@ -1604,25 +1628,15 @@ impl ThinkingBlock {
         // Append delta to current content
         if let Some(content) = &mut self.current_generating_content {
             content.push_str(&delta);
-
-            // Try to parse title if we don't have one yet
-            if self.current_generating_title.is_none() {
-                self.current_generating_title = Self::parse_title_from_content(content);
-            }
+            // Always try to parse/update title as content grows
+            // This handles cases where initial chunks only contain partial titles like "**Plan"
+            // and later chunks complete them to "**Planning the approach**"
+            self.current_generating_title = Self::parse_title_from_content(content);
         }
     }
 
     /// Complete reasoning and finalize any remaining items
     pub fn complete_reasoning(&mut self) {
-        use tracing::debug;
-
-        debug!(
-            "ThinkingBlock::complete_reasoning called - current_id: {:?}, current_content: {:?}, existing_items: {}",
-            self.current_reasoning_item_id,
-            self.current_generating_content.as_ref().map(|c| c.len()),
-            self.reasoning_summary_items.len()
-        );
-
         // Finalize current item if any
         if let Some(_current_id) = &self.current_reasoning_item_id {
             if let Some(content) = &self.current_generating_content {
@@ -1630,10 +1644,6 @@ impl ThinkingBlock {
                     .push(llm::ReasoningSummaryItem::SummaryText {
                         text: content.clone(),
                     });
-                debug!(
-                    "Added final reasoning item, total items: {}",
-                    self.reasoning_summary_items.len()
-                );
             }
 
             // Clear current state
@@ -1653,17 +1663,7 @@ impl ThinkingBlock {
                 })
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            debug!(
-                "Populated fallback content with reasoning items, content_len: {}",
-                self.content.len()
-            );
         }
-
-        debug!(
-            "ThinkingBlock::complete_reasoning finished - total items: {}, content_len: {}",
-            self.reasoning_summary_items.len(),
-            self.content.len()
-        );
     }
 
     /// Get display title based on generating state
@@ -1682,7 +1682,7 @@ impl ThinkingBlock {
 
     /// Get expanded content based on generating state
     pub fn get_expanded_content(&self, is_generating: bool) -> String {
-        use tracing::debug;
+        use tracing::warn;
 
         let result = if is_generating {
             // While generating, show current item content
@@ -1691,11 +1691,6 @@ impl ThinkingBlock {
                 .as_deref()
                 .unwrap_or(&self.content)
                 .to_string();
-            debug!(
-                "get_expanded_content(generating=true): current_content_len={}, fallback_content_len={}",
-                self.current_generating_content.as_ref().map(|c| c.len()).unwrap_or(0),
-                self.content.len()
-            );
             content
         } else if self.is_reasoning_block() {
             // When completed with reasoning, show all summary items as raw content
@@ -1708,13 +1703,6 @@ impl ThinkingBlock {
                 .collect::<Vec<_>>()
                 .join("\n\n");
 
-            debug!(
-                "get_expanded_content(generating=false, is_reasoning=true): items={}, reasoning_content_len={}, fallback_content_len={}",
-                self.reasoning_summary_items.len(),
-                reasoning_content.len(),
-                self.content.len()
-            );
-
             // Fallback: if reasoning_summary_items is empty but we had content,
             // there might have been a timing issue during completion
             if reasoning_content.is_empty() && !self.content.is_empty() {
@@ -1724,14 +1712,13 @@ impl ThinkingBlock {
             }
         } else {
             // Traditional thinking block
-            debug!(
+            warn!(
                 "get_expanded_content(generating=false, is_reasoning=false): content_len={}",
                 self.content.len()
             );
             self.content.clone()
         };
 
-        debug!("get_expanded_content final result_len={}", result.len());
         result
     }
 
