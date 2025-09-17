@@ -8,7 +8,7 @@ use gpui::{
     Timer, Transformation,
 };
 use gpui::{prelude::*, FontWeight};
-use gpui_component::{label::Label, ActiveTheme};
+use gpui_component::{label::Label, text::TextView, ActiveTheme};
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -845,16 +845,16 @@ impl BlockView {
 }
 
 impl Render for BlockView {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         match &self.block {
             BlockData::TextBlock(block) => {
                 // Use TextView with Markdown for rendering text
                 div()
                     .text_color(cx.theme().foreground)
-                    .child(gpui_component::text::TextView::markdown(
-                        "md-block",
-                        block.content.clone(),
-                    ))
+                    .child(
+                        TextView::markdown("md-block", block.content.clone(), window, cx)
+                            .selectable(),
+                    )
                     .into_any_element()
             }
             BlockData::ThinkingBlock(block) => {
@@ -1016,9 +1016,11 @@ impl Render for BlockView {
                                                 .text_size(px(14.))
                                                 .italic()
                                                 .text_color(text_color)
-                                                .child(gpui_component::text::TextView::markdown(
+                                                .child(TextView::markdown(
                                                     "thinking-content",
                                                     content,
+                                                    window,
+                                                    cx,
                                                 ))
                                                 .into_any()
                                         } else {
@@ -1499,7 +1501,7 @@ impl Render for BlockView {
                                 .border_color(cx.theme().border)
                                 .rounded_md()
                                 .overflow_hidden()
-                                .bg(cx.theme().card)
+                                .bg(cx.theme().popover)
                                 .shadow_sm()
                                 .child(
                                     img(ImageSource::Image(image.clone()))

@@ -11,8 +11,8 @@ glob = "0.3"
 ignore = "0.4"
 walkdir = "2.5"
 percent-encoding = "2.3"
-tokio = { version = "1.44", features = ["full"] }
-tempfile = "3.18"
+tokio = { version = "1.47", features = ["full"] }
+tempfile = "3.22"
 
 # Terminal UI
 rustyline = "12.0.0"
@@ -25,8 +25,8 @@ tui-markdown = "0.3.5"
 # GPUI related
 gpui = { git = "https://github.com/zed-industries/zed.git" }
 gpui-component = { git = "https://github.com/longbridge/gpui-component.git" }
-smallvec = "1.14"
-rust-embed = { version = "8.4", features = ["include-exclude"] }
+smallvec = "1.15"
+rust-embed = { version = "8.7", features = ["include-exclude"] }
 
 # JSON (de)serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -59,8 +59,8 @@ unicode-segmentation = "1.12.0"
 rand = "0.8.5"
 
 # Diff visualization
-similar = { version = "2.5.0", features = ["inline"] }
-async-channel = "2.3.1"
+similar = { version = "2.7.0", features = ["inline"] }
+async-channel = "2.5.0"
 
 # Base64 encoding for images
 base64 = "0.22"

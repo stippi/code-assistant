@@ -3,11 +3,11 @@ use gpui_component::theme::{Theme, ThemeMode};
 
 /// Define our custom dark theme colors - matching existing colors
 pub fn custom_dark_theme() -> gpui_component::theme::ThemeColor {
-    let mut colors = gpui_component::theme::ThemeColor::dark();
+    let mut colors = *gpui_component::theme::ThemeColor::dark();
 
     // Main backgrounds
     colors.background = rgb(0x2c2c2c).into(); // Primary background
-    colors.card = rgb(0x303030).into(); // Message area background
+    colors.popover = rgb(0x303030).into(); // Message area background (was card)
     colors.title_bar = rgb(0x303030).into(); // Titlebar background
     colors.title_bar_border = rgb(0x404040).into(); // Titlebar border
 
@@ -38,11 +38,11 @@ pub fn custom_dark_theme() -> gpui_component::theme::ThemeColor {
 
 /// Define equivalent light theme colors with good contrast
 pub fn custom_light_theme() -> gpui_component::theme::ThemeColor {
-    let mut colors = gpui_component::theme::ThemeColor::light();
+    let mut colors = *gpui_component::theme::ThemeColor::light();
 
     // Main backgrounds
     colors.background = rgb(0xF5F5F5).into(); // Light gray background
-    colors.card = rgb(0xFFFFFF).into(); // White message area
+    colors.popover = rgb(0xFFFFFF).into(); // White message area (was card)
     colors.title_bar = rgb(0xE5E5E5).into(); // Light gray titlebar
     colors.title_bar_border = rgb(0xD0D0D0).into(); // Light border
 
