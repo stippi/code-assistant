@@ -826,11 +826,8 @@ impl OpenAIResponsesClient {
         let mut line_buffer = String::new();
         let mut usage = Usage::zero();
         let mut byte_buffer = Vec::new();
-        let mut active_function_calls: std::collections::HashMap<String, (String, String)> =
-            std::collections::HashMap::new(); // item_id -> (tool_name, call_id)
-        let mut block_start_times: std::collections::HashMap<String, std::time::SystemTime> =
-            std::collections::HashMap::new(); // item_id -> start_time
-        let mut reasoning_state = ReasoningState::default();
+
+        let mut processor = StreamProcessor::new(self, &mut content_blocks, &mut usage, callback);
 
         while let Some(chunk) = chunk_stream.next_chunk().await? {
             byte_buffer.extend_from_slice(&chunk);
@@ -848,16 +845,7 @@ impl OpenAIResponsesClient {
                                         warn!("Failed to record chunk: {e}");
                                     }
                                 }
-
-                                self.process_sse_line(
-                                    &line_buffer,
-                                    &mut content_blocks,
-                                    &mut usage,
-                                    &mut active_function_calls,
-                                    &mut block_start_times,
-                                    &mut reasoning_state,
-                                    callback,
-                                )?;
+                                processor.process_line(&line_buffer)?;
                             }
                             line_buffer.clear();
                         } else {
@@ -881,16 +869,7 @@ impl OpenAIResponsesClient {
                                             warn!("Failed to record chunk: {e}");
                                         }
                                     }
-
-                                    self.process_sse_line(
-                                        &line_buffer,
-                                        &mut content_blocks,
-                                        &mut usage,
-                                        &mut active_function_calls,
-                                        &mut block_start_times,
-                                        &mut reasoning_state,
-                                        callback,
-                                    )?;
+                                    processor.process_line(&line_buffer)?;
                                 }
                                 line_buffer.clear();
                             } else {
@@ -919,33 +898,11 @@ impl OpenAIResponsesClient {
                     warn!("Failed to record final chunk: {e}");
                 }
             }
-
-            self.process_sse_line(
-                &line_buffer,
-                &mut content_blocks,
-                &mut usage,
-                &mut active_function_calls,
-                &mut block_start_times,
-                &mut reasoning_state,
-                callback,
-            )?;
+            processor.process_line(&line_buffer)?;
         }
 
-        // Create a RedactedThinking block from collected reasoning items if any
-        // Only do this if we didn't receive a completed reasoning item from the API
-        if !reasoning_state.completed_items.is_empty()
-            && !reasoning_state.received_completed_reasoning
-        {
-            content_blocks.push(ContentBlock::RedactedThinking {
-                id: reasoning_state
-                    .reasoning_block_id
-                    .unwrap_or_else(|| "reasoning_stream".to_string()),
-                summary: reasoning_state.completed_items.clone(),
-                data: "".to_string(), // No encrypted data for streaming
-                start_time: None,
-                end_time: None,
-            });
-        }
+        // Finalize internal state (reasoning, usage from response, etc.) if needed
+        processor.on_response_completed(None)?;
 
         callback(&StreamingChunk::StreamingComplete)?;
 
@@ -958,17 +915,50 @@ impl OpenAIResponsesClient {
             rate_limits,
         ))
     }
+}
 
-    fn process_sse_line(
-        &self,
-        line: &str,
-        content_blocks: &mut Vec<ContentBlock>,
-        usage: &mut Usage,
-        active_function_calls: &mut std::collections::HashMap<String, (String, String)>,
-        block_start_times: &mut std::collections::HashMap<String, std::time::SystemTime>,
-        reasoning_state: &mut ReasoningState,
-        callback: &StreamingCallback,
-    ) -> Result<()> {
+#[derive(Debug, Clone)]
+struct FunctionCallInfo {
+    name: String,
+    call_id: String,
+}
+
+use std::collections::HashMap;
+use std::time::SystemTime;
+
+type FunctionCalls = HashMap<String, FunctionCallInfo>; // item_id -> info
+
+type BlockStartTimes = HashMap<String, SystemTime>; // item_id -> start_time
+
+struct StreamProcessor<'a> {
+    client: &'a OpenAIResponsesClient,
+    content_blocks: &'a mut Vec<ContentBlock>,
+    usage: &'a mut Usage,
+    active_function_calls: FunctionCalls,
+    block_start_times: BlockStartTimes,
+    reasoning_state: ReasoningState,
+    callback: &'a StreamingCallback,
+}
+
+impl<'a> StreamProcessor<'a> {
+    fn new(
+        client: &'a OpenAIResponsesClient,
+        content_blocks: &'a mut Vec<ContentBlock>,
+        usage: &'a mut Usage,
+        callback: &'a StreamingCallback,
+    ) -> Self {
+        Self {
+            client,
+            content_blocks,
+            usage,
+            active_function_calls: HashMap::new(),
+            block_start_times: HashMap::new(),
+            reasoning_state: ReasoningState::default(),
+            callback,
+        }
+    }
+
+    fn process_line(&mut self, line: &str) -> Result<()> {
         if let Some(data) = line.strip_prefix("data: ") {
             debug!("received event: {data}");
 
@@ -977,173 +967,219 @@ impl OpenAIResponsesClient {
 
             match event.event_type.as_str() {
                 "response.output_item.added" => {
-                    let now = std::time::SystemTime::now();
-                    if let Some(item_data) = event.item {
-                        if let Ok(item_type) =
-                            serde_json::from_value::<serde_json::Value>(item_data.clone())
-                        {
-                            if let Some(item_type_str) =
-                                item_type.get("type").and_then(|v| v.as_str())
-                            {
-                                let item_id = item_type
-                                    .get("id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-
-                                // Record start time for this item
-                                block_start_times.insert(item_id.clone(), now);
-
-                                if item_type_str == "function_call" {
-                                    let call_id = item_type
-                                        .get("call_id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let name = item_type
-                                        .get("name")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-
-                                    active_function_calls.insert(item_id, (name, call_id));
-                                } else if item_type_str == "reasoning" {
-                                    // Track the reasoning item ID for proper round-trip preservation
-                                    reasoning_state.reasoning_block_id = Some(item_id);
-                                }
-                            }
-                        }
+                    if let Some(item) = event.item {
+                        self.on_output_item_added(item)?;
                     }
                 }
                 "response.output_text.delta" => {
                     if let Some(delta) = event.delta {
-                        callback(&StreamingChunk::Text(delta))?;
+                        self.on_output_text_delta(delta)?;
                     }
                 }
                 "response.reasoning_text.delta" => {
                     if let Some(delta) = event.delta {
-                        callback(&StreamingChunk::Thinking(delta))?;
+                        self.on_reasoning_text_delta(delta)?;
                     }
                 }
                 "response.reasoning_summary_text.delta" => {
                     if let Some(delta) = event.delta {
-                        // Use item_id from the event to track different summary items
-                        let item_id = event.item_id.unwrap_or_else(|| "default".to_string());
-
-                        // Check if this is a new item
-                        if reasoning_state.current_item_id.as_ref() != Some(&item_id) {
-                            // If we had a previous item, finalize it
-                            if let Some(_prev_id) = &reasoning_state.current_item_id {
-                                reasoning_state.completed_items.push(
-                                    ReasoningSummaryItem::SummaryText {
-                                        text: reasoning_state.current_item_content.clone(),
-                                    },
-                                );
-                            }
-
-                            // Start tracking the new item
-                            reasoning_state.current_item_id = Some(item_id.clone());
-                            reasoning_state.current_item_content.clear();
-                        }
-
-                        // Append the delta to the current item content
-                        reasoning_state.current_item_content.push_str(&delta);
-
-                        // Emit the reasoning summary chunk with raw content delta
-                        callback(&StreamingChunk::ReasoningSummary { id: item_id, delta })?;
+                        let id = event.item_id.unwrap_or_else(|| "default".to_string());
+                        self.on_reasoning_summary_delta(id, delta)?;
                     }
                 }
                 "response.function_call_arguments.delta" => {
                     if let Some(delta) = event.delta {
-                        let (tool_name, tool_id) = if let Some(item_id) = &event.item_id {
-                            active_function_calls
-                                .get(item_id)
-                                .map(|(name, call_id)| (Some(name.clone()), Some(call_id.clone())))
-                                .unwrap_or((None, None))
-                        } else {
-                            (None, None)
-                        };
-
-                        callback(&StreamingChunk::InputJson {
-                            content: delta,
-                            tool_name,
-                            tool_id,
-                        })?;
+                        self.on_function_call_arguments_delta(event.item_id.as_deref(), delta)?;
                     }
                 }
                 "response.output_item.done" => {
-                    let now = std::time::SystemTime::now();
-                    if let Some(item_data) = event.item {
-                        let output_item: ResponseOutputItem =
-                            serde_json::from_value(item_data.clone())?;
-
-                        // Get the item ID for timestamp lookup
-                        let item_id = item_data
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-
-                        let start_time = block_start_times.get(&item_id).copied();
-
-                        let mut converted = self.convert_output(vec![output_item]);
-
-                        // Set timestamps on the converted blocks
-                        for block in &mut converted {
-                            if let Some(start) = start_time {
-                                block.set_timestamps(start, now);
-                            }
-                        }
-
-                        // Check if this is a reasoning item to avoid duplicate creation
-                        for block in &converted {
-                            if matches!(block, ContentBlock::RedactedThinking { .. }) {
-                                reasoning_state.received_completed_reasoning = true;
-                            }
-                        }
-
-                        content_blocks.extend(converted);
+                    if let Some(item) = event.item {
+                        self.on_output_item_done(item)?;
                     }
                 }
                 "response.completed" => {
-                    // Finalize any remaining reasoning item
-                    if let Some(_current_id) = &reasoning_state.current_item_id {
-                        reasoning_state
-                            .completed_items
-                            .push(ReasoningSummaryItem::SummaryText {
-                                text: reasoning_state.current_item_content.clone(),
-                            });
-
-                        reasoning_state.current_item_id = None;
-                        reasoning_state.current_item_content.clear();
-                    }
-
-                    // Emit reasoning complete if we had any reasoning items
-                    if !reasoning_state.completed_items.is_empty() {
-                        callback(&StreamingChunk::ReasoningComplete)?;
-                    }
-
-                    if let Some(response_data) = event.response {
-                        if let Ok(usage_data) = serde_json::from_value::<ResponsesUsage>(
-                            response_data
-                                .get("usage")
-                                .unwrap_or(&serde_json::Value::Null)
-                                .clone(),
-                        ) {
-                            usage.input_tokens = usage_data.input_tokens;
-                            usage.output_tokens = usage_data.output_tokens;
-                            usage.cache_read_input_tokens = usage_data
-                                .input_tokens_details
-                                .map(|d| d.cached_tokens)
-                                .unwrap_or(0);
-                        }
-                    }
+                    self.on_response_completed(event.response.as_ref())?;
                 }
-                _ => {
-                    // Ignore other event types
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn on_output_item_added(&mut self, item_data: serde_json::Value) -> Result<()> {
+        let now = SystemTime::now();
+        if let Ok(item_type) = serde_json::from_value::<serde_json::Value>(item_data.clone()) {
+            if let Some(item_type_str) = item_type.get("type").and_then(|v| v.as_str()) {
+                let item_id = item_type
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // Record start time for this item
+                self.block_start_times.insert(item_id.clone(), now);
+
+                if item_type_str == "function_call" {
+                    let call_id = item_type
+                        .get("call_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = item_type
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    self.active_function_calls
+                        .insert(item_id, FunctionCallInfo { name, call_id });
+                } else if item_type_str == "reasoning" {
+                    // Track the reasoning item ID for proper round-trip preservation
+                    self.reasoning_state.reasoning_block_id = Some(item_id);
                 }
             }
         }
+        Ok(())
+    }
+
+    fn on_output_text_delta(&mut self, delta: String) -> Result<()> {
+        (self.callback)(&StreamingChunk::Text(delta))
+    }
+
+    fn on_reasoning_text_delta(&mut self, delta: String) -> Result<()> {
+        (self.callback)(&StreamingChunk::Thinking(delta))
+    }
+
+    fn on_reasoning_summary_delta(&mut self, item_id: String, delta: String) -> Result<()> {
+        // Check if this is a new item
+        if self.reasoning_state.current_item_id.as_ref() != Some(&item_id) {
+            // If we had a previous item, finalize it
+            if let Some(_prev_id) = &self.reasoning_state.current_item_id {
+                self.reasoning_state
+                    .completed_items
+                    .push(ReasoningSummaryItem::SummaryText {
+                        text: self.reasoning_state.current_item_content.clone(),
+                    });
+            }
+
+            // Start tracking the new item
+            self.reasoning_state.current_item_id = Some(item_id.clone());
+            self.reasoning_state.current_item_content.clear();
+        }
+
+        // Append the delta to the current item content
+        self.reasoning_state.current_item_content.push_str(&delta);
+
+        // Emit the reasoning summary chunk with raw content delta
+        (self.callback)(&StreamingChunk::ReasoningSummary { id: item_id, delta })
+    }
+
+    fn on_function_call_arguments_delta(
+        &mut self,
+        item_id: Option<&str>,
+        delta: String,
+    ) -> Result<()> {
+        let (tool_name, tool_id) = if let Some(id) = item_id {
+            self.active_function_calls
+                .get(id)
+                .map(|info| (Some(info.name.clone()), Some(info.call_id.clone())))
+                .unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
+
+        (self.callback)(&StreamingChunk::InputJson {
+            content: delta,
+            tool_name,
+            tool_id,
+        })
+    }
+
+    fn on_output_item_done(&mut self, item_data: serde_json::Value) -> Result<()> {
+        let now = SystemTime::now();
+        let output_item: ResponseOutputItem = serde_json::from_value(item_data.clone())?;
+
+        // Get the item ID for timestamp lookup
+        let item_id = item_data
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let start_time = self.block_start_times.get(&item_id).copied();
+
+        let mut converted = self.client.convert_output(vec![output_item]);
+
+        // Set timestamps on the converted blocks
+        for block in &mut converted {
+            if let Some(start) = start_time {
+                block.set_timestamps(start, now);
+            }
+        }
+
+        // Check if this is a reasoning item to avoid duplicate creation
+        for block in &converted {
+            if matches!(block, ContentBlock::RedactedThinking { .. }) {
+                self.reasoning_state.received_completed_reasoning = true;
+            }
+        }
+
+        self.content_blocks.extend(converted);
+        Ok(())
+    }
+
+    fn on_response_completed(&mut self, response: Option<&serde_json::Value>) -> Result<()> {
+        // Finalize any remaining reasoning item
+        if self.reasoning_state.current_item_id.is_some() {
+            self.reasoning_state
+                .completed_items
+                .push(ReasoningSummaryItem::SummaryText {
+                    text: self.reasoning_state.current_item_content.clone(),
+                });
+
+            self.reasoning_state.current_item_id = None;
+            self.reasoning_state.current_item_content.clear();
+        }
+
+        // Emit reasoning complete if we had any reasoning items
+        if !self.reasoning_state.completed_items.is_empty() {
+            (self.callback)(&StreamingChunk::ReasoningComplete)?;
+        }
+
+        if let Some(response_data) = response {
+            if let Ok(usage_data) = serde_json::from_value::<ResponsesUsage>(
+                response_data
+                    .get("usage")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .clone(),
+            ) {
+                self.usage.input_tokens = usage_data.input_tokens;
+                self.usage.output_tokens = usage_data.output_tokens;
+                self.usage.cache_read_input_tokens = usage_data
+                    .input_tokens_details
+                    .map(|d| d.cached_tokens)
+                    .unwrap_or(0);
+            }
+        }
+
+        // Create a RedactedThinking block from collected reasoning items if any
+        // Only do this if we didn't receive a completed reasoning item from the API
+        if !self.reasoning_state.completed_items.is_empty()
+            && !self.reasoning_state.received_completed_reasoning
+        {
+            self.content_blocks.push(ContentBlock::RedactedThinking {
+                id: self
+                    .reasoning_state
+                    .reasoning_block_id
+                    .clone()
+                    .unwrap_or_else(|| "reasoning_stream".to_string()),
+                summary: self.reasoning_state.completed_items.clone(),
+                data: "".to_string(), // No encrypted data for streaming
+                start_time: None,
+                end_time: None,
+            });
+        }
+
         Ok(())
     }
 }
