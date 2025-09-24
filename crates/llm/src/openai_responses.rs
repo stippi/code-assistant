@@ -816,6 +816,32 @@ impl OpenAIResponsesClient {
             .await
     }
 
+    #[inline]
+    fn process_decoded_segment(
+        &self,
+        segment: &str,
+        line_buffer: &mut String,
+        processor: &mut StreamProcessor,
+    ) -> Result<()> {
+        for c in segment.chars() {
+            if c == '\n' {
+                if !line_buffer.is_empty() {
+                    // Record the SSE line if recorder is available
+                    if let Some(recorder) = &self.recorder {
+                        if let Err(e) = recorder.record_chunk(line_buffer) {
+                            warn!("Failed to record chunk: {e}");
+                        }
+                    }
+                    processor.process_line(line_buffer)?;
+                }
+                line_buffer.clear();
+            } else {
+                line_buffer.push(c);
+            }
+        }
+        Ok(())
+    }
+
     async fn process_chunk_stream(
         &self,
         chunk_stream: &mut dyn ChunkStream,
@@ -836,22 +862,7 @@ impl OpenAIResponsesClient {
             match std::str::from_utf8(&byte_buffer) {
                 Ok(chunk_str) => {
                     // Successfully decoded all bytes
-                    for c in chunk_str.chars() {
-                        if c == '\n' {
-                            if !line_buffer.is_empty() {
-                                // Record the SSE line if recorder is available
-                                if let Some(recorder) = &self.recorder {
-                                    if let Err(e) = recorder.record_chunk(&line_buffer) {
-                                        warn!("Failed to record chunk: {e}");
-                                    }
-                                }
-                                processor.process_line(&line_buffer)?;
-                            }
-                            line_buffer.clear();
-                        } else {
-                            line_buffer.push(c);
-                        }
-                    }
+                    self.process_decoded_segment(chunk_str, &mut line_buffer, &mut processor)?;
                     byte_buffer.clear();
                 }
                 Err(e) => {
@@ -860,22 +871,7 @@ impl OpenAIResponsesClient {
                     if valid_up_to > 0 {
                         // Process the valid part
                         let valid_str = std::str::from_utf8(&byte_buffer[..valid_up_to])?;
-                        for c in valid_str.chars() {
-                            if c == '\n' {
-                                if !line_buffer.is_empty() {
-                                    // Record the SSE line if recorder is available
-                                    if let Some(recorder) = &self.recorder {
-                                        if let Err(e) = recorder.record_chunk(&line_buffer) {
-                                            warn!("Failed to record chunk: {e}");
-                                        }
-                                    }
-                                    processor.process_line(&line_buffer)?;
-                                }
-                                line_buffer.clear();
-                            } else {
-                                line_buffer.push(c);
-                            }
-                        }
+                        self.process_decoded_segment(valid_str, &mut line_buffer, &mut processor)?;
                         // Keep the incomplete bytes for the next chunk
                         byte_buffer.drain(..valid_up_to);
                     } else {
@@ -899,6 +895,14 @@ impl OpenAIResponsesClient {
                 }
             }
             processor.process_line(&line_buffer)?;
+        }
+
+        // If there's leftover bytes in buffer (unterminated line without trailing \n), try to process
+        if !byte_buffer.is_empty() {
+            if let Ok(valid_str) = std::str::from_utf8(&byte_buffer) {
+                self.process_decoded_segment(valid_str, &mut line_buffer, &mut processor)?;
+                byte_buffer.clear();
+            }
         }
 
         // Finalize internal state (reasoning, usage from response, etc.) if needed
