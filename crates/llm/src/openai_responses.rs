@@ -406,52 +406,79 @@ impl OpenAIResponsesClient {
         result
     }
 
+    #[inline]
+    fn flush_current_message(
+        &self,
+        role_str: &str,
+        current_message_content: &mut Vec<ResponseContentItem>,
+        result: &mut Vec<ResponseInputItem>,
+    ) {
+        if !current_message_content.is_empty() {
+            result.push(ResponseInputItem::Message {
+                role: role_str.to_string(),
+                content: std::mem::take(current_message_content),
+            });
+        }
+    }
+
     fn convert_structured_message(
         &self,
         role: MessageRole,
         blocks: Vec<ContentBlock>,
         result: &mut Vec<ResponseInputItem>,
     ) {
-        let mut content_items = Vec::new();
-        let mut additional_items = Vec::new();
+        let mut current_message_content = Vec::new();
+        let role_str = match role {
+            MessageRole::User => "user".to_string(),
+            MessageRole::Assistant => "assistant".to_string(),
+        };
 
         for block in blocks {
             match block {
                 ContentBlock::Text { text, .. } => match role {
                     MessageRole::User => {
-                        content_items.push(ResponseContentItem::InputText { text });
+                        current_message_content.push(ResponseContentItem::InputText { text });
                     }
                     MessageRole::Assistant => {
-                        content_items.push(ResponseContentItem::OutputText { text });
+                        current_message_content.push(ResponseContentItem::OutputText { text });
                     }
                 },
                 ContentBlock::Image {
                     media_type, data, ..
                 } => {
                     let image_url = format!("data:{media_type};base64,{data}");
-                    content_items.push(ResponseContentItem::InputImage { image_url });
+                    current_message_content.push(ResponseContentItem::InputImage { image_url });
                 }
+                ContentBlock::Thinking { thinking, .. } => match role {
+                    MessageRole::User => {
+                        current_message_content
+                            .push(ResponseContentItem::InputText { text: thinking });
+                    }
+                    MessageRole::Assistant => {
+                        current_message_content
+                            .push(ResponseContentItem::OutputText { text: thinking });
+                    }
+                },
+                // Non-message content blocks: flush current message and add as separate items
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
                     ..
                 } => {
-                    additional_items.push(ResponseInputItem::FunctionCallOutput {
+                    // Flush current message content if any
+                    self.flush_current_message(&role_str, &mut current_message_content, result);
+
+                    result.push(ResponseInputItem::FunctionCallOutput {
                         call_id: tool_use_id,
                         output: content,
                     });
                 }
-                ContentBlock::Thinking { thinking, .. } => match role {
-                    MessageRole::User => {
-                        content_items.push(ResponseContentItem::InputText { text: thinking });
-                    }
-                    MessageRole::Assistant => {
-                        content_items.push(ResponseContentItem::OutputText { text: thinking });
-                    }
-                },
                 ContentBlock::RedactedThinking {
                     id, summary, data, ..
                 } => {
+                    // Flush current message content if any
+                    self.flush_current_message(&role_str, &mut current_message_content, result);
+
                     // Convert structured summary items back to API format for input
                     let summary_json: Vec<serde_json::Value> = summary
                         .into_iter()
@@ -462,7 +489,7 @@ impl OpenAIResponsesClient {
                         })
                         .collect();
 
-                    additional_items.push(ResponseInputItem::Reasoning {
+                    result.push(ResponseInputItem::Reasoning {
                         id,
                         summary: summary_json,
                         encrypted_content: data,
@@ -471,11 +498,14 @@ impl OpenAIResponsesClient {
                 ContentBlock::ToolUse {
                     id, name, input, ..
                 } => {
+                    // Flush current message content if any
+                    self.flush_current_message(&role_str, &mut current_message_content, result);
+
                     // Convert tool use to function call input item
                     if role != MessageRole::Assistant {
                         warn!("ToolUse blocks should only appear in assistant messages");
                     }
-                    additional_items.push(ResponseInputItem::FunctionCall {
+                    result.push(ResponseInputItem::FunctionCall {
                         call_id: id,
                         name,
                         arguments: serde_json::to_string(&input)
@@ -485,19 +515,8 @@ impl OpenAIResponsesClient {
             }
         }
 
-        // Add message content if any
-        if !content_items.is_empty() {
-            result.push(ResponseInputItem::Message {
-                role: match role {
-                    MessageRole::User => "user".to_string(),
-                    MessageRole::Assistant => "assistant".to_string(),
-                },
-                content: content_items,
-            });
-        }
-
-        // Add function outputs and reasoning items
-        result.extend(additional_items);
+        // Add any remaining message content
+        self.flush_current_message(&role_str, &mut current_message_content, result);
     }
 
     /// Convert Responses API output to internal format
@@ -1418,23 +1437,8 @@ mod tests {
             _ => panic!("Expected user message"),
         }
 
-        // Second: Assistant response text
+        // Second: Encrypted reasoning preserved (maintains original order)
         match &converted[1] {
-            ResponseInputItem::Message { role, content } => {
-                assert_eq!(role, "assistant");
-                assert_eq!(content.len(), 1);
-                match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
-                        assert_eq!(text, "2+2 equals 4.");
-                    }
-                    _ => panic!("Expected OutputText"),
-                }
-            }
-            _ => panic!("Expected assistant message"),
-        }
-
-        // Third: Encrypted reasoning preserved
-        match &converted[2] {
             ResponseInputItem::Reasoning {
                 id,
                 summary,
@@ -1452,6 +1456,21 @@ mod tests {
             _ => panic!("Expected Reasoning item"),
         }
 
+        // Third: Assistant response text
+        match &converted[2] {
+            ResponseInputItem::Message { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ResponseContentItem::OutputText { text } => {
+                        assert_eq!(text, "2+2 equals 4.");
+                    }
+                    _ => panic!("Expected OutputText"),
+                }
+            }
+            _ => panic!("Expected assistant message"),
+        }
+
         // Fourth: Follow-up user question
         match &converted[3] {
             ResponseInputItem::Message { role, content } => {
@@ -1465,6 +1484,119 @@ mod tests {
                 }
             }
             _ => panic!("Expected user message"),
+        }
+    }
+
+    #[test]
+    fn test_order_preservation_mixed_content() {
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+
+        let messages = vec![Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Structured(vec![
+                ContentBlock::Text {
+                    text: "First text".to_string(),
+                    start_time: None,
+                    end_time: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "tool_123".to_string(),
+                    name: "test_tool".to_string(),
+                    input: serde_json::json!({"arg": "value"}),
+                    start_time: None,
+                    end_time: None,
+                },
+                ContentBlock::Text {
+                    text: "Second text".to_string(),
+                    start_time: None,
+                    end_time: None,
+                },
+                ContentBlock::RedactedThinking {
+                    id: "rs_456".to_string(),
+                    summary: vec![ReasoningSummaryItem::SummaryText {
+                        text: "Some reasoning".to_string(),
+                    }],
+                    data: "encrypted_data".to_string(),
+                    start_time: None,
+                    end_time: None,
+                },
+                ContentBlock::Text {
+                    text: "Third text".to_string(),
+                    start_time: None,
+                    end_time: None,
+                },
+            ]),
+            request_id: None,
+            usage: None,
+        }];
+
+        let converted = client.convert_messages(messages);
+        assert_eq!(converted.len(), 5);
+
+        // First: First text
+        match &converted[0] {
+            ResponseInputItem::Message { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ResponseContentItem::OutputText { text } => {
+                        assert_eq!(text, "First text");
+                    }
+                    _ => panic!("Expected OutputText"),
+                }
+            }
+            _ => panic!("Expected Message"),
+        }
+
+        // Second: Tool use
+        match &converted[1] {
+            ResponseInputItem::FunctionCall { call_id, name, .. } => {
+                assert_eq!(call_id, "tool_123");
+                assert_eq!(name, "test_tool");
+            }
+            _ => panic!("Expected FunctionCall"),
+        }
+
+        // Third: Second text
+        match &converted[2] {
+            ResponseInputItem::Message { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ResponseContentItem::OutputText { text } => {
+                        assert_eq!(text, "Second text");
+                    }
+                    _ => panic!("Expected OutputText"),
+                }
+            }
+            _ => panic!("Expected Message"),
+        }
+
+        // Fourth: Reasoning
+        match &converted[3] {
+            ResponseInputItem::Reasoning { id, .. } => {
+                assert_eq!(id, "rs_456");
+            }
+            _ => panic!("Expected Reasoning"),
+        }
+
+        // Fifth: Third text
+        match &converted[4] {
+            ResponseInputItem::Message { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ResponseContentItem::OutputText { text } => {
+                        assert_eq!(text, "Third text");
+                    }
+                    _ => panic!("Expected OutputText"),
+                }
+            }
+            _ => panic!("Expected Message"),
         }
     }
 
@@ -1501,23 +1633,8 @@ mod tests {
         let converted = client.convert_messages(messages);
         assert_eq!(converted.len(), 2);
 
-        // First should be the reasoning item
+        // First should be the encrypted reasoning (maintains original order)
         match &converted[0] {
-            ResponseInputItem::Message { role, content } => {
-                assert_eq!(role, "assistant");
-                assert_eq!(content.len(), 1);
-                match &content[0] {
-                    ResponseContentItem::OutputText { text } => {
-                        assert_eq!(text, "Based on my reasoning, here's the answer.");
-                    }
-                    _ => panic!("Expected OutputText"),
-                }
-            }
-            _ => panic!("Expected Message"),
-        }
-
-        // Second should be the encrypted reasoning
-        match &converted[1] {
             ResponseInputItem::Reasoning {
                 id,
                 summary,
@@ -1532,6 +1649,21 @@ mod tests {
                 assert_eq!(encrypted_content, "encrypted_reasoning_data");
             }
             _ => panic!("Expected Reasoning item"),
+        }
+
+        // Second should be the message content
+        match &converted[1] {
+            ResponseInputItem::Message { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ResponseContentItem::OutputText { text } => {
+                        assert_eq!(text, "Based on my reasoning, here's the answer.");
+                    }
+                    _ => panic!("Expected OutputText"),
+                }
+            }
+            _ => panic!("Expected Message"),
         }
     }
 }
