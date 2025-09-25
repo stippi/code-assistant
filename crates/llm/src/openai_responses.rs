@@ -1066,16 +1066,17 @@ impl<'a> StreamProcessor<'a> {
                     });
             }
 
-            // Start tracking the new item
+            // Start tracking the new item and notify downstream consumers
             self.reasoning_state.current_item_id = Some(item_id.clone());
             self.reasoning_state.current_item_content.clear();
+            (self.callback)(&StreamingChunk::ReasoningSummaryStart)?;
         }
 
         // Append the delta to the current item content
         self.reasoning_state.current_item_content.push_str(&delta);
 
         // Emit the reasoning summary chunk with raw content delta
-        (self.callback)(&StreamingChunk::ReasoningSummary { id: item_id, delta })
+        (self.callback)(&StreamingChunk::ReasoningSummaryDelta(delta))
     }
 
     fn on_function_call_arguments_delta(

@@ -40,8 +40,10 @@ pub enum DisplayFragment {
     ToolEnd { id: String },
     /// Streaming tool output chunk
     ToolOutput { tool_id: String, chunk: String },
-    /// OpenAI reasoning summary item delta with ID for tracking
-    ReasoningSummary { id: String, delta: String },
+    /// OpenAI reasoning summary started a new item
+    ReasoningSummaryStart,
+    /// OpenAI reasoning summary delta for the current item
+    ReasoningSummaryDelta(String),
     /// Mark reasoning as completed
     ReasoningComplete,
 }

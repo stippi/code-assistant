@@ -133,11 +133,12 @@ impl StreamProcessorTrait for XmlStreamProcessor {
             // For text chunks, we need to parse for tags
             StreamingChunk::Text(text) => self.process_text_with_tags(text),
 
-            StreamingChunk::ReasoningSummary { id, delta } => {
-                self.emit_fragment(DisplayFragment::ReasoningSummary {
-                    id: id.clone(),
-                    delta: delta.clone(),
-                })
+            StreamingChunk::ReasoningSummaryStart => {
+                self.emit_fragment(DisplayFragment::ReasoningSummaryStart)
+            }
+
+            StreamingChunk::ReasoningSummaryDelta(delta) => {
+                self.emit_fragment(DisplayFragment::ReasoningSummaryDelta(delta.clone()))
             }
 
             StreamingChunk::ReasoningComplete => {
@@ -240,14 +241,13 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                             ContentBlock::RedactedThinking { summary, .. } => {
                                 // Generate reasoning summary fragments for each item, emitting raw content
                                 // exactly as it would come from streaming API
-                                for (index, item) in summary.iter().enumerate() {
-                                    let synthetic_id = format!("history_{index}");
+                                for item in summary {
+                                    fragments.push(DisplayFragment::ReasoningSummaryStart);
                                     match item {
                                         ReasoningSummaryItem::SummaryText { text } => {
-                                            fragments.push(DisplayFragment::ReasoningSummary {
-                                                id: synthetic_id,
-                                                delta: text.clone(), // Emit raw text content
-                                            });
+                                            fragments.push(DisplayFragment::ReasoningSummaryDelta(
+                                                text.clone(),
+                                            ));
                                         }
                                     }
                                 }
@@ -734,7 +734,8 @@ impl XmlStreamProcessor {
                             buffered_fragments.push(fragment);
                         }
                     }
-                    DisplayFragment::ReasoningSummary { .. } => {
+                    DisplayFragment::ReasoningSummaryStart
+                    | DisplayFragment::ReasoningSummaryDelta(_) => {
                         // Reasoning summary - buffer it
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..

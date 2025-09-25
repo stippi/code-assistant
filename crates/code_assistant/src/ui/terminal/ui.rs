@@ -363,7 +363,10 @@ impl UserInterface for TerminalTuiUI {
                     data: data.clone(),
                 });
             }
-            DisplayFragment::ReasoningSummary { id: _, delta } => {
+            DisplayFragment::ReasoningSummaryStart => {
+                // Terminal UI currently treats reasoning summaries as text; no separate handling needed
+            }
+            DisplayFragment::ReasoningSummaryDelta(delta) => {
                 // For terminal UI, treat reasoning summary as thinking text
                 self.push_event(UiEvent::AppendToThinkingBlock {
                     content: delta.clone(),

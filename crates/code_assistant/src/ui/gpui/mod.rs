@@ -931,11 +931,20 @@ impl Gpui {
                 // Refresh UI to hide the error popover
                 cx.refresh().expect("Failed to refresh windows");
             }
-            UiEvent::UpdateReasoningSummary { id, delta } => {
+            UiEvent::StartReasoningSummaryItem => {
                 let queue = self.message_queue.lock().unwrap();
                 if let Some(last) = queue.last() {
                     cx.update_entity(last, |message, cx| {
-                        message.update_reasoning_summary(id, delta, cx);
+                        message.start_reasoning_summary_item(cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+            }
+            UiEvent::AppendReasoningSummaryDelta { delta } => {
+                let queue = self.message_queue.lock().unwrap();
+                if let Some(last) = queue.last() {
+                    cx.update_entity(last, |message, cx| {
+                        message.append_reasoning_summary_delta(delta, cx);
                     })
                     .expect("Failed to update entity");
                 }
@@ -1001,9 +1010,15 @@ impl Gpui {
                     })
                     .expect("Failed to update entity");
                 }
-                DisplayFragment::ReasoningSummary { id, delta } => {
+                DisplayFragment::ReasoningSummaryStart => {
                     cx.update_entity(container, |container, cx| {
-                        container.update_reasoning_summary(id, delta, cx);
+                        container.start_reasoning_summary_item(cx);
+                    })
+                    .expect("Failed to update entity");
+                }
+                DisplayFragment::ReasoningSummaryDelta(delta) => {
+                    cx.update_entity(container, |container, cx| {
+                        container.append_reasoning_summary_delta(delta, cx);
                     })
                     .expect("Failed to update entity");
                 }
@@ -1327,9 +1342,11 @@ impl UserInterface for Gpui {
                     data: data.clone(),
                 });
             }
-            DisplayFragment::ReasoningSummary { id, delta } => {
-                self.push_event(UiEvent::UpdateReasoningSummary {
-                    id: id.clone(),
+            DisplayFragment::ReasoningSummaryStart => {
+                self.push_event(UiEvent::StartReasoningSummaryItem);
+            }
+            DisplayFragment::ReasoningSummaryDelta(delta) => {
+                self.push_event(UiEvent::AppendReasoningSummaryDelta {
                     delta: delta.clone(),
                 });
             }

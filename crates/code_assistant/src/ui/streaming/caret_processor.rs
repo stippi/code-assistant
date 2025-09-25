@@ -98,13 +98,13 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                 // Emit any remaining buffered fragments since no more content is coming
                 self.flush_buffered_content()?;
             }
-            StreamingChunk::ReasoningSummary { id, delta } => {
-                // Pass through reasoning summary chunks directly
+            StreamingChunk::ReasoningSummaryStart => {
                 self.ui
-                    .display_fragment(&DisplayFragment::ReasoningSummary {
-                        id: id.clone(),
-                        delta: delta.clone(),
-                    })?;
+                    .display_fragment(&DisplayFragment::ReasoningSummaryStart)?;
+            }
+            StreamingChunk::ReasoningSummaryDelta(delta) => {
+                self.ui
+                    .display_fragment(&DisplayFragment::ReasoningSummaryDelta(delta.clone()))?;
             }
             StreamingChunk::ReasoningComplete => {
                 // Pass through reasoning complete
@@ -212,14 +212,13 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                             llm::ContentBlock::RedactedThinking { summary, .. } => {
                                 // Generate reasoning summary fragments for each item, emitting raw content
                                 // exactly as it would come from streaming API
-                                for (index, item) in summary.iter().enumerate() {
-                                    let synthetic_id = format!("history_{index}");
+                                for item in summary {
+                                    fragments.push(DisplayFragment::ReasoningSummaryStart);
                                     match item {
                                         llm::ReasoningSummaryItem::SummaryText { text } => {
-                                            fragments.push(DisplayFragment::ReasoningSummary {
-                                                id: synthetic_id,
-                                                delta: text.clone(), // Emit raw text content
-                                            });
+                                            fragments.push(DisplayFragment::ReasoningSummaryDelta(
+                                                text.clone(),
+                                            ));
                                         }
                                     }
                                 }
@@ -898,7 +897,8 @@ impl CaretStreamProcessor {
                             buffered_fragments.push(fragment);
                         }
                     }
-                    DisplayFragment::ReasoningSummary { .. } => {
+                    DisplayFragment::ReasoningSummaryStart
+                    | DisplayFragment::ReasoningSummaryDelta(_) => {
                         // Reasoning summary - buffer it until we know if next tool is allowed
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..

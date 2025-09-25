@@ -226,13 +226,13 @@ impl StreamProcessorTrait for JsonStreamProcessor {
 
             StreamingChunk::Text(text) => self.process_text_with_thinking_tags(text),
 
-            StreamingChunk::ReasoningSummary { id, delta } => {
-                self.ui
-                    .display_fragment(&DisplayFragment::ReasoningSummary {
-                        id: id.clone(),
-                        delta: delta.clone(),
-                    })
-            }
+            StreamingChunk::ReasoningSummaryStart => self
+                .ui
+                .display_fragment(&DisplayFragment::ReasoningSummaryStart),
+
+            StreamingChunk::ReasoningSummaryDelta(delta) => self
+                .ui
+                .display_fragment(&DisplayFragment::ReasoningSummaryDelta(delta.clone())),
 
             StreamingChunk::ReasoningComplete => self
                 .ui
@@ -309,14 +309,13 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                         ContentBlock::RedactedThinking { summary, .. } => {
                             // Generate reasoning summary fragments for each item, emitting raw content
                             // exactly as it would come from streaming API
-                            for (index, item) in summary.iter().enumerate() {
-                                let synthetic_id = format!("history_{index}");
+                            for item in summary {
+                                fragments.push(DisplayFragment::ReasoningSummaryStart);
                                 match item {
                                     llm::ReasoningSummaryItem::SummaryText { text } => {
-                                        fragments.push(DisplayFragment::ReasoningSummary {
-                                            id: synthetic_id,
-                                            delta: text.clone(), // Emit raw text content
-                                        });
+                                        fragments.push(DisplayFragment::ReasoningSummaryDelta(
+                                            text.clone(),
+                                        ));
                                     }
                                 }
                             }
@@ -1167,11 +1166,15 @@ mod tests {
 
         // Verify we get the expected fragments
         let mut reasoning_fragments = Vec::new();
+        let mut start_events = 0;
         let mut has_reasoning_complete = false;
 
         for fragment in &fragments {
             match fragment {
-                DisplayFragment::ReasoningSummary { id: _, delta } => {
+                DisplayFragment::ReasoningSummaryStart => {
+                    start_events += 1;
+                }
+                DisplayFragment::ReasoningSummaryDelta(delta) => {
                     reasoning_fragments.push(delta.clone());
                 }
                 DisplayFragment::ReasoningComplete => {
@@ -1181,7 +1184,8 @@ mod tests {
             }
         }
 
-        // Should have 2 reasoning summary fragments (one per summary item)
+        // Should have 2 reasoning summary items (start + delta per item)
+        assert_eq!(start_events, 2);
         assert_eq!(reasoning_fragments.len(), 2);
 
         // Content should match the raw text from summary items

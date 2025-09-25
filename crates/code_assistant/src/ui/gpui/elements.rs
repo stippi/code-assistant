@@ -521,9 +521,8 @@ impl MessageContainer {
                 if let Some(thinking_block) = view.block.as_thinking_mut() {
                     if !thinking_block.is_completed {
                         warn!(
-                            "Finishing thinking block - is_reasoning: {}, current_id: {:?}, items: {}",
+                            "Finishing thinking block - is_reasoning: {}, items: {}",
                             thinking_block.is_reasoning_block(),
-                            thinking_block.current_reasoning_item_id,
                             thinking_block.reasoning_summary_items.len()
                         );
 
@@ -535,10 +534,7 @@ impl MessageContainer {
                         thinking_block.end_time = std::time::Instant::now();
                         view.set_generating(false);
 
-                        warn!(
-                            "Finished thinking block - items after: {}",
-                            items_after
-                        );
+                        warn!("Finished thinking block - items after: {}", items_after);
 
                         cx.notify();
                     }
@@ -547,8 +543,33 @@ impl MessageContainer {
         }
     }
 
-    /// Update reasoning summary for the most recent thinking block
-    pub fn update_reasoning_summary(&self, id: String, delta: String, cx: &mut Context<Self>) {
+    /// Start a new reasoning summary item for the most recent thinking block
+    pub fn start_reasoning_summary_item(&self, cx: &mut Context<Self>) {
+        let mut elements = self.elements.lock().unwrap();
+
+        if let Some(last) = elements.last() {
+            last.update(cx, |view, cx| {
+                if let Some(thinking_block) = view.block.as_thinking_mut() {
+                    thinking_block.start_reasoning_summary_item();
+                    cx.notify();
+                }
+            });
+            return;
+        }
+
+        // If we reach here, we need to add a new thinking block
+        let request_id = *self.current_request_id.lock().unwrap();
+        let mut new_thinking_block = ThinkingBlock::new(String::new());
+        new_thinking_block.start_reasoning_summary_item();
+
+        let block = BlockData::ThinkingBlock(new_thinking_block);
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        elements.push(view);
+        cx.notify();
+    }
+
+    /// Append delta content to the current reasoning summary item
+    pub fn append_reasoning_summary_delta(&self, delta: String, cx: &mut Context<Self>) {
         let mut elements = self.elements.lock().unwrap();
 
         if let Some(last) = elements.last() {
@@ -556,7 +577,7 @@ impl MessageContainer {
 
             last.update(cx, |view, cx| {
                 if let Some(thinking_block) = view.block.as_thinking_mut() {
-                    thinking_block.update_reasoning_summary(id.clone(), delta.clone());
+                    thinking_block.append_reasoning_summary_delta(delta.clone());
                     was_updated = true;
                     cx.notify();
                 }
@@ -570,7 +591,8 @@ impl MessageContainer {
         // If we reach here, we need to add a new thinking block
         let request_id = *self.current_request_id.lock().unwrap();
         let mut new_thinking_block = ThinkingBlock::new(String::new());
-        new_thinking_block.update_reasoning_summary(id, delta);
+        new_thinking_block.start_reasoning_summary_item();
+        new_thinking_block.append_reasoning_summary_delta(delta);
 
         let block = BlockData::ThinkingBlock(new_thinking_block);
         let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
@@ -591,8 +613,7 @@ impl MessageContainer {
             last.update(cx, |view, cx| {
                 if let Some(thinking_block) = view.block.as_thinking_mut() {
                     warn!(
-                        "About to complete reasoning - current_id: {:?}, items: {}, generating: {}",
-                        thinking_block.current_reasoning_item_id,
+                        "About to complete reasoning - items: {}, generating: {}",
                         thinking_block.reasoning_summary_items.len(),
                         view.is_generating
                     );
@@ -1560,7 +1581,6 @@ pub struct ThinkingBlock {
     pub reasoning_summary_items: Vec<llm::ReasoningSummaryItem>,
     pub current_generating_title: Option<String>,
     pub current_generating_content: Option<String>,
-    pub current_reasoning_item_id: Option<String>,
 }
 
 /// Image block with media type and base64 data
@@ -1584,7 +1604,6 @@ impl ThinkingBlock {
             reasoning_summary_items: Vec::new(),
             current_generating_title: None,
             current_generating_content: None,
-            current_reasoning_item_id: None,
         }
     }
 
@@ -1607,32 +1626,29 @@ impl ThinkingBlock {
         }
     }
 
-    /// Update reasoning summary with new content
-    pub fn update_reasoning_summary(&mut self, id: String, delta: String) {
-        // Check if this is a new item
-        if self.current_reasoning_item_id.as_ref() != Some(&id) {
-            // If we had a previous item, finalize it
-            if self.current_reasoning_item_id.is_some() {
-                if let Some(content) = &self.current_generating_content {
-                    self.reasoning_summary_items
-                        .push(llm::ReasoningSummaryItem::SummaryText {
-                            text: content.clone(),
-                        });
-                }
+    /// Start a new reasoning summary item, finalizing the previous one if present
+    pub fn start_reasoning_summary_item(&mut self) {
+        if let Some(content) = &self.current_generating_content {
+            if !content.is_empty() {
+                self.reasoning_summary_items
+                    .push(llm::ReasoningSummaryItem::SummaryText {
+                        text: content.clone(),
+                    });
             }
-
-            // Start tracking the new item
-            self.current_reasoning_item_id = Some(id);
-            self.current_generating_content = Some(String::new());
-            self.current_generating_title = None;
         }
 
-        // Append delta to current content
+        self.current_generating_content = Some(String::new());
+        self.current_generating_title = None;
+    }
+
+    /// Append delta text to the current reasoning summary item
+    pub fn append_reasoning_summary_delta(&mut self, delta: String) {
+        if self.current_generating_content.is_none() {
+            self.current_generating_content = Some(String::new());
+        }
+
         if let Some(content) = &mut self.current_generating_content {
             content.push_str(&delta);
-            // Always try to parse/update title as content grows
-            // This handles cases where initial chunks only contain partial titles like "**Plan"
-            // and later chunks complete them to "**Planning the approach**"
             self.current_generating_title = Self::parse_title_from_content(content);
         }
     }
@@ -1640,19 +1656,18 @@ impl ThinkingBlock {
     /// Complete reasoning and finalize any remaining items
     pub fn complete_reasoning(&mut self) {
         // Finalize current item if any
-        if let Some(_current_id) = &self.current_reasoning_item_id {
-            if let Some(content) = &self.current_generating_content {
+        if let Some(content) = &self.current_generating_content {
+            if !content.is_empty() {
                 self.reasoning_summary_items
                     .push(llm::ReasoningSummaryItem::SummaryText {
                         text: content.clone(),
                     });
             }
-
-            // Clear current state
-            self.current_reasoning_item_id = None;
-            self.current_generating_title = None;
-            self.current_generating_content = None;
         }
+
+        // Clear current state
+        self.current_generating_title = None;
+        self.current_generating_content = None;
 
         // Ensure we have content to display - if we have reasoning items but no fallback content,
         // populate the fallback content with the joined reasoning content
@@ -1726,9 +1741,7 @@ impl ThinkingBlock {
 
     /// Check if this is a reasoning block (has reasoning summary items)
     pub fn is_reasoning_block(&self) -> bool {
-        !self.reasoning_summary_items.is_empty()
-            || self.current_reasoning_item_id.is_some()
-            || self.current_generating_content.is_some()
+        !self.reasoning_summary_items.is_empty() || self.current_generating_content.is_some()
     }
 
     /// Parse title from reasoning content in OpenAI format "**title**\n\ncontent"

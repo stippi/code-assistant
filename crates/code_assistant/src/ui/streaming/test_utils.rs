@@ -151,9 +151,12 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
                 tool_id,
             } => println!("  [{i}] ToolParameter: {name}={value} (tool_id: {tool_id})"),
             DisplayFragment::ToolEnd { id } => println!("  [{i}] ToolEnd: (id: {id})"),
-            DisplayFragment::ReasoningSummary { id, delta } => {
+            DisplayFragment::ReasoningSummaryStart => {
+                println!("  [{i}] ReasoningSummaryStart",);
+            }
+            DisplayFragment::ReasoningSummaryDelta(delta) => {
                 println!(
-                    "  [{i}] ReasoningSummary: id={id}, delta={}",
+                    "  [{i}] ReasoningSummaryDelta: {}",
                     delta.chars().take(50).collect::<String>()
                 )
             }
@@ -197,6 +200,11 @@ pub fn fragments_match(expected: &DisplayFragment, actual: &DisplayFragment) -> 
             },
         ) => expected_name == actual_name && expected_value == actual_value,
         (DisplayFragment::ToolEnd { .. }, DisplayFragment::ToolEnd { .. }) => true,
+        (DisplayFragment::ReasoningSummaryStart, DisplayFragment::ReasoningSummaryStart) => true,
+        (
+            DisplayFragment::ReasoningSummaryDelta(expected_delta),
+            DisplayFragment::ReasoningSummaryDelta(actual_delta),
+        ) => expected_delta == actual_delta,
         _ => false,
     }
 }

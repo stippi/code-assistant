@@ -262,7 +262,10 @@ impl UserInterface for MockUI {
             crate::ui::DisplayFragment::ToolOutput { chunk, .. } => {
                 self.streaming.lock().unwrap().push(chunk.clone());
             }
-            crate::ui::DisplayFragment::ReasoningSummary { delta, .. } => {
+            crate::ui::DisplayFragment::ReasoningSummaryStart => {
+                // Ignore start markers in mock output
+            }
+            crate::ui::DisplayFragment::ReasoningSummaryDelta(delta) => {
                 self.streaming.lock().unwrap().push(delta.clone());
             }
             crate::ui::DisplayFragment::ReasoningComplete => {

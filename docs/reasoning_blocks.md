@@ -108,8 +108,10 @@ Implement OpenAI reasoning blocks with the following UX:
    ```rust
    pub enum StreamingChunk {
        // ... existing variants
-       /// OpenAI reasoning summary item delta with ID for tracking
-       ReasoningSummary { id: String, delta: String },
+       /// OpenAI reasoning summary started a new item
+       ReasoningSummaryStart,
+       /// OpenAI reasoning summary delta for the current item
+       ReasoningSummaryDelta(String),
        /// Indicates reasoning block is complete
        ReasoningComplete,
    }
@@ -131,9 +133,10 @@ Implement OpenAI reasoning blocks with the following UX:
 2. **Update `process_sse_line` method:**
    - Track reasoning state during streaming
    - Handle `response.reasoning_summary_text.delta` events
-   - Emit `StreamingChunk::ReasoningSummary` with item ID and delta content
+   - Emit `StreamingChunk::ReasoningSummaryStart` for new items and
+     `StreamingChunk::ReasoningSummaryDelta` for content deltas
    - Emit `StreamingChunk::ReasoningComplete` when reasoning finishes
-   - Use item_id from SSE events to track different summary items
+   - Use `item_id` from SSE events to detect when a new summary item starts
 
 3. **Update `convert_output` method:**
    - Convert completed reasoning to `RedactedThinking` with both `summary` and `summary_items`
@@ -147,17 +150,20 @@ Implement OpenAI reasoning blocks with the following UX:
    ```rust
    pub enum DisplayFragment {
        // ... existing variants
-       /// OpenAI reasoning summary item delta with ID for tracking
-       ReasoningSummary { id: String, delta: String },
+       /// OpenAI reasoning summary started a new item
+       ReasoningSummaryStart,
+       /// OpenAI reasoning summary delta for the current item
+       ReasoningSummaryDelta(String),
        /// Mark reasoning as completed
        ReasoningComplete,
    }
    ```
 
 2. **Update all stream processors** (XML, Caret, JSON) to handle:
-   - `StreamingChunk::ReasoningSummary` → `DisplayFragment::ReasoningSummary` (pass through)
+   - `StreamingChunk::ReasoningSummaryStart` → `DisplayFragment::ReasoningSummaryStart`
+   - `StreamingChunk::ReasoningSummaryDelta` → `DisplayFragment::ReasoningSummaryDelta`
    - `StreamingChunk::ReasoningComplete` → `DisplayFragment::ReasoningComplete`
-   - UI layer will handle parsing title from content and detecting new items by ID changes
+   - UI layer manages item boundaries explicitly via start events
 
 ### Phase 5: Update UI Components for Reasoning Display
 
@@ -181,7 +187,8 @@ Implement OpenAI reasoning blocks with the following UX:
 2. **Add reasoning-specific methods:**
    ```rust
    impl ThinkingBlock {
-       pub fn update_reasoning_summary(&mut self, id: String, delta: String);
+       pub fn start_reasoning_summary_item(&mut self);
+       pub fn append_reasoning_summary_delta(&mut self, delta: String);
        pub fn complete_reasoning(&mut self);
        pub fn get_display_title(&self, is_generating: bool) -> String;
        pub fn get_expanded_content(&self, is_generating: bool) -> String;
@@ -202,7 +209,8 @@ Implement OpenAI reasoning blocks with the following UX:
 1. **Add reasoning methods to `MessageContainer`:**
    ```rust
    impl MessageContainer {
-       pub fn update_reasoning_summary(&self, id: String, delta: String, cx: &mut Context<Self>);
+       pub fn start_reasoning_summary_item(&self, cx: &mut Context<Self>);
+       pub fn append_reasoning_summary_delta(&self, delta: String, cx: &mut Context<Self>);
        pub fn complete_reasoning(&self, cx: &mut Context<Self>);
        pub fn set_block_generating(&self, generating: bool, cx: &mut Context<Self>);
    }
@@ -220,7 +228,8 @@ Implement OpenAI reasoning blocks with the following UX:
    ```rust
    pub enum UiEvent {
        // ... existing variants
-       UpdateReasoningSummary { id: String, delta: String },
+       StartReasoningSummaryItem,
+       AppendReasoningSummaryDelta { delta: String },
        CompleteReasoning,
    }
    ```
@@ -230,9 +239,11 @@ Implement OpenAI reasoning blocks with the following UX:
    fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
        match fragment {
            // ... existing cases
-           DisplayFragment::ReasoningSummary { id, delta } => {
-               self.push_event(UiEvent::UpdateReasoningSummary {
-                   id: id.clone(),
+           DisplayFragment::ReasoningSummaryStart => {
+               self.push_event(UiEvent::StartReasoningSummaryItem);
+           }
+           DisplayFragment::ReasoningSummaryDelta(delta) => {
+               self.push_event(UiEvent::AppendReasoningSummaryDelta {
                    delta: delta.clone(),
                });
            }
@@ -245,10 +256,10 @@ Implement OpenAI reasoning blocks with the following UX:
    ```
 
 3. **Update `process_ui_event_async`:**
-   - Handle `UpdateReasoningSummary` events (with ID and delta parsing)
+   - Handle `StartReasoningSummaryItem` events to begin a new item
+   - Handle `AppendReasoningSummaryDelta` events to append text
    - Handle `CompleteReasoning` events
    - Update existing events to use universal generating state
-   - UI layer detects new items by ID changes and parses titles from content
 
 ### Phase 8: Fragment Extraction for Session History
 
@@ -256,13 +267,15 @@ Implement OpenAI reasoning blocks with the following UX:
 
 1. **Update `extract_fragments_from_message` methods:**
    - Handle `RedactedThinking` blocks with `summary_items`
-   - Generate `DisplayFragment::ReasoningSummary` for each summary item (synthesize ID and full content)
+   - Generate `DisplayFragment::ReasoningSummaryStart` followed by
+     `DisplayFragment::ReasoningSummaryDelta` for each summary item
+     (synthesize content for history)
    - End with `DisplayFragment::ReasoningComplete`
    - Use ContentBlock timestamps for proper timing
 
 2. **Ensure consistent fragment ordering:**
    - Traditional thinking: `ThinkingText` → fragments
-   - OpenAI reasoning: `ReasoningSummary` (multiple) → `ReasoningComplete`
+   - OpenAI reasoning: `ReasoningSummaryStart` + `ReasoningSummaryDelta` (per item) → `ReasoningComplete`
 
 ## Implementation Order
 
