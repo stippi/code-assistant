@@ -139,6 +139,67 @@ fn init(cx: &mut App) {
 impl Global for Gpui {}
 
 impl Gpui {
+    // Helper methods for entity updates to reduce boilerplate
+
+    /// Update the last message container in the queue
+    fn update_last_message<F>(&self, cx: &mut gpui::AsyncApp, f: F)
+    where
+        F: FnOnce(&mut MessageContainer, &mut gpui::Context<MessageContainer>),
+    {
+        let queue = self.message_queue.lock().unwrap();
+        if let Some(last) = queue.last() {
+            cx.update_entity(last, f)
+                .expect("Failed to update last message container");
+        }
+    }
+
+    /// Update all message containers in the queue
+    fn update_all_messages<F>(&self, cx: &mut gpui::AsyncApp, f: F)
+    where
+        F: Fn(&mut MessageContainer, &mut gpui::Context<MessageContainer>) + Clone,
+    {
+        let queue = self.message_queue.lock().unwrap();
+        for message_container in queue.iter() {
+            cx.update_entity(message_container, f.clone())
+                .expect("Failed to update message container");
+        }
+    }
+
+    /// Update the chat sidebar entity
+    fn update_chat_sidebar<F>(&self, cx: &mut gpui::AsyncApp, f: F)
+    where
+        F: FnOnce(&mut chat_sidebar::ChatSidebar, &mut gpui::Context<chat_sidebar::ChatSidebar>),
+    {
+        if let Some(chat_sidebar_entity) = self.chat_sidebar.lock().unwrap().as_ref() {
+            cx.update_entity(chat_sidebar_entity, f)
+                .expect("Failed to update chat sidebar");
+        }
+    }
+
+    /// Update the messages view entity
+    fn update_messages_view<F>(&self, cx: &mut gpui::AsyncApp, f: F)
+    where
+        F: FnOnce(&mut MessagesView, &mut gpui::Context<MessagesView>),
+    {
+        if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
+            cx.update_entity(messages_view_entity, f)
+                .expect("Failed to update messages view");
+        }
+    }
+
+    /// Update a specific message container
+    fn update_container<F>(
+        &self,
+        container: &Entity<MessageContainer>,
+        cx: &mut gpui::AsyncApp,
+        f: F,
+    ) where
+        F: FnOnce(&mut MessageContainer, &mut gpui::Context<MessageContainer>),
+    {
+        cx.update_entity(container, f)
+            .expect("Failed to update message container");
+    }
+
     pub fn new() -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let working_memory = Arc::new(Mutex::new(None));
@@ -434,56 +495,37 @@ impl Gpui {
                 }
 
                 // Reset pending message when a user message is displayed
-                if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
-                    cx.update_entity(messages_view_entity, |messages_view, cx| {
-                        messages_view.update_pending_message(None);
-                        cx.notify();
-                    })
-                    .expect("Failed to update messages view");
-                }
+                self.update_messages_view(cx, |messages_view, cx| {
+                    messages_view.update_pending_message(None);
+                    cx.notify();
+                });
             }
             UiEvent::AppendToTextBlock { content } => {
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    // Since StreamingStarted ensures last container is Assistant, we can safely append
-                    cx.update_entity(last, |message, cx| {
-                        message.add_or_append_to_text_block(&content, cx)
-                    })
-                    .expect("Failed to update entity");
-                }
+                // Since StreamingStarted ensures last container is Assistant, we can safely append
+                self.update_last_message(cx, |message, cx| {
+                    message.add_or_append_to_text_block(&content, cx)
+                });
             }
             UiEvent::AppendToThinkingBlock { content } => {
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    // Since StreamingStarted ensures last container is Assistant, we can safely append
-                    cx.update_entity(last, |message, cx| {
-                        message.add_or_append_to_thinking_block(&content, cx)
-                    })
-                    .expect("Failed to update entity");
-                }
+                // Since StreamingStarted ensures last container is Assistant, we can safely append
+                self.update_last_message(cx, |message, cx| {
+                    message.add_or_append_to_thinking_block(&content, cx)
+                });
             }
             UiEvent::StartTool { name, id } => {
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    // Since StreamingStarted ensures last container is Assistant, we can safely add tool
-                    cx.update_entity(last, |message, cx| {
-                        message.add_tool_use_block(&name, &id, cx);
-                    })
-                    .expect("Failed to update entity");
-                }
+                // Since StreamingStarted ensures last container is Assistant, we can safely add tool
+                self.update_last_message(cx, |message, cx| {
+                    message.add_tool_use_block(&name, &id, cx);
+                });
             }
             UiEvent::UpdateToolParameter {
                 tool_id,
                 name,
                 value,
             } => {
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    cx.update_entity(last, |message, cx| {
-                        message.add_or_update_tool_parameter(&tool_id, &name, &value, cx);
-                    })
-                    .expect("Failed to update entity");
-                }
+                self.update_last_message(cx, |message, cx| {
+                    message.add_or_update_tool_parameter(&tool_id, &name, &value, cx);
+                });
             }
             UiEvent::UpdateToolStatus {
                 tool_id,
@@ -491,28 +533,20 @@ impl Gpui {
                 message,
                 output,
             } => {
-                let queue = self.message_queue.lock().unwrap();
-                for message_container in queue.iter() {
-                    cx.update_entity(message_container, |message_container, cx| {
-                        message_container.update_tool_status(
-                            &tool_id,
-                            status,
-                            message.clone(),
-                            output.clone(),
-                            cx,
-                        );
-                    })
-                    .expect("Failed to update entity");
-                }
+                self.update_all_messages(cx, |message_container, cx| {
+                    message_container.update_tool_status(
+                        &tool_id,
+                        status,
+                        message.clone(),
+                        output.clone(),
+                        cx,
+                    );
+                });
             }
             UiEvent::EndTool { id } => {
-                let queue = self.message_queue.lock().unwrap();
-                for message_container in queue.iter() {
-                    cx.update_entity(message_container, |message_container, cx| {
-                        message_container.end_tool_use(&id, cx);
-                    })
-                    .expect("Failed to update entity");
-                }
+                self.update_all_messages(cx, |message_container, cx| {
+                    message_container.end_tool_use(&id, cx);
+                });
             }
             UiEvent::UpdateMemory { memory } => {
                 if let Ok(mut memory_guard) = self.working_memory.lock() {
@@ -550,13 +584,9 @@ impl Gpui {
                     warn!("Using initial project: '{}'", current_project);
 
                     // Update MessagesView with current project
-                    if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref()
-                    {
-                        cx.update_entity(messages_view_entity, |messages_view, _cx| {
-                            messages_view.set_current_project(current_project.clone());
-                        })
-                        .expect("Failed to update messages view with current project");
-                    }
+                    self.update_messages_view(cx, |messages_view, _cx| {
+                        messages_view.set_current_project(current_project.clone());
+                    });
                 }
 
                 // Clear existing messages
@@ -605,20 +635,18 @@ impl Gpui {
                                 .expect("Failed to create message container");
 
                             // Set current project on the new container
-                            cx.update_entity(&container, |container, _cx| {
+                            self.update_container(&container, cx, |container, _cx| {
                                 container.set_current_project(current_project.clone());
-                            })
-                            .expect("Failed to set current project on container");
+                            });
 
                             queue.push(container.clone());
                             container
                         } else {
                             // Use existing container - also set current project in case it changed
                             let container = queue.last().unwrap().clone();
-                            cx.update_entity(&container, |container, _cx| {
+                            self.update_container(&container, cx, |container, _cx| {
                                 container.set_current_project(current_project.clone());
-                            })
-                            .expect("Failed to set current project on container");
+                            });
                             container
                         }
                     }; // Lock is released here
@@ -633,19 +661,15 @@ impl Gpui {
 
                 // Apply tool results to update tool blocks with their execution results
                 for tool_result in tool_results {
-                    let queue = self.message_queue.lock().unwrap();
-                    for message_container in queue.iter() {
-                        cx.update_entity(message_container, |message_container, cx| {
-                            message_container.update_tool_status(
-                                &tool_result.tool_id,
-                                tool_result.status,
-                                tool_result.message.clone(),
-                                tool_result.output.clone(),
-                                cx,
-                            );
-                        })
-                        .expect("Failed to update entity");
-                    }
+                    self.update_all_messages(cx, |message_container, cx| {
+                        message_container.update_tool_status(
+                            &tool_result.tool_id,
+                            tool_result.status,
+                            tool_result.message.clone(),
+                            tool_result.output.clone(),
+                            cx,
+                        );
+                    });
                 }
 
                 // Ensure we always end with an Assistant container
@@ -692,13 +716,10 @@ impl Gpui {
                     queue.push(assistant_container);
                 } else {
                     // Use existing assistant container
-                    if let Some(last_message) = queue.last() {
-                        cx.update_entity(last_message, |container, cx| {
-                            container.set_current_request_id(request_id);
-                            cx.notify();
-                        })
-                        .expect("Failed to update existing container");
-                    }
+                    self.update_last_message(cx, |container, cx| {
+                        container.set_current_request_id(request_id);
+                        cx.notify();
+                    });
                 }
             }
             UiEvent::StreamingStopped {
@@ -707,13 +728,9 @@ impl Gpui {
                 error: _,
             } => {
                 if cancelled {
-                    let queue = self.message_queue.lock().unwrap();
-                    for message_container in queue.iter() {
-                        cx.update_entity(message_container, |message_container, cx| {
-                            message_container.remove_blocks_with_request_id(id, cx);
-                        })
-                        .expect("Failed to update entity");
-                    }
+                    self.update_all_messages(cx, |message_container, cx| {
+                        message_container.remove_blocks_with_request_id(id, cx);
+                    });
                 }
             }
             UiEvent::RefreshChatList => {
@@ -792,39 +809,25 @@ impl Gpui {
                 if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
                     if *current_session_id == metadata.id {
                         // Update MessagesView with current project
-                        if let Some(messages_view_entity) =
-                            self.messages_view.lock().unwrap().as_ref()
-                        {
-                            cx.update_entity(messages_view_entity, |messages_view, _cx| {
-                                messages_view.set_current_project(metadata.initial_project.clone());
-                            })
-                            .expect("Failed to update messages view with current project");
-                        }
+                        self.update_messages_view(cx, |messages_view, _cx| {
+                            messages_view.set_current_project(metadata.initial_project.clone());
+                        });
 
                         // Update all MessageContainers with current project
-                        let message_queue = self.message_queue.lock().unwrap();
-                        for container_entity in message_queue.iter() {
-                            cx.update_entity(container_entity, |container, _cx| {
-                                container.set_current_project(metadata.initial_project.clone());
-                            })
-                            .expect("Failed to update message container with current project");
-                        }
+                        self.update_all_messages(cx, |container, _cx| {
+                            container.set_current_project(metadata.initial_project.clone());
+                        });
                     }
                 }
 
                 // Update the chat sidebar entity specifically
-                if let Some(chat_sidebar_entity) = self.chat_sidebar.lock().unwrap().as_ref() {
-                    cx.update_entity(chat_sidebar_entity, |sidebar, cx| {
-                        // Get updated sessions list
-                        let updated_sessions = self.chat_sessions.lock().unwrap().clone();
-                        sidebar.update_sessions(updated_sessions, cx);
-                        cx.notify();
-                    })
-                    .expect("Failed to update chat sidebar entity");
-                    debug!("UI: Updated chat sidebar for session metadata change");
-                } else {
-                    debug!("UI: No chat sidebar entity available for metadata update");
-                }
+                self.update_chat_sidebar(cx, |sidebar, cx| {
+                    // Get updated sessions list
+                    let updated_sessions = self.chat_sessions.lock().unwrap().clone();
+                    sidebar.update_sessions(updated_sessions, cx);
+                    cx.notify();
+                });
+                debug!("UI: Updated chat sidebar for session metadata change");
             }
             UiEvent::UpdateSessionActivityState {
                 session_id,
@@ -836,16 +839,13 @@ impl Gpui {
                 );
 
                 // Update the chat sidebar
-                if let Some(chat_sidebar_entity) = self.chat_sidebar.lock().unwrap().as_ref() {
-                    cx.update_entity(chat_sidebar_entity, |sidebar, cx| {
-                        sidebar.update_single_session_activity_state(
-                            session_id.clone(),
-                            activity_state.clone(),
-                            cx,
-                        );
-                    })
-                    .expect("Failed to update chat sidebar activity state");
-                }
+                self.update_chat_sidebar(cx, |sidebar, cx| {
+                    sidebar.update_single_session_activity_state(
+                        session_id.clone(),
+                        activity_state.clone(),
+                        cx,
+                    );
+                });
 
                 // Update current session activity state for messages view
                 if let Some(current_session_id) = self.current_session_id.lock().unwrap().as_ref() {
@@ -887,35 +887,24 @@ impl Gpui {
             UiEvent::UpdatePendingMessage { message } => {
                 debug!("UI: UpdatePendingMessage event with message: {:?}", message);
                 // Update MessagesView's pending message
-                if let Some(messages_view_entity) = self.messages_view.lock().unwrap().as_ref() {
-                    cx.update_entity(messages_view_entity, |messages_view, cx| {
-                        messages_view.update_pending_message(message.clone());
-                        cx.notify();
-                    })
-                    .expect("Failed to update messages view");
-                }
+                self.update_messages_view(cx, |messages_view, cx| {
+                    messages_view.update_pending_message(message.clone());
+                    cx.notify();
+                });
                 // Refresh UI to trigger re-render
                 cx.refresh().expect("Failed to refresh windows");
             }
             UiEvent::AddImage { media_type, data } => {
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    // Add image to the last message container
-                    cx.update_entity(last, |message, cx| {
-                        message.add_image_block(media_type, data, cx);
-                    })
-                    .expect("Failed to update entity");
-                }
+                // Add image to the last message container
+                self.update_last_message(cx, |message, cx| {
+                    message.add_image_block(media_type, data, cx);
+                });
             }
             UiEvent::AppendToolOutput { tool_id, chunk } => {
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    // Append tool output to the last message container
-                    cx.update_entity(last, |message, cx| {
-                        message.append_tool_output(tool_id, chunk, cx);
-                    })
-                    .expect("Failed to update entity");
-                }
+                // Append tool output to the last message container
+                self.update_last_message(cx, |message, cx| {
+                    message.append_tool_output(tool_id, chunk, cx);
+                });
             }
             UiEvent::DisplayError { message } => {
                 debug!("UI: DisplayError event with message: {}", message);
@@ -932,31 +921,19 @@ impl Gpui {
                 cx.refresh().expect("Failed to refresh windows");
             }
             UiEvent::StartReasoningSummaryItem => {
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    cx.update_entity(last, |message, cx| {
-                        message.start_reasoning_summary_item(cx);
-                    })
-                    .expect("Failed to update entity");
-                }
+                self.update_last_message(cx, |message, cx| {
+                    message.start_reasoning_summary_item(cx);
+                });
             }
             UiEvent::AppendReasoningSummaryDelta { delta } => {
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    cx.update_entity(last, |message, cx| {
-                        message.append_reasoning_summary_delta(delta, cx);
-                    })
-                    .expect("Failed to update entity");
-                }
+                self.update_last_message(cx, |message, cx| {
+                    message.append_reasoning_summary_delta(delta, cx);
+                });
             }
             UiEvent::CompleteReasoning => {
-                let queue = self.message_queue.lock().unwrap();
-                if let Some(last) = queue.last() {
-                    cx.update_entity(last, |message, cx| {
-                        message.complete_reasoning(cx);
-                    })
-                    .expect("Failed to update entity");
-                }
+                self.update_last_message(cx, |message, cx| {
+                    message.complete_reasoning(cx);
+                });
             }
         }
     }
@@ -971,68 +948,58 @@ impl Gpui {
         for fragment in fragments {
             match fragment {
                 DisplayFragment::PlainText(text) => {
-                    cx.update_entity(container, |container, cx| {
+                    self.update_container(container, cx, |container, cx| {
                         container.add_or_append_to_text_block(text, cx);
-                    })
-                    .expect("Failed to update entity");
+                    });
                 }
                 DisplayFragment::ThinkingText(text) => {
-                    cx.update_entity(container, |container, cx| {
+                    self.update_container(container, cx, |container, cx| {
                         container.add_or_append_to_thinking_block(text, cx);
-                    })
-                    .expect("Failed to update entity");
+                    });
                 }
                 DisplayFragment::ToolName { name, id } => {
-                    cx.update_entity(container, |container, cx| {
+                    self.update_container(container, cx, |container, cx| {
                         container.add_tool_use_block(name, id, cx);
-                    })
-                    .expect("Failed to update entity");
+                    });
                 }
                 DisplayFragment::ToolParameter {
                     name,
                     value,
                     tool_id,
                 } => {
-                    cx.update_entity(container, |container, cx| {
+                    self.update_container(container, cx, |container, cx| {
                         container.add_or_update_tool_parameter(tool_id, name, value, cx);
-                    })
-                    .expect("Failed to update entity");
+                    });
                 }
                 DisplayFragment::ToolEnd { id } => {
-                    cx.update_entity(container, |container, cx| {
+                    self.update_container(container, cx, |container, cx| {
                         container.end_tool_use(id, cx);
-                    })
-                    .expect("Failed to update entity");
+                    });
                 }
                 DisplayFragment::Image { media_type, data } => {
-                    cx.update_entity(container, |container, cx| {
+                    self.update_container(container, cx, |container, cx| {
                         container.add_image_block(media_type, data, cx);
-                    })
-                    .expect("Failed to update entity");
+                    });
                 }
                 DisplayFragment::ReasoningSummaryStart => {
-                    cx.update_entity(container, |container, cx| {
+                    self.update_container(container, cx, |container, cx| {
                         container.start_reasoning_summary_item(cx);
-                    })
-                    .expect("Failed to update entity");
+                    });
                 }
                 DisplayFragment::ReasoningSummaryDelta(delta) => {
-                    cx.update_entity(container, |container, cx| {
+                    self.update_container(container, cx, |container, cx| {
                         container.append_reasoning_summary_delta(delta, cx);
-                    })
-                    .expect("Failed to update entity");
+                    });
                 }
                 DisplayFragment::ToolOutput { tool_id, chunk } => {
-                    cx.update_entity(container, |container, cx| {
+                    self.update_container(container, cx, |container, cx| {
                         container.append_tool_output(tool_id, chunk, cx);
-                    })
-                    .expect("Failed to update entity");
+                    });
                 }
                 DisplayFragment::ReasoningComplete => {
-                    cx.update_entity(container, |container, cx| {
+                    self.update_container(container, cx, |container, cx| {
                         container.complete_reasoning(cx);
-                    })
-                    .expect("Failed to update entity");
+                    });
                 }
             }
         }
