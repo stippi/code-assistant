@@ -12,7 +12,7 @@ ignore = "0.4"
 walkdir = "2.5"
 percent-encoding = "2.3"
 tokio = { version = "1.47", features = ["full"] }
-tempfile = "3.22"
+tempfile = "3.23"
 
 # Terminal UI
 rustyline = "12.0.0"

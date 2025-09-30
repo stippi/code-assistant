@@ -125,76 +125,88 @@ impl DefaultMessageConverter {
                             },
                         }]
                     }
-                    MessageContent::Structured(blocks) => blocks
-                        .into_iter()
-                        .enumerate()
-                        .map(|(block_index, block)| {
-                            let (block_type, content) = match block {
-                                ContentBlock::Text { text, .. } => {
-                                    ("text".to_string(), AnthropicBlockContent::Text { text })
-                                }
-                                ContentBlock::Image {
-                                    media_type, data, ..
-                                } => (
-                                    "image".to_string(),
-                                    AnthropicBlockContent::Image {
-                                        source: AnthropicImageSource {
-                                            source_type: "base64".to_string(),
-                                            media_type,
-                                            data,
+                    MessageContent::Structured(blocks) => {
+                        let mut cache_applied = false;
+                        blocks
+                            .into_iter()
+                            .map(|block| {
+                                let (block_type, content, cache_eligible) = match block {
+                                    ContentBlock::Text { text, .. } => (
+                                        "text".to_string(),
+                                        AnthropicBlockContent::Text { text },
+                                        true,
+                                    ),
+                                    ContentBlock::Image {
+                                        media_type, data, ..
+                                    } => (
+                                        "image".to_string(),
+                                        AnthropicBlockContent::Image {
+                                            source: AnthropicImageSource {
+                                                source_type: "base64".to_string(),
+                                                media_type,
+                                                data,
+                                            },
                                         },
-                                    },
-                                ),
-                                ContentBlock::ToolUse {
-                                    id, name, input, ..
-                                } => (
-                                    "tool_use".to_string(),
-                                    AnthropicBlockContent::ToolUse { id, name, input },
-                                ),
-                                ContentBlock::ToolResult {
-                                    tool_use_id,
-                                    content,
-                                    is_error,
-                                    ..
-                                } => (
-                                    "tool_result".to_string(),
-                                    AnthropicBlockContent::ToolResult {
+                                        true,
+                                    ),
+                                    ContentBlock::ToolUse {
+                                        id, name, input, ..
+                                    } => (
+                                        "tool_use".to_string(),
+                                        AnthropicBlockContent::ToolUse { id, name, input },
+                                        true,
+                                    ),
+                                    ContentBlock::ToolResult {
                                         tool_use_id,
                                         content,
                                         is_error,
-                                    },
-                                ),
-                                ContentBlock::Thinking {
-                                    thinking,
-                                    signature,
-                                    ..
-                                } => (
-                                    "thinking".to_string(),
-                                    AnthropicBlockContent::Thinking {
+                                        ..
+                                    } => (
+                                        "tool_result".to_string(),
+                                        AnthropicBlockContent::ToolResult {
+                                            tool_use_id,
+                                            content,
+                                            is_error,
+                                        },
+                                        true,
+                                    ),
+                                    ContentBlock::Thinking {
                                         thinking,
                                         signature,
-                                    },
-                                ),
-                                ContentBlock::RedactedThinking { data, .. } => {
-                                    ("redacted_thinking".to_string(), {
-                                        AnthropicBlockContent::RedactedThinking { data }
-                                    })
-                                }
-                            };
+                                        ..
+                                    } => (
+                                        "thinking".to_string(),
+                                        AnthropicBlockContent::Thinking {
+                                            thinking,
+                                            signature,
+                                        },
+                                        false,
+                                    ),
+                                    ContentBlock::RedactedThinking { data, .. } => (
+                                        "redacted_thinking".to_string(),
+                                        AnthropicBlockContent::RedactedThinking { data },
+                                        false,
+                                    ),
+                                };
 
-                            AnthropicContentBlock {
-                                block_type,
-                                content,
-                                cache_control: if should_cache && block_index == 0 {
-                                    Some(CacheControl {
-                                        cache_type: "ephemeral".to_string(),
-                                    })
-                                } else {
-                                    None
-                                },
-                            }
-                        })
-                        .collect(),
+                                let cache_control =
+                                    if should_cache && cache_eligible && !cache_applied {
+                                        cache_applied = true;
+                                        Some(CacheControl {
+                                            cache_type: "ephemeral".to_string(),
+                                        })
+                                    } else {
+                                        None
+                                    };
+
+                                AnthropicContentBlock {
+                                    block_type,
+                                    content,
+                                    cache_control,
+                                }
+                            })
+                            .collect()
+                    }
                 };
 
                 AnthropicMessage {
@@ -1282,7 +1294,7 @@ impl LLMProvider for AnthropicClient {
         });
 
         // Configure thinking mode and max_tokens based on model
-        let (thinking, max_tokens) = if self.supports_thinking() {
+        let (thinking_config, max_tokens) = if self.supports_thinking() {
             (
                 Some(ThinkingConfiguration {
                     thinking_type: "enabled".to_string(),
@@ -1301,13 +1313,18 @@ impl LLMProvider for AnthropicClient {
         let mut anthropic_request = serde_json::json!({
             "model": self.model,
             "max_tokens": max_tokens,
-            "temperature": 0.7,
+            "temperature": if thinking_config.is_some() {
+                // Anthropic requires this to be 1.0 if you enable "thinking"
+                1.0
+            } else {
+                0.7
+            },
             "system": system,
             "stream": streaming_callback.is_some(),
             "messages": messages_json,
         });
 
-        if let Some(thinking_config) = thinking {
+        if let Some(thinking_config) = thinking_config {
             anthropic_request["thinking"] = serde_json::to_value(thinking_config)?;
         }
         if let Some(tool_choice) = tool_choice {
@@ -1361,10 +1378,12 @@ mod tests {
         fn count_message_cache_markers(result: &[AnthropicMessage]) -> Vec<usize> {
             let mut marker_positions = Vec::new();
             for (msg_idx, msg) in result.iter().enumerate() {
-                for (block_idx, block) in msg.content.iter().enumerate() {
-                    if block.cache_control.is_some() && block_idx == 0 {
-                        marker_positions.push(msg_idx);
-                    }
+                if msg
+                    .content
+                    .iter()
+                    .any(|block| block.cache_control.is_some())
+                {
+                    marker_positions.push(msg_idx);
                 }
             }
             marker_positions
@@ -1511,10 +1530,12 @@ mod tests {
         // Should have cache markers at indices 9 and 14
         let mut cache_markers = Vec::new();
         for (idx, msg) in result.iter().enumerate() {
-            if let Some(block) = msg.content.first() {
-                if block.cache_control.is_some() {
-                    cache_markers.push(idx);
-                }
+            if msg
+                .content
+                .iter()
+                .any(|block| block.cache_control.is_some())
+            {
+                cache_markers.push(idx);
             }
         }
         assert_eq!(
@@ -1538,6 +1559,57 @@ mod tests {
             "Tool result should have 1 block"
         );
         assert_eq!(result[2].content[0].block_type, "tool_result");
+    }
+
+    #[test]
+    fn test_thinking_blocks_not_marked_for_cache_control() {
+        let converter = DefaultMessageConverter::new();
+
+        let mut messages: Vec<Message> = (0..4)
+            .map(|i| Message {
+                role: MessageRole::User,
+                content: MessageContent::Text(format!("Prelude {i}")),
+                request_id: None,
+                usage: None,
+            })
+            .collect();
+
+        messages.push(Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Structured(vec![
+                ContentBlock::Thinking {
+                    thinking: "internal reasoning".to_string(),
+                    signature: "sig".to_string(),
+                    start_time: None,
+                    end_time: None,
+                },
+                ContentBlock::Text {
+                    text: "Here is the result.".to_string(),
+                    start_time: None,
+                    end_time: None,
+                },
+            ]),
+            request_id: None,
+            usage: None,
+        });
+
+        let result = converter.convert_messages_with_cache(messages);
+
+        let cached_message = &result[4];
+        assert_eq!(cached_message.content.len(), 2);
+        assert_eq!(cached_message.content[0].block_type, "thinking");
+        assert!(cached_message.content[0].cache_control.is_none());
+        assert_eq!(cached_message.content[1].block_type, "text");
+        assert!(cached_message.content[1].cache_control.is_some());
+        assert_eq!(
+            cached_message
+                .content
+                .iter()
+                .filter(|block| block.cache_control.is_some())
+                .count(),
+            1,
+            "Only one content block should carry cache_control",
+        );
     }
 
     /// Test that cache markers work across different message histories (agent-agnostic)
@@ -1582,7 +1654,11 @@ mod tests {
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, msg)| {
-                    if msg.content.first()?.cache_control.is_some() {
+                    if msg
+                        .content
+                        .iter()
+                        .any(|block| block.cache_control.is_some())
+                    {
                         Some(idx)
                     } else {
                         None
@@ -1736,7 +1812,11 @@ mod tests {
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, msg)| {
-                    if msg.content.first()?.cache_control.is_some() {
+                    if msg
+                        .content
+                        .iter()
+                        .any(|block| block.cache_control.is_some())
+                    {
                         Some(idx)
                     } else {
                         None
@@ -1808,10 +1888,22 @@ mod tests {
         assert_eq!(structured_message.content[1].block_type, "tool_use");
 
         // If this message has a cache marker, it should only be on the first block
-        if structured_message.content[0].cache_control.is_some() {
+        if let Some(marker_index) = structured_message
+            .content
+            .iter()
+            .position(|block| block.cache_control.is_some())
+        {
+            assert_eq!(
+                marker_index, 0,
+                "Cache marker should only be on first eligible block"
+            );
             assert!(
-                structured_message.content[1].cache_control.is_none(),
-                "Cache marker should only be on first content block"
+                structured_message
+                    .content
+                    .iter()
+                    .enumerate()
+                    .all(|(idx, block)| idx == marker_index || block.cache_control.is_none()),
+                "Only a single content block should carry cache_control"
             );
         }
 
