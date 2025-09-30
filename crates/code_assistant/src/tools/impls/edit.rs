@@ -111,7 +111,8 @@ impl Tool for EditTool {
                     },
                     "replace_all": {
                         "type": "boolean",
-                        "description": "Optional. If true, replace all occurrences of old_text. If false or omitted, old_text must match exactly one location (default: false)."
+                        "description": "Optional. If true, replace all occurrences of old_text. If false or omitted, old_text must match exactly one location (default: false).",
+                        "default": false
                     }
                 },
                 "required": ["project", "path", "old_text", "new_text"]
@@ -234,9 +235,7 @@ impl Tool for EditTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::{MockCommandExecutor, MockExplorer, MockProjectManager};
-    use crate::types::WorkingMemory;
-    use std::collections::HashMap;
+    use crate::tests::mocks::ToolTestFixture;
 
     #[tokio::test]
     async fn test_edit_output_rendering() {
@@ -285,33 +284,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_edit_basic_replacement() -> Result<()> {
-        // Create a mock project manager and setup test files
-        let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("./root/test.rs"),
+        // Create test fixture with working memory
+        let mut fixture = ToolTestFixture::with_files(vec![(
+            "test.rs".to_string(),
             "fn original() {\n    println!(\"Original\");\n}".to_string(),
-        );
-
-        let explorer = MockExplorer::new(files, None);
-
-        let project_manager = Box::new(MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(explorer),
-        ));
-
-        // Create a command executor
-        let command_executor = Box::new(MockCommandExecutor::new(vec![]));
-
-        // Create working memory
-        let mut working_memory = WorkingMemory::default();
-
-        // Create a tool context with working memory
-        let mut context = ToolContext {
-            project_manager: project_manager.as_ref(),
-            command_executor: command_executor.as_ref(),
-            working_memory: Some(&mut working_memory),
-        };
+        )])
+        .with_working_memory();
+        let mut context = fixture.context();
 
         // Create input for a valid replacement
         let mut input = EditInput {
@@ -330,6 +309,7 @@ mod tests {
         assert!(result.error.is_none());
 
         // Verify that working memory was updated
+        let working_memory = fixture.working_memory().unwrap();
         assert_eq!(working_memory.loaded_resources.len(), 1);
 
         // Verify the content in working memory
@@ -346,33 +326,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_edit_replace_all() -> Result<()> {
-        // Create a mock project manager with test files
-        let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("./root/test.js"),
+        // Create test fixture with working memory
+        let mut fixture = ToolTestFixture::with_files(vec![(
+            "test.js".to_string(),
             "console.log('test1');\nconsole.log('test2');\nconsole.log('test3');".to_string(),
-        );
-
-        let explorer = MockExplorer::new(files, None);
-
-        let project_manager = Box::new(MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(explorer),
-        ));
-
-        // Create a command executor
-        let command_executor = Box::new(MockCommandExecutor::new(vec![]));
-
-        // Create working memory
-        let mut working_memory = WorkingMemory::default();
-
-        // Create a tool context with working memory
-        let mut context = ToolContext {
-            project_manager: project_manager.as_ref(),
-            command_executor: command_executor.as_ref(),
-            working_memory: Some(&mut working_memory),
-        };
+        )])
+        .with_working_memory();
+        let mut context = fixture.context();
 
         // Create input for replace all
         let mut input = EditInput {
@@ -391,6 +351,7 @@ mod tests {
         assert!(result.error.is_none());
 
         // Verify the content in working memory
+        let working_memory = fixture.working_memory().unwrap();
         let key = ("test-project".to_string(), PathBuf::from("test.js"));
         if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&key) {
             assert!(content.contains("logger.debug('test1')"));
@@ -406,30 +367,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_edit_error_handling() -> Result<()> {
-        // Create a mock project manager with test files
-        let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("./root/test.rs"),
+        // Create test fixture
+        let mut fixture = ToolTestFixture::with_files(vec![(
+            "test.rs".to_string(),
             "console.log('test');\nconsole.log('test');\nconsole.log('test');".to_string(),
-        );
-
-        let explorer = MockExplorer::new(files, None);
-
-        let project_manager = Box::new(MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(explorer),
-        ));
-
-        // Create a command executor
-        let command_executor = Box::new(MockCommandExecutor::new(vec![]));
-
-        // Create a tool context
-        let mut context = ToolContext {
-            project_manager: project_manager.as_ref(),
-            command_executor: command_executor.as_ref(),
-            working_memory: None,
-        };
+        )]);
+        let mut context = fixture.context();
 
         // Test case with multiple matches but replace_all = false
         let mut input_multiple = EditInput {
@@ -477,29 +420,13 @@ mod tests {
     #[tokio::test]
     async fn test_edit_empty_replacement() -> Result<()> {
         // Test deleting content by replacing with empty string
-        let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("./root/test.rs"),
+        let mut fixture = ToolTestFixture::with_files(vec![(
+            "test.rs".to_string(),
             "fn test() {\n    // TODO: Remove this comment\n    println!(\"Hello\");\n}"
                 .to_string(),
-        );
-
-        let explorer = MockExplorer::new(files, None);
-
-        let project_manager = Box::new(MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(explorer),
-        ));
-
-        let command_executor = Box::new(MockCommandExecutor::new(vec![]));
-        let mut working_memory = WorkingMemory::default();
-
-        let mut context = ToolContext {
-            project_manager: project_manager.as_ref(),
-            command_executor: command_executor.as_ref(),
-            working_memory: Some(&mut working_memory),
-        };
+        )])
+        .with_working_memory();
+        let mut context = fixture.context();
 
         // Delete the TODO comment
         let mut input = EditInput {
@@ -517,6 +444,7 @@ mod tests {
         assert!(result.error.is_none());
 
         // Verify the content in working memory
+        let working_memory = fixture.working_memory().unwrap();
         let key = ("test-project".to_string(), PathBuf::from("test.rs"));
         if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&key) {
             assert!(!content.contains("TODO"));
@@ -532,28 +460,14 @@ mod tests {
     #[tokio::test]
     async fn test_edit_whitespace_normalization() -> Result<()> {
         // Test that whitespace differences are handled correctly
-        let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("./root/test.rs"),
-            "function test() {\r\n  console.log('test');\r\n}".to_string(), // CRLF endings
-        );
-
-        let explorer = MockExplorer::new(files, None);
-
-        let project_manager = Box::new(MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(explorer),
-        ));
-
-        let command_executor = Box::new(MockCommandExecutor::new(vec![]));
-        let mut working_memory = WorkingMemory::default();
-
-        let mut context = ToolContext {
-            project_manager: project_manager.as_ref(),
-            command_executor: command_executor.as_ref(),
-            working_memory: Some(&mut working_memory),
-        };
+        let mut fixture = ToolTestFixture::with_files(vec![
+            (
+                "test.rs".to_string(),
+                "function test() {\r\n  console.log('test');\r\n}".to_string(),
+            ), // CRLF endings
+        ])
+        .with_working_memory();
+        let mut context = fixture.context();
 
         // Use LF endings in search text, should still match CRLF in file
         let mut input = EditInput {
@@ -571,6 +485,7 @@ mod tests {
         assert!(result.error.is_none());
 
         // Verify the content in working memory
+        let working_memory = fixture.working_memory().unwrap();
         let key = ("test-project".to_string(), PathBuf::from("test.rs"));
         if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&key) {
             assert!(content.contains("function answer()"));

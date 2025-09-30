@@ -346,6 +346,16 @@ pub struct ChatSidebar {
 }
 
 impl ChatSidebar {
+    /// Update all chat list items
+    fn update_all_chat_items<F>(&self, cx: &mut Context<Self>, f: F)
+    where
+        F: Fn(&mut ChatListItem, &mut gpui::Context<ChatListItem>) + Clone,
+    {
+        self.items.iter().for_each(|item| {
+            item.update(cx, f.clone());
+        });
+    }
+
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             items: Vec::new(),
@@ -377,7 +387,7 @@ impl ChatSidebar {
             .map(|session| {
                 let item = if let Some(existing_item) = existing_items.remove(&session.id) {
                     // Reuse existing item but update its metadata and activity state
-                    cx.update_entity(&existing_item, |item, cx| {
+                    existing_item.update(cx, |item, cx| {
                         item.update_metadata(session.clone(), cx);
                         // Update activity state if we have it
                         if let Some(activity_state) = self.activity_states.get(&session.id) {
@@ -390,7 +400,7 @@ impl ChatSidebar {
                     let new_item = cx.new(|cx| ChatListItem::new(session.clone(), false, cx));
                     // Set activity state if we have it
                     if let Some(activity_state) = self.activity_states.get(&session.id) {
-                        cx.update_entity(&new_item, |item, cx| {
+                        new_item.update(cx, |item, cx| {
                             item.update_activity_state(activity_state.clone(), cx);
                         });
                     }
@@ -412,15 +422,11 @@ impl ChatSidebar {
         self.selected_session_id = session_id;
         //cx.notify();
         if let Some(session_id) = self.selected_session_id.clone() {
-            self.items.iter().for_each(|entity| {
-                cx.update_entity(entity, |item, cx| {
-                    item.update_selection(session_id == item.metadata.id, cx)
-                })
+            self.update_all_chat_items(cx, |item, cx| {
+                item.update_selection(session_id == item.metadata.id, cx)
             });
         } else {
-            self.items.iter().for_each(|entity| {
-                cx.update_entity(entity, |item, cx| item.update_selection(false, cx))
-            });
+            self.update_all_chat_items(cx, |item, cx| item.update_selection(false, cx));
         }
     }
 

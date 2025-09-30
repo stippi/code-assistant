@@ -126,7 +126,7 @@ impl Render for AttachmentView {
             .w(px(ATTACHMENT_THUMBNAIL_SIZE))
             .h(px(ATTACHMENT_THUMBNAIL_SIZE))
             .rounded_md()
-            .bg(cx.theme().card)
+            .bg(cx.theme().popover)
             .border_1()
             .border_color(cx.theme().border)
             .overflow_hidden()

@@ -24,7 +24,7 @@ fn test_flexible_xml_parsing() -> Result<()> {
     )
     .to_string();
     let response = LLMResponse {
-        content: vec![ContentBlock::Text { text }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -65,7 +65,7 @@ fn test_replacement_xml_parsing() -> Result<()> {
     )
     .to_string();
     let response = LLMResponse {
-        content: vec![ContentBlock::Text { text }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -111,7 +111,7 @@ async fn test_mixed_tool_start_end() -> Result<()> {
     )
     .to_string();
     let response = LLMResponse {
-        content: vec![ContentBlock::Text { text }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -214,7 +214,7 @@ async fn test_missing_closing_param_tag() -> Result<()> {
     )
     .to_string();
     let response = LLMResponse {
-        content: vec![ContentBlock::Text { text }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -254,7 +254,7 @@ fn test_ignore_non_tool_tags() -> Result<()> {
     )
     .to_string();
     let response = LLMResponse {
-        content: vec![ContentBlock::Text { text }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -289,7 +289,7 @@ fn test_html_between_tool_tags_should_error() -> Result<()> {
     )
     .to_string();
     let response = LLMResponse {
-        content: vec![ContentBlock::Text { text }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -335,7 +335,7 @@ fn test_html_inside_parameter_allowed() -> Result<()> {
     )
     .to_string();
     let response = LLMResponse {
-        content: vec![ContentBlock::Text { text }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -421,14 +421,17 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         assert_eq!(blocks.len(), 2);
 
         // Check first block - text reasoning
-        if let ContentBlock::Text { text } = &blocks[0] {
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
             assert!(text.contains("Calling unknown tool"));
         } else {
             panic!("Expected Text block as first block in assistant message");
         }
 
         // Check second block - tool use
-        if let ContentBlock::ToolUse { id, name, input } = &blocks[1] {
+        if let ContentBlock::ToolUse {
+            id, name, input, ..
+        } = &blocks[1]
+        {
             assert_eq!(id, "test-id");
             assert_eq!(name, "unknown_tool");
             assert_eq!(input["some_param"], "value");
@@ -449,6 +452,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
             tool_use_id,
             content,
             is_error,
+            ..
         } = &blocks[0]
         {
             assert_eq!(tool_use_id, "test-id");
@@ -531,7 +535,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
     assert_eq!(request1.messages[1].role, MessageRole::Assistant);
     if let MessageContent::Structured(blocks) = &request1.messages[1].content {
         assert_eq!(blocks.len(), 1);
-        if let ContentBlock::Text { text } = &blocks[0] {
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
             assert!(text.contains("invalid tool call"));
             assert!(text.contains("</tool:read>")); // The invalid closing tag
         } else {
@@ -560,7 +564,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
     assert_eq!(request2.messages[3].role, MessageRole::Assistant);
     if let MessageContent::Structured(blocks) = &request2.messages[3].content {
         assert_eq!(blocks.len(), 1);
-        if let ContentBlock::Text { text } = &blocks[0] {
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
             assert!(text.contains("Correct second attempt"));
             assert!(text.contains("</tool:read_files>")); // The correct closing tag
         } else {
@@ -653,14 +657,17 @@ async fn test_parse_error_handling() -> Result<()> {
         assert_eq!(blocks.len(), 2);
 
         // Check first block - text reasoning
-        if let ContentBlock::Text { text } = &blocks[0] {
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
             assert!(text.contains("Reading with incorrect parameters"));
         } else {
             panic!("Expected Text block as first block in assistant message");
         }
 
         // Check second block - tool use with wrong parameters
-        if let ContentBlock::ToolUse { id, name, input } = &blocks[1] {
+        if let ContentBlock::ToolUse {
+            id, name, input, ..
+        } = &blocks[1]
+        {
             assert_eq!(id, "read-files-1");
             assert_eq!(name, "read_files");
             assert!(
@@ -685,6 +692,7 @@ async fn test_parse_error_handling() -> Result<()> {
             tool_use_id,
             content,
             is_error,
+            ..
         } = &blocks[0]
         {
             assert_eq!(tool_use_id, "read-files-1");
@@ -736,24 +744,20 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
             // Parse error message in XML mode - should be filtered out
             Message {
                 role: MessageRole::User,
-                content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                    tool_use_id: "tool-1-0".to_string(),
-                    content:
-                        "Tool error: Unknown tool 'invalid_tool'. Please use only available tools."
-                            .to_string(),
-                    is_error: Some(true),
-                }]),
+                content: MessageContent::Structured(vec![ContentBlock::new_error_tool_result(
+                    "tool-1-0",
+                    "Tool error: Unknown tool 'invalid_tool'. Please use only available tools.",
+                )]),
                 request_id: None,
                 usage: None,
             },
             // Regular tool result - should be filtered out
             Message {
                 role: MessageRole::User,
-                content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                    tool_use_id: "regular-tool-123".to_string(),
-                    content: "File contents here".to_string(),
-                    is_error: None,
-                }]),
+                content: MessageContent::Structured(vec![ContentBlock::new_tool_result(
+                    "regular-tool-123",
+                    "File contents here",
+                )]),
                 request_id: None,
                 usage: None,
             },
@@ -842,9 +846,7 @@ fn test_caret_array_parsing() -> Result<()> {
     );
 
     let response = LLMResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -893,9 +895,7 @@ fn test_caret_empty_array_parsing() -> Result<()> {
     );
 
     let response = LLMResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -935,9 +935,7 @@ fn test_caret_multiple_arrays_parsing() -> Result<()> {
     );
 
     let response = LLMResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -993,9 +991,7 @@ fn test_caret_array_with_multiline_parsing() -> Result<()> {
     );
 
     let response = LLMResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -1060,9 +1056,7 @@ fn test_original_caret_issue_reproduction() -> Result<()> {
     );
 
     let response = LLMResponse {
-        content: vec![ContentBlock::Text {
-            text: text.to_string(),
-        }],
+        content: vec![ContentBlock::new_text(text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -1144,14 +1138,14 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         assert_eq!(blocks.len(), 2);
 
         // First block should contain the original user text
-        if let ContentBlock::Text { text } = &blocks[0] {
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
             assert_eq!(text, "Hello, help me with a task");
         } else {
             panic!("Expected first block to be text with original user message");
         }
 
         // Second block should contain the reminder
-        if let ContentBlock::Text { text } = &blocks[1] {
+        if let ContentBlock::Text { text, .. } = &blocks[1] {
             assert!(text.contains("<system-reminder>"));
             assert!(text.contains("name_session"));
         } else {
@@ -1171,19 +1165,18 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         },
         Message {
             role: MessageRole::Assistant,
-            content: MessageContent::Structured(vec![ContentBlock::Text {
-                text: "I'll help you with that task.".to_string(),
-            }]),
+            content: MessageContent::Structured(vec![ContentBlock::new_text(
+                "I'll help you with that task.",
+            )]),
             request_id: Some(1),
             usage: Some(Usage::zero()),
         },
         Message {
             role: MessageRole::User,
-            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                tool_use_id: "tool-1-1".to_string(),
-                content: "Tool execution result".to_string(),
-                is_error: None,
-            }]),
+            content: MessageContent::Structured(vec![ContentBlock::new_tool_result(
+                "tool-1-1",
+                "Tool execution result",
+            )]),
             request_id: None,
             usage: None,
         },
@@ -1199,14 +1192,14 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         assert_eq!(blocks.len(), 2);
 
         // First block should contain the original user text
-        if let ContentBlock::Text { text } = &blocks[0] {
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
             assert_eq!(text, "Hello, help me with a task");
         } else {
             panic!("Expected first block to be text with original user message");
         }
 
         // Second block should contain the reminder
-        if let ContentBlock::Text { text } = &blocks[1] {
+        if let ContentBlock::Text { text, .. } = &blocks[1] {
             assert!(text.contains("<system-reminder>"));
             assert!(text.contains("name_session"));
         } else {
@@ -1222,7 +1215,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         assert!(matches!(blocks[0], ContentBlock::ToolResult { .. }));
         // No reminder should be added to this message
         for block in blocks {
-            if let ContentBlock::Text { text } = block {
+            if let ContentBlock::Text { text, .. } = block {
                 assert!(!text.contains("<system-reminder>"));
             }
         }
@@ -1234,14 +1227,8 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     let mixed_message = vec![Message {
         role: MessageRole::User,
         content: MessageContent::Structured(vec![
-            ContentBlock::Text {
-                text: "Please analyze this file".to_string(),
-            },
-            ContentBlock::ToolResult {
-                tool_use_id: "tool-1-1".to_string(),
-                content: "Previous tool result".to_string(),
-                is_error: None,
-            },
+            ContentBlock::new_text("Please analyze this file"),
+            ContentBlock::new_tool_result("tool-1-1", "Previous tool result"),
         ]),
         request_id: None,
         usage: None,
@@ -1254,7 +1241,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         assert_eq!(blocks.len(), 3); // Original text + tool result + reminder text
 
         // First block should be the original text
-        if let ContentBlock::Text { text } = &blocks[0] {
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
             assert_eq!(text, "Please analyze this file");
         } else {
             panic!("Expected first block to be original text");
@@ -1264,7 +1251,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         assert!(matches!(blocks[1], ContentBlock::ToolResult { .. }));
 
         // Third block should be the reminder
-        if let ContentBlock::Text { text } = &blocks[2] {
+        if let ContentBlock::Text { text, .. } = &blocks[2] {
             assert!(text.contains("<system-reminder>"));
             assert!(text.contains("name_session"));
         } else {
@@ -1318,9 +1305,7 @@ fn test_update_tool_call_in_text_with_offsets() -> Result<()> {
 
     let parser = ParserRegistry::get(ToolSyntax::Xml);
     let llm_response = LLMResponse {
-        content: vec![ContentBlock::Text {
-            text: original_text.to_string(),
-        }],
+        content: vec![ContentBlock::new_text(original_text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -1399,9 +1384,7 @@ fn test_update_tool_call_in_text_caret_syntax() -> Result<()> {
 
     let parser = ParserRegistry::get(ToolSyntax::Caret);
     let llm_response = LLMResponse {
-        content: vec![ContentBlock::Text {
-            text: original_text.to_string(),
-        }],
+        content: vec![ContentBlock::new_text(original_text)],
         usage: Usage::zero(),
         rate_limit_info: None,
     };

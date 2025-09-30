@@ -16,7 +16,6 @@ mod utils;
 //pub mod aicore_converse;
 pub mod aicore_invoke;
 pub mod anthropic;
-pub mod anthropic_playback;
 pub mod auth;
 pub mod cerebras;
 pub mod config;
@@ -26,8 +25,10 @@ pub mod groq;
 pub mod mistralai;
 pub mod ollama;
 pub mod openai;
+pub mod openai_responses;
 pub mod openrouter;
 pub mod recording;
+pub mod streaming;
 pub mod types;
 pub mod vertex;
 
@@ -38,6 +39,7 @@ pub use groq::GroqClient;
 pub use mistralai::MistralAiClient;
 pub use ollama::OllamaClient;
 pub use openai::OpenAIClient;
+pub use openai_responses::OpenAIResponsesClient;
 pub use openrouter::OpenRouterClient;
 pub use types::*;
 pub use vertex::VertexClient;
@@ -64,6 +66,12 @@ pub enum StreamingChunk {
     RateLimitClear,
     /// Indicates that streaming from the LLM has completed
     StreamingComplete,
+    /// OpenAI reasoning summary started a new item
+    ReasoningSummaryStart,
+    /// OpenAI reasoning summary delta for the current item
+    ReasoningSummaryDelta(String),
+    /// Indicates reasoning block is complete
+    ReasoningComplete,
 }
 
 pub type StreamingCallback = Box<dyn Fn(&StreamingChunk) -> Result<()> + Send + Sync>;

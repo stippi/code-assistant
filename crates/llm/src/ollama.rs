@@ -122,7 +122,7 @@ impl OllamaClient {
 
         for block in blocks {
             match block {
-                ContentBlock::Text { text } => content_parts.push(text.clone()),
+                ContentBlock::Text { text, .. } => content_parts.push(text.clone()),
                 ContentBlock::Image { data, .. } => images.push(data.clone()),
                 ContentBlock::ToolUse { name, input, .. } => {
                     tool_calls.push(OllamaToolCall {
@@ -196,7 +196,7 @@ impl OllamaClient {
                         tool_calls: None,
                     });
                 }
-                ContentBlock::Text { text } => current_content.push(text.clone()),
+                ContentBlock::Text { text, .. } => current_content.push(text.clone()),
                 ContentBlock::Image { data, .. } => current_images.push(data.clone()),
                 ContentBlock::Thinking { thinking, .. } => current_content.push(thinking.clone()),
                 ContentBlock::RedactedThinking { .. } => {
@@ -269,6 +269,8 @@ impl OllamaClient {
         if !ollama_response.message.content.is_empty() {
             content.push(ContentBlock::Text {
                 text: ollama_response.message.content,
+                start_time: None,
+                end_time: None,
             });
         }
 
@@ -278,6 +280,8 @@ impl OllamaClient {
                     id: format!("tool-{}-{}", request_id, index + 1),
                     name: tool_call.function.name,
                     input: tool_call.function.arguments,
+                    start_time: None,
+                    end_time: None,
                 });
             }
         }
@@ -330,8 +334,8 @@ impl OllamaClient {
 
         let mut response = response;
         let mut line_buffer = String::new();
-        let mut accumulated_content = String::new();
-        let mut tool_calls = Vec::new();
+        let mut content_blocks: Vec<ContentBlock> = Vec::new();
+        let mut tool_counter = 0;
         let mut final_eval_counts = (0u32, 0u32); // (prompt_eval_count, eval_count)
 
         while let Some(chunk) = response.chunk().await? {
@@ -346,22 +350,57 @@ impl OllamaClient {
                             debug!("Received stream event '{line_buffer}'");
                             // Handle text content
                             if !chunk_response.message.content.is_empty() {
+                                // Add or extend text block
+                                if let Some(ContentBlock::Text { text, .. }) =
+                                    content_blocks.last_mut()
+                                {
+                                    text.push_str(&chunk_response.message.content);
+                                } else {
+                                    content_blocks.push(ContentBlock::Text {
+                                        text: chunk_response.message.content.clone(),
+                                        start_time: Some(std::time::SystemTime::now()),
+                                        end_time: None,
+                                    });
+                                }
                                 streaming_callback(&StreamingChunk::Text(
                                     chunk_response.message.content.clone(),
                                 ))?;
-                                accumulated_content.push_str(&chunk_response.message.content);
                             }
                             // Handle thinking content
                             if !chunk_response.message.thinking.is_empty() {
+                                // Add or extend thinking block
+                                if let Some(ContentBlock::Thinking { thinking, .. }) =
+                                    content_blocks.last_mut()
+                                {
+                                    thinking.push_str(&chunk_response.message.thinking);
+                                } else {
+                                    content_blocks.push(ContentBlock::Thinking {
+                                        thinking: chunk_response.message.thinking.clone(),
+                                        signature: String::new(),
+                                        start_time: Some(std::time::SystemTime::now()),
+                                        end_time: None,
+                                    });
+                                }
                                 streaming_callback(&StreamingChunk::Thinking(
                                     chunk_response.message.thinking.clone(),
                                 ))?;
-                                accumulated_content.push_str(&chunk_response.message.content);
                             }
 
                             // Handle tool calls - only collect complete tool calls from the response
                             if let Some(chunk_tool_calls) = chunk_response.message.tool_calls {
                                 for tool_call in &chunk_tool_calls {
+                                    tool_counter += 1;
+                                    let tool_id = format!("tool-{request_id}-{tool_counter}");
+
+                                    // Create tool block immediately
+                                    content_blocks.push(ContentBlock::ToolUse {
+                                        id: tool_id.clone(),
+                                        name: tool_call.function.name.clone(),
+                                        input: tool_call.function.arguments.clone(),
+                                        start_time: Some(std::time::SystemTime::now()),
+                                        end_time: Some(std::time::SystemTime::now()), // Complete immediately for Ollama
+                                    });
+
                                     // Stream the JSON input to the callback
                                     if let Ok(arguments_str) =
                                         serde_json::to_string(&tool_call.function.arguments)
@@ -369,21 +408,26 @@ impl OllamaClient {
                                         streaming_callback(&StreamingChunk::InputJson {
                                             content: arguments_str,
                                             tool_name: Some(tool_call.function.name.clone()),
-                                            tool_id: Some(format!(
-                                                "tool-{}-{}",
-                                                request_id,
-                                                tool_calls.len() + 1
-                                            )),
+                                            tool_id: Some(tool_id),
                                         })?;
                                     }
                                 }
-                                tool_calls.extend(chunk_tool_calls);
                             }
 
                             // Update eval counts from the final response
                             if chunk_response.done {
                                 final_eval_counts =
                                     (chunk_response.prompt_eval_count, chunk_response.eval_count);
+
+                                // Complete any active blocks
+                                let now = std::time::SystemTime::now();
+                                match content_blocks.last_mut() {
+                                    Some(ContentBlock::Text { end_time, .. })
+                                    | Some(ContentBlock::Thinking { end_time, .. }) => {
+                                        *end_time = Some(now);
+                                    }
+                                    _ => {}
+                                }
                             }
                         } else {
                             warn!("Failed to parse chunk line '{}'", line_buffer);
@@ -399,27 +443,8 @@ impl OllamaClient {
         // Send StreamingComplete to indicate streaming has finished
         streaming_callback(&StreamingChunk::StreamingComplete)?;
 
-        // Build final response
-        let mut content = Vec::new();
-
-        // Add accumulated text content if present
-        if !accumulated_content.is_empty() {
-            content.push(ContentBlock::Text {
-                text: accumulated_content,
-            });
-        }
-
-        // Add tool calls if present
-        for (index, tool_call) in tool_calls.into_iter().enumerate() {
-            content.push(ContentBlock::ToolUse {
-                id: format!("tool-{}-{}", request_id, index + 1),
-                name: tool_call.function.name,
-                input: tool_call.function.arguments,
-            });
-        }
-
         Ok(LLMResponse {
-            content,
+            content: content_blocks,
             usage: Usage {
                 input_tokens: final_eval_counts.0,
                 output_tokens: final_eval_counts.1,
@@ -481,12 +506,21 @@ impl LLMProvider for OllamaClient {
 
         let request_id = request.request_id;
 
-        if let Some(callback) = streaming_callback {
+        let request_start = std::time::SystemTime::now();
+        let mut response = if let Some(callback) = streaming_callback {
             ollama_request.stream = true;
             self.try_send_request_streaming(&ollama_request, request_id, callback)
-                .await
+                .await?
         } else {
-            self.try_send_request(&ollama_request, request_id).await
+            self.try_send_request(&ollama_request, request_id).await?
+        };
+        let response_end = std::time::SystemTime::now();
+
+        // For non-streaming responses, distribute timestamps across blocks
+        if streaming_callback.is_none() {
+            response.set_distributed_timestamps(request_start, response_end);
         }
+
+        Ok(response)
     }
 }

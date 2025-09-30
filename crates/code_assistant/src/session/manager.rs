@@ -562,7 +562,7 @@ impl SessionManager {
         let text_representation = content_blocks
             .iter()
             .filter_map(|block| match block {
-                llm::ContentBlock::Text { text } => Some(text.clone()),
+                llm::ContentBlock::Text { text, .. } => Some(text.clone()),
                 llm::ContentBlock::Image { media_type, .. } => {
                     Some(format!("[Image: {media_type}]"))
                 }

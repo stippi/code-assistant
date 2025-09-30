@@ -446,11 +446,13 @@ impl OpenAIClient {
 
         for block in blocks {
             match block {
-                ContentBlock::Text { text } => content_parts.push(serde_json::json!({
+                ContentBlock::Text { text, .. } => content_parts.push(serde_json::json!({
                     "type": "text",
                     "text": text
                 })),
-                ContentBlock::Image { media_type, data } => {
+                ContentBlock::Image {
+                    media_type, data, ..
+                } => {
                     images.push(serde_json::json!({
                         "type": "image_url",
                         "image_url": {
@@ -458,7 +460,9 @@ impl OpenAIClient {
                         }
                     }));
                 }
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     tool_calls.push(OpenAIToolCall {
                         id: id.clone(),
                         call_type: "function".to_string(),
@@ -550,8 +554,10 @@ impl OpenAIClient {
                         tool_call_id: Some(tool_use_id.clone()),
                     });
                 }
-                ContentBlock::Text { text } => current_content.push(text.clone()),
-                ContentBlock::Image { media_type, data } => {
+                ContentBlock::Text { text, .. } => current_content.push(text.clone()),
+                ContentBlock::Image {
+                    media_type, data, ..
+                } => {
                     current_images.push(serde_json::json!({
                         "type": "image_url",
                         "image_url": {
@@ -713,6 +719,8 @@ impl OpenAIClient {
                             if !text.is_empty() {
                                 blocks.push(ContentBlock::Text {
                                     text: text.to_string(),
+                                    start_time: None,
+                                    end_time: None,
                                 });
                             }
                         }
@@ -731,6 +739,8 @@ impl OpenAIClient {
                                 id: call.id.clone(),
                                 name: call.function.name.clone(),
                                 input,
+                                start_time: None,
+                                end_time: None,
                             });
                         }
                     }
@@ -790,8 +800,7 @@ impl OpenAIClient {
 
         let mut response = utils::check_response_error::<OpenAIRateLimitInfo>(response).await?;
 
-        let mut accumulated_content: Option<String> = None;
-        let mut accumulated_tool_calls: Vec<ContentBlock> = Vec::new();
+        let mut content_blocks: Vec<ContentBlock> = Vec::new();
         let mut current_tool: Option<OpenAIToolCallDelta> = None;
 
         let mut line_buffer = String::new();
@@ -800,9 +809,8 @@ impl OpenAIClient {
         fn process_chunk(
             chunk: &[u8],
             line_buffer: &mut String,
-            accumulated_content: &mut Option<String>,
+            content_blocks: &mut Vec<ContentBlock>,
             current_tool: &mut Option<OpenAIToolCallDelta>,
-            accumulated_tool_calls: &mut Vec<ContentBlock>,
             callback: &StreamingCallback,
             usage: &mut Option<OpenAIUsage>,
         ) -> Result<()> {
@@ -813,9 +821,8 @@ impl OpenAIClient {
                     if !line_buffer.is_empty() {
                         match process_sse_line(
                             line_buffer,
-                            accumulated_content,
+                            content_blocks,
                             current_tool,
-                            accumulated_tool_calls,
                             callback,
                             usage,
                         ) {
@@ -841,9 +848,8 @@ impl OpenAIClient {
 
         fn process_sse_line(
             line: &str,
-            accumulated_content: &mut Option<String>,
+            content_blocks: &mut Vec<ContentBlock>,
             current_tool: &mut Option<OpenAIToolCallDelta>,
-            accumulated_tool_calls: &mut Vec<ContentBlock>,
             callback: &StreamingCallback,
             usage: &mut Option<OpenAIUsage>,
         ) -> Result<()> {
@@ -860,29 +866,50 @@ impl OpenAIClient {
                         if let Some(reasoning) = &delta.delta.reasoning {
                             // Check if this is analysis channel (thinking content)
                             if delta.delta.channel.as_deref() == Some("analysis") {
+                                // Add or extend thinking block
+                                if let Some(ContentBlock::Thinking { thinking, .. }) =
+                                    content_blocks.last_mut()
+                                {
+                                    thinking.push_str(reasoning);
+                                } else {
+                                    content_blocks.push(ContentBlock::Thinking {
+                                        thinking: reasoning.clone(),
+                                        signature: String::new(),
+                                        start_time: Some(std::time::SystemTime::now()),
+                                        end_time: None,
+                                    });
+                                }
                                 callback(&StreamingChunk::Thinking(reasoning.clone()))?;
                             } else {
                                 // Treat as regular content if not analysis channel
-                                *accumulated_content = Some(
-                                    accumulated_content
-                                        .as_ref()
-                                        .unwrap_or(&String::new())
-                                        .clone()
-                                        + reasoning,
-                                );
+                                if let Some(ContentBlock::Text { text, .. }) =
+                                    content_blocks.last_mut()
+                                {
+                                    text.push_str(reasoning);
+                                } else {
+                                    content_blocks.push(ContentBlock::Text {
+                                        text: reasoning.clone(),
+                                        start_time: Some(std::time::SystemTime::now()),
+                                        end_time: None,
+                                    });
+                                }
                                 callback(&StreamingChunk::Text(reasoning.clone()))?;
                             }
                         }
 
                         // Handle content streaming
                         if let Some(content) = &delta.delta.content {
-                            *accumulated_content = Some(
-                                accumulated_content
-                                    .as_ref()
-                                    .unwrap_or(&String::new())
-                                    .clone()
-                                    + content,
-                            );
+                            // Add or extend text block
+                            if let Some(ContentBlock::Text { text, .. }) = content_blocks.last_mut()
+                            {
+                                text.push_str(content);
+                            } else {
+                                content_blocks.push(ContentBlock::Text {
+                                    text: content.clone(),
+                                    start_time: Some(std::time::SystemTime::now()),
+                                    end_time: None,
+                                });
+                            }
                             callback(&StreamingChunk::Text(content.clone()))?;
                         }
 
@@ -891,22 +918,50 @@ impl OpenAIClient {
                             for tool_call in tool_calls {
                                 if let Some(function) = &tool_call.function {
                                     if tool_call.id.is_some() {
-                                        // New tool call - handle both incremental (OpenAI) and complete (Groq) styles
-                                        if let Some(prev_tool) = current_tool.take() {
-                                            accumulated_tool_calls
-                                                .push(OpenAIClient::build_tool_block(prev_tool)?);
+                                        // New tool call - complete previous one if exists
+                                        if let Some(_prev_tool) = current_tool.take() {
+                                            // Complete the previous tool block
+                                            if let Some(ContentBlock::ToolUse {
+                                                end_time, ..
+                                            }) = content_blocks.last_mut()
+                                            {
+                                                *end_time = Some(std::time::SystemTime::now());
+                                            }
                                         }
 
-                                        // Store the new tool call
+                                        // Create new tool block immediately
+                                        let tool_id = tool_call.id.clone().unwrap_or_default();
+                                        let tool_name = function.name.clone().unwrap_or_default();
+
+                                        content_blocks.push(ContentBlock::ToolUse {
+                                            id: tool_id.clone(),
+                                            name: tool_name.clone(),
+                                            input: serde_json::Value::Object(serde_json::Map::new()),
+                                            start_time: Some(std::time::SystemTime::now()),
+                                            end_time: None,
+                                        });
+
+                                        // Store the new tool call for argument updates
                                         *current_tool = Some(tool_call.clone());
 
                                         // If this tool call has complete arguments (Groq style), stream them immediately
                                         if let Some(args) = &function.arguments {
                                             if !args.is_empty() {
+                                                // Update the tool block with complete arguments
+                                                if let Some(ContentBlock::ToolUse {
+                                                    input, ..
+                                                }) = content_blocks.last_mut()
+                                                {
+                                                    *input = serde_json::from_str(args)
+                                                        .unwrap_or_else(|_| {
+                                                            serde_json::Value::String(args.clone())
+                                                        });
+                                                }
+
                                                 callback(&StreamingChunk::InputJson {
                                                     content: args.clone(),
-                                                    tool_name: function.name.clone(),
-                                                    tool_id: tool_call.id.clone(),
+                                                    tool_name: Some(tool_name),
+                                                    tool_id: Some(tool_id),
                                                 })?;
                                             }
                                         }
@@ -924,6 +979,23 @@ impl OpenAIClient {
                                                 // Update arguments
                                                 curr_func.arguments =
                                                     Some(prev_args.clone() + args);
+
+                                                // Try to parse the accumulated arguments as JSON
+                                                // Only update the tool block if it's valid JSON
+                                                if let Some(ContentBlock::ToolUse {
+                                                    input, ..
+                                                }) = content_blocks.last_mut()
+                                                {
+                                                    let full_args =
+                                                        &curr_func.arguments.as_ref().unwrap();
+                                                    if let Ok(parsed_json) =
+                                                        serde_json::from_str(full_args)
+                                                    {
+                                                        *input = parsed_json;
+                                                    }
+                                                    // If JSON is invalid, keep the previous valid state
+                                                    // Don't update input with partial/invalid JSON
+                                                }
 
                                                 // Stream the JSON input to the callback
                                                 callback(&StreamingChunk::InputJson {
@@ -943,8 +1015,24 @@ impl OpenAIClient {
 
                         // Handle completion
                         if delta.finish_reason.is_some() {
-                            if let Some(tool) = current_tool.take() {
-                                accumulated_tool_calls.push(OpenAIClient::build_tool_block(tool)?);
+                            let now = std::time::SystemTime::now();
+
+                            // Complete any active tool
+                            if current_tool.take().is_some() {
+                                if let Some(ContentBlock::ToolUse { end_time, .. }) =
+                                    content_blocks.last_mut()
+                                {
+                                    *end_time = Some(now);
+                                }
+                            }
+
+                            // Complete any active text/thinking block
+                            match content_blocks.last_mut() {
+                                Some(ContentBlock::Text { end_time, .. })
+                                | Some(ContentBlock::Thinking { end_time, .. }) => {
+                                    *end_time = Some(now);
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -963,9 +1051,8 @@ impl OpenAIClient {
             process_chunk(
                 &chunk,
                 &mut line_buffer,
-                &mut accumulated_content,
+                &mut content_blocks,
                 &mut current_tool,
-                &mut accumulated_tool_calls,
                 streaming_callback,
                 &mut usage,
             )?;
@@ -975,9 +1062,8 @@ impl OpenAIClient {
         if !line_buffer.is_empty() {
             process_sse_line(
                 &line_buffer,
-                &mut accumulated_content,
+                &mut content_blocks,
                 &mut current_tool,
-                &mut accumulated_tool_calls,
                 streaming_callback,
                 &mut usage,
             )?;
@@ -986,15 +1072,9 @@ impl OpenAIClient {
         // Send StreamingComplete to indicate streaming has finished
         streaming_callback(&StreamingChunk::StreamingComplete)?;
 
-        let mut content = Vec::new();
-        if let Some(text) = accumulated_content {
-            content.push(ContentBlock::Text { text });
-        }
-        content.extend(accumulated_tool_calls);
-
         Ok((
             LLMResponse {
-                content,
+                content: content_blocks,
                 usage: usage
                     .map(|u| Usage {
                         input_tokens: u.prompt_tokens,
@@ -1015,23 +1095,6 @@ impl OpenAIClient {
             },
             OpenAIRateLimitInfo::from_response(&response),
         ))
-    }
-
-    fn build_tool_block(tool: OpenAIToolCallDelta) -> Result<ContentBlock> {
-        let function = tool
-            .function
-            .ok_or_else(|| anyhow::anyhow!("Tool call without function"))?;
-        let name = function
-            .name
-            .ok_or_else(|| anyhow::anyhow!("Function without name"))?;
-        let args = function.arguments.unwrap_or_default();
-
-        Ok(ContentBlock::ToolUse {
-            id: tool.id.unwrap_or_default(),
-            name,
-            input: serde_json::from_str(&args)
-                .map_err(|e| anyhow::anyhow!("Invalid JSON in arguments: {}", e))?,
-        })
     }
 }
 
@@ -1084,8 +1147,18 @@ impl LLMProvider for OpenAIClient {
             }),
         };
 
-        self.send_with_retry(&openai_request, streaming_callback, 3)
-            .await
+        let request_start = std::time::SystemTime::now();
+        let mut response = self
+            .send_with_retry(&openai_request, streaming_callback, 3)
+            .await?;
+        let response_end = std::time::SystemTime::now();
+
+        // For non-streaming responses, distribute timestamps across blocks
+        if streaming_callback.is_none() {
+            response.set_distributed_timestamps(request_start, response_end);
+        }
+
+        Ok(response)
     }
 }
 

@@ -1,6 +1,13 @@
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+
+/// OpenAI reasoning summary item - matches API format
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReasoningSummaryItem {
+    SummaryText { text: String },
+}
 
 /// Tracks token usage for a request/response pair
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Default)]
@@ -92,13 +99,34 @@ pub enum MessageContent {
 #[serde(tag = "type")]
 pub enum ContentBlock {
     #[serde(rename = "thinking")]
-    Thinking { thinking: String, signature: String },
+    Thinking {
+        thinking: String,
+        signature: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start_time: Option<SystemTime>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end_time: Option<SystemTime>,
+    },
 
     #[serde(rename = "redacted_thinking")]
-    RedactedThinking { data: String },
+    RedactedThinking {
+        id: String,
+        summary: Vec<ReasoningSummaryItem>, // Structured summary items matching API format
+        data: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start_time: Option<SystemTime>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end_time: Option<SystemTime>,
+    },
 
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start_time: Option<SystemTime>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end_time: Option<SystemTime>,
+    },
 
     #[serde(rename = "image")]
     Image {
@@ -106,6 +134,10 @@ pub enum ContentBlock {
         media_type: String,
         /// Base64-encoded image data
         data: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start_time: Option<SystemTime>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end_time: Option<SystemTime>,
     },
 
     #[serde(rename = "tool_use")]
@@ -113,6 +145,10 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start_time: Option<SystemTime>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end_time: Option<SystemTime>,
     },
 
     #[serde(rename = "tool_result")]
@@ -121,6 +157,10 @@ pub enum ContentBlock {
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start_time: Option<SystemTime>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end_time: Option<SystemTime>,
     },
 }
 
@@ -141,6 +181,65 @@ pub struct LLMResponse {
     /// Rate limit information from provider headers
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limit_info: Option<RateLimitInfo>,
+}
+
+impl LLMResponse {
+    /// Distribute timestamps across all content blocks in the response
+    /// For non-streaming responses where we have request start and response end times
+    pub fn set_distributed_timestamps(
+        &mut self,
+        request_start: SystemTime,
+        response_end: SystemTime,
+    ) {
+        if self.content.is_empty() {
+            return;
+        }
+
+        let total_duration = response_end
+            .duration_since(request_start)
+            .unwrap_or(Duration::from_millis(0));
+        let num_blocks = self.content.len();
+
+        if num_blocks == 1 {
+            // Single block gets the full duration
+            if let Some(block) = self.content.first_mut() {
+                block.set_timestamps(request_start, response_end);
+            }
+        } else {
+            // Distribute time evenly across blocks
+            let duration_per_block = total_duration / num_blocks as u32;
+
+            for (i, block) in self.content.iter_mut().enumerate() {
+                let block_start = request_start + (duration_per_block * i as u32);
+                let block_end = if i == num_blocks - 1 {
+                    // Last block ends at response_end to account for any rounding
+                    response_end
+                } else {
+                    block_start + duration_per_block
+                };
+
+                block.set_timestamps(block_start, block_end);
+            }
+        }
+    }
+
+    /// Compare this LLMResponse content with another, ignoring timestamps
+    /// Useful for testing where timestamps may vary
+    pub fn content_eq_ignore_timestamps(&self, other: &[ContentBlock]) -> bool {
+        content_blocks_eq_ignore_timestamps(&self.content, other)
+    }
+}
+
+/// Compare two slices of ContentBlocks, ignoring timestamps
+/// Useful for testing where timestamps may vary
+pub fn content_blocks_eq_ignore_timestamps(a: &[ContentBlock], b: &[ContentBlock]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
+    a.iter()
+        .zip(b.iter())
+        .all(|(block_a, block_b)| block_a.eq_ignore_timestamps(block_b))
 }
 
 /// Common error types for all LLM providers
@@ -189,9 +288,23 @@ pub trait RateLimitHandler: Sized {
 }
 
 impl ContentBlock {
+    /// Create a thinking content block from a String
+    pub fn new_thinking(text: impl Into<String>, signature: impl Into<String>) -> Self {
+        ContentBlock::Thinking {
+            thinking: text.into(),
+            signature: signature.into(),
+            start_time: None,
+            end_time: None,
+        }
+    }
+
     /// Create a text content block from a String
     pub fn new_text(text: impl Into<String>) -> Self {
-        ContentBlock::Text { text: text.into() }
+        ContentBlock::Text {
+            text: text.into(),
+            start_time: None,
+            end_time: None,
+        }
     }
 
     /// Create an image content block from raw image data
@@ -200,6 +313,8 @@ impl ContentBlock {
         ContentBlock::Image {
             media_type: media_type.into(),
             data: base64::engine::general_purpose::STANDARD.encode(data.as_ref()),
+            start_time: None,
+            end_time: None,
         }
     }
 
@@ -208,6 +323,203 @@ impl ContentBlock {
         ContentBlock::Image {
             media_type: media_type.into(),
             data: base64_data.into(),
+            start_time: None,
+            end_time: None,
+        }
+    }
+
+    pub fn new_tool_use(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        input: impl Into<serde_json::Value>,
+    ) -> Self {
+        ContentBlock::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input: input.into(),
+            start_time: None,
+            end_time: None,
+        }
+    }
+
+    pub fn new_tool_result(tool_use_id: impl Into<String>, content: impl Into<String>) -> Self {
+        ContentBlock::ToolResult {
+            tool_use_id: tool_use_id.into(),
+            content: content.into(),
+            is_error: None,
+            start_time: None,
+            end_time: None,
+        }
+    }
+
+    pub fn new_error_tool_result(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        ContentBlock::ToolResult {
+            tool_use_id: tool_use_id.into(),
+            content: content.into(),
+            is_error: Some(true),
+            start_time: None,
+            end_time: None,
+        }
+    }
+
+    /// Get the start time of this content block
+    pub fn start_time(&self) -> Option<SystemTime> {
+        match self {
+            ContentBlock::Thinking { start_time, .. } => *start_time,
+            ContentBlock::RedactedThinking { start_time, .. } => *start_time,
+            ContentBlock::Text { start_time, .. } => *start_time,
+            ContentBlock::Image { start_time, .. } => *start_time,
+            ContentBlock::ToolUse { start_time, .. } => *start_time,
+            ContentBlock::ToolResult { start_time, .. } => *start_time,
+        }
+    }
+
+    /// Get the end time of this content block
+    pub fn end_time(&self) -> Option<SystemTime> {
+        match self {
+            ContentBlock::Thinking { end_time, .. } => *end_time,
+            ContentBlock::RedactedThinking { end_time, .. } => *end_time,
+            ContentBlock::Text { end_time, .. } => *end_time,
+            ContentBlock::Image { end_time, .. } => *end_time,
+            ContentBlock::ToolUse { end_time, .. } => *end_time,
+            ContentBlock::ToolResult { end_time, .. } => *end_time,
+        }
+    }
+
+    /// Set the start time of this content block
+    pub fn set_start_time(&mut self, time: SystemTime) -> &mut Self {
+        match self {
+            ContentBlock::Thinking { start_time, .. } => *start_time = Some(time),
+            ContentBlock::RedactedThinking { start_time, .. } => *start_time = Some(time),
+            ContentBlock::Text { start_time, .. } => *start_time = Some(time),
+            ContentBlock::Image { start_time, .. } => *start_time = Some(time),
+            ContentBlock::ToolUse { start_time, .. } => *start_time = Some(time),
+            ContentBlock::ToolResult { start_time, .. } => *start_time = Some(time),
+        }
+        self
+    }
+
+    /// Set the end time of this content block
+    pub fn set_end_time(&mut self, time: SystemTime) -> &mut Self {
+        match self {
+            ContentBlock::Thinking { end_time, .. } => *end_time = Some(time),
+            ContentBlock::RedactedThinking { end_time, .. } => *end_time = Some(time),
+            ContentBlock::Text { end_time, .. } => *end_time = Some(time),
+            ContentBlock::Image { end_time, .. } => *end_time = Some(time),
+            ContentBlock::ToolUse { end_time, .. } => *end_time = Some(time),
+            ContentBlock::ToolResult { end_time, .. } => *end_time = Some(time),
+        }
+        self
+    }
+
+    /// Set both start and end times of this content block
+    pub fn set_timestamps(&mut self, start_time: SystemTime, end_time: SystemTime) -> &mut Self {
+        self.set_start_time(start_time);
+        self.set_end_time(end_time);
+        self
+    }
+
+    /// Set the start time of this content block (consuming version for chaining)
+    pub fn with_start_time(mut self, time: SystemTime) -> Self {
+        self.set_start_time(time);
+        self
+    }
+
+    /// Set the end time of this content block (consuming version for chaining)
+    pub fn with_end_time(mut self, time: SystemTime) -> Self {
+        self.set_end_time(time);
+        self
+    }
+
+    /// Set both start and end times of this content block (consuming version for chaining)
+    pub fn with_timestamps(mut self, start_time: SystemTime, end_time: SystemTime) -> Self {
+        self.set_timestamps(start_time, end_time);
+        self
+    }
+
+    /// Get the duration of this content block if both timestamps are available
+    pub fn duration(&self) -> Option<Duration> {
+        match (self.start_time(), self.end_time()) {
+            (Some(start), Some(end)) => end.duration_since(start).ok(),
+            _ => None,
+        }
+    }
+
+    /// Compare this ContentBlock with another, ignoring timestamps
+    /// Useful for testing where timestamps may vary
+    pub fn eq_ignore_timestamps(&self, other: &ContentBlock) -> bool {
+        match (self, other) {
+            (ContentBlock::Text { text: a, .. }, ContentBlock::Text { text: b, .. }) => a == b,
+            (
+                ContentBlock::Image {
+                    media_type: a_type,
+                    data: a_data,
+                    ..
+                },
+                ContentBlock::Image {
+                    media_type: b_type,
+                    data: b_data,
+                    ..
+                },
+            ) => a_type == b_type && a_data == b_data,
+            (
+                ContentBlock::Thinking {
+                    thinking: a_thinking,
+                    signature: a_sig,
+                    ..
+                },
+                ContentBlock::Thinking {
+                    thinking: b_thinking,
+                    signature: b_sig,
+                    ..
+                },
+            ) => a_thinking == b_thinking && a_sig == b_sig,
+            (
+                ContentBlock::RedactedThinking {
+                    id: a_id,
+                    summary: a_summary,
+                    data: a_data,
+                    ..
+                },
+                ContentBlock::RedactedThinking {
+                    id: b_id,
+                    summary: b_summary,
+                    data: b_data,
+                    ..
+                },
+            ) => a_id == b_id && a_summary == b_summary && a_data == b_data,
+            (
+                ContentBlock::ToolUse {
+                    id: a_id,
+                    name: a_name,
+                    input: a_input,
+                    ..
+                },
+                ContentBlock::ToolUse {
+                    id: b_id,
+                    name: b_name,
+                    input: b_input,
+                    ..
+                },
+            ) => a_id == b_id && a_name == b_name && a_input == b_input,
+            (
+                ContentBlock::ToolResult {
+                    tool_use_id: a_id,
+                    content: a_content,
+                    is_error: a_error,
+                    ..
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: b_id,
+                    content: b_content,
+                    is_error: b_error,
+                    ..
+                },
+            ) => a_id == b_id && a_content == b_content && a_error == b_error,
+            _ => false, // Different variants
         }
     }
 }

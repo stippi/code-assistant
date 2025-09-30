@@ -38,6 +38,14 @@ pub enum DisplayFragment {
     },
     /// End of a tool invocation
     ToolEnd { id: String },
+    /// Streaming tool output chunk
+    ToolOutput { tool_id: String, chunk: String },
+    /// OpenAI reasoning summary started a new item
+    ReasoningSummaryStart,
+    /// OpenAI reasoning summary delta for the current item
+    ReasoningSummaryDelta(String),
+    /// Mark reasoning as completed
+    ReasoningComplete,
 }
 
 /// Common trait for stream processors

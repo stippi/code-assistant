@@ -1,11 +1,9 @@
-use crate::tests::mocks::{MockCommandExecutor, MockExplorer, MockProjectManager};
-use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry};
+use crate::tests::mocks::ToolTestFixture;
+use crate::tools::core::{ResourcesTracker, ToolRegistry};
 use crate::tools::impls::{ListFilesTool, ListProjectsTool, ReadFilesTool, WriteFileTool};
-use crate::types::{FileSystemEntryType, FileTreeEntry};
 
 use anyhow::Result;
 use serde_json::json;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::tools::impls::{ExecuteCommandTool, ReplaceInFileTool};
@@ -19,51 +17,12 @@ async fn test_read_files_tool() -> Result<()> {
     // Register just the read files tool
     registry.register(Box::new(ReadFilesTool));
 
-    // Set up sample test files
-    let mut files = HashMap::new();
-    files.insert(
-        PathBuf::from("./root/test.txt"),
-        "line 1\nline 2\nline 3\n".to_string(),
-    );
-
-    // Create file tree
-    let mut children = HashMap::new();
-    children.insert(
+    // Create test fixture with sample files
+    let mut fixture = ToolTestFixture::with_files(vec![(
         "test.txt".to_string(),
-        FileTreeEntry {
-            name: "test.txt".to_string(),
-            entry_type: FileSystemEntryType::File,
-            children: HashMap::new(),
-            is_expanded: false,
-        },
-    );
-
-    let file_tree = Some(FileTreeEntry {
-        name: "./root".to_string(),
-        entry_type: FileSystemEntryType::Directory,
-        children,
-        is_expanded: true,
-    });
-
-    // Create a custom explorer
-    let explorer = MockExplorer::new(files, file_tree);
-
-    // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project_path(
-        "test-project",
-        PathBuf::from("./root"),
-        Box::new(explorer),
-    );
-
-    // Create a default mock command executor
-    let command_executor = MockCommandExecutor::new(vec![]);
-
-    // Create a tool context
-    let mut context = ToolContext::<'_> {
-        project_manager: &project_manager,
-        command_executor: &command_executor,
-        working_memory: None,
-    };
+        "line 1\nline 2\nline 3\n".to_string(),
+    )]);
+    let mut context = fixture.context();
 
     // Test read_files tool - full file
     {
@@ -133,51 +92,12 @@ async fn test_write_file_tool() -> Result<()> {
     // Register just the write file tool
     registry.register(Box::new(WriteFileTool));
 
-    // Set up sample test files
-    let mut files = HashMap::new();
-    files.insert(
-        PathBuf::from("./root/existing.txt"),
-        "original content".to_string(),
-    );
-
-    // Create file tree
-    let mut children = HashMap::new();
-    children.insert(
+    // Create test fixture with existing file
+    let mut fixture = ToolTestFixture::with_files(vec![(
         "existing.txt".to_string(),
-        FileTreeEntry {
-            name: "existing.txt".to_string(),
-            entry_type: FileSystemEntryType::File,
-            children: HashMap::new(),
-            is_expanded: false,
-        },
-    );
-
-    let file_tree = Some(FileTreeEntry {
-        name: "./root".to_string(),
-        entry_type: FileSystemEntryType::Directory,
-        children,
-        is_expanded: true,
-    });
-
-    // Create a custom explorer
-    let explorer = MockExplorer::new(files.clone(), file_tree);
-
-    // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project_path(
-        "test-project",
-        PathBuf::from("./root"),
-        Box::new(explorer),
-    );
-
-    // Create a default mock command executor
-    let command_executor = MockCommandExecutor::new(vec![]);
-
-    // Create a tool context
-    let mut context = ToolContext::<'_> {
-        project_manager: &project_manager,
-        command_executor: &command_executor,
-        working_memory: None,
-    };
+        "original content".to_string(),
+    )]);
+    let mut context = fixture.context();
 
     // Test write_file tool - create new file
     {
@@ -279,7 +199,6 @@ async fn test_replace_in_file_tool() -> Result<()> {
     registry.register(Box::new(ReplaceInFileTool));
 
     // Set up sample test files
-    let mut files = HashMap::new();
     let source_file_content = concat!(
         "function test() {\n",
         "  console.log(\"old message\");\n",
@@ -287,30 +206,12 @@ async fn test_replace_in_file_tool() -> Result<()> {
         "  return x;\n",
         "}"
     );
-    files.insert(
-        PathBuf::from("./root/source.txt"),
+
+    let mut fixture = ToolTestFixture::with_files(vec![(
+        "source.txt".to_string(),
         source_file_content.to_string(),
-    );
-
-    // Create a custom explorer
-    let explorer = MockExplorer::new(files, None);
-
-    // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project_path(
-        "test-project",
-        PathBuf::from("./root"),
-        Box::new(explorer),
-    );
-
-    // Create a default mock command executor
-    let command_executor = MockCommandExecutor::new(vec![]);
-
-    // Create a tool context
-    let mut context = ToolContext::<'_> {
-        project_manager: &project_manager,
-        command_executor: &command_executor,
-        working_memory: None,
-    };
+    )]);
+    let mut context = fixture.context();
 
     // Test replace_in_file tool
     {
@@ -414,28 +315,12 @@ async fn test_execute_command_tool() -> Result<()> {
     // Register just the execute command tool
     registry.register(Box::new(ExecuteCommandTool));
 
-    // Create a custom explorer
-    let explorer = MockExplorer::default();
-
-    // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project_path(
-        "test-project",
-        PathBuf::from("./root"),
-        Box::new(explorer),
-    );
-
-    // Create a mock command executor with successful command execution
-    let command_executor = MockCommandExecutor::new(vec![Ok(CommandOutput {
+    // Create test fixture with command response
+    let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
         success: true,
         output: "Command output\nLine 2\nWarning message".to_string(),
     })]);
-
-    // Create a tool context
-    let mut context = ToolContext::<'_> {
-        project_manager: &project_manager,
-        command_executor: &command_executor,
-        working_memory: None,
-    };
+    let mut context = fixture.context();
 
     // Test execute_command tool - successful command
     {
@@ -446,7 +331,7 @@ async fn test_execute_command_tool() -> Result<()> {
 
         // Parameters for execute_command
         let mut params = json!({
-            "project": "test-project",
+            "project": "test",
             "command_line": "ls -la",
             "working_dir": "src"
         });
@@ -468,18 +353,12 @@ async fn test_execute_command_tool() -> Result<()> {
 
     // Now test with a failing command
     {
-        // Reset the command executor with a command that fails
-        let command_executor = MockCommandExecutor::new(vec![Ok(CommandOutput {
+        // Create new fixture with failing command
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
             success: false,
             output: "Some output\nError: command failed".to_string(),
         })]);
-
-        // Update the context
-        let mut context = ToolContext::<'_> {
-            project_manager: &project_manager,
-            command_executor: &command_executor,
-            working_memory: None,
-        };
+        let mut context = fixture.context();
 
         // Get the tool from the registry
         let execute_command_tool = registry
@@ -488,7 +367,7 @@ async fn test_execute_command_tool() -> Result<()> {
 
         // Parameters for execute_command
         let mut params = json!({
-            "project": "test-project",
+            "project": "test",
             "command_line": "invalid-command"
         });
 
@@ -520,51 +399,12 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
     registry.register(Box::new(ReadFilesTool));
     registry.register(Box::new(WriteFileTool));
 
-    // Set up sample test files
-    let mut files = HashMap::new();
-    files.insert(
-        PathBuf::from("./root/test.txt"),
-        "Test file content".to_string(),
-    );
-
-    // Create file tree
-    let mut children = HashMap::new();
-    children.insert(
+    // Create test fixture with test file
+    let mut fixture = ToolTestFixture::with_files(vec![(
         "test.txt".to_string(),
-        FileTreeEntry {
-            name: "test.txt".to_string(),
-            entry_type: FileSystemEntryType::File,
-            children: HashMap::new(),
-            is_expanded: false,
-        },
-    );
-
-    let file_tree = Some(FileTreeEntry {
-        name: "./root".to_string(),
-        entry_type: FileSystemEntryType::Directory,
-        children,
-        is_expanded: true,
-    });
-
-    // Create a custom explorer
-    let explorer = MockExplorer::new(files, file_tree);
-
-    // Create a mock project manager with our files
-    let project_manager = MockProjectManager::default().with_project_path(
-        "test-project",
-        PathBuf::from("./root"),
-        Box::new(explorer),
-    );
-
-    // Create a default mock command executor
-    let command_executor = crate::utils::DefaultCommandExecutor;
-
-    // Create a tool context
-    let mut context = ToolContext::<'_> {
-        project_manager: &project_manager,
-        command_executor: &command_executor,
-        working_memory: None,
-    };
+        "Test file content".to_string(),
+    )]);
+    let mut context = fixture.context();
 
     // Test list_projects tool
     {
@@ -934,21 +774,21 @@ async fn test_xml_parsing_with_multiple_valid_blocks_should_limit_to_first() {
     let text = r#"Let me read these files:
 
 <tool:read_files>
-<param:project>test-project</param:project>
+<param:project>test</param:project>
 <param:path>file1.txt</param:path>
 </tool:read_files>
 
 And then list the directory:
 
 <tool:list_files>
-<param:project>test-project</param:project>
+<param:project>test</param:project>
 <param:paths>src</param:paths>
 </tool:list_files>
 
 And finally modify the file:
 
 <tool:replace_in_file>
-<param:project>test-project</param:project>
+<param:project>test</param:project>
 <param:path>file1.txt</param:path>
 <param:diff>some diff</param:diff>
 </tool:replace_in_file>"#;
@@ -961,7 +801,7 @@ And finally modify the file:
     // Should only get the first tool
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].name, "read_files");
-    assert_eq!(result[0].input["project"], "test-project");
+    assert_eq!(result[0].input["project"], "test");
 
     // The XML parser converts single path parameters to the paths array based on the schema
     let paths = result[0].input["paths"].as_array().unwrap();
@@ -1022,28 +862,28 @@ async fn test_xml_parsing_with_smart_filter_allows_multiple_read_tools() {
     let text = r#"Let me analyze the project structure:
 
 <tool:read_files>
-<param:project>test-project</param:project>
+<param:project>test</param:project>
 <param:path>package.json</param:path>
 </tool:read_files>
 
 Now let me list the directories:
 
 <tool:list_files>
-<param:project>test-project</param:project>
+<param:project>test</param:project>
 <param:paths>src</param:paths>
 </tool:list_files>
 
 Let me search for specific patterns:
 
 <tool:search_files>
-<param:project>test-project</param:project>
+<param:project>test</param:project>
 <param:regex>function.*\(</param:regex>
 </tool:search_files>
 
 But I shouldn't be able to write files yet:
 
 <tool:write_file>
-<param:project>test-project</param:project>
+<param:project>test</param:project>
 <param:path>test.txt</param:path>
 <param:content>test content</param:content>
 </tool:write_file>"#;
@@ -1070,14 +910,14 @@ async fn test_xml_parsing_with_smart_filter_blocks_write_after_read() {
     let text = r#"First I'll read a file:
 
 <tool:read_files>
-<param:project>test-project</param:project>
+<param:project>test</param:project>
 <param:path>config.json</param:path>
 </tool:read_files>
 
 Now I want to modify it immediately:
 
 <tool:replace_in_file>
-<param:project>test-project</param:project>
+<param:project>test</param:project>
 <param:path>config.json</param:path>
 <param:diff>some diff content</param:diff>
 </tool:replace_in_file>"#;
@@ -1102,18 +942,18 @@ async fn test_xml_parsing_with_unlimited_filter_allows_all_tools() {
     let text = r#"I'll do multiple operations:
 
 <tool:read_files>
-<param:project>test-project</param:project>
+<param:project>test</param:project>
 <param:path>file1.txt</param:path>
 </tool:read_files>
 
 <tool:write_file>
-<param:project>test-project</param:project>
+<param:project>test</param:project>
 <param:path>file2.txt</param:path>
 <param:content>new content</param:content>
 </tool:write_file>
 
 <tool:execute_command>
-<param:project>test-project</param:project>
+<param:project>test</param:project>
 <param:command_line>ls -la</param:command_line>
 </tool:execute_command>"#;
 
@@ -1140,7 +980,7 @@ async fn test_caret_parsing_with_single_tool_filter() {
     let text = concat!(
         "I'll read some files first:\n\n",
         "^^^read_files\n",
-        "project: test-project\n",
+        "project: test\n",
         "paths: [\n",
         "file1.txt\n",
         "file2.txt\n",
@@ -1148,7 +988,7 @@ async fn test_caret_parsing_with_single_tool_filter() {
         "^^^\n\n",
         "Then I'll write a new file:\n\n",
         "^^^write_file\n",
-        "project: test-project\n",
+        "project: test\n",
         "path: new_file.txt\n",
         "content: test content\n",
         "^^^"
@@ -1161,7 +1001,7 @@ async fn test_caret_parsing_with_single_tool_filter() {
     // Should only get the first tool due to SingleToolFilter
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "read_files");
-    assert_eq!(tools[0].input["project"], "test-project");
+    assert_eq!(tools[0].input["project"], "test");
 
     // Text should be truncated after the first tool block
     assert!(truncated_text.contains("^^^read_files"));
@@ -1177,26 +1017,26 @@ async fn test_caret_parsing_with_smart_filter_allows_multiple_read_tools() {
     let text = concat!(
         "Let me analyze the project:\n\n",
         "^^^read_files\n",
-        "project: test-project\n",
+        "project: test\n",
         "paths: [\n",
         "package.json\n",
         "]\n",
         "^^^\n\n",
         "Now list the files:\n\n",
         "^^^list_files\n",
-        "project: test-project\n",
+        "project: test\n",
         "paths: [\n",
         "src\n",
         "]\n",
         "^^^\n\n",
         "Search for patterns:\n\n",
         "^^^search_files\n",
-        "project: test-project\n",
+        "project: test\n",
         "regex: function.*\\(\n",
         "^^^\n\n",
         "But I shouldn't write yet:\n\n",
         "^^^write_file\n",
-        "project: test-project\n",
+        "project: test\n",
         "path: test.txt\n",
         "content: test\n",
         "^^^"
@@ -1225,14 +1065,14 @@ async fn test_caret_parsing_with_smart_filter_blocks_write_after_read() {
     let text = concat!(
         "First I'll read a file:\n\n",
         "^^^read_files\n",
-        "project: test-project\n",
+        "project: test\n",
         "paths: [\n",
         "config.json\n",
         "]\n",
         "^^^\n\n",
         "Now I want to modify it:\n\n",
         "^^^replace_in_file\n",
-        "project: test-project\n",
+        "project: test\n",
         "path: config.json\n",
         "diff ---\n",
         "some diff content\n",
@@ -1261,18 +1101,18 @@ async fn test_caret_parsing_with_unlimited_filter_allows_all_tools() {
     let text = concat!(
         "I'll do multiple operations:\n\n",
         "^^^read_files\n",
-        "project: test-project\n",
+        "project: test\n",
         "paths: [\n",
         "file1.txt\n",
         "]\n",
         "^^^\n\n",
         "^^^write_file\n",
-        "project: test-project\n",
+        "project: test\n",
         "path: file2.txt\n",
         "content: new content\n",
         "^^^\n\n",
         "^^^execute_command\n",
-        "project: test-project\n",
+        "project: test\n",
         "command_line: ls -la\n",
         "^^^"
     );
@@ -1342,7 +1182,7 @@ async fn test_caret_parsing_multiline_parameters_with_filter() {
     let text = concat!(
         "I'll write a file with multiline content:\n\n",
         "^^^write_file\n",
-        "project: test-project\n",
+        "project: test\n",
         "path: test.txt\n",
         "content ---\n",
         "This is line 1\n",
@@ -1352,7 +1192,7 @@ async fn test_caret_parsing_multiline_parameters_with_filter() {
         "^^^\n\n",
         "Then execute a command:\n\n",
         "^^^execute_command\n",
-        "project: test-project\n",
+        "project: test\n",
         "command_line ---\n",
         "echo 'hello world'\n",
         "--- command_line\n",
@@ -1366,7 +1206,7 @@ async fn test_caret_parsing_multiline_parameters_with_filter() {
     // Should only get the first tool
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "write_file");
-    assert_eq!(tools[0].input["project"], "test-project");
+    assert_eq!(tools[0].input["project"], "test");
     assert_eq!(tools[0].input["path"], "test.txt");
 
     let content = tools[0].input["content"].as_str().unwrap();
@@ -1387,12 +1227,12 @@ async fn test_caret_parsing_edge_case_empty_arrays_with_filter() {
     let text = concat!(
         "Testing with empty arrays:\n\n",
         "^^^list_files\n",
-        "project: test-project\n",
+        "project: test\n",
         "paths: [\n",
         "]\n",
         "^^^\n\n",
         "^^^read_files\n",
-        "project: test-project\n",
+        "project: test\n",
         "paths: [\n",
         "file1.txt\n",
         "]\n",
@@ -1406,7 +1246,7 @@ async fn test_caret_parsing_edge_case_empty_arrays_with_filter() {
     // Should only get the first tool
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "list_files");
-    assert_eq!(tools[0].input["project"], "test-project");
+    assert_eq!(tools[0].input["project"], "test");
 
     // Empty array should be preserved
     let paths = tools[0].input["paths"].as_array().unwrap();

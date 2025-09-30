@@ -98,6 +98,19 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                 // Emit any remaining buffered fragments since no more content is coming
                 self.flush_buffered_content()?;
             }
+            StreamingChunk::ReasoningSummaryStart => {
+                self.ui
+                    .display_fragment(&DisplayFragment::ReasoningSummaryStart)?;
+            }
+            StreamingChunk::ReasoningSummaryDelta(delta) => {
+                self.ui
+                    .display_fragment(&DisplayFragment::ReasoningSummaryDelta(delta.clone()))?;
+            }
+            StreamingChunk::ReasoningComplete => {
+                // Pass through reasoning complete
+                self.ui
+                    .display_fragment(&DisplayFragment::ReasoningComplete)?;
+            }
             _ => {
                 // Other chunk types are not handled by caret processor
             }
@@ -124,7 +137,7 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                     let mut combined_text = String::new();
                     for block in blocks {
                         match block {
-                            llm::ContentBlock::Text { text } => {
+                            llm::ContentBlock::Text { text, .. } => {
                                 combined_text.push_str(text);
                             }
                             llm::ContentBlock::ToolResult { content, .. } => {
@@ -152,13 +165,15 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                             llm::ContentBlock::Thinking { thinking, .. } => {
                                 fragments.push(DisplayFragment::ThinkingText(thinking.clone()));
                             }
-                            llm::ContentBlock::Text { text } => {
+                            llm::ContentBlock::Text { text, .. } => {
                                 // Process text for caret syntax
                                 fragments.extend(
                                     self.extract_fragments_from_text(text, message.request_id)?,
                                 );
                             }
-                            llm::ContentBlock::ToolUse { id, name, input } => {
+                            llm::ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } => {
                                 // Check if tool is hidden
                                 let tool_hidden =
                                     ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
@@ -194,10 +209,27 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                             llm::ContentBlock::ToolResult { .. } => {
                                 // Tool results are typically not part of assistant messages
                             }
-                            llm::ContentBlock::RedactedThinking { .. } => {
-                                // Redacted thinking blocks are not displayed
+                            llm::ContentBlock::RedactedThinking { summary, .. } => {
+                                // Generate reasoning summary fragments for each item, emitting raw content
+                                // exactly as it would come from streaming API
+                                for item in summary {
+                                    fragments.push(DisplayFragment::ReasoningSummaryStart);
+                                    match item {
+                                        llm::ReasoningSummaryItem::SummaryText { text } => {
+                                            fragments.push(DisplayFragment::ReasoningSummaryDelta(
+                                                text.clone(),
+                                            ));
+                                        }
+                                    }
+                                }
+                                // End with reasoning complete if we had items
+                                if !summary.is_empty() {
+                                    fragments.push(DisplayFragment::ReasoningComplete);
+                                }
                             }
-                            llm::ContentBlock::Image { media_type, data } => {
+                            llm::ContentBlock::Image {
+                                media_type, data, ..
+                            } => {
                                 // Images in assistant messages - preserve for display
                                 fragments.push(DisplayFragment::Image {
                                     media_type: media_type.clone(),
@@ -727,7 +759,8 @@ impl CaretStreamProcessor {
             match &fragment {
                 DisplayFragment::ToolName { .. }
                 | DisplayFragment::ToolParameter { .. }
-                | DisplayFragment::ToolEnd { .. } => {
+                | DisplayFragment::ToolEnd { .. }
+                | DisplayFragment::ToolOutput { .. } => {
                     // Skip tool-related fragments for hidden tools
                     return Ok(());
                 }
@@ -857,6 +890,29 @@ impl CaretStreamProcessor {
                     }
                     DisplayFragment::Image { .. } => {
                         // Image - buffer it until we know if next tool is allowed
+                        if let StreamingState::BufferingAfterTool {
+                            buffered_fragments, ..
+                        } = &mut self.streaming_state
+                        {
+                            buffered_fragments.push(fragment);
+                        }
+                    }
+                    DisplayFragment::ReasoningSummaryStart
+                    | DisplayFragment::ReasoningSummaryDelta(_) => {
+                        // Reasoning summary - buffer it until we know if next tool is allowed
+                        if let StreamingState::BufferingAfterTool {
+                            buffered_fragments, ..
+                        } = &mut self.streaming_state
+                        {
+                            buffered_fragments.push(fragment);
+                        }
+                    }
+                    DisplayFragment::ToolOutput { .. } => {
+                        // Tool output - emit immediately (we've already decided to allow the tool)
+                        self.ui.display_fragment(&fragment)?;
+                    }
+                    DisplayFragment::ReasoningComplete => {
+                        // Reasoning complete - buffer it until we know if next tool is allowed
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..
                         } = &mut self.streaming_state

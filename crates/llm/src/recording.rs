@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
-use std::io::{Seek, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -127,5 +127,90 @@ impl APIRecorder {
         *start_guard = None;
 
         Ok(())
+    }
+}
+
+/// Provider-agnostic playback state shared by providers
+#[derive(Clone)]
+pub struct PlaybackState {
+    sessions: Arc<Vec<RecordingSession>>, // immutable list
+    index: Arc<Mutex<usize>>,             // current session index
+    pub fast: bool,
+}
+
+impl PlaybackState {
+    pub fn from_file<P: AsRef<Path>>(path: P, fast: bool) -> Result<Self> {
+        let mut file = File::open(path).context("Failed to open recording file")?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .context("Failed to read recording file")?;
+        let sessions: Vec<RecordingSession> =
+            serde_json::from_str(&contents).context("Failed to parse recording file")?;
+        Ok(Self {
+            sessions: Arc::new(sessions),
+            index: Arc::new(Mutex::new(0)),
+            fast,
+        })
+    }
+
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// Take the next session, or None if exhausted
+    pub fn next_session(&self) -> Option<RecordingSession> {
+        let mut idx = self.index.lock().unwrap();
+        if *idx >= self.sessions.len() {
+            return None;
+        }
+        let session = self.sessions[*idx].clone();
+        *idx += 1;
+        Some(session)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn playback_state_sequences_sessions() {
+        // Prepare a temporary file with two sessions
+        let tmp_path = std::env::temp_dir().join("llm_playback_test.json");
+        let json = r#"[
+  {
+    "request": {"foo": 1},
+    "timestamp": "2024-01-01T00:00:00Z",
+    "chunks": [
+      {"data": "{\"a\":1}", "timestamp_ms": 0}
+    ]
+  },
+  {
+    "request": {"bar": 2},
+    "timestamp": "2024-01-01T00:00:01Z",
+    "chunks": [
+      {"data": "{\"b\":2}", "timestamp_ms": 10}
+    ]
+  }
+]
+"#;
+        fs::write(&tmp_path, json).unwrap();
+
+        let state = PlaybackState::from_file(&tmp_path, true).unwrap();
+        assert_eq!(state.session_count(), 2);
+
+        let s1 = state.next_session().unwrap();
+        assert_eq!(s1.request["foo"], 1);
+        assert_eq!(s1.chunks.len(), 1);
+
+        let s2 = state.next_session().unwrap();
+        assert_eq!(s2.request["bar"], 2);
+
+        let none = state.next_session();
+        assert!(none.is_none());
+
+        // Cleanup
+        let _ = fs::remove_file(&tmp_path);
     }
 }

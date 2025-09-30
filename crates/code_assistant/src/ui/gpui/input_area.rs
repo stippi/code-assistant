@@ -192,7 +192,7 @@ impl InputArea {
         cx: &mut Context<Self>,
     ) {
         match event {
-            InputEvent::Change(_text) => {
+            InputEvent::Change => {
                 // Emit content changed event for draft saving
                 self.emit_content_changed(cx);
             }
@@ -262,7 +262,7 @@ impl InputArea {
         div()
             .id("input-area")
             .flex_none() // Important: don't grow or shrink
-            .bg(cx.theme().card)
+            .bg(cx.theme().popover)
             .border_t_1()
             .border_color(cx.theme().border)
             .flex()

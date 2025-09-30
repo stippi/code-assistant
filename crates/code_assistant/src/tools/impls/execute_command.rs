@@ -1,6 +1,9 @@
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
+use crate::ui::streaming::DisplayFragment;
+use crate::ui::UserInterface;
+use crate::utils::command::StreamingCallback;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -60,6 +63,26 @@ impl Render for ExecuteCommandOutput {
 impl ToolResult for ExecuteCommandOutput {
     fn is_success(&self) -> bool {
         self.success
+    }
+}
+
+/// Streaming callback implementation for tool output
+struct ToolOutputStreamer<'a> {
+    ui: &'a dyn UserInterface,
+    tool_id: String,
+}
+
+impl<'a> StreamingCallback for ToolOutputStreamer<'a> {
+    fn on_output_chunk(&self, chunk: &str) -> Result<()> {
+        let fragment = DisplayFragment::ToolOutput {
+            tool_id: self.tool_id.clone(),
+            chunk: chunk.to_string(),
+        };
+
+        // Send to UI synchronously (don't spawn a task to avoid lifetime issues)
+        let _ = self.ui.display_fragment(&fragment);
+
+        Ok(())
     }
 }
 
@@ -146,11 +169,32 @@ impl Tool for ExecuteCommandTool {
             .map(|dir| explorer.root_dir().join(dir))
             .unwrap_or_else(|| explorer.root_dir());
 
-        // Execute the command using the command executor from context
-        let result = context
-            .command_executor
-            .execute(&input.command_line, Some(&effective_working_dir))
-            .await?;
+        // Execute the command using streaming
+        let result = match (context.ui, &context.tool_id) {
+            (Some(ui), Some(tool_id)) => {
+                // Create streaming callback for UI output
+                let callback = ToolOutputStreamer {
+                    ui,
+                    tool_id: tool_id.clone(),
+                };
+
+                context
+                    .command_executor
+                    .execute_streaming(
+                        &input.command_line,
+                        Some(&effective_working_dir),
+                        Some(&callback),
+                    )
+                    .await?
+            }
+            _ => {
+                // No UI available, use regular execution
+                context
+                    .command_executor
+                    .execute_streaming(&input.command_line, Some(&effective_working_dir), None)
+                    .await?
+            }
+        };
 
         Ok(ExecuteCommandOutput {
             project: input.project.clone(),
@@ -165,10 +209,7 @@ impl Tool for ExecuteCommandTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::{
-        create_command_executor_mock, create_explorer_mock, create_failed_command_executor_mock,
-        MockProjectManager,
-    };
+    use crate::tests::mocks::ToolTestFixture;
 
     #[tokio::test]
     async fn test_execute_command_output_rendering() {
@@ -210,29 +251,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_command_success() -> Result<()> {
-        // Create test project manager
-        let test_explorer = create_explorer_mock();
-
-        // Create test command executor with predefined response
-        let test_cmd_executor = create_command_executor_mock();
-
-        // Setup the project manager with test explorer
-        let mock_project_manager = MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(test_explorer),
-        );
-
-        // Create tool context with both project manager and command executor
-        let mut context = ToolContext {
-            project_manager: &mock_project_manager,
-            command_executor: &test_cmd_executor,
-            working_memory: None,
-        };
+        // Create test fixture with command executor and UI
+        let mut fixture =
+            ToolTestFixture::with_command_responses(vec![Ok(crate::utils::CommandOutput {
+                success: true,
+                output: "Command output".to_string(),
+            })])
+            .with_ui()
+            .with_tool_id("test-tool-1".to_string());
+        let mut context = fixture.context();
 
         // Create input
         let mut input = ExecuteCommandInput {
-            project: "test-project".to_string(),
+            project: "test".to_string(),
             command_line: "ls -la".to_string(),
             working_dir: Some("src".to_string()),
         };
@@ -247,7 +278,7 @@ mod tests {
         assert!(result.success);
 
         // Verify command was executed with correct parameters
-        let commands = test_cmd_executor.get_captured_commands();
+        let commands = fixture.command_executor().get_captured_commands();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].command_line, "ls -la");
         assert_eq!(commands[0].working_dir, Some(PathBuf::from("./root/src")));
@@ -257,27 +288,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_command_failure() -> Result<()> {
-        // Create test project manager with explorer
-        let test_explorer = create_explorer_mock();
-        let mock_project_manager = MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(test_explorer),
-        );
-
-        // Create test command executor that returns failure
-        let test_cmd_executor = create_failed_command_executor_mock();
-
-        // Create tool context with project manager and failing command executor
-        let mut context = ToolContext {
-            project_manager: &mock_project_manager,
-            command_executor: &test_cmd_executor,
-            working_memory: None,
-        };
+        // Create test fixture with failing command executor and UI
+        let mut fixture =
+            ToolTestFixture::with_command_responses(vec![Ok(crate::utils::CommandOutput {
+                success: false,
+                output: "Command failed: permission denied".to_string(),
+            })])
+            .with_ui()
+            .with_tool_id("test-tool-2".to_string());
+        let mut context = fixture.context();
 
         // Create input
         let mut input = ExecuteCommandInput {
-            project: "test-project".to_string(),
+            project: "test".to_string(),
             command_line: "rm -rf /tmp/nonexistent".to_string(),
             working_dir: None,
         };
@@ -292,10 +315,51 @@ mod tests {
         assert!(!result.success);
 
         // Verify command was executed
-        let commands = test_cmd_executor.get_captured_commands();
+        let commands = fixture.command_executor().get_captured_commands();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].command_line, "rm -rf /tmp/nonexistent");
         assert_eq!(commands[0].working_dir, Some(PathBuf::from("./root")));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_execute_command_streaming() -> Result<()> {
+        use crate::utils::CommandOutput;
+
+        // Create test fixture with multi-line output and UI for streaming
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
+            success: true,
+            output: "Line 1\nLine 2\nLine 3\n".to_string(),
+        })])
+        .with_ui()
+        .with_tool_id("test-streaming-tool".to_string());
+        let mut context = fixture.context();
+
+        // Create input
+        let mut input = ExecuteCommandInput {
+            project: "test".to_string(),
+            command_line: "echo 'test'".to_string(),
+            working_dir: None,
+        };
+
+        // Execute tool
+        let tool = ExecuteCommandTool;
+        let result = tool.execute(&mut context, &mut input).await?;
+
+        // Verify result
+        assert!(result.success);
+        assert_eq!(result.output, "Line 1\nLine 2\nLine 3\n");
+
+        // Verify streaming output was captured
+        let streaming_output = fixture.ui().unwrap().get_streaming_output();
+        assert!(
+            !streaming_output.is_empty(),
+            "Should have received streaming output"
+        );
+
+        // The streaming output should contain the individual lines
+        println!("Streaming output received: {streaming_output:?}");
 
         Ok(())
     }

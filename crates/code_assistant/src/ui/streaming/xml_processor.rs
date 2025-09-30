@@ -3,7 +3,7 @@ use crate::tools::core::{ToolRegistry, ToolScope};
 use crate::tools::tool_use_filter::{SmartToolFilter, ToolUseFilter};
 use crate::ui::{UIError, UserInterface};
 use anyhow::Result;
-use llm::{ContentBlock, Message, MessageContent, StreamingChunk};
+use llm::{ContentBlock, Message, MessageContent, ReasoningSummaryItem, StreamingChunk};
 use std::sync::Arc;
 use tracing::warn;
 
@@ -132,6 +132,18 @@ impl StreamProcessorTrait for XmlStreamProcessor {
 
             // For text chunks, we need to parse for tags
             StreamingChunk::Text(text) => self.process_text_with_tags(text),
+
+            StreamingChunk::ReasoningSummaryStart => {
+                self.emit_fragment(DisplayFragment::ReasoningSummaryStart)
+            }
+
+            StreamingChunk::ReasoningSummaryDelta(delta) => {
+                self.emit_fragment(DisplayFragment::ReasoningSummaryDelta(delta.clone()))
+            }
+
+            StreamingChunk::ReasoningComplete => {
+                self.emit_fragment(DisplayFragment::ReasoningComplete)
+            }
         }
     }
 
@@ -154,7 +166,7 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                     let mut combined_text = String::new();
                     for block in blocks {
                         match block {
-                            ContentBlock::Text { text } => {
+                            ContentBlock::Text { text, .. } => {
                                 combined_text.push_str(text);
                             }
                             ContentBlock::ToolResult { content, .. } => {
@@ -182,13 +194,15 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                             ContentBlock::Thinking { thinking, .. } => {
                                 fragments.push(DisplayFragment::ThinkingText(thinking.clone()));
                             }
-                            ContentBlock::Text { text } => {
+                            ContentBlock::Text { text, .. } => {
                                 // Process text for XML tags, using request_id for consistent tool ID generation
                                 fragments.extend(
                                     self.extract_fragments_from_text(text, message.request_id)?,
                                 );
                             }
-                            ContentBlock::ToolUse { id, name, input } => {
+                            ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } => {
                                 // Check if tool is hidden
                                 let tool_hidden =
                                     ToolRegistry::global().is_tool_hidden(name, ToolScope::Agent);
@@ -224,10 +238,27 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                             ContentBlock::ToolResult { .. } => {
                                 // Tool results are typically not part of assistant messages
                             }
-                            ContentBlock::RedactedThinking { .. } => {
-                                // Redacted thinking blocks are not displayed
+                            ContentBlock::RedactedThinking { summary, .. } => {
+                                // Generate reasoning summary fragments for each item, emitting raw content
+                                // exactly as it would come from streaming API
+                                for item in summary {
+                                    fragments.push(DisplayFragment::ReasoningSummaryStart);
+                                    match item {
+                                        ReasoningSummaryItem::SummaryText { text } => {
+                                            fragments.push(DisplayFragment::ReasoningSummaryDelta(
+                                                text.clone(),
+                                            ));
+                                        }
+                                    }
+                                }
+                                // End with reasoning complete if we had items
+                                if !summary.is_empty() {
+                                    fragments.push(DisplayFragment::ReasoningComplete);
+                                }
                             }
-                            ContentBlock::Image { media_type, data } => {
+                            ContentBlock::Image {
+                                media_type, data, ..
+                            } => {
                                 // Images in assistant messages - preserve for display
                                 fragments.push(DisplayFragment::Image {
                                     media_type: media_type.clone(),
@@ -696,6 +727,29 @@ impl XmlStreamProcessor {
                     }
                     DisplayFragment::Image { .. } => {
                         // Image - buffer it
+                        if let StreamingState::BufferingAfterTool {
+                            buffered_fragments, ..
+                        } = &mut self.streaming_state
+                        {
+                            buffered_fragments.push(fragment);
+                        }
+                    }
+                    DisplayFragment::ReasoningSummaryStart
+                    | DisplayFragment::ReasoningSummaryDelta(_) => {
+                        // Reasoning summary - buffer it
+                        if let StreamingState::BufferingAfterTool {
+                            buffered_fragments, ..
+                        } = &mut self.streaming_state
+                        {
+                            buffered_fragments.push(fragment);
+                        }
+                    }
+                    DisplayFragment::ToolOutput { .. } => {
+                        // Tool output - emit immediately (we've already decided to allow the tool)
+                        self.ui.display_fragment(&fragment)?;
+                    }
+                    DisplayFragment::ReasoningComplete => {
+                        // Reasoning complete - buffer it
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..
                         } = &mut self.streaming_state

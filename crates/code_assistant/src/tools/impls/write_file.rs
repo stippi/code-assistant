@@ -202,9 +202,7 @@ impl Tool for WriteFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::{MockExplorer, MockProjectManager};
-    use crate::types::WorkingMemory;
-    use std::collections::HashMap;
+    use crate::tests::mocks::ToolTestFixture;
     use std::path::PathBuf;
 
     #[tokio::test]
@@ -238,35 +236,13 @@ mod tests {
         // Create a tool registry (not needed for this test but kept for consistency)
         let write_file_tool = WriteFileTool;
 
-        // Create test files
-        let files = HashMap::new();
-
-        // Create a mock explorer with these files
-        let explorer = MockExplorer::new(files, None);
-
-        // Create a mock project manager with our test files
-        let project_manager = Box::new(MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(explorer),
-        ));
-
-        // Create working memory
-        let mut working_memory = WorkingMemory::default();
-
-        // Create a tool context with working memory
-        // Create a default command executor
-        let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
-
-        let mut context = ToolContext::<'_> {
-            project_manager: project_manager.as_ref(),
-            command_executor: command_executor.as_ref(),
-            working_memory: Some(&mut working_memory),
-        };
+        // Create test fixture with working memory
+        let mut fixture = ToolTestFixture::new().with_working_memory();
+        let mut context = fixture.context();
 
         // Parameters for write_file
         let mut input = WriteFileInput {
-            project: "test-project".to_string(),
+            project: "test".to_string(),
             path: "test.txt".to_string(),
             content: "Test content".to_string(),
             append: false,
@@ -279,10 +255,11 @@ mod tests {
         assert!(result.error.is_none());
 
         // Verify that the file was added to working memory
+        let working_memory = fixture.working_memory().unwrap();
         assert_eq!(working_memory.loaded_resources.len(), 1);
 
         // Check that the file is in the working memory
-        let resource_key = ("test-project".to_string(), PathBuf::from("test.txt"));
+        let resource_key = ("test".to_string(), PathBuf::from("test.txt"));
         assert!(working_memory.loaded_resources.contains_key(&resource_key));
 
         // Check that the content matches
@@ -302,35 +279,13 @@ mod tests {
         // Create a tool registry (not needed for this test but kept for consistency)
         let write_file_tool = WriteFileTool;
 
-        // Create test files with existing content
-        let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("./root/test.txt"),
+        // Create test fixture with existing file and working memory
+        let mut fixture = ToolTestFixture::with_files(vec![(
+            "test.txt".to_string(),
             "Initial content".to_string(),
-        );
-
-        // Create a mock explorer with these files
-        let explorer = MockExplorer::new(files, None);
-
-        // Create a mock project manager with our test files
-        let project_manager = Box::new(MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(explorer),
-        ));
-
-        // Create working memory
-        let mut working_memory = WorkingMemory::default();
-
-        // Create a tool context with working memory
-        // Create a default command executor
-        let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
-
-        let mut context = ToolContext::<'_> {
-            project_manager: project_manager.as_ref(),
-            command_executor: command_executor.as_ref(),
-            working_memory: Some(&mut working_memory),
-        };
+        )])
+        .with_working_memory();
+        let mut context = fixture.context();
 
         // Parameters for write_file with append=true
         let mut input = WriteFileInput {
@@ -347,6 +302,7 @@ mod tests {
         assert!(result.error.is_none());
 
         // Verify that the file WAS added to working memory (we fixed the behavior)
+        let working_memory = fixture.working_memory().unwrap();
         assert_eq!(working_memory.loaded_resources.len(), 1);
 
         // Check that the file is in the working memory

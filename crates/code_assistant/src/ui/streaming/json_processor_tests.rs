@@ -1094,14 +1094,8 @@ mod tests {
         let message = llm::Message {
             role: llm::MessageRole::Assistant,
             content: llm::MessageContent::Structured(vec![
-                llm::ContentBlock::Text {
-                    text: "I'll read the file for you.".to_string(),
-                },
-                llm::ContentBlock::ToolUse {
-                    id: "tool_123".to_string(),
-                    name: "read_files".to_string(),
-                    input: tool_input,
-                },
+                llm::ContentBlock::new_text("I'll read the file for you."),
+                llm::ContentBlock::new_tool_use("tool_123", "read_files", tool_input),
             ]),
             request_id: None,
             usage: None,
@@ -1144,25 +1138,19 @@ mod tests {
         let message = llm::Message {
             role: llm::MessageRole::Assistant,
             content: llm::MessageContent::Structured(vec![
-                llm::ContentBlock::Thinking {
-                    thinking: "Let me think about this request.".to_string(),
-                    signature: "sig".to_string(),
-                },
-                llm::ContentBlock::Text {
-                    text: "I understand. <thinking>More thinking here.</thinking> Let me help."
-                        .to_string(),
-                },
-                llm::ContentBlock::ToolUse {
-                    id: "write_123".to_string(),
-                    name: "write_file".to_string(),
-                    input: serde_json::json!({
+                llm::ContentBlock::new_thinking("Let me think about this request.", "sig"),
+                llm::ContentBlock::new_text(
+                    "I understand. <thinking>More thinking here.</thinking> Let me help.",
+                ),
+                llm::ContentBlock::new_tool_use(
+                    "write_123",
+                    "write_file",
+                    serde_json::json!({
                         "content": "Hello world!",
                         "path": "hello.txt"
                     }),
-                },
-                llm::ContentBlock::Text {
-                    text: "File has been written.".to_string(),
-                },
+                ),
+                llm::ContentBlock::new_text("File has been written."),
             ]),
             request_id: None,
             usage: None,

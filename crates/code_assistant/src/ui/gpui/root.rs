@@ -742,7 +742,7 @@ impl Render for RootView {
                         // Center: Messages and input (content area) with floating popover
                         div()
                             .relative() // For popover positioning
-                            .bg(cx.theme().card)
+                            .bg(cx.theme().popover)
                             .flex()
                             .flex_col()
                             .flex_grow() // Grow to take available space

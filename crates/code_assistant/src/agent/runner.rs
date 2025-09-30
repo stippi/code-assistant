@@ -491,6 +491,8 @@ impl Agent {
                                 tool_use_id: tool_id,
                                 content: error_text,
                                 is_error: Some(true),
+                                start_time: Some(SystemTime::now()),
+                                end_time: None,
                             }]),
                             request_id: None,
                             usage: None,
@@ -516,11 +518,14 @@ impl Agent {
                 return Ok(LoopFlow::Break);
             }
 
+            let start_time = Some(SystemTime::now());
             let result_block = match self.execute_tool(tool_request).await {
                 Ok(success) => ContentBlock::ToolResult {
                     tool_use_id: tool_request.id.clone(),
                     content: String::new(), // Will be filled dynamically in prepare_messages
                     is_error: if success { None } else { Some(true) },
+                    start_time,
+                    end_time: Some(SystemTime::now()),
                 },
                 Err(e) => {
                     let error_text = Self::format_error_for_user(&e);
@@ -528,6 +533,8 @@ impl Agent {
                         tool_use_id: tool_request.id.clone(),
                         content: error_text,
                         is_error: Some(true),
+                        start_time,
+                        end_time: Some(SystemTime::now()),
                     }
                 }
             };
@@ -724,7 +731,7 @@ impl Agent {
                                         text_content.push_str("\n\n");
                                     }
                                 }
-                                ContentBlock::Text { text } => {
+                                ContentBlock::Text { text, .. } => {
                                     // For existing Text blocks, keep as is
                                     text_content.push_str(text);
                                     text_content.push_str("\n\n");
@@ -781,20 +788,14 @@ impl Agent {
                     match &mut msg.content {
                         MessageContent::Text(original_text) => {
                             // Convert from Text to Structured with two ContentBlocks
-                            let original_block = ContentBlock::Text {
-                                text: original_text.clone(),
-                            };
-                            let reminder_block = ContentBlock::Text {
-                                text: reminder_text.to_string(),
-                            };
-                            msg.content =
-                                MessageContent::Structured(vec![original_block, reminder_block]);
+                            msg.content = MessageContent::Structured(vec![
+                                ContentBlock::new_text(original_text.clone()),
+                                ContentBlock::new_text(reminder_text.to_string()),
+                            ]);
                         }
                         MessageContent::Structured(blocks) => {
                             // Add reminder as a new ContentBlock
-                            blocks.push(ContentBlock::Text {
-                                text: reminder_text.to_string(),
-                            });
+                            blocks.push(ContentBlock::new_text(reminder_text));
                         }
                     }
                     break; // Found and updated the last actual user message, we're done
@@ -848,6 +849,7 @@ impl Agent {
         };
 
         // Log messages for debugging
+        /*
         for (i, message) in request.messages.iter().enumerate() {
             debug!("Message {}:", i);
             // Using the Display trait implementation for Message
@@ -860,6 +862,7 @@ impl Agent {
                 .join("\n");
             debug!("{}", indented);
         }
+        */
 
         // Create a StreamProcessor with the UI and request ID
         let parser = ParserRegistry::get(self.tool_syntax);
@@ -929,7 +932,7 @@ impl Agent {
         debug!("Raw LLM response:");
         for block in &response.content {
             match block {
-                ContentBlock::Text { text } => {
+                ContentBlock::Text { text, .. } => {
                     debug!("---\n{}\n---", text);
                 }
                 ContentBlock::ToolUse { name, input, .. } => {
@@ -992,6 +995,8 @@ impl Agent {
                         if let ContentBlock::ToolResult {
                             tool_use_id,
                             is_error,
+                            start_time,
+                            end_time,
                             ..
                         } = block
                         {
@@ -1002,6 +1007,8 @@ impl Agent {
                                     tool_use_id: tool_use_id.clone(),
                                     content: output.clone(),
                                     is_error: *is_error,
+                                    start_time: *start_time,
+                                    end_time: *end_time,
                                 });
                                 need_update = true;
                             } else {
@@ -1095,6 +1102,8 @@ impl Agent {
             project_manager: self.project_manager.as_ref(),
             command_executor: self.command_executor.as_ref(),
             working_memory: Some(&mut self.working_memory),
+            ui: Some(self.ui.as_ref()),
+            tool_id: Some(tool_request.id.clone()),
         };
 
         // Execute the tool - could fail with ParseError or other errors
@@ -1222,7 +1231,10 @@ impl Agent {
                     MessageContent::Structured(blocks) => {
                         // Look for the ToolUse block with matching ID
                         for block in blocks {
-                            if let ContentBlock::ToolUse { id, name, input } = block {
+                            if let ContentBlock::ToolUse {
+                                id, name, input, ..
+                            } = block
+                            {
                                 if *id == updated_request.id && *name == updated_request.name {
                                     *input = updated_request.input.clone();
                                     debug!("Updated tool call {} in message history", id);

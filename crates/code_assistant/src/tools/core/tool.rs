@@ -13,6 +13,10 @@ pub struct ToolContext<'a> {
     pub command_executor: &'a dyn crate::utils::CommandExecutor,
     /// Optional working memory (available in WorkingMemoryAgent mode)
     pub working_memory: Option<&'a mut WorkingMemory>,
+    /// Optional UI instance for streaming output
+    pub ui: Option<&'a dyn crate::ui::UserInterface>,
+    /// Optional current tool ID for streaming output
+    pub tool_id: Option<String>,
 }
 
 /// Core trait for tools, defining the execution interface

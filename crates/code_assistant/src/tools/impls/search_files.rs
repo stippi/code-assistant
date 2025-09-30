@@ -388,8 +388,7 @@ impl Tool for SearchFilesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::{create_explorer_mock, MockProjectManager};
-    use std::collections::HashMap;
+    use crate::tests::mocks::ToolTestFixture;
     use std::path::PathBuf;
 
     #[tokio::test]
@@ -456,36 +455,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_files_execution() -> Result<()> {
-        // Set up test files with content that will match our search
-        let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("./root/test.txt"),
-            "This is a test file\nwith multiple lines\nand searchable content".to_string(),
-        );
-
-        // Create a mock explorer with our test files
-        let explorer = create_explorer_mock();
-
-        // Create a mock project manager
-        let project_manager = Box::new(MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(explorer),
-        ));
-
-        // Create a command executor
-        let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
-
-        // Create a tool context
-        let mut context = ToolContext {
-            project_manager: project_manager.as_ref(),
-            command_executor: command_executor.as_ref(),
-            working_memory: None,
-        };
+        // Create test fixture
+        let mut fixture = ToolTestFixture::new();
+        let mut context = fixture.context();
 
         // Create input for the search
         let mut input = SearchFilesInput {
-            project: "test-project".to_string(),
+            project: "test".to_string(),
             regex: "searchable".to_string(),
             paths: None,
         };
@@ -499,7 +475,7 @@ mod tests {
         // to properly return search results for our test files
 
         // For now, let's just validate that we got a valid response object
-        assert_eq!(result.project, "test-project");
+        assert_eq!(result.project, "test");
         assert_eq!(result.regex, "searchable");
 
         Ok(())

@@ -2,7 +2,9 @@ use anyhow::Result;
 use llm::factory::LLMProviderType;
 use llm::Message;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
@@ -420,6 +422,8 @@ impl SessionDraft {
 #[derive(Debug, Clone)]
 pub struct DraftStorage {
     drafts_dir: PathBuf,
+    /// Per-session mutexes to prevent concurrent writes to the same draft file
+    session_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl DraftStorage {
@@ -433,12 +437,24 @@ impl DraftStorage {
             debug!("Created drafts directory: {}", drafts_dir.display());
         }
 
-        Ok(Self { drafts_dir })
+        Ok(Self {
+            drafts_dir,
+            session_locks: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     /// Get the path for a draft file for a given session
     fn draft_file_path(&self, session_id: &str) -> PathBuf {
         self.drafts_dir.join(format!("{session_id}.json"))
+    }
+
+    /// Get or create a mutex for the given session to prevent concurrent writes
+    fn get_session_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.session_locks.lock().unwrap();
+        locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// Save a draft with attachments for a session
@@ -448,6 +464,10 @@ impl DraftStorage {
         text_content: &str,
         attachments: &[DraftAttachment],
     ) -> Result<()> {
+        // Acquire session-specific lock to prevent concurrent writes
+        let session_lock = self.get_session_lock(session_id);
+        let _guard = session_lock.lock().unwrap();
+
         let file_path = self.draft_file_path(session_id);
 
         if text_content.is_empty() && attachments.is_empty() {
@@ -461,7 +481,7 @@ impl DraftStorage {
 
         // Load existing draft or create new one
         let mut draft = self
-            .load_draft_struct(session_id)?
+            .load_draft_struct_unlocked(session_id)?
             .unwrap_or_else(|| SessionDraft::new(session_id.to_string()));
 
         // Update message content and attachments
@@ -472,11 +492,6 @@ impl DraftStorage {
         let draft_json = serde_json::to_string_pretty(&draft)?;
         std::fs::write(&file_path, draft_json)?;
 
-        debug!(
-            "Saved draft with {} attachments for session: {}",
-            attachments.len(),
-            session_id
-        );
         Ok(())
     }
 
@@ -488,6 +503,16 @@ impl DraftStorage {
 
     /// Load the complete draft structure for a session
     pub fn load_draft_struct(&self, session_id: &str) -> Result<Option<SessionDraft>> {
+        // Acquire session-specific lock to prevent reading during writes
+        let session_lock = self.get_session_lock(session_id);
+        let _guard = session_lock.lock().unwrap();
+
+        self.load_draft_struct_unlocked(session_id)
+    }
+
+    /// Load the complete draft structure for a session without acquiring lock
+    /// (for internal use when lock is already held)
+    fn load_draft_struct_unlocked(&self, session_id: &str) -> Result<Option<SessionDraft>> {
         let file_path = self.draft_file_path(session_id);
 
         if !file_path.exists() {
@@ -497,17 +522,15 @@ impl DraftStorage {
         let json_content = std::fs::read_to_string(&file_path)?;
         let draft: SessionDraft = serde_json::from_str(&json_content)?;
 
-        let message = draft.get_message();
-        debug!(
-            "Loaded draft for session {}: {} characters",
-            session_id,
-            message.len()
-        );
         Ok(Some(draft))
     }
 
     /// Clear a draft for a session (used when message is sent)
     pub fn clear_draft(&self, session_id: &str) -> Result<()> {
+        // Acquire session-specific lock to prevent concurrent operations
+        let session_lock = self.get_session_lock(session_id);
+        let _guard = session_lock.lock().unwrap();
+
         let file_path = self.draft_file_path(session_id);
 
         if file_path.exists() {

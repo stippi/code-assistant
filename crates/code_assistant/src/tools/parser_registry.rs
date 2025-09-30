@@ -49,7 +49,7 @@ fn parse_and_truncate_caret_response(
     let filter = SmartToolFilter::new();
 
     for block in &response.content {
-        if let ContentBlock::Text { text } = block {
+        if let ContentBlock::Text { text, .. } = block {
             // Parse Caret tool invocations and get truncation position
             let (block_tool_requests, truncated_text) =
                 parse_caret_tool_invocations(text, request_id, tool_requests.len(), Some(&filter))?;
@@ -60,6 +60,8 @@ fn parse_and_truncate_caret_response(
             if !block_tool_requests.is_empty() {
                 truncated_content.push(ContentBlock::Text {
                     text: truncated_text,
+                    start_time: None,
+                    end_time: None,
                 });
                 break; // Stop processing after first tool block
             } else {
@@ -94,7 +96,7 @@ fn parse_and_truncate_xml_response(
     let filter = SmartToolFilter::new();
 
     for block in &response.content {
-        if let ContentBlock::Text { text } = block {
+        if let ContentBlock::Text { text, .. } = block {
             // Parse XML tool invocations and get truncation position
             let (block_tool_requests, truncated_text) =
                 parse_xml_tool_invocations(text, request_id, tool_requests.len(), Some(&filter))?;
@@ -105,6 +107,8 @@ fn parse_and_truncate_xml_response(
             if !block_tool_requests.is_empty() {
                 truncated_content.push(ContentBlock::Text {
                     text: truncated_text,
+                    start_time: None,
+                    end_time: None,
                 });
                 break; // Stop processing after first tool block
             } else {
@@ -137,7 +141,10 @@ fn parse_json_response(
     let mut tool_requests = Vec::new();
 
     for block in &response.content {
-        if let ContentBlock::ToolUse { id, name, input } = block {
+        if let ContentBlock::ToolUse {
+            id, name, input, ..
+        } = block
+        {
             let tool_request = ToolRequest {
                 id: id.clone(),
                 name: name.clone(),

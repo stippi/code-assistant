@@ -213,7 +213,7 @@ fn find_files_matching_pattern(root_dir: &std::path::Path, pattern: &str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::mocks::{create_explorer_mock, MockProjectManager};
+    use crate::tests::mocks::ToolTestFixture;
 
     #[tokio::test]
     async fn test_glob_files_output_rendering() {
@@ -258,25 +258,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_glob_files_execution() -> Result<()> {
-        // Create a mock explorer
-        let explorer = create_explorer_mock();
-
-        // Create a mock project manager
-        let project_manager = Box::new(MockProjectManager::default().with_project_path(
-            "test-project",
-            PathBuf::from("./root"),
-            Box::new(explorer),
-        ));
-
-        // Create a command executor
-        let command_executor = Box::new(crate::utils::DefaultCommandExecutor);
-
-        // Create a tool context
-        let mut context = ToolContext {
-            project_manager: project_manager.as_ref(),
-            command_executor: command_executor.as_ref(),
-            working_memory: None,
-        };
+        // Create test fixture
+        let mut fixture = ToolTestFixture::new();
+        let mut context = fixture.context();
 
         // Create input for the glob
         let mut input = GlobFilesInput {

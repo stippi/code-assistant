@@ -1,6 +1,9 @@
 use crate::{
-    recording::APIRecorder, types::*, utils, ApiError, ApiErrorContext, LLMProvider,
-    RateLimitHandler, StreamingCallback, StreamingChunk,
+    recording::{APIRecorder, PlaybackState},
+    streaming::{ChunkStream, HttpChunkStream, PlaybackChunkStream},
+    types::*,
+    utils, ApiError, ApiErrorContext, LLMProvider, RateLimitHandler, StreamingCallback,
+    StreamingChunk,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -8,7 +11,7 @@ use chrono::{DateTime, Utc};
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use std::str::{self};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
 /// Trait for providing authentication headers
@@ -127,10 +130,12 @@ impl DefaultMessageConverter {
                         .enumerate()
                         .map(|(block_index, block)| {
                             let (block_type, content) = match block {
-                                ContentBlock::Text { text } => {
+                                ContentBlock::Text { text, .. } => {
                                     ("text".to_string(), AnthropicBlockContent::Text { text })
                                 }
-                                ContentBlock::Image { media_type, data } => (
+                                ContentBlock::Image {
+                                    media_type, data, ..
+                                } => (
                                     "image".to_string(),
                                     AnthropicBlockContent::Image {
                                         source: AnthropicImageSource {
@@ -140,7 +145,9 @@ impl DefaultMessageConverter {
                                         },
                                     },
                                 ),
-                                ContentBlock::ToolUse { id, name, input } => (
+                                ContentBlock::ToolUse {
+                                    id, name, input, ..
+                                } => (
                                     "tool_use".to_string(),
                                     AnthropicBlockContent::ToolUse { id, name, input },
                                 ),
@@ -148,6 +155,7 @@ impl DefaultMessageConverter {
                                     tool_use_id,
                                     content,
                                     is_error,
+                                    ..
                                 } => (
                                     "tool_result".to_string(),
                                     AnthropicBlockContent::ToolResult {
@@ -159,6 +167,7 @@ impl DefaultMessageConverter {
                                 ContentBlock::Thinking {
                                     thinking,
                                     signature,
+                                    ..
                                 } => (
                                     "thinking".to_string(),
                                     AnthropicBlockContent::Thinking {
@@ -166,7 +175,7 @@ impl DefaultMessageConverter {
                                         signature,
                                     },
                                 ),
-                                ContentBlock::RedactedThinking { data } => {
+                                ContentBlock::RedactedThinking { data, .. } => {
                                     ("redacted_thinking".to_string(), {
                                         AnthropicBlockContent::RedactedThinking { data }
                                     })
@@ -537,6 +546,7 @@ pub struct AnthropicClient {
     base_url: String,
     model: String,
     recorder: Option<APIRecorder>,
+    playback: Option<PlaybackState>,
 
     // Customization points
     auth_provider: Box<dyn AuthProvider>,
@@ -567,6 +577,7 @@ impl AnthropicClient {
             base_url,
             model,
             recorder: None,
+            playback: None,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
             message_converter: Box::new(DefaultMessageConverter::new()),
@@ -585,6 +596,7 @@ impl AnthropicClient {
             base_url,
             model,
             recorder: Some(APIRecorder::new(recording_path)),
+            playback: None,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
             message_converter: Box::new(DefaultMessageConverter::new()),
@@ -604,6 +616,7 @@ impl AnthropicClient {
             base_url,
             model,
             recorder: None,
+            playback: None,
             auth_provider,
             request_customizer,
             message_converter,
@@ -613,6 +626,12 @@ impl AnthropicClient {
     /// Set recorder for existing client
     pub fn with_recorder<P: AsRef<std::path::Path>>(mut self, recording_path: P) -> Self {
         self.recorder = Some(APIRecorder::new(recording_path));
+        self
+    }
+
+    /// Add playback capability to the client
+    pub fn with_playback(mut self, playback_state: PlaybackState) -> Self {
+        self.playback = Some(playback_state);
         self
     }
 
@@ -627,6 +646,11 @@ impl AnthropicClient {
         streaming_callback: Option<&StreamingCallback>,
         max_retries: u32,
     ) -> Result<LLMResponse> {
+        // If playback is enabled, skip HTTP and use recorded data
+        if self.playback.is_some() {
+            return self.playback_request(request, streaming_callback).await;
+        }
+
         let mut attempts = 0;
 
         loop {
@@ -651,6 +675,52 @@ impl AnthropicClient {
                     return Err(e);
                 }
             }
+        }
+    }
+
+    async fn playback_request(
+        &mut self,
+        _request: &serde_json::Value,
+        streaming_callback: Option<&StreamingCallback>,
+    ) -> Result<LLMResponse> {
+        let playback = self.playback.as_ref().unwrap();
+
+        // Get the next session from the recording
+        let session = playback
+            .next_session()
+            .ok_or_else(|| anyhow::anyhow!("No more recorded sessions available"))?;
+
+        debug!("Playing back session with {} chunks", session.chunks.len());
+
+        if let Some(callback) = streaming_callback {
+            // Use the common PlaybackChunkStream and existing streaming processing logic
+            let mut chunk_stream = PlaybackChunkStream::new(session.chunks.clone(), playback.fast);
+            let rate_limits = AnthropicRateLimitInfo::default();
+
+            // Use the same streaming processing logic, but without recording
+            self.process_chunk_stream_without_recording(&mut chunk_stream, callback, rate_limits)
+                .await
+                .map(|(response, _)| response)
+        } else {
+            // Non-streaming playback - parse the recorded response body from chunks
+            let body: String = session.chunks.iter().map(|c| c.data.as_str()).collect();
+
+            let anthropic_response: AnthropicResponse = serde_json::from_str(&body)
+                .map_err(|e| anyhow::anyhow!("Failed to parse recorded response body: {e}"))?;
+
+            let content = anthropic_response.content;
+            let usage = Usage {
+                input_tokens: anthropic_response.usage.input_tokens,
+                output_tokens: anthropic_response.usage.output_tokens,
+                cache_creation_input_tokens: anthropic_response.usage.cache_creation_input_tokens,
+                cache_read_input_tokens: anthropic_response.usage.cache_read_input_tokens,
+            };
+
+            Ok(LLMResponse {
+                content,
+                usage,
+                rate_limit_info: None,
+            })
         }
     }
 
@@ -703,341 +773,31 @@ impl AnthropicClient {
         // Log raw headers for debugging
         debug!("Response headers: {:?}", response.headers());
 
-        let mut response = utils::check_response_error::<AnthropicRateLimitInfo>(response).await?;
+        let response = utils::check_response_error::<AnthropicRateLimitInfo>(response).await?;
         let rate_limits = AnthropicRateLimitInfo::from_response(&response);
 
         // Log parsed rate limits
         debug!("Parsed rate limits: {:?}", rate_limits);
 
         if let Some(callback) = streaming_callback {
-            debug!("Starting streaming response processing");
-            let mut blocks: Vec<ContentBlock> = Vec::new();
-            let mut current_content = String::new();
-            let mut line_buffer = String::new();
-            let mut usage = AnthropicUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: 0,
-            };
-
-            fn process_chunk(
-                chunk: &[u8],
-                line_buffer: &mut String,
-                blocks: &mut Vec<ContentBlock>,
-                usage: &mut AnthropicUsage,
-                current_content: &mut String,
-                callback: &StreamingCallback,
-                recorder: &Option<APIRecorder>,
-            ) -> Result<()> {
-                let chunk_str = str::from_utf8(chunk)?;
-
-                for c in chunk_str.chars() {
-                    if c == '\n' {
-                        if !line_buffer.is_empty() {
-                            process_sse_line(
-                                line_buffer,
-                                blocks,
-                                usage,
-                                current_content,
-                                callback,
-                                recorder,
-                            )?;
-                            line_buffer.clear();
-                        }
-                    } else {
-                        line_buffer.push(c);
-                    }
-                }
-                Ok(())
-            }
-
-            fn process_sse_line(
-                line: &str,
-                blocks: &mut Vec<ContentBlock>,
-                usage: &mut AnthropicUsage,
-                current_content: &mut String,
-                callback: &StreamingCallback,
-                recorder: &Option<APIRecorder>,
-            ) -> Result<()> {
-                if let Some(data) = line.strip_prefix("data: ") {
-                    debug!("Received stream event: {}", data);
-                    // Record the chunk if recorder is available
-                    if let Some(recorder) = &recorder {
-                        recorder.record_chunk(data)?;
-                    }
-                    if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
-                        // Handle error events immediately
-                        if let StreamEvent::Error { error } = &event {
-                            let error_msg = format!("{}: {}", error.error_type, error.message);
-                            return match error.error_type.as_str() {
-                                "overloaded_error" => Err(ApiErrorContext {
-                                    error: ApiError::Overloaded(error_msg),
-                                    rate_limits: Some(AnthropicRateLimitInfo::default()),
-                                }
-                                .into()),
-                                _ => Err(anyhow::anyhow!("Stream error: {}", error_msg)),
-                            };
-                        }
-
-                        // Extract and check index for relevant events
-                        match &event {
-                            StreamEvent::ContentBlockStart { common, .. } => {
-                                if common.index != blocks.len() {
-                                    return Err(anyhow::anyhow!(
-                                        "Start index {} does not match expected block {}",
-                                        common.index,
-                                        blocks.len()
-                                    ));
-                                }
-                            }
-                            StreamEvent::ContentBlockDelta { common, .. }
-                            | StreamEvent::ContentBlockStop { common } => {
-                                // Check if we have any blocks at all
-                                if blocks.is_empty() {
-                                    return Err(anyhow::anyhow!(
-                                        "Received Delta/Stop but no blocks exist"
-                                    ));
-                                }
-                                if common.index != blocks.len() - 1 {
-                                    return Err(anyhow::anyhow!(
-                                        "Delta/Stop index {} does not match current block {}",
-                                        common.index,
-                                        blocks.len() - 1
-                                    ));
-                                }
-                            }
-                            StreamEvent::MessageStart { message } => {
-                                usage.input_tokens = message.usage.input_tokens;
-                                usage.output_tokens = message.usage.output_tokens;
-                                usage.cache_creation_input_tokens =
-                                    message.usage.cache_creation_input_tokens;
-                                usage.cache_read_input_tokens =
-                                    message.usage.cache_read_input_tokens;
-                                return Ok(());
-                            }
-                            StreamEvent::MessageDelta { usage: delta_usage } => {
-                                // Use max() to ensure counts never decrease during streaming
-                                usage.input_tokens =
-                                    usage.input_tokens.max(delta_usage.input_tokens);
-                                usage.output_tokens = delta_usage.output_tokens;
-                                usage.cache_creation_input_tokens = usage
-                                    .cache_creation_input_tokens
-                                    .max(delta_usage.cache_creation_input_tokens);
-                                usage.cache_read_input_tokens = usage
-                                    .cache_read_input_tokens
-                                    .max(delta_usage.cache_read_input_tokens);
-                                return Ok(());
-                            }
-                            _ => return Ok(()), // Early return for events without index
-                        }
-
-                        match event {
-                            StreamEvent::ContentBlockStart { content_block, .. } => {
-                                current_content.clear();
-                                let block = match content_block.block_type.as_str() {
-                                    "thinking" => {
-                                        if let Some(thinking) = content_block.thinking {
-                                            current_content.push_str(&thinking);
-                                        }
-                                        ContentBlock::Thinking {
-                                            thinking: current_content.clone(),
-                                            signature: content_block.signature.unwrap_or_default(),
-                                        }
-                                    }
-                                    "redacted_thinking" => {
-                                        if let Some(data) = content_block.data {
-                                            current_content.push_str(&data);
-                                        }
-                                        ContentBlock::RedactedThinking {
-                                            data: current_content.clone(),
-                                        }
-                                    }
-                                    "text" => {
-                                        if let Some(text) = content_block.text {
-                                            current_content.push_str(&text);
-                                        }
-                                        ContentBlock::Text {
-                                            text: current_content.clone(),
-                                        }
-                                    }
-                                    "tool_use" => {
-                                        // Handle input as JSON value directly
-                                        let input_json = if let Some(input) = &content_block.input {
-                                            input.clone()
-                                        } else {
-                                            serde_json::Value::Null
-                                        };
-
-                                        let tool_id = content_block.id.unwrap_or_default();
-                                        let tool_name = content_block.name.unwrap_or_default();
-
-                                        debug!(
-                                            "Creating ToolUse block with id={:?}, name={:?}",
-                                            tool_id, tool_name
-                                        );
-
-                                        ContentBlock::ToolUse {
-                                            id: tool_id,
-                                            name: tool_name,
-                                            input: input_json,
-                                        }
-                                    }
-                                    _ => ContentBlock::Text {
-                                        text: String::new(),
-                                    },
-                                };
-                                blocks.push(block);
-                            }
-                            StreamEvent::ContentBlockDelta { delta, .. } => {
-                                match &delta {
-                                    ContentDelta::Thinking {
-                                        thinking: delta_text,
-                                    } => {
-                                        current_content.push_str(delta_text);
-                                        callback(&StreamingChunk::Thinking(delta_text.clone()))?;
-                                    }
-                                    ContentDelta::Signature {
-                                        signature: signature_delta,
-                                    } => {
-                                        // Update the signature in the last block if it's a thinking block
-                                        if let ContentBlock::Thinking { signature, .. } =
-                                            blocks.last_mut().unwrap()
-                                        {
-                                            *signature = signature_delta.clone();
-                                        }
-                                    }
-                                    ContentDelta::Text { text: delta_text } => {
-                                        current_content.push_str(delta_text);
-                                        callback(&StreamingChunk::Text(delta_text.clone()))?;
-                                    }
-                                    ContentDelta::InputJson { partial_json } => {
-                                        let (tool_name, tool_id) =
-                                            blocks.last().map_or((None, None), |block| {
-                                                if let ContentBlock::ToolUse { name, id, .. } =
-                                                    block
-                                                {
-                                                    (Some(name.clone()), Some(id.clone()))
-                                                } else {
-                                                    warn!("Last block is not a ToolUse type!");
-                                                    (None, None)
-                                                }
-                                            });
-
-                                        current_content.push_str(partial_json);
-                                        callback(&StreamingChunk::InputJson {
-                                            content: partial_json.clone(),
-                                            tool_name,
-                                            tool_id,
-                                        })?;
-                                    }
-                                }
-                            }
-                            StreamEvent::ContentBlockStop { .. } => {
-                                match blocks.last_mut().unwrap() {
-                                    ContentBlock::Thinking { thinking, .. } => {
-                                        *thinking = current_content.clone();
-                                    }
-                                    ContentBlock::Text { text } => {
-                                        *text = current_content.clone();
-                                    }
-                                    ContentBlock::ToolUse { input, .. } => {
-                                        if let Ok(json) = serde_json::from_str(current_content) {
-                                            *input = json;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        return Err(anyhow::anyhow!("Failed to parse stream event:\n{}", line));
-                    }
-                }
-                Ok(())
-            }
-
-            while let Some(chunk) = response.chunk().await? {
-                match process_chunk(
-                    &chunk,
-                    &mut line_buffer,
-                    &mut blocks,
-                    &mut usage,
-                    &mut current_content,
-                    callback,
-                    &self.recorder,
-                ) {
-                    Ok(()) => continue,
-                    Err(e) if e.to_string().contains("Tool limit reached") => {
-                        debug!("Tool limit reached, stopping streaming early. Collected {} blocks so far", blocks.len());
-
-                        // Finalize the current block with any accumulated content
-                        if !blocks.is_empty() && !current_content.is_empty() {
-                            match blocks.last_mut().unwrap() {
-                                ContentBlock::Thinking { thinking, .. } => {
-                                    *thinking = current_content.clone();
-                                }
-                                ContentBlock::Text { text } => {
-                                    *text = current_content.clone();
-                                }
-                                ContentBlock::ToolUse { input, .. } => {
-                                    if let Ok(json) = serde_json::from_str(&current_content) {
-                                        *input = json;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        line_buffer.clear(); // Make sure we stop processing
-                        break; // Exit chunk processing loop early
-                    }
-                    Err(e) => return Err(e), // Propagate other errors
-                }
-            }
-
-            // Process any remaining data in the buffer
-            if !line_buffer.is_empty() {
-                process_sse_line(
-                    &line_buffer,
-                    &mut blocks,
-                    &mut usage,
-                    &mut current_content,
-                    callback,
-                    &self.recorder,
-                )?;
-            }
-
-            // Send StreamingComplete to indicate streaming has finished
-            callback(&StreamingChunk::StreamingComplete)?;
-
-            // End recording if a recorder is available
-            if let Some(recorder) = &self.recorder {
-                recorder.end_recording()?;
-            }
-
-            Ok((
-                LLMResponse {
-                    content: blocks,
-                    usage: Usage {
-                        input_tokens: usage.input_tokens,
-                        output_tokens: usage.output_tokens,
-                        cache_creation_input_tokens: usage.cache_creation_input_tokens,
-                        cache_read_input_tokens: usage.cache_read_input_tokens,
-                    },
-                    rate_limit_info: Some(crate::types::RateLimitInfo {
-                        tokens_limit: rate_limits.tokens_limit,
-                        tokens_remaining: rate_limits.tokens_remaining,
-                    }),
-                },
-                rate_limits,
-            ))
+            let mut chunk_stream = HttpChunkStream::new(response);
+            self.process_chunk_stream(&mut chunk_stream, callback, rate_limits)
+                .await
         } else {
             let response_text = response
                 .text()
                 .await
                 .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+
+            // Record full non-streaming response body
+            if let Some(recorder) = &self.recorder {
+                if let Err(e) = recorder.record_chunk(&response_text) {
+                    warn!("Failed to record non-streaming response: {e}");
+                }
+                if let Err(e) = recorder.end_recording() {
+                    warn!("Failed to end recording: {e}");
+                }
+            }
 
             let anthropic_response: AnthropicResponse = serde_json::from_str(&response_text)
                 .map_err(|e| ApiError::Unknown(format!("Failed to parse response: {e}")))?;
@@ -1061,6 +821,410 @@ impl AnthropicClient {
 
             Ok((llm_response, rate_limits))
         }
+    }
+
+    async fn process_chunk_stream(
+        &self,
+        chunk_stream: &mut dyn ChunkStream,
+        callback: &StreamingCallback,
+        rate_limits: AnthropicRateLimitInfo,
+    ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
+        self.process_chunk_stream_with_recorder(chunk_stream, callback, rate_limits, &self.recorder)
+            .await
+    }
+
+    async fn process_chunk_stream_without_recording(
+        &self,
+        chunk_stream: &mut dyn ChunkStream,
+        callback: &StreamingCallback,
+        rate_limits: AnthropicRateLimitInfo,
+    ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
+        self.process_chunk_stream_with_recorder(chunk_stream, callback, rate_limits, &None)
+            .await
+    }
+
+    async fn process_chunk_stream_with_recorder(
+        &self,
+        chunk_stream: &mut dyn ChunkStream,
+        callback: &StreamingCallback,
+        rate_limits: AnthropicRateLimitInfo,
+        recorder: &Option<APIRecorder>,
+    ) -> Result<(LLMResponse, AnthropicRateLimitInfo)> {
+        debug!("Starting streaming response processing");
+        let mut blocks: Vec<ContentBlock> = Vec::new();
+        let mut current_content = String::new();
+        let mut line_buffer = String::new();
+        let mut usage = AnthropicUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        };
+
+        fn process_chunk(
+            chunk: &[u8],
+            line_buffer: &mut String,
+            blocks: &mut Vec<ContentBlock>,
+            usage: &mut AnthropicUsage,
+            current_content: &mut String,
+            callback: &StreamingCallback,
+            recorder: &Option<APIRecorder>,
+        ) -> Result<()> {
+            let chunk_str = str::from_utf8(chunk)?;
+
+            for c in chunk_str.chars() {
+                if c == '\n' {
+                    if !line_buffer.is_empty() {
+                        process_sse_line(
+                            line_buffer,
+                            blocks,
+                            usage,
+                            current_content,
+                            callback,
+                            recorder,
+                        )?;
+                        line_buffer.clear();
+                    }
+                } else {
+                    line_buffer.push(c);
+                }
+            }
+            Ok(())
+        }
+
+        fn process_sse_line(
+            line: &str,
+            blocks: &mut Vec<ContentBlock>,
+            usage: &mut AnthropicUsage,
+            current_content: &mut String,
+            callback: &StreamingCallback,
+            recorder: &Option<APIRecorder>,
+        ) -> Result<()> {
+            if let Some(data) = line.strip_prefix("data: ") {
+                debug!("Received stream event: {}", data);
+                // Record the raw SSE line if recorder is available
+                if let Some(recorder) = &recorder {
+                    recorder.record_chunk(line)?;
+                }
+                if let Ok(event) = serde_json::from_str::<StreamEvent>(data) {
+                    // Handle error events immediately
+                    if let StreamEvent::Error { error } = &event {
+                        let error_msg = format!("{}: {}", error.error_type, error.message);
+                        return match error.error_type.as_str() {
+                            "overloaded_error" => Err(ApiErrorContext {
+                                error: ApiError::Overloaded(error_msg),
+                                rate_limits: Some(AnthropicRateLimitInfo::default()),
+                            }
+                            .into()),
+                            _ => Err(anyhow::anyhow!("Stream error: {}", error_msg)),
+                        };
+                    }
+
+                    // Extract and check index for relevant events
+                    match &event {
+                        StreamEvent::ContentBlockStart { common, .. } => {
+                            if common.index != blocks.len() {
+                                return Err(anyhow::anyhow!(
+                                    "Start index {} does not match expected block {}",
+                                    common.index,
+                                    blocks.len()
+                                ));
+                            }
+                        }
+                        StreamEvent::ContentBlockDelta { common, .. }
+                        | StreamEvent::ContentBlockStop { common } => {
+                            // Check if we have any blocks at all
+                            if blocks.is_empty() {
+                                return Err(anyhow::anyhow!(
+                                    "Received Delta/Stop but no blocks exist"
+                                ));
+                            }
+                            if common.index != blocks.len() - 1 {
+                                return Err(anyhow::anyhow!(
+                                    "Delta/Stop index {} does not match current block {}",
+                                    common.index,
+                                    blocks.len() - 1
+                                ));
+                            }
+                        }
+                        StreamEvent::MessageStart { message } => {
+                            usage.input_tokens = message.usage.input_tokens;
+                            usage.output_tokens = message.usage.output_tokens;
+                            usage.cache_creation_input_tokens =
+                                message.usage.cache_creation_input_tokens;
+                            usage.cache_read_input_tokens = message.usage.cache_read_input_tokens;
+                            return Ok(());
+                        }
+                        StreamEvent::MessageDelta { usage: delta_usage } => {
+                            // Use max() to ensure counts never decrease during streaming
+                            usage.input_tokens = usage.input_tokens.max(delta_usage.input_tokens);
+                            usage.output_tokens = delta_usage.output_tokens;
+                            usage.cache_creation_input_tokens = usage
+                                .cache_creation_input_tokens
+                                .max(delta_usage.cache_creation_input_tokens);
+                            usage.cache_read_input_tokens = usage
+                                .cache_read_input_tokens
+                                .max(delta_usage.cache_read_input_tokens);
+                            return Ok(());
+                        }
+                        _ => return Ok(()), // Early return for events without index
+                    }
+
+                    match event {
+                        StreamEvent::ContentBlockStart { content_block, .. } => {
+                            current_content.clear();
+                            let block = match content_block.block_type.as_str() {
+                                "thinking" => {
+                                    if let Some(thinking) = content_block.thinking {
+                                        current_content.push_str(&thinking);
+                                    }
+                                    ContentBlock::Thinking {
+                                        thinking: current_content.clone(),
+                                        signature: content_block.signature.unwrap_or_default(),
+                                        start_time: Some(SystemTime::now()),
+                                        end_time: None,
+                                    }
+                                }
+                                "redacted_thinking" => {
+                                    if let Some(data) = content_block.data {
+                                        current_content.push_str(&data);
+                                    }
+                                    ContentBlock::RedactedThinking {
+                                        id: String::new(),
+                                        summary: vec![], // Empty for Anthropic
+                                        data: current_content.clone(),
+                                        start_time: Some(SystemTime::now()),
+                                        end_time: None,
+                                    }
+                                }
+                                "text" => {
+                                    if let Some(text) = content_block.text {
+                                        current_content.push_str(&text);
+                                    }
+                                    ContentBlock::Text {
+                                        text: current_content.clone(),
+                                        start_time: Some(SystemTime::now()),
+                                        end_time: None,
+                                    }
+                                }
+                                "tool_use" => {
+                                    // Handle input as JSON value directly
+                                    let input_json = if let Some(input) = &content_block.input {
+                                        input.clone()
+                                    } else {
+                                        serde_json::Value::Null
+                                    };
+
+                                    let tool_id = content_block.id.unwrap_or_default();
+                                    let tool_name = content_block.name.unwrap_or_default();
+
+                                    debug!(
+                                        "Creating ToolUse block with id={:?}, name={:?}",
+                                        tool_id, tool_name
+                                    );
+
+                                    ContentBlock::ToolUse {
+                                        id: tool_id,
+                                        name: tool_name,
+                                        input: input_json,
+                                        start_time: Some(SystemTime::now()),
+                                        end_time: None,
+                                    }
+                                }
+                                _ => ContentBlock::Text {
+                                    text: String::new(),
+                                    start_time: Some(SystemTime::now()),
+                                    end_time: None,
+                                },
+                            };
+                            blocks.push(block);
+                        }
+                        StreamEvent::ContentBlockDelta { delta, .. } => {
+                            match &delta {
+                                ContentDelta::Thinking {
+                                    thinking: delta_text,
+                                } => {
+                                    current_content.push_str(delta_text);
+                                    callback(&StreamingChunk::Thinking(delta_text.clone()))?;
+                                }
+                                ContentDelta::Signature {
+                                    signature: signature_delta,
+                                } => {
+                                    // Update the signature in the last block if it's a thinking block
+                                    if let ContentBlock::Thinking { signature, .. } =
+                                        blocks.last_mut().unwrap()
+                                    {
+                                        *signature = signature_delta.clone();
+                                    }
+                                }
+                                ContentDelta::Text { text: delta_text } => {
+                                    current_content.push_str(delta_text);
+                                    callback(&StreamingChunk::Text(delta_text.clone()))?;
+                                }
+                                ContentDelta::InputJson { partial_json } => {
+                                    let (tool_name, tool_id) =
+                                        blocks.last().map_or((None, None), |block| {
+                                            if let ContentBlock::ToolUse { name, id, .. } = block {
+                                                (Some(name.clone()), Some(id.clone()))
+                                            } else {
+                                                warn!("Last block is not a ToolUse type!");
+                                                (None, None)
+                                            }
+                                        });
+
+                                    current_content.push_str(partial_json);
+                                    callback(&StreamingChunk::InputJson {
+                                        content: partial_json.clone(),
+                                        tool_name,
+                                        tool_id,
+                                    })?;
+                                }
+                            }
+                        }
+                        StreamEvent::ContentBlockStop { .. } => {
+                            let now = SystemTime::now();
+                            match blocks.last_mut().unwrap() {
+                                ContentBlock::Thinking {
+                                    thinking, end_time, ..
+                                } => {
+                                    *thinking = current_content.clone();
+                                    *end_time = Some(now);
+                                }
+                                ContentBlock::Text { text, end_time, .. } => {
+                                    *text = current_content.clone();
+                                    *end_time = Some(now);
+                                }
+                                ContentBlock::ToolUse {
+                                    input, end_time, ..
+                                } => {
+                                    if let Ok(json) = serde_json::from_str(current_content) {
+                                        *input = json;
+                                    }
+                                    *end_time = Some(now);
+                                }
+                                ContentBlock::RedactedThinking { end_time, .. } => {
+                                    *end_time = Some(now);
+                                }
+                                ContentBlock::Image { end_time, .. } => {
+                                    *end_time = Some(now);
+                                }
+                                ContentBlock::ToolResult { end_time, .. } => {
+                                    *end_time = Some(now);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                } else {
+                    return Err(anyhow::anyhow!("Failed to parse stream event:\n{}", line));
+                }
+            }
+            Ok(())
+        }
+
+        while let Some(chunk) = chunk_stream.next_chunk().await? {
+            match process_chunk(
+                &chunk,
+                &mut line_buffer,
+                &mut blocks,
+                &mut usage,
+                &mut current_content,
+                callback,
+                recorder,
+            ) {
+                Ok(()) => continue,
+                Err(e) if e.to_string().contains("Tool limit reached") => {
+                    debug!(
+                        "Tool limit reached, stopping streaming early. Collected {} blocks so far",
+                        blocks.len()
+                    );
+
+                    // Finalize the current block with any accumulated content
+                    if !blocks.is_empty() && !current_content.is_empty() {
+                        let now = SystemTime::now();
+                        match blocks.last_mut().unwrap() {
+                            ContentBlock::Thinking {
+                                thinking, end_time, ..
+                            } => {
+                                *thinking = current_content.clone();
+                                *end_time = Some(now);
+                            }
+                            ContentBlock::Text { text, end_time, .. } => {
+                                *text = current_content.clone();
+                                *end_time = Some(now);
+                            }
+                            ContentBlock::ToolUse {
+                                input, end_time, ..
+                            } => {
+                                if let Ok(json) = serde_json::from_str(&current_content) {
+                                    *input = json;
+                                }
+                                *end_time = Some(now);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    line_buffer.clear(); // Make sure we stop processing
+                    break; // Exit chunk processing loop early
+                }
+                Err(e) => return Err(e), // Propagate other errors
+            }
+        }
+
+        // Process any remaining data in the buffer
+        if !line_buffer.is_empty() {
+            process_sse_line(
+                &line_buffer,
+                &mut blocks,
+                &mut usage,
+                &mut current_content,
+                callback,
+                recorder,
+            )?;
+        }
+
+        // Ensure any incomplete blocks have end times set
+        let now = SystemTime::now();
+        for block in blocks.iter_mut() {
+            match block {
+                ContentBlock::Thinking { end_time, .. }
+                | ContentBlock::RedactedThinking { end_time, .. }
+                | ContentBlock::Text { end_time, .. }
+                | ContentBlock::Image { end_time, .. }
+                | ContentBlock::ToolUse { end_time, .. }
+                | ContentBlock::ToolResult { end_time, .. } => {
+                    if end_time.is_none() {
+                        *end_time = Some(now);
+                    }
+                }
+            }
+        }
+
+        // Send StreamingComplete to indicate streaming has finished
+        callback(&StreamingChunk::StreamingComplete)?;
+
+        // End recording if a recorder is available
+        if let Some(recorder) = recorder {
+            recorder.end_recording()?;
+        }
+
+        Ok((
+            LLMResponse {
+                content: blocks,
+                usage: Usage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                    cache_read_input_tokens: usage.cache_read_input_tokens,
+                },
+                rate_limit_info: Some(crate::types::RateLimitInfo {
+                    tokens_limit: rate_limits.tokens_limit,
+                    tokens_remaining: rate_limits.tokens_remaining,
+                }),
+            },
+            rate_limits,
+        ))
     }
 }
 
@@ -1122,7 +1286,7 @@ impl LLMProvider for AnthropicClient {
             (
                 Some(ThinkingConfiguration {
                     thinking_type: "enabled".to_string(),
-                    budget_tokens: 4000,
+                    budget_tokens: 16000,
                 }),
                 64000,
             )
@@ -1157,8 +1321,18 @@ impl LLMProvider for AnthropicClient {
         self.request_customizer
             .customize_request(&mut anthropic_request)?;
 
-        self.send_with_retry(&anthropic_request, streaming_callback, 3)
-            .await
+        let request_start = std::time::SystemTime::now();
+        let mut response = self
+            .send_with_retry(&anthropic_request, streaming_callback, 3)
+            .await?;
+        let response_end = std::time::SystemTime::now();
+
+        // For non-streaming responses, distribute timestamps across blocks
+        if streaming_callback.is_none() {
+            response.set_distributed_timestamps(request_start, response_end);
+        }
+
+        Ok(response)
     }
 }
 
@@ -1283,11 +1457,15 @@ mod tests {
                 content: MessageContent::Structured(vec![
                     ContentBlock::Text {
                         text: "Using tool".to_string(),
+                        start_time: None,
+                        end_time: None,
                     },
                     ContentBlock::ToolUse {
                         id: id.to_string(),
                         name: "test_tool".to_string(),
                         input: json!({"param": "value"}),
+                        start_time: None,
+                        end_time: None,
                     },
                 ]),
                 request_id: None,
@@ -1303,6 +1481,8 @@ mod tests {
                     tool_use_id: tool_id.to_string(),
                     content: content.to_string(),
                     is_error: Some(false),
+                    start_time: None,
+                    end_time: None,
                 }]),
                 request_id: None,
                 usage: None,
@@ -1471,11 +1651,15 @@ mod tests {
             content: MessageContent::Structured(vec![
                 ContentBlock::Text {
                     text: "I'll help you analyze the data using the appropriate tools.".to_string(),
+                    start_time: None,
+                    end_time: None,
                 },
                 ContentBlock::ToolUse {
                     id: "analysis_tool_1".to_string(),
                     name: "data_analyzer".to_string(),
                     input: json!({"dataset": "user_data.csv", "analysis_type": "statistical"}),
+                    start_time: None,
+                    end_time: None,
                 },
             ]),
             request_id: None,
@@ -1489,6 +1673,8 @@ mod tests {
                 tool_use_id: "analysis_tool_1".to_string(),
                 content: "Analysis complete: Mean=45.2, StdDev=12.8, Outliers=3".to_string(),
                 is_error: Some(false),
+                start_time: None,
+                end_time: None,
             }]),
             request_id: None,
             usage: None,
@@ -1508,11 +1694,15 @@ mod tests {
                 content: MessageContent::Structured(vec![
                     ContentBlock::Text {
                         text: format!("Let me help with question {i}."),
+                        start_time: None,
+                        end_time: None,
                     },
                     ContentBlock::ToolUse {
                         id: format!("tool_{i}"),
                         name: "helper_tool".to_string(),
                         input: json!({"query": format!("query_{}", i), "context": "analysis"}),
+                        start_time: None,
+                        end_time: None,
                     },
                 ]),
                 request_id: None,
@@ -1525,6 +1715,8 @@ mod tests {
                     tool_use_id: format!("tool_{i}"),
                     content: format!("Tool result for query {i}"),
                     is_error: Some(false),
+                    start_time: None,
+                    end_time: None,
                 }]),
                 request_id: None,
                 usage: None,
@@ -1659,11 +1851,15 @@ mod tests {
             content: MessageContent::Structured(vec![
                 ContentBlock::Text {
                     text: "I'll try that operation.".to_string(),
+                    start_time: None,
+                    end_time: None,
                 },
                 ContentBlock::ToolUse {
                     id: "risky_tool".to_string(),
                     name: "risky_operation".to_string(),
                     input: json!({"operation": "dangerous_task", "safety": false}),
+                    start_time: None,
+                    end_time: None,
                 },
             ]),
             request_id: None,
@@ -1676,6 +1872,8 @@ mod tests {
                 tool_use_id: "risky_tool".to_string(),
                 content: "ERROR: Operation failed due to safety constraints".to_string(),
                 is_error: Some(true),
+                start_time: None,
+                end_time: None,
             }]),
             request_id: None,
             usage: None,

@@ -91,7 +91,7 @@ impl Focusable for MessagesView {
 }
 
 impl Render for MessagesView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Get current messages to display
         let messages = {
             let lock = self.message_queue.lock().unwrap();
@@ -177,7 +177,7 @@ impl Render for MessagesView {
         let mut messages_container = v_flex()
             .id("messages")
             .p_2()
-            .bg(cx.theme().card)
+            .bg(cx.theme().popover)
             .gap_2()
             .text_size(px(16.))
             .children(message_elements);
@@ -221,10 +221,15 @@ impl Render for MessagesView {
                             div()
                                 .mt_2()
                                 .text_color(cx.theme().foreground.opacity(0.8))
-                                .child(gpui_component::text::TextView::markdown(
-                                    "pending-message",
-                                    pending_message,
-                                )),
+                                .child(
+                                    gpui_component::text::TextView::markdown(
+                                        "pending-message",
+                                        pending_message,
+                                        window,
+                                        cx,
+                                    )
+                                    .selectable(),
+                                ),
                         ),
                 );
             }
