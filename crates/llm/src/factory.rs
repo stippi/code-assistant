@@ -136,7 +136,7 @@ pub async fn create_llm_client(config: LLMClientConfig) -> Result<Box<dyn LLMPro
                 .context("ANTHROPIC_API_KEY environment variable not set")?;
             let model_name = config
                 .model
-                .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
+                .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
             let base_url = config
                 .base_url
                 .unwrap_or(AnthropicClient::default_base_url());

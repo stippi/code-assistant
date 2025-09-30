@@ -1286,7 +1286,7 @@ impl LLMProvider for AnthropicClient {
             (
                 Some(ThinkingConfiguration {
                     thinking_type: "enabled".to_string(),
-                    budget_tokens: 4000,
+                    budget_tokens: 16000,
                 }),
                 64000,
             )
