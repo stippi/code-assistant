@@ -1294,7 +1294,7 @@ impl LLMProvider for AnthropicClient {
         });
 
         // Configure thinking mode and max_tokens based on model
-        let (thinking, max_tokens) = if self.supports_thinking() {
+        let (thinking_config, max_tokens) = if self.supports_thinking() {
             (
                 Some(ThinkingConfiguration {
                     thinking_type: "enabled".to_string(),
@@ -1313,13 +1313,18 @@ impl LLMProvider for AnthropicClient {
         let mut anthropic_request = serde_json::json!({
             "model": self.model,
             "max_tokens": max_tokens,
-            "temperature": 0.7,
+            "temperature": if thinking_config.is_some() {
+                // Anthropic requires this to be 1.0 if you enable "thinking"
+                1.0
+            } else {
+                0.7
+            },
             "system": system,
             "stream": streaming_callback.is_some(),
             "messages": messages_json,
         });
 
-        if let Some(thinking_config) = thinking {
+        if let Some(thinking_config) = thinking_config {
             anthropic_request["thinking"] = serde_json::to_value(thinking_config)?;
         }
         if let Some(tool_choice) = tool_choice {

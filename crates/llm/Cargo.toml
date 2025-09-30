@@ -16,7 +16,7 @@ oauth2 = "4.4"
 base64 = "0.21"
 keyring = "2.3"
 chrono = { version = "0.4", features = ["serde"] }
-tempfile = "3.22"
+tempfile = "3.23"
 thiserror = "1.0"
 regex = "1.11"
 dirs = "5.0"
