@@ -1,3 +1,4 @@
+mod acp;
 mod agent;
 mod app;
 mod cli;
@@ -25,6 +26,30 @@ async fn main() -> Result<()> {
 
     match args.mode {
         Some(Mode::Server { verbose }) => app::server::run(verbose).await,
+        Some(Mode::Acp { verbose }) => {
+            // Ensure the path exists and is a directory
+            if !args.path.is_dir() {
+                anyhow::bail!("Path '{}' is not a directory", args.path.display());
+            }
+
+            let config = app::AgentRunConfig {
+                path: args.path,
+                task: args.task,
+                continue_task: args.continue_task,
+                provider: args.provider,
+                model: args.model,
+                base_url: args.base_url,
+                aicore_config: args.aicore_config,
+                num_ctx: args.num_ctx,
+                tool_syntax: args.tool_syntax,
+                use_diff_format: args.use_diff_format,
+                record: args.record,
+                playback: args.playback,
+                fast_playback: args.fast_playback,
+            };
+
+            app::acp::run(verbose, config).await
+        }
         None => {
             if args.ui {
                 // GPUI mode - use stderr to keep stdout clean

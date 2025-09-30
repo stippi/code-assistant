@@ -11,6 +11,13 @@ pub enum Mode {
         #[arg(short, long)]
         verbose: bool,
     },
+
+    /// Run as ACP (Agent Client Protocol) agent
+    Acp {
+        /// Enable verbose logging
+        #[arg(short, long)]
+        verbose: bool,
+    },
 }
 
 /// Define the application arguments
@@ -130,6 +137,17 @@ mod tests {
         match args.mode {
             Some(Mode::Server { verbose }) => assert!(verbose),
             _ => panic!("Expected server mode"),
+        }
+    }
+
+    #[test]
+    fn test_acp_mode() {
+        let args =
+            Args::try_parse_from(["test", "acp", "--verbose"]).expect("Failed to parse acp args");
+
+        match args.mode {
+            Some(Mode::Acp { verbose }) => assert!(verbose),
+            _ => panic!("Expected acp mode"),
         }
     }
 }
