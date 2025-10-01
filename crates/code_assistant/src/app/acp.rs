@@ -2,6 +2,7 @@ use super::AgentRunConfig;
 use crate::acp::ACPAgentImpl;
 use crate::persistence::FileSessionPersistence;
 use crate::session::{AgentConfig, SessionManager};
+use agent_client_protocol::Client;
 use anyhow::Result;
 use llm::factory::LLMClientConfig;
 use std::sync::Arc;

@@ -65,11 +65,16 @@ impl ACPUserUI {
         tool_calls
             .entry(tool_id.to_string())
             .or_insert_with(|| acp::ToolCallUpdate {
-                tool_call_id: acp::ToolCallId(tool_id.to_string().into()),
-                title: name.to_string(),
-                kind: map_tool_kind(name),
-                status: acp::ToolCallStatus::Pending,
-                content: vec![],
+                id: acp::ToolCallId(tool_id.to_string().into()),
+                fields: acp::ToolCallUpdateFields {
+                    kind: Some(map_tool_kind(name)),
+                    status: Some(acp::ToolCallStatus::Pending),
+                    title: Some(name.to_string()),
+                    content: Some(vec![]),
+                    locations: None,
+                    raw_input: None,
+                    raw_output: None,
+                },
             })
             .clone()
     }
@@ -86,11 +91,16 @@ impl ACPUserUI {
         } else {
             // Should not happen, but return a default
             acp::ToolCallUpdate {
-                tool_call_id: acp::ToolCallId(tool_id.to_string().into()),
-                title: String::new(),
-                kind: acp::ToolKind::Other,
-                status: acp::ToolCallStatus::Pending,
-                content: vec![],
+                id: acp::ToolCallId(tool_id.to_string().into()),
+                fields: acp::ToolCallUpdateFields {
+                    kind: Some(acp::ToolKind::Other),
+                    status: Some(acp::ToolCallStatus::Pending),
+                    title: Some(String::new()),
+                    content: Some(vec![]),
+                    locations: None,
+                    raw_input: None,
+                    raw_output: None,
+                },
             }
         }
     }
@@ -116,17 +126,18 @@ impl UserInterface for ACPUserUI {
                 // Send attachments as additional content blocks
                 for attachment in attachments {
                     match attachment {
-                        crate::persistence::DraftAttachment::Image { data, media_type } => {
+                        crate::persistence::DraftAttachment::Image { content, mime_type } => {
                             self.send_session_update(acp::SessionUpdate::UserMessageChunk {
                                 content: acp::ContentBlock::Image(acp::ImageContent {
                                     annotations: None,
-                                    data,
-                                    mime_type: media_type,
+                                    data: content,
+                                    mime_type,
                                     uri: None,
                                 }),
                             })
                             .await?;
                         }
+                        _ => {} // Ignore other attachment types for now
                     }
                 }
             }
@@ -153,8 +164,27 @@ impl UserInterface for ACPUserUI {
             }
 
             UiEvent::StartTool { name, id } => {
-                let tool_call = self.get_or_create_tool_call(&id, &name).await;
-                self.send_session_update(acp::SessionUpdate::ToolCall { update: tool_call })
+                let tool_call_update = self.get_or_create_tool_call(&id, &name).await;
+                // Convert ToolCallUpdate to ToolCall for the initial notification
+                let tool_call = acp::ToolCall {
+                    id: tool_call_update.id.clone(),
+                    kind: tool_call_update
+                        .fields
+                        .kind
+                        .clone()
+                        .unwrap_or(acp::ToolKind::Other),
+                    title: tool_call_update
+                        .fields
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| name.clone()),
+                    status: acp::ToolCallStatus::Pending,
+                    content: vec![],
+                    locations: vec![],
+                    raw_input: None,
+                    raw_output: None,
+                };
+                self.send_session_update(acp::SessionUpdate::ToolCall(tool_call))
                     .await?;
             }
 
@@ -163,15 +193,20 @@ impl UserInterface for ACPUserUI {
                 name,
                 value,
             } => {
-                let tool_call = self
+                let tool_call_update = self
                     .update_tool_call(&tool_id, |tc| {
                         // Add or update parameter as text content
-                        tc.content.push(acp::ToolCallContent::Text {
-                            text: format!("{}: {}", name, value),
-                        });
+                        if let Some(ref mut content) = tc.fields.content {
+                            content.push(acp::ToolCallContent::Content {
+                                content: acp::ContentBlock::Text(acp::TextContent {
+                                    annotations: None,
+                                    text: format!("{}: {}", name, value),
+                                }),
+                            });
+                        }
                     })
                     .await;
-                self.send_session_update(acp::SessionUpdate::ToolCall { update: tool_call })
+                self.send_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update))
                     .await?;
             }
 
@@ -181,37 +216,48 @@ impl UserInterface for ACPUserUI {
                 message,
                 output,
             } => {
-                let tool_call = self
+                let tool_call_update = self
                     .update_tool_call(&tool_id, |tc| {
-                        tc.status = map_tool_status(status);
+                        tc.fields.status = Some(map_tool_status(status));
                         if let Some(msg) = message {
-                            tc.content.push(acp::ToolCallContent::Text { text: msg });
+                            if let Some(ref mut content) = tc.fields.content {
+                                content.push(acp::ToolCallContent::Content {
+                                    content: acp::ContentBlock::Text(acp::TextContent {
+                                        annotations: None,
+                                        text: msg,
+                                    }),
+                                });
+                            }
                         }
                         if let Some(out) = output {
-                            tc.content.push(acp::ToolCallContent::Terminal {
-                                block: acp::TerminalBlock {
-                                    output: out,
-                                    exit_code: None,
-                                },
-                            });
+                            if let Some(ref mut content) = tc.fields.content {
+                                content.push(acp::ToolCallContent::Content {
+                                    content: acp::ContentBlock::Text(acp::TextContent {
+                                        annotations: None,
+                                        text: out,
+                                    }),
+                                });
+                            }
                         }
                     })
                     .await;
-                self.send_session_update(acp::SessionUpdate::ToolCall { update: tool_call })
+                self.send_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update))
                     .await?;
             }
 
             UiEvent::EndTool { id } => {
-                let tool_call = self
+                let tool_call_update = self
                     .update_tool_call(&id, |tc| {
-                        if tc.status == acp::ToolCallStatus::Pending
-                            || tc.status == acp::ToolCallStatus::Executing
-                        {
-                            tc.status = acp::ToolCallStatus::Executed;
+                        if let Some(status) = &tc.fields.status {
+                            if *status == acp::ToolCallStatus::Pending
+                                || *status == acp::ToolCallStatus::InProgress
+                            {
+                                tc.fields.status = Some(acp::ToolCallStatus::Completed);
+                            }
                         }
                     })
                     .await;
-                self.send_session_update(acp::SessionUpdate::ToolCall { update: tool_call })
+                self.send_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update))
                     .await?;
             }
 
@@ -228,24 +274,27 @@ impl UserInterface for ACPUserUI {
             }
 
             UiEvent::AppendToolOutput { tool_id, chunk } => {
-                let tool_call = self
+                let tool_call_update = self
                     .update_tool_call(&tool_id, |tc| {
-                        // Append to last terminal block or create new one
-                        if let Some(acp::ToolCallContent::Terminal { block }) =
-                            tc.content.last_mut()
-                        {
-                            block.output.push_str(&chunk);
-                        } else {
-                            tc.content.push(acp::ToolCallContent::Terminal {
-                                block: acp::TerminalBlock {
-                                    output: chunk,
-                                    exit_code: None,
-                                },
-                            });
+                        if let Some(ref mut content) = tc.fields.content {
+                            // Append to last text content or create new one
+                            if let Some(acp::ToolCallContent::Content {
+                                content: acp::ContentBlock::Text(ref mut text_content),
+                            }) = content.last_mut()
+                            {
+                                text_content.text.push_str(&chunk);
+                            } else {
+                                content.push(acp::ToolCallContent::Content {
+                                    content: acp::ContentBlock::Text(acp::TextContent {
+                                        annotations: None,
+                                        text: chunk,
+                                    }),
+                                });
+                            }
                         }
                     })
                     .await;
-                self.send_session_update(acp::SessionUpdate::ToolCall { update: tool_call })
+                self.send_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update))
                     .await?;
             }
 

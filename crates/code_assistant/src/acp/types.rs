@@ -55,8 +55,8 @@ pub fn map_tool_kind(tool_name: &str) -> acp::ToolKind {
 pub fn map_tool_status(status: crate::ui::ToolStatus) -> acp::ToolCallStatus {
     match status {
         crate::ui::ToolStatus::Pending => acp::ToolCallStatus::Pending,
-        crate::ui::ToolStatus::Running => acp::ToolCallStatus::Executing,
-        crate::ui::ToolStatus::Success => acp::ToolCallStatus::Executed,
+        crate::ui::ToolStatus::Running => acp::ToolCallStatus::InProgress,
+        crate::ui::ToolStatus::Success => acp::ToolCallStatus::Completed,
         crate::ui::ToolStatus::Error => acp::ToolCallStatus::Failed,
     }
 }
@@ -69,9 +69,12 @@ pub fn convert_prompt_to_content_blocks(prompt: Vec<acp::ContentBlock>) -> Vec<l
             acp::ContentBlock::Text(text_content) => {
                 Some(llm::ContentBlock::new_text(text_content.text))
             }
+
             acp::ContentBlock::Image(image_content) => Some(llm::ContentBlock::Image {
                 media_type: image_content.mime_type,
                 data: image_content.data,
+                start_time: None,
+                end_time: None,
             }),
             // Other content types not yet supported
             _ => None,
