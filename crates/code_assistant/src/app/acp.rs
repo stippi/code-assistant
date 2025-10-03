@@ -23,7 +23,7 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     };
 
     let log_file = std::fs::File::create(log_path)
-        .unwrap_or_else(|_| panic!("Failed to create log file at {}", log_path));
+        .unwrap_or_else(|_| panic!("Failed to create log file at {log_path}"));
 
     tracing_subscriber::registry()
         .with(

@@ -96,6 +96,7 @@ impl ACPAgentImpl {
 }
 
 impl acp::Agent for ACPAgentImpl {
+    #[allow(clippy::manual_async_fn)]
     fn initialize(
         &self,
         _arguments: acp::InitializeRequest,
@@ -118,6 +119,7 @@ impl acp::Agent for ACPAgentImpl {
         }
     }
 
+    #[allow(clippy::manual_async_fn)]
     fn authenticate(
         &self,
         _arguments: acp::AuthenticateRequest,

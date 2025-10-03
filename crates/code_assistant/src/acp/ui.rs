@@ -51,19 +51,13 @@ impl ACPUserUI {
             ))
             .map_err(|_| {
                 tracing::error!("ACPUserUI: Channel closed when sending update");
-                UIError::IOError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Channel closed",
-                ))
+                UIError::IOError(std::io::Error::other("Channel closed"))
             })?;
 
         // Wait for acknowledgment
         rx.await.map_err(|_| {
             tracing::error!("ACPUserUI: Failed to receive acknowledgment");
-            UIError::IOError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to receive ack",
-            ))
+            UIError::IOError(std::io::Error::other("Failed to receive ack"))
         })?;
 
         tracing::debug!("ACPUserUI: Update sent and acknowledged");
@@ -136,6 +130,7 @@ impl UserInterface for ACPUserUI {
 
                 // Send attachments as additional content blocks
                 for attachment in attachments {
+                    #[allow(clippy::single_match)]
                     match attachment {
                         crate::persistence::DraftAttachment::Image { content, mime_type } => {
                             self.send_session_update(acp::SessionUpdate::UserMessageChunk {
@@ -211,7 +206,7 @@ impl UserInterface for ACPUserUI {
                             content.push(acp::ToolCallContent::Content {
                                 content: acp::ContentBlock::Text(acp::TextContent {
                                     annotations: None,
-                                    text: format!("{}: {}", name, value),
+                                    text: format!("{name}: {value}"),
                                 }),
                             });
                         }
