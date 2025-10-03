@@ -74,10 +74,7 @@ impl ToolCallState {
     }
 
     fn append_parameter(&mut self, name: &str, value: &str) {
-        let entry = self
-            .parameters
-            .entry(name.to_string())
-            .or_insert_with(ParameterValue::default);
+        let entry = self.parameters.entry(name.to_string()).or_default();
         entry.append(value);
     }
 
@@ -137,7 +134,7 @@ impl ToolCallState {
     }
 
     fn raw_output(&self) -> Option<JsonValue> {
-        self.output_text().map(|text| JsonValue::String(text))
+        self.output_text().map(JsonValue::String)
     }
 
     fn diff_content(&self) -> Option<acp::ToolCallContent> {
@@ -462,7 +459,7 @@ impl UserInterface for ACPUserUI {
                     )));
                 }
 
-                let tool_call = self.get_tool_call(&id, |state| {
+                let tool_call = self.get_tool_call(id, |state| {
                     state.set_tool_name(name);
                 });
 
@@ -486,7 +483,7 @@ impl UserInterface for ACPUserUI {
 
                 let name = name.clone();
                 let value = value.clone();
-                let tool_call_update = self.update_tool_call(&tool_id, |state| {
+                let tool_call_update = self.update_tool_call(tool_id, |state| {
                     state.append_parameter(&name, &value);
                 });
 
@@ -503,7 +500,7 @@ impl UserInterface for ACPUserUI {
                     )));
                 }
 
-                let tool_call_update = self.update_tool_call(&id, |state| {
+                let tool_call_update = self.update_tool_call(id, |state| {
                     state.ensure_completed();
                 });
 
@@ -521,7 +518,7 @@ impl UserInterface for ACPUserUI {
                 }
 
                 let chunk = chunk.clone();
-                let tool_call_update = self.update_tool_call(&tool_id, |state| {
+                let tool_call_update = self.update_tool_call(tool_id, |state| {
                     state.append_output_chunk(&chunk);
                 });
 
