@@ -1,6 +1,7 @@
 use agent_client_protocol as acp;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -13,8 +14,8 @@ pub struct ACPUserUI {
     session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     // Track tool calls for status updates
     tool_calls: Arc<Mutex<HashMap<String, acp::ToolCallUpdate>>>,
-    // Track if we should continue streaming
-    should_continue: Arc<Mutex<bool>>,
+    // Track if we should continue streaming (atomic for lock-free access from sync callbacks)
+    should_continue: Arc<AtomicBool>,
 }
 
 impl ACPUserUI {
@@ -26,20 +27,19 @@ impl ACPUserUI {
             session_id,
             session_update_tx,
             tool_calls: Arc::new(Mutex::new(HashMap::new())),
-            should_continue: Arc::new(Mutex::new(true)),
+            should_continue: Arc::new(AtomicBool::new(true)),
         }
     }
 
     /// Signal that the operation should be cancelled
     /// This is called by the cancel() method to stop the prompt() loop
     pub fn signal_cancel(&self) {
-        if let Ok(mut should_continue) = self.should_continue.try_lock() {
-            *should_continue = false;
-        }
+        self.should_continue.store(false, Ordering::Relaxed);
     }
 
     /// Send a session update notification
     async fn send_session_update(&self, update: acp::SessionUpdate) -> Result<(), UIError> {
+        tracing::debug!("ACPUserUI: Sending session update: {:?}", update);
         let (tx, rx) = oneshot::channel();
         self.session_update_tx
             .send((
@@ -50,6 +50,7 @@ impl ACPUserUI {
                 tx,
             ))
             .map_err(|_| {
+                tracing::error!("ACPUserUI: Channel closed when sending update");
                 UIError::IOError(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "Channel closed",
@@ -58,12 +59,14 @@ impl ACPUserUI {
 
         // Wait for acknowledgment
         rx.await.map_err(|_| {
+            tracing::error!("ACPUserUI: Failed to receive acknowledgment");
             UIError::IOError(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Failed to receive ack",
             ))
         })?;
 
+        tracing::debug!("ACPUserUI: Update sent and acknowledged");
         Ok(())
     }
 
@@ -359,23 +362,33 @@ impl UserInterface for ACPUserUI {
                 let content = fragment_to_content_block(fragment);
                 let update = acp::SessionUpdate::AgentMessageChunk { content };
 
-                // We need to send this synchronously, but display_fragment is not async
-                // We'll spawn a task to send it
-                let tx = self.session_update_tx.clone();
-                let session_id = self.session_id.clone();
-                tokio::spawn(async move {
-                    let (ack_tx, _ack_rx) = oneshot::channel();
-                    let _ = tx.send((acp::SessionNotification { session_id, update }, ack_tx));
-                });
+                // Send to unbounded channel (non-blocking)
+                // The receiver task will process it asynchronously
+                let (ack_tx, _ack_rx) = oneshot::channel();
+                let notification = acp::SessionNotification {
+                    session_id: self.session_id.clone(),
+                    update,
+                };
+
+                match self.session_update_tx.send((notification, ack_tx)) {
+                    Ok(_) => {
+                        tracing::debug!("ACPUserUI: Fragment queued for sending");
+                    }
+                    Err(e) => {
+                        tracing::error!("ACPUserUI: Failed to send to channel: {:?}", e);
+                    }
+                }
             }
             // Tool fragments are handled via UiEvent::StartTool, etc.
-            _ => {}
+            _ => {
+                tracing::trace!("ACPUserUI: Ignoring non-text fragment");
+            }
         }
         Ok(())
     }
 
     fn should_streaming_continue(&self) -> bool {
-        *self.should_continue.blocking_lock()
+        self.should_continue.load(Ordering::Relaxed)
     }
 
     fn notify_rate_limit(&self, _seconds_remaining: u64) {

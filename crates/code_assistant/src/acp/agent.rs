@@ -306,6 +306,24 @@ impl acp::Agent for ACPAgentImpl {
             let project_manager = Box::new(DefaultProjectManager::new());
             let command_executor = Box::new(DefaultCommandExecutor);
 
+            // Mark session as connected so ProxyUI forwards to our UI
+            {
+                let mut manager = session_manager.lock().await;
+                if let Some(session) = manager.get_session_mut(&arguments.session_id.0) {
+                    session.set_ui_connected(true);
+                    tracing::debug!("ACP: Marked session as UI-connected");
+                } else {
+                    let error_msg = "Session not found when trying to mark as connected";
+                    tracing::error!("{}", error_msg);
+                    send_error(error_msg.to_string()).await;
+                    let mut uis = active_uis.lock().await;
+                    uis.remove(arguments.session_id.0.as_ref());
+                    return Ok(acp::PromptResponse {
+                        stop_reason: acp::StopReason::EndTurn,
+                    });
+                }
+            }
+
             // Start agent
             if let Err(e) = async {
                 let mut manager = session_manager.lock().await;
@@ -334,19 +352,24 @@ impl acp::Agent for ACPAgentImpl {
 
             // Wait for agent to complete
             // The agent will send session/update events via ACPUserUI as it processes
+            tracing::info!("ACP: Waiting for agent to complete");
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
                 let is_idle = {
                     let manager = session_manager.lock().await;
                     if let Some(session) = manager.get_session(&arguments.session_id.0) {
-                        session.get_activity_state() == SessionActivityState::Idle
+                        let state = session.get_activity_state();
+                        tracing::trace!("ACP: Session state: {:?}", state);
+                        state == SessionActivityState::Idle
                     } else {
+                        tracing::warn!("ACP: Session not found in manager");
                         true
                     }
                 };
 
                 if is_idle {
+                    tracing::info!("ACP: Agent is idle, exiting wait loop");
                     break;
                 }
 
@@ -354,7 +377,14 @@ impl acp::Agent for ACPAgentImpl {
                 if !ui.should_streaming_continue() {
                     tracing::info!("ACP: Streaming cancelled");
 
-                    // Remove UI from active set
+                    // Mark session as disconnected and remove UI from active set
+                    {
+                        let mut manager = session_manager.lock().await;
+                        if let Some(session) = manager.get_session_mut(&arguments.session_id.0) {
+                            session.set_ui_connected(false);
+                        }
+                    }
+
                     {
                         let mut uis = active_uis.lock().await;
                         uis.remove(arguments.session_id.0.as_ref());
@@ -371,7 +401,15 @@ impl acp::Agent for ACPAgentImpl {
                 arguments.session_id.0
             );
 
-            // Remove UI from active set
+            // Mark session as disconnected and remove UI from active set
+            {
+                let mut manager = session_manager.lock().await;
+                if let Some(session) = manager.get_session_mut(&arguments.session_id.0) {
+                    session.set_ui_connected(false);
+                    tracing::debug!("ACP: Marked session as UI-disconnected");
+                }
+            }
+
             {
                 let mut uis = active_uis.lock().await;
                 uis.remove(arguments.session_id.0.as_ref());

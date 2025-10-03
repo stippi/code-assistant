@@ -13,8 +13,18 @@ use tracing::info;
 pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     // Setup logging to file since stdout is used for ACP protocol
     use tracing_subscriber::prelude::*;
-    let log_file =
-        std::fs::File::create("/tmp/code-assistant-acp.log").expect("Failed to create log file");
+
+    // Use /tmp on Unix-like systems
+    let log_path = if cfg!(unix) {
+        "/tmp/code-assistant-acp.log"
+    } else {
+        // Windows fallback
+        "code-assistant-acp.log"
+    };
+
+    let log_file = std::fs::File::create(log_path)
+        .unwrap_or_else(|_| panic!("Failed to create log file at {}", log_path));
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()
@@ -28,7 +38,7 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
         }))
         .init();
 
-    info!("Starting ACP agent mode");
+    info!("Starting ACP agent mode, logging to {}", log_path);
 
     // Prepare configuration
     let agent_config = AgentConfig {
@@ -66,13 +76,15 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     // Create the agent
     let agent = ACPAgentImpl::new(session_manager, agent_config, llm_config, session_update_tx);
 
-    // Use LocalSet for non-Send futures from agent-client-protocol
+    // Use LocalSet for non-Send futures from agent-client-protocol,
+    // but the spawned futures will themselves spawn agent tasks on the multi-threaded runtime
     let local_set = tokio::task::LocalSet::new();
     local_set
         .run_until(async move {
             // Create the ACP connection
             let (conn, handle_io) =
                 agent_client_protocol::AgentSideConnection::new(agent, outgoing, incoming, |fut| {
+                    // Spawn on LocalSet for agent-client-protocol futures
                     tokio::task::spawn_local(fut);
                 });
 
