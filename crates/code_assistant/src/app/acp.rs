@@ -11,8 +11,22 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::info;
 
 pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
-    // Setup logging
-    crate::logging::setup_logging(if verbose { 1 } else { 0 }, false);
+    // Setup logging to file since stdout is used for ACP protocol
+    use tracing_subscriber::prelude::*;
+    let log_file =
+        std::fs::File::create("/tmp/code-assistant-acp.log").expect("Failed to create log file");
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(Arc::new(log_file))
+                .with_ansi(false),
+        )
+        .with(tracing_subscriber::EnvFilter::new(if verbose {
+            "debug"
+        } else {
+            "info"
+        }))
+        .init();
 
     info!("Starting ACP agent mode");
 

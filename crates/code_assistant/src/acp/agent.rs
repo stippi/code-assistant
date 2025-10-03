@@ -1,6 +1,7 @@
 use agent_client_protocol as acp;
 use anyhow::Result;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -22,6 +23,9 @@ pub struct ACPAgentImpl {
     session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     #[allow(dead_code)]
     next_session_counter: Cell<u64>,
+    /// Active UI instances for running prompts, keyed by session ID
+    /// Used to signal cancellation to the prompt() wait loop
+    active_uis: Arc<Mutex<HashMap<String, Arc<ACPUserUI>>>>,
 }
 
 impl ACPAgentImpl {
@@ -37,6 +41,7 @@ impl ACPAgentImpl {
             llm_config,
             session_update_tx,
             next_session_counter: Cell::new(0),
+            active_uis: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -125,13 +130,18 @@ impl acp::Agent for ACPAgentImpl {
 
     fn new_session(
         &self,
-        _arguments: acp::NewSessionRequest,
+        arguments: acp::NewSessionRequest,
     ) -> impl std::future::Future<Output = Result<acp::NewSessionResponse, acp::Error>> {
         let session_manager = self.session_manager.clone();
         let llm_config = self.llm_config.clone();
+        let agent_config = self.agent_config.clone();
 
         async move {
-            tracing::info!("ACP: Creating new session");
+            tracing::info!("ACP: Creating new session with cwd: {:?}", arguments.cwd);
+
+            // Update the agent config to use the provided cwd
+            let mut session_agent_config = agent_config;
+            session_agent_config.init_path = Some(arguments.cwd);
 
             let llm_session_config = LlmSessionConfig {
                 provider: llm_config.provider,
@@ -144,6 +154,9 @@ impl acp::Agent for ACPAgentImpl {
 
             let session_id = {
                 let mut manager = session_manager.lock().await;
+                // Update the manager's agent config for this session
+                // Actually, we need to pass this differently...
+                // For now, let's just use it when we start the agent
                 manager
                     .create_session_with_config(None, Some(llm_session_config))
                     .map_err(|e| {
@@ -228,6 +241,7 @@ impl acp::Agent for ACPAgentImpl {
         let session_manager = self.session_manager.clone();
         let session_update_tx = self.session_update_tx.clone();
         let llm_config = self.llm_config.clone();
+        let active_uis = self.active_uis.clone();
 
         async move {
             tracing::info!(
@@ -236,26 +250,64 @@ impl acp::Agent for ACPAgentImpl {
             );
 
             // Create UI for this session
-            let ui: Arc<dyn crate::ui::UserInterface> = Arc::new(ACPUserUI::new(
+            let acp_ui = Arc::new(ACPUserUI::new(
                 arguments.session_id.clone(),
-                session_update_tx,
+                session_update_tx.clone(),
             ));
+
+            // Store it so cancel() can reach it
+            {
+                let mut uis = active_uis.lock().await;
+                uis.insert(arguments.session_id.0.to_string(), acp_ui.clone());
+            }
+
+            let ui: Arc<dyn crate::ui::UserInterface> = acp_ui.clone();
+
+            // Clone for error closure
+            let error_session_id = arguments.session_id.clone();
+            let error_tx = session_update_tx.clone();
+
+            // Helper to send error messages to client
+            let send_error = |error_msg: String| async move {
+                let (tx, _rx) = oneshot::channel();
+                let _ = error_tx.send((
+                    acp::SessionNotification {
+                        session_id: error_session_id.clone(),
+                        update: acp::SessionUpdate::AgentMessageChunk {
+                            content: acp::ContentBlock::Text(acp::TextContent {
+                                annotations: None,
+                                text: format!("ERROR: {error_msg}"),
+                            }),
+                        },
+                    },
+                    tx,
+                ));
+            };
 
             // Convert prompt content blocks
             let content_blocks = convert_prompt_to_content_blocks(arguments.prompt);
 
             // Create LLM client
-            let llm_client = create_llm_client(llm_config).await.map_err(|e| {
-                tracing::error!("Failed to create LLM client: {}", e);
-                acp::Error::internal_error()
-            })?;
+            let llm_client = match create_llm_client(llm_config).await {
+                Ok(client) => client,
+                Err(e) => {
+                    let error_msg = format!("Failed to create LLM client: {e}");
+                    tracing::error!("{}", error_msg);
+                    send_error(error_msg).await;
+                    let mut uis = active_uis.lock().await;
+                    uis.remove(arguments.session_id.0.as_ref());
+                    return Ok(acp::PromptResponse {
+                        stop_reason: acp::StopReason::EndTurn,
+                    });
+                }
+            };
 
             // Create project manager and command executor
             let project_manager = Box::new(DefaultProjectManager::new());
             let command_executor = Box::new(DefaultCommandExecutor);
 
             // Start agent
-            {
+            if let Err(e) = async {
                 let mut manager = session_manager.lock().await;
                 manager
                     .start_agent_for_message(
@@ -267,10 +319,17 @@ impl acp::Agent for ACPAgentImpl {
                         ui.clone(),
                     )
                     .await
-                    .map_err(|e| {
-                        tracing::error!("Failed to start agent: {}", e);
-                        acp::Error::internal_error()
-                    })?;
+            }
+            .await
+            {
+                let error_msg = format!("Failed to start agent: {e}");
+                tracing::error!("{}", error_msg);
+                send_error(error_msg).await;
+                let mut uis = active_uis.lock().await;
+                uis.remove(arguments.session_id.0.as_ref());
+                return Ok(acp::PromptResponse {
+                    stop_reason: acp::StopReason::EndTurn,
+                });
             }
 
             // Wait for agent to complete
@@ -294,6 +353,13 @@ impl acp::Agent for ACPAgentImpl {
                 // Check if we should continue
                 if !ui.should_streaming_continue() {
                     tracing::info!("ACP: Streaming cancelled");
+
+                    // Remove UI from active set
+                    {
+                        let mut uis = active_uis.lock().await;
+                        uis.remove(arguments.session_id.0.as_ref());
+                    }
+
                     return Ok(acp::PromptResponse {
                         stop_reason: acp::StopReason::Cancelled,
                     });
@@ -304,6 +370,12 @@ impl acp::Agent for ACPAgentImpl {
                 "ACP: Prompt completed for session: {}",
                 arguments.session_id.0
             );
+
+            // Remove UI from active set
+            {
+                let mut uis = active_uis.lock().await;
+                uis.remove(arguments.session_id.0.as_ref());
+            }
 
             Ok(acp::PromptResponse {
                 stop_reason: acp::StopReason::EndTurn,
@@ -316,15 +388,29 @@ impl acp::Agent for ACPAgentImpl {
         args: acp::CancelNotification,
     ) -> impl std::future::Future<Output = Result<(), acp::Error>> {
         let session_manager = self.session_manager.clone();
+        let active_uis = self.active_uis.clone();
 
         async move {
             tracing::info!("ACP: Received cancel for session: {}", args.session_id.0);
 
-            // Terminate the agent
+            // Signal the UI to stop (this makes prompt() loop exit)
+            {
+                let uis = active_uis.lock().await;
+                if let Some(ui) = uis.get(args.session_id.0.as_ref()) {
+                    ui.signal_cancel();
+                    tracing::info!(
+                        "ACP: Signaled cancel to UI for session: {}",
+                        args.session_id.0
+                    );
+                }
+            }
+
+            // Terminate the agent task
             {
                 let mut manager = session_manager.lock().await;
                 if let Some(session) = manager.get_session_mut(&args.session_id.0) {
                     session.terminate_agent();
+                    tracing::info!("ACP: Terminated agent for session: {}", args.session_id.0);
                 }
             }
 

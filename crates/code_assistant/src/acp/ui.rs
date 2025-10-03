@@ -30,6 +30,14 @@ impl ACPUserUI {
         }
     }
 
+    /// Signal that the operation should be cancelled
+    /// This is called by the cancel() method to stop the prompt() loop
+    pub fn signal_cancel(&self) {
+        if let Ok(mut should_continue) = self.should_continue.try_lock() {
+            *should_continue = false;
+        }
+    }
+
     /// Send a session update notification
     async fn send_session_update(&self, update: acp::SessionUpdate) -> Result<(), UIError> {
         let (tx, rx) = oneshot::channel();
