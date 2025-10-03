@@ -160,20 +160,10 @@ impl ToolCallState {
 
     fn build_content(&self) -> Option<Vec<acp::ToolCallContent>> {
         let mut content = Vec::new();
+        let is_failed = matches!(self.status, acp::ToolCallStatus::Failed);
 
         if let Some(diff_content) = self.diff_content() {
             content.push(diff_content);
-
-            let supplemental = self
-                .parameters
-                .iter()
-                .filter(|(name, _)| *name != "old_text" && *name != "new_text")
-                .map(|(name, value)| format!("{name}: {}", value.value))
-                .collect::<Vec<_>>();
-
-            if !supplemental.is_empty() {
-                content.push(text_content(supplemental.join("\n")));
-            }
         } else if !self.parameters.is_empty() {
             let mut lines = Vec::new();
             for (name, value) in &self.parameters {
@@ -182,15 +172,23 @@ impl ToolCallState {
             content.push(text_content(lines.join("\n")));
         }
 
-        if let Some(message) = &self.status_message {
-            if !message.is_empty() {
-                content.push(text_content(message.clone()));
+        if is_failed {
+            if let Some(message) = &self.status_message {
+                if !message.is_empty() {
+                    content.push(text_content(message.clone()));
+                }
             }
-        }
 
-        if let Some(output) = self.output_text() {
-            if !output.is_empty() {
-                content.push(text_content(output));
+            if let Some(output) = self.output_text() {
+                if !output.is_empty()
+                    && !self
+                        .status_message
+                        .as_ref()
+                        .map(|msg| msg.trim() == output.trim())
+                        .unwrap_or(false)
+                {
+                    content.push(text_content(output));
+                }
             }
         }
 
