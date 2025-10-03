@@ -2,8 +2,8 @@ use agent_client_protocol as acp;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use std::sync::{Arc, Mutex};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::acp::types::{fragment_to_content_block, map_tool_kind, map_tool_status};
 use crate::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
@@ -65,48 +65,73 @@ impl ACPUserUI {
     }
 
     /// Get or create a tool call update
-    async fn get_or_create_tool_call(&self, tool_id: &str, name: &str) -> acp::ToolCallUpdate {
-        let mut tool_calls = self.tool_calls.lock().await;
+    fn create_tool_call_update(tool_id: &str, name: Option<&str>) -> acp::ToolCallUpdate {
+        let title = name.unwrap_or(tool_id);
+        let kind = name.map(map_tool_kind).unwrap_or(acp::ToolKind::Other);
+        acp::ToolCallUpdate {
+            id: acp::ToolCallId(tool_id.to_string().into()),
+            fields: acp::ToolCallUpdateFields {
+                kind: Some(kind),
+                status: Some(acp::ToolCallStatus::Pending),
+                title: Some(title.to_string()),
+                content: Some(vec![]),
+                locations: None,
+                raw_input: None,
+                raw_output: None,
+            },
+        }
+    }
+
+    fn get_or_create_tool_call(&self, tool_id: &str, name: &str) -> acp::ToolCallUpdate {
+        let mut tool_calls = self.tool_calls.lock().unwrap();
         tool_calls
             .entry(tool_id.to_string())
-            .or_insert_with(|| acp::ToolCallUpdate {
-                id: acp::ToolCallId(tool_id.to_string().into()),
-                fields: acp::ToolCallUpdateFields {
-                    kind: Some(map_tool_kind(name)),
-                    status: Some(acp::ToolCallStatus::Pending),
-                    title: Some(name.to_string()),
-                    content: Some(vec![]),
-                    locations: None,
-                    raw_input: None,
-                    raw_output: None,
-                },
+            .and_modify(|tc| {
+                if tc
+                    .fields
+                    .title
+                    .as_deref()
+                    .map(|t| t.is_empty())
+                    .unwrap_or(true)
+                {
+                    tc.fields.title = Some(name.to_string());
+                }
+                if tc.fields.kind.is_none() {
+                    tc.fields.kind = Some(map_tool_kind(name));
+                }
             })
+            .or_insert_with(|| Self::create_tool_call_update(tool_id, Some(name)))
             .clone()
     }
 
     /// Update a tool call
-    async fn update_tool_call<F>(&self, tool_id: &str, updater: F) -> acp::ToolCallUpdate
+    fn update_tool_call<F>(&self, tool_id: &str, updater: F) -> acp::ToolCallUpdate
     where
         F: FnOnce(&mut acp::ToolCallUpdate),
     {
-        let mut tool_calls = self.tool_calls.lock().await;
+        let mut tool_calls = self.tool_calls.lock().unwrap();
         if let Some(tool_call) = tool_calls.get_mut(tool_id) {
             updater(tool_call);
             tool_call.clone()
         } else {
-            // Should not happen, but return a default
-            acp::ToolCallUpdate {
-                id: acp::ToolCallId(tool_id.to_string().into()),
-                fields: acp::ToolCallUpdateFields {
-                    kind: Some(acp::ToolKind::Other),
-                    status: Some(acp::ToolCallStatus::Pending),
-                    title: Some(String::new()),
-                    content: Some(vec![]),
-                    locations: None,
-                    raw_input: None,
-                    raw_output: None,
-                },
-            }
+            let mut default = Self::create_tool_call_update(tool_id, None);
+            updater(&mut default);
+            tool_calls.insert(tool_id.to_string(), default.clone());
+            default
+        }
+    }
+
+    fn queue_session_update(&self, update: acp::SessionUpdate) {
+        let (ack_tx, _ack_rx) = oneshot::channel();
+        let notification = acp::SessionNotification {
+            session_id: self.session_id.clone(),
+            update,
+        };
+
+        if let Err(e) = self.session_update_tx.send((notification, ack_tx)) {
+            tracing::error!("ACPUserUI: Failed to send queued update: {:?}", e);
+        } else {
+            tracing::trace!("ACPUserUI: Queued session update");
         }
     }
 }
@@ -170,7 +195,7 @@ impl UserInterface for ACPUserUI {
             }
 
             UiEvent::StartTool { name, id } => {
-                let tool_call_update = self.get_or_create_tool_call(&id, &name).await;
+                let tool_call_update = self.get_or_create_tool_call(&id, &name);
                 // Convert ToolCallUpdate to ToolCall for the initial notification
                 let tool_call = acp::ToolCall {
                     id: tool_call_update.id.clone(),
@@ -199,19 +224,17 @@ impl UserInterface for ACPUserUI {
                 name,
                 value,
             } => {
-                let tool_call_update = self
-                    .update_tool_call(&tool_id, |tc| {
-                        // Add or update parameter as text content
-                        if let Some(ref mut content) = tc.fields.content {
-                            content.push(acp::ToolCallContent::Content {
-                                content: acp::ContentBlock::Text(acp::TextContent {
-                                    annotations: None,
-                                    text: format!("{name}: {value}"),
-                                }),
-                            });
-                        }
-                    })
-                    .await;
+                let tool_call_update = self.update_tool_call(&tool_id, |tc| {
+                    // Add or update parameter as text content
+                    if let Some(ref mut content) = tc.fields.content {
+                        content.push(acp::ToolCallContent::Content {
+                            content: acp::ContentBlock::Text(acp::TextContent {
+                                annotations: None,
+                                text: format!("{name}: {value}"),
+                            }),
+                        });
+                    }
+                });
                 self.send_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update))
                     .await?;
             }
@@ -222,47 +245,43 @@ impl UserInterface for ACPUserUI {
                 message,
                 output,
             } => {
-                let tool_call_update = self
-                    .update_tool_call(&tool_id, |tc| {
-                        tc.fields.status = Some(map_tool_status(status));
-                        if let Some(msg) = message {
-                            if let Some(ref mut content) = tc.fields.content {
-                                content.push(acp::ToolCallContent::Content {
-                                    content: acp::ContentBlock::Text(acp::TextContent {
-                                        annotations: None,
-                                        text: msg,
-                                    }),
-                                });
-                            }
+                let tool_call_update = self.update_tool_call(&tool_id, |tc| {
+                    tc.fields.status = Some(map_tool_status(status));
+                    if let Some(msg) = message {
+                        if let Some(ref mut content) = tc.fields.content {
+                            content.push(acp::ToolCallContent::Content {
+                                content: acp::ContentBlock::Text(acp::TextContent {
+                                    annotations: None,
+                                    text: msg,
+                                }),
+                            });
                         }
-                        if let Some(out) = output {
-                            if let Some(ref mut content) = tc.fields.content {
-                                content.push(acp::ToolCallContent::Content {
-                                    content: acp::ContentBlock::Text(acp::TextContent {
-                                        annotations: None,
-                                        text: out,
-                                    }),
-                                });
-                            }
+                    }
+                    if let Some(out) = output {
+                        if let Some(ref mut content) = tc.fields.content {
+                            content.push(acp::ToolCallContent::Content {
+                                content: acp::ContentBlock::Text(acp::TextContent {
+                                    annotations: None,
+                                    text: out,
+                                }),
+                            });
                         }
-                    })
-                    .await;
+                    }
+                });
                 self.send_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update))
                     .await?;
             }
 
             UiEvent::EndTool { id } => {
-                let tool_call_update = self
-                    .update_tool_call(&id, |tc| {
-                        if let Some(status) = &tc.fields.status {
-                            if *status == acp::ToolCallStatus::Pending
-                                || *status == acp::ToolCallStatus::InProgress
-                            {
-                                tc.fields.status = Some(acp::ToolCallStatus::Completed);
-                            }
+                let tool_call_update = self.update_tool_call(&id, |tc| {
+                    if let Some(status) = &tc.fields.status {
+                        if *status == acp::ToolCallStatus::Pending
+                            || *status == acp::ToolCallStatus::InProgress
+                        {
+                            tc.fields.status = Some(acp::ToolCallStatus::Completed);
                         }
-                    })
-                    .await;
+                    }
+                });
                 self.send_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update))
                     .await?;
             }
@@ -280,26 +299,24 @@ impl UserInterface for ACPUserUI {
             }
 
             UiEvent::AppendToolOutput { tool_id, chunk } => {
-                let tool_call_update = self
-                    .update_tool_call(&tool_id, |tc| {
-                        if let Some(ref mut content) = tc.fields.content {
-                            // Append to last text content or create new one
-                            if let Some(acp::ToolCallContent::Content {
-                                content: acp::ContentBlock::Text(ref mut text_content),
-                            }) = content.last_mut()
-                            {
-                                text_content.text.push_str(&chunk);
-                            } else {
-                                content.push(acp::ToolCallContent::Content {
-                                    content: acp::ContentBlock::Text(acp::TextContent {
-                                        annotations: None,
-                                        text: chunk,
-                                    }),
-                                });
-                            }
+                let tool_call_update = self.update_tool_call(&tool_id, |tc| {
+                    if let Some(ref mut content) = tc.fields.content {
+                        // Append to last text content or create new one
+                        if let Some(acp::ToolCallContent::Content {
+                            content: acp::ContentBlock::Text(ref mut text_content),
+                        }) = content.last_mut()
+                        {
+                            text_content.text.push_str(&chunk);
+                        } else {
+                            content.push(acp::ToolCallContent::Content {
+                                content: acp::ContentBlock::Text(acp::TextContent {
+                                    annotations: None,
+                                    text: chunk,
+                                }),
+                            });
                         }
-                    })
-                    .await;
+                    }
+                });
                 self.send_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update))
                     .await?;
             }
@@ -348,35 +365,161 @@ impl UserInterface for ACPUserUI {
     }
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
-        // For ACP, we convert fragments to content blocks
-        // This is called during streaming
         match fragment {
             DisplayFragment::PlainText(_)
             | DisplayFragment::ThinkingText(_)
             | DisplayFragment::Image { .. } => {
                 let content = fragment_to_content_block(fragment);
-                let update = acp::SessionUpdate::AgentMessageChunk { content };
+                self.queue_session_update(acp::SessionUpdate::AgentMessageChunk { content });
+            }
+            DisplayFragment::ToolName { name, id } => {
+                if id.is_empty() {
+                    tracing::warn!(
+                        "ACPUserUI: StreamingProcessor provided empty tool ID for tool '{}'",
+                        name
+                    );
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Empty tool ID for tool '{name}'"),
+                    )));
+                }
 
-                // Send to unbounded channel (non-blocking)
-                // The receiver task will process it asynchronously
-                let (ack_tx, _ack_rx) = oneshot::channel();
-                let notification = acp::SessionNotification {
-                    session_id: self.session_id.clone(),
-                    update,
+                let tool_call = {
+                    let mut tool_calls = self.tool_calls.lock().unwrap();
+                    let entry = tool_calls
+                        .entry(id.clone())
+                        .or_insert_with(|| Self::create_tool_call_update(id, Some(name)));
+                    entry.fields.kind = Some(map_tool_kind(name));
+                    entry.fields.title = Some(name.clone());
+                    entry
+                        .fields
+                        .status
+                        .get_or_insert(acp::ToolCallStatus::Pending);
+                    entry.fields.content.get_or_insert_with(Vec::new);
+
+                    acp::ToolCall {
+                        id: entry.id.clone(),
+                        title: entry.fields.title.clone().unwrap_or_else(|| name.clone()),
+                        kind: entry.fields.kind.clone().unwrap_or(acp::ToolKind::Other),
+                        status: entry.fields.status.unwrap_or(acp::ToolCallStatus::Pending),
+                        content: entry.fields.content.clone().unwrap_or_default(),
+                        locations: entry.fields.locations.clone().unwrap_or_default(),
+                        raw_input: entry.fields.raw_input.clone(),
+                        raw_output: entry.fields.raw_output.clone(),
+                    }
                 };
 
-                match self.session_update_tx.send((notification, ack_tx)) {
-                    Ok(_) => {
-                        tracing::debug!("ACPUserUI: Fragment queued for sending");
-                    }
-                    Err(e) => {
-                        tracing::error!("ACPUserUI: Failed to send to channel: {:?}", e);
-                    }
-                }
+                self.queue_session_update(acp::SessionUpdate::ToolCall(tool_call));
             }
-            // Tool fragments are handled via UiEvent::StartTool, etc.
-            _ => {
-                tracing::trace!("ACPUserUI: Ignoring non-text fragment");
+            DisplayFragment::ToolParameter {
+                name,
+                value,
+                tool_id,
+            } => {
+                if tool_id.is_empty() {
+                    tracing::warn!(
+                        "ACPUserUI: StreamingProcessor provided empty tool ID for parameter '{}'",
+                        name
+                    );
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Empty tool ID for parameter '{name}'"),
+                    )));
+                }
+
+                let tool_call_update = {
+                    let mut tool_calls = self.tool_calls.lock().unwrap();
+                    let entry = tool_calls
+                        .entry(tool_id.clone())
+                        .or_insert_with(|| Self::create_tool_call_update(tool_id, None));
+                    entry.fields.content.get_or_insert_with(Vec::new).push(
+                        acp::ToolCallContent::Content {
+                            content: acp::ContentBlock::Text(acp::TextContent {
+                                annotations: None,
+                                text: format!("{name}: {value}"),
+                            }),
+                        },
+                    );
+                    entry.clone()
+                };
+
+                self.queue_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update));
+            }
+            DisplayFragment::ToolEnd { id } => {
+                if id.is_empty() {
+                    tracing::warn!(
+                        "ACPUserUI: StreamingProcessor provided empty tool ID for ToolEnd"
+                    );
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Empty tool ID for ToolEnd".to_string(),
+                    )));
+                }
+
+                let tool_call_update = {
+                    let mut tool_calls = self.tool_calls.lock().unwrap();
+                    let entry = tool_calls
+                        .entry(id.clone())
+                        .or_insert_with(|| Self::create_tool_call_update(id, None));
+
+                    let status = entry.fields.status.unwrap_or(acp::ToolCallStatus::Pending);
+                    if matches!(
+                        status,
+                        acp::ToolCallStatus::Pending | acp::ToolCallStatus::InProgress
+                    ) {
+                        entry.fields.status = Some(acp::ToolCallStatus::Completed);
+                    }
+
+                    entry.clone()
+                };
+
+                self.queue_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update));
+            }
+            DisplayFragment::ToolOutput { tool_id, chunk } => {
+                if tool_id.is_empty() {
+                    tracing::warn!(
+                        "ACPUserUI: StreamingProcessor provided empty tool ID for ToolOutput"
+                    );
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Empty tool ID for ToolOutput".to_string(),
+                    )));
+                }
+
+                let tool_call_update = {
+                    let mut tool_calls = self.tool_calls.lock().unwrap();
+                    let entry = tool_calls
+                        .entry(tool_id.clone())
+                        .or_insert_with(|| Self::create_tool_call_update(tool_id, None));
+                    let content = entry.fields.content.get_or_insert_with(Vec::new);
+                    if let Some(acp::ToolCallContent::Content {
+                        content: acp::ContentBlock::Text(text_content),
+                    }) = content.last_mut()
+                    {
+                        text_content.text.push_str(chunk);
+                    } else {
+                        content.push(acp::ToolCallContent::Content {
+                            content: acp::ContentBlock::Text(acp::TextContent {
+                                annotations: None,
+                                text: chunk.clone(),
+                            }),
+                        });
+                    }
+                    entry.clone()
+                };
+
+                self.queue_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update));
+            }
+            DisplayFragment::ReasoningSummaryStart | DisplayFragment::ReasoningComplete => {
+                // No ACP representation needed yet
+            }
+            DisplayFragment::ReasoningSummaryDelta(delta) => {
+                self.queue_session_update(acp::SessionUpdate::AgentMessageChunk {
+                    content: acp::ContentBlock::Text(acp::TextContent {
+                        annotations: None,
+                        text: delta.clone(),
+                    }),
+                });
             }
         }
         Ok(())
