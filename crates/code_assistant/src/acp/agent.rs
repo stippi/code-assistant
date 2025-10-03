@@ -58,7 +58,7 @@ impl ACPAgentImpl {
     async fn replay_session_history(&self, session_id: &str) -> Result<()> {
         use crate::ui::streaming::create_stream_processor;
 
-        let (tool_syntax, messages) = {
+        let (tool_syntax, messages, base_path) = {
             let manager = self.session_manager.lock().await;
             let session_instance = manager
                 .get_session(session_id)
@@ -67,6 +67,7 @@ impl ACPAgentImpl {
             (
                 session_instance.session.tool_syntax,
                 session_instance.session.messages.clone(),
+                session_instance.session.init_path.clone(),
             )
         };
 
@@ -74,6 +75,7 @@ impl ACPAgentImpl {
         let ui = Arc::new(ACPUserUI::new(
             acp::SessionId(session_id.to_string().into()),
             self.session_update_tx.clone(),
+            base_path,
         ));
 
         // Create stream processor to extract fragments
@@ -196,7 +198,7 @@ impl acp::Agent for ACPAgentImpl {
 
             // Replay message history as session/update events
             // We need to reconstruct the replay logic here since we moved self fields
-            let (tool_syntax, messages) = {
+            let (tool_syntax, messages, base_path) = {
                 let manager = session_manager.lock().await;
                 let session_instance = manager
                     .get_session(&arguments.session_id.0)
@@ -205,6 +207,7 @@ impl acp::Agent for ACPAgentImpl {
                 (
                     session_instance.session.tool_syntax,
                     session_instance.session.messages.clone(),
+                    session_instance.session.init_path.clone(),
                 )
             };
 
@@ -212,6 +215,7 @@ impl acp::Agent for ACPAgentImpl {
             let ui = Arc::new(ACPUserUI::new(
                 arguments.session_id.clone(),
                 session_update_tx,
+                base_path,
             ));
 
             // Create stream processor to extract fragments
@@ -251,10 +255,18 @@ impl acp::Agent for ACPAgentImpl {
                 arguments.session_id.0
             );
 
+            let base_path = {
+                let manager = session_manager.lock().await;
+                manager
+                    .get_session(&arguments.session_id.0)
+                    .and_then(|session| session.session.init_path.clone())
+            };
+
             // Create UI for this session
             let acp_ui = Arc::new(ACPUserUI::new(
                 arguments.session_id.clone(),
                 session_update_tx.clone(),
+                base_path,
             ));
 
             // Store it so cancel() can reach it

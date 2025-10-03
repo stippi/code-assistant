@@ -1,7 +1,7 @@
 use agent_client_protocol as acp;
 use async_trait::async_trait;
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
@@ -17,6 +17,7 @@ pub struct ACPUserUI {
     session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     // Track tool calls for status updates
     tool_calls: Arc<Mutex<HashMap<String, ToolCallState>>>,
+    base_path: Option<PathBuf>,
     // Track if we should continue streaming (atomic for lock-free access from sync callbacks)
     should_continue: Arc<AtomicBool>,
 }
@@ -137,7 +138,7 @@ impl ToolCallState {
         self.output_text().map(JsonValue::String)
     }
 
-    fn diff_content(&self) -> Option<acp::ToolCallContent> {
+    fn diff_content(&self, base_path: Option<&Path>) -> Option<acp::ToolCallContent> {
         if !matches!(self.tool_name.as_deref(), Some("edit")) {
             return None;
         }
@@ -150,7 +151,7 @@ impl ToolCallState {
         let old_text = self.parameters.get("old_text").map(|v| v.value.clone());
 
         let diff = acp::Diff {
-            path: PathBuf::from(path),
+            path: resolve_path(path, base_path),
             old_text,
             new_text,
         };
@@ -158,11 +159,11 @@ impl ToolCallState {
         Some(acp::ToolCallContent::Diff { diff })
     }
 
-    fn build_content(&self) -> Option<Vec<acp::ToolCallContent>> {
+    fn build_content(&self, base_path: Option<&Path>) -> Option<Vec<acp::ToolCallContent>> {
         let mut content = Vec::new();
         let is_failed = matches!(self.status, acp::ToolCallStatus::Failed);
 
-        if let Some(diff_content) = self.diff_content() {
+        if let Some(diff_content) = self.diff_content(base_path) {
             content.push(diff_content);
         } else if !self.parameters.is_empty() {
             let mut lines = Vec::new();
@@ -199,7 +200,27 @@ impl ToolCallState {
         }
     }
 
-    fn to_tool_call(&self) -> acp::ToolCall {
+    fn build_locations(&self, base_path: Option<&Path>) -> Option<Vec<acp::ToolCallLocation>> {
+        let path_value = self.parameters.get("path")?.value.trim();
+        if path_value.is_empty() {
+            return None;
+        }
+
+        let resolved = resolve_path(path_value, base_path);
+
+        let line = self
+            .parameters
+            .get("line")
+            .or_else(|| self.parameters.get("line_number"))
+            .and_then(|value| value.value.trim().parse::<u32>().ok());
+
+        Some(vec![acp::ToolCallLocation {
+            path: resolved,
+            line,
+        }])
+    }
+
+    fn to_tool_call(&self, base_path: Option<&Path>) -> acp::ToolCall {
         acp::ToolCall {
             id: self.id.clone(),
             title: self
@@ -209,22 +230,22 @@ impl ToolCallState {
                 .unwrap_or_default(),
             kind: self.kind(),
             status: self.status(),
-            content: self.build_content().unwrap_or_default(),
-            locations: Vec::new(),
+            content: self.build_content(base_path).unwrap_or_default(),
+            locations: self.build_locations(base_path).unwrap_or_default(),
             raw_input: self.raw_input(),
             raw_output: self.raw_output(),
         }
     }
 
-    fn to_update(&self) -> acp::ToolCallUpdate {
+    fn to_update(&self, base_path: Option<&Path>) -> acp::ToolCallUpdate {
         acp::ToolCallUpdate {
             id: self.id.clone(),
             fields: acp::ToolCallUpdateFields {
                 kind: self.kind.clone(),
                 status: Some(self.status()),
                 title: self.title.clone(),
-                content: self.build_content(),
-                locations: None,
+                content: self.build_content(base_path),
+                locations: self.build_locations(base_path),
                 raw_input: self.raw_input(),
                 raw_output: self.raw_output(),
             },
@@ -254,15 +275,28 @@ fn text_content(text: String) -> acp::ToolCallContent {
     }
 }
 
+fn resolve_path(path: &str, base_path: Option<&Path>) -> PathBuf {
+    let candidate = PathBuf::from(path);
+    if candidate.is_absolute() {
+        candidate
+    } else if let Some(root) = base_path {
+        root.join(candidate)
+    } else {
+        candidate
+    }
+}
+
 impl ACPUserUI {
     pub fn new(
         session_id: acp::SessionId,
         session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
+        base_path: Option<PathBuf>,
     ) -> Self {
         Self {
             session_id,
             session_update_tx,
             tool_calls: Arc::new(Mutex::new(HashMap::new())),
+            base_path,
             should_continue: Arc::new(AtomicBool::new(true)),
         }
     }
@@ -305,13 +339,14 @@ impl ACPUserUI {
         F: FnOnce(&mut ToolCallState),
     {
         let tool_id = tool_id.to_string();
+        let base_path = self.base_path.as_deref();
         let update = {
             let mut tool_calls = self.tool_calls.lock().unwrap();
             let state = tool_calls
                 .entry(tool_id.clone())
                 .or_insert_with(|| ToolCallState::new(&tool_id));
             updater(state);
-            state.to_update()
+            state.to_update(base_path)
         };
         update
     }
@@ -321,13 +356,14 @@ impl ACPUserUI {
         F: FnOnce(&mut ToolCallState),
     {
         let tool_id = tool_id.to_string();
+        let base_path = self.base_path.as_deref();
         let tool_call = {
             let mut tool_calls = self.tool_calls.lock().unwrap();
             let state = tool_calls
                 .entry(tool_id.clone())
                 .or_insert_with(|| ToolCallState::new(&tool_id));
             mutator(state);
-            state.to_tool_call()
+            state.to_tool_call(base_path)
         };
         tool_call
     }
