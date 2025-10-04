@@ -172,7 +172,7 @@ code-assistant --provider ollama --model llama2 --num-ctx 4096
 <details>
 <summary>Zed Editor Integration (ACP)</summary>
 
-Configure in Zed settings (**Extensions** → **Installed** → **Assistant** → **Settings**):
+Configure in Zed settings:
 
 ```json
 {
