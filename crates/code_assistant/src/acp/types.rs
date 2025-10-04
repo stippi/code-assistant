@@ -86,3 +86,60 @@ pub fn convert_prompt_to_content_blocks(prompt: Vec<acp::ContentBlock>) -> Vec<l
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::streaming::DisplayFragment;
+
+    #[test]
+    fn prompt_conversion_handles_text_and_images() {
+        let prompt = vec![
+            acp::ContentBlock::Text(acp::TextContent {
+                annotations: None,
+                text: "hello".into(),
+                meta: None,
+            }),
+            acp::ContentBlock::Image(acp::ImageContent {
+                annotations: None,
+                data: "image-data".into(),
+                mime_type: "image/png".into(),
+                uri: None,
+                meta: None,
+            }),
+        ];
+
+        let blocks = convert_prompt_to_content_blocks(prompt);
+        assert_eq!(blocks.len(), 2);
+        match &blocks[0] {
+            llm::ContentBlock::Text { text, .. } => assert_eq!(text, "hello"),
+            other => panic!("expected text block, got {other:?}"),
+        }
+        match &blocks[1] {
+            llm::ContentBlock::Image {
+                media_type, data, ..
+            } => {
+                assert_eq!(media_type, "image/png");
+                assert_eq!(data, "image-data");
+            }
+            other => panic!("expected image block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reasoning_fragments_convert_to_empty_text() {
+        let fragment = DisplayFragment::ReasoningSummaryDelta("thought".into());
+        let block = fragment_to_content_block(&fragment);
+        match block {
+            acp::ContentBlock::Text(text) => assert!(text.text.is_empty()),
+            other => panic!("expected text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_tool_kind_matches_known_names() {
+        assert_eq!(map_tool_kind("execute_command"), acp::ToolKind::Execute);
+        assert_eq!(map_tool_kind("read_files"), acp::ToolKind::Read);
+        assert_eq!(map_tool_kind("unknown_tool"), acp::ToolKind::Other);
+    }
+}

@@ -642,6 +642,16 @@ impl UserInterface for ACPUserUI {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::{mpsc, oneshot};
+
+    fn create_ui() -> (
+        ACPUserUI,
+        mpsc::UnboundedReceiver<(acp::SessionNotification, oneshot::Sender<()>)>,
+    ) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let ui = ACPUserUI::new(acp::SessionId("session-1".to_string().into()), tx, None);
+        (ui, rx)
+    }
 
     #[test]
     fn tool_call_state_includes_terminal_content() {
@@ -679,5 +689,101 @@ mod tests {
         state.append_output_chunk("line two\n");
 
         assert_eq!(state.output_text().as_deref(), Some("line one\n"));
+    }
+
+    #[test]
+    fn tool_name_fragment_emits_tool_call_notification() {
+        let (ui, mut rx) = create_ui();
+
+        ui.display_fragment(&DisplayFragment::ToolName {
+            name: "execute_command".into(),
+            id: "tool-1".into(),
+        })
+        .unwrap();
+
+        let (notification, _ack) = rx.try_recv().expect("expected tool call notification");
+        match notification.update {
+            acp::SessionUpdate::ToolCall(call) => {
+                assert_eq!(call.id.0.as_ref(), "tool-1");
+                assert_eq!(call.kind, acp::ToolKind::Execute);
+                assert_eq!(call.title, "execute_command");
+            }
+            other => panic!("unexpected update: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_output_fragments_accumulate_raw_output() {
+        let (ui, mut rx) = create_ui();
+
+        ui.display_fragment(&DisplayFragment::ToolName {
+            name: "read_files".into(),
+            id: "tool-1".into(),
+        })
+        .unwrap();
+        rx.try_recv().unwrap(); // discard ToolCall notification
+
+        ui.display_fragment(&DisplayFragment::ToolOutput {
+            tool_id: "tool-1".into(),
+            chunk: "part one".into(),
+        })
+        .unwrap();
+        let (notification, _ack) = rx.try_recv().expect("first tool update");
+        let update = match notification.update {
+            acp::SessionUpdate::ToolCallUpdate(update) => update,
+            other => panic!("unexpected update: {other:?}"),
+        };
+        assert_eq!(
+            update
+                .fields
+                .raw_output
+                .clone()
+                .and_then(|value| value.as_str().map(str::to_owned)),
+            Some("part one".to_string())
+        );
+
+        ui.display_fragment(&DisplayFragment::ToolOutput {
+            tool_id: "tool-1".into(),
+            chunk: "part two".into(),
+        })
+        .unwrap();
+        let (notification, _ack) = rx.try_recv().expect("second tool update");
+        let update = match notification.update {
+            acp::SessionUpdate::ToolCallUpdate(update) => update,
+            other => panic!("unexpected update: {other:?}"),
+        };
+        assert_eq!(
+            update
+                .fields
+                .raw_output
+                .and_then(|value| value.as_str().map(str::to_owned)),
+            Some("part onepart two".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn send_event_streams_user_message() {
+        let (ui, mut rx) = create_ui();
+
+        let send_future = ui.send_event(UiEvent::DisplayUserInput {
+            content: "Hello".into(),
+            attachments: vec![],
+        });
+        let receive_future = async {
+            let (notification, ack) = rx.recv().await.expect("session update");
+            ack.send(()).unwrap();
+            notification
+        };
+
+        let (send_result, notification) = tokio::join!(send_future, receive_future);
+        send_result.unwrap();
+
+        match notification.update {
+            acp::SessionUpdate::UserMessageChunk { content } => match content {
+                acp::ContentBlock::Text(text) => assert_eq!(text.text, "Hello"),
+                other => panic!("unexpected content: {other:?}"),
+            },
+            other => panic!("unexpected update: {other:?}"),
+        }
     }
 }
