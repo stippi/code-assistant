@@ -1,224 +1,72 @@
-use anyhow::Result;
-use async_trait::async_trait;
-use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::time::{timeout, Duration};
-
 use agent_client_protocol::{self as acp, Client};
+use anyhow::{anyhow, Result};
+use async_trait::async_trait;
+use shell_words::split as split_command_line;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::time::{Duration, Instant};
 
 use crate::utils::command::{CommandExecutor, CommandOutput, StreamingCallback};
+use crate::utils::DefaultCommandExecutor;
+
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+const OUTPUT_BYTE_LIMIT: u64 = 1_048_576;
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+static TERMINAL_WORKER: OnceLock<UnboundedSender<TerminalWorkerRequest>> = OnceLock::new();
+
+/// Register the background worker that proxies terminal RPC calls onto the
+/// `LocalSet` that owns the ACP connection. Must be called from that
+/// `LocalSet` so `spawn_local` is available.
+pub fn register_terminal_worker(connection: Arc<acp::AgentSideConnection>) {
+    if TERMINAL_WORKER.get().is_some() {
+        tracing::warn!("ACP terminal worker already registered");
+        return;
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    match TERMINAL_WORKER.set(tx.clone()) {
+        Ok(()) => {
+            tokio::task::spawn_local(async move {
+                run_terminal_worker(connection, rx).await;
+            });
+        }
+        Err(_) => {
+            tracing::warn!("ACP terminal worker registration raced");
+        }
+    }
+}
+
+fn terminal_worker_sender() -> Option<UnboundedSender<TerminalWorkerRequest>> {
+    TERMINAL_WORKER.get().cloned()
+}
 
 /// CommandExecutor implementation that uses ACP Terminal Protocol
-/// instead of executing commands locally
+/// instead of executing commands locally.
 pub struct ACPTerminalCommandExecutor {
     session_id: acp::SessionId,
-    client: Arc<acp::AgentSideConnection>,
     default_timeout: Duration,
 }
 
 impl ACPTerminalCommandExecutor {
-    pub fn new(session_id: acp::SessionId, client: Arc<acp::AgentSideConnection>) -> Self {
+    pub fn new(session_id: acp::SessionId) -> Self {
         Self {
             session_id,
-            client,
-            default_timeout: Duration::from_secs(300), // 5 minutes default timeout
+            default_timeout: DEFAULT_TIMEOUT,
         }
     }
 
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.default_timeout = timeout;
-        self
-    }
+    fn parse_command_line(command_line: &str) -> Result<(String, Vec<String>)> {
+        let mut parts = split_command_line(command_line)
+            .map_err(|e| anyhow!("Failed to parse command line '{command_line}': {e}"))?
+            .into_iter();
 
-    /// Parse command line into command and args
-    fn parse_command_line(command_line: &str) -> (String, Vec<String>) {
-        // Simple parsing - split on whitespace
-        // In a real implementation, you might want to use a proper shell parser
-        let parts: Vec<&str> = command_line.split_whitespace().collect();
-        if parts.is_empty() {
-            return (command_line.to_string(), vec![]);
-        }
-
-        let command = parts[0].to_string();
-        let args = parts[1..].iter().map(|s| s.to_string()).collect();
-        (command, args)
-    }
-
-    /// Execute command with streaming output via callback
-    async fn execute_with_streaming(
-        &self,
-        command_line: &str,
-        working_dir: Option<&PathBuf>,
-        callback: Option<&dyn StreamingCallback>,
-    ) -> Result<CommandOutput> {
-        let (command, args) = Self::parse_command_line(command_line);
-
-        // Convert environment variables if needed (empty for now)
-        let env = vec![];
-
-        // Create terminal
-        let create_request = acp::CreateTerminalRequest {
-            session_id: self.session_id.clone(),
-            command,
-            args,
-            env,
-            cwd: working_dir.cloned(),
-            output_byte_limit: Some(1_048_576), // 1MB limit
-            meta: None,
-        };
-
-        let create_response = self
-            .client
-            .create_terminal(create_request)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create terminal: {}", e))?;
-
-        let terminal_id = create_response.terminal_id;
-
-        // If we have a callback, stream output in real-time
-        let mut accumulated_output = String::new();
-        let mut exit_status = None;
-
-        if let Some(callback) = callback {
-            // Poll for output until command completes
-            loop {
-                // Get current output
-                let output_request = acp::TerminalOutputRequest {
-                    session_id: self.session_id.clone(),
-                    terminal_id: terminal_id.clone(),
-                    meta: None,
-                };
-
-                let output_response = self
-                    .client
-                    .terminal_output(output_request)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to get terminal output: {}", e))?;
-
-                // Send new output chunks to callback
-                if output_response.output.len() > accumulated_output.len() {
-                    let new_chunk = &output_response.output[accumulated_output.len()..];
-                    if !new_chunk.is_empty() {
-                        let _ = callback.on_output_chunk(new_chunk);
-                    }
-                }
-                accumulated_output = output_response.output;
-
-                // Check if command completed
-                if let Some(status) = output_response.exit_status {
-                    exit_status = Some(status);
-                    break;
-                }
-
-                // If output was truncated, we might want to handle that
-                if output_response.truncated {
-                    tracing::warn!("Terminal output was truncated");
-                }
-
-                // Short delay before next poll
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        } else {
-            // No streaming - just wait for completion
-            let wait_request = acp::WaitForTerminalExitRequest {
-                session_id: self.session_id.clone(),
-                terminal_id: terminal_id.clone(),
-                meta: None,
-            };
-
-            let wait_result = timeout(
-                self.default_timeout,
-                self.client.wait_for_terminal_exit(wait_request),
-            )
-            .await;
-
-            match wait_result {
-                Ok(Ok(wait_response)) => {
-                    exit_status = Some(wait_response.exit_status);
-                }
-                Ok(Err(e)) => {
-                    // Release terminal before returning error
-                    let _ = self.release_terminal(&terminal_id).await;
-                    return Err(anyhow::anyhow!("Failed to wait for terminal exit: {}", e));
-                }
-                Err(_) => {
-                    // Timeout - kill the terminal
-                    let _ = self.kill_terminal(&terminal_id).await;
-                    let _ = self.release_terminal(&terminal_id).await;
-                    return Err(anyhow::anyhow!(
-                        "Command timed out after {:?}",
-                        self.default_timeout
-                    ));
-                }
-            }
-
-            // Get final output
-            let output_request = acp::TerminalOutputRequest {
-                session_id: self.session_id.clone(),
-                terminal_id: terminal_id.clone(),
-                meta: None,
-            };
-
-            let output_response = self
-                .client
-                .terminal_output(output_request)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to get final terminal output: {}", e))?;
-
-            accumulated_output = output_response.output;
-
-            // Use the exit status from the output response if available, otherwise from wait
-            if output_response.exit_status.is_some() {
-                exit_status = output_response.exit_status;
-            }
-        }
-
-        // Release terminal
-        let _ = self.release_terminal(&terminal_id).await;
-
-        // Determine success based on exit status
-        let success = exit_status
-            .as_ref()
-            .and_then(|status| status.exit_code)
-            .map(|code| code == 0)
-            .unwrap_or(false);
-
-        Ok(CommandOutput {
-            success,
-            output: accumulated_output,
-        })
-    }
-
-    /// Helper to kill a terminal
-    async fn kill_terminal(&self, terminal_id: &acp::TerminalId) -> Result<()> {
-        let kill_request = acp::KillTerminalCommandRequest {
-            session_id: self.session_id.clone(),
-            terminal_id: terminal_id.clone(),
-            meta: None,
-        };
-
-        self.client
-            .kill_terminal_command(kill_request)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to kill terminal: {}", e))?;
-
-        Ok(())
-    }
-
-    /// Helper to release a terminal
-    async fn release_terminal(&self, terminal_id: &acp::TerminalId) -> Result<()> {
-        let release_request = acp::ReleaseTerminalRequest {
-            session_id: self.session_id.clone(),
-            terminal_id: terminal_id.clone(),
-            meta: None,
-        };
-
-        self.client
-            .release_terminal(release_request)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to release terminal: {}", e))?;
-
-        Ok(())
+        let command = parts
+            .next()
+            .ok_or_else(|| anyhow!("Command line is empty"))?;
+        let args = parts.collect();
+        Ok((command, args))
     }
 }
 
@@ -239,19 +87,283 @@ impl CommandExecutor for ACPTerminalCommandExecutor {
         working_dir: Option<&PathBuf>,
         callback: Option<&dyn StreamingCallback>,
     ) -> Result<CommandOutput> {
-        // Since ACP client methods return non-Send futures, we need to execute them
-        // in a local task context. For now, we'll fall back to the default executor
-        // TODO: Implement proper ACP terminal integration with LocalSet
-        tracing::warn!(
-            "ACP Terminal integration not yet fully implemented - falling back to local execution"
-        );
+        let (command, args) = match Self::parse_command_line(command_line) {
+            Ok(parsed) => parsed,
+            Err(err) => return Err(err),
+        };
 
-        // For now, fall back to local execution
-        let default_executor = crate::utils::DefaultCommandExecutor;
-        default_executor
-            .execute_streaming(command_line, working_dir, callback)
-            .await
+        let sender = match terminal_worker_sender() {
+            Some(sender) => sender,
+            None => {
+                tracing::warn!("ACP terminal worker unavailable, falling back to local execution");
+                return DefaultCommandExecutor
+                    .execute_streaming(command_line, working_dir, callback)
+                    .await;
+            }
+        };
+
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let request = TerminalExecuteRequest {
+            session_id: self.session_id.clone(),
+            command,
+            args,
+            cwd: working_dir.cloned(),
+            timeout: self.default_timeout,
+            streaming: callback.is_some(),
+            event_tx,
+        };
+
+        if sender
+            .send(TerminalWorkerRequest::Execute(request))
+            .is_err()
+        {
+            tracing::warn!(
+                "Failed to dispatch ACP terminal request, falling back to local execution"
+            );
+            return DefaultCommandExecutor
+                .execute_streaming(command_line, working_dir, callback)
+                .await;
+        }
+
+        let mut final_result: Option<Result<CommandOutput>> = None;
+
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                TerminalWorkerEvent::TerminalAttached { terminal_id } => {
+                    if let Some(cb) = callback {
+                        cb.on_terminal_attached(&terminal_id)?;
+                    }
+                }
+                TerminalWorkerEvent::OutputChunk(chunk) => {
+                    if let Some(cb) = callback {
+                        cb.on_output_chunk(&chunk)?;
+                    }
+                }
+                TerminalWorkerEvent::Finished(result) => {
+                    final_result = Some(result);
+                    break;
+                }
+            }
+        }
+
+        final_result.unwrap_or_else(|| Err(anyhow!("ACP terminal worker ended without a result")))
     }
+}
+
+#[derive(Debug)]
+struct TerminalExecuteRequest {
+    session_id: acp::SessionId,
+    command: String,
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+    timeout: Duration,
+    streaming: bool,
+    event_tx: UnboundedSender<TerminalWorkerEvent>,
+}
+
+enum TerminalWorkerRequest {
+    Execute(TerminalExecuteRequest),
+}
+
+enum TerminalWorkerEvent {
+    TerminalAttached { terminal_id: String },
+    OutputChunk(String),
+    Finished(Result<CommandOutput>),
+}
+
+async fn run_terminal_worker(
+    connection: Arc<acp::AgentSideConnection>,
+    mut rx: UnboundedReceiver<TerminalWorkerRequest>,
+) {
+    while let Some(message) = rx.recv().await {
+        match message {
+            TerminalWorkerRequest::Execute(request) => {
+                execute_via_terminal(connection.clone(), request).await;
+            }
+        }
+    }
+}
+
+async fn execute_via_terminal(
+    connection: Arc<acp::AgentSideConnection>,
+    request: TerminalExecuteRequest,
+) {
+    let event_tx = request.event_tx.clone();
+    let result = run_command(connection, request, &event_tx).await;
+    let _ = event_tx.send(TerminalWorkerEvent::Finished(result));
+}
+
+async fn run_command(
+    connection: Arc<acp::AgentSideConnection>,
+    request: TerminalExecuteRequest,
+    event_tx: &UnboundedSender<TerminalWorkerEvent>,
+) -> Result<CommandOutput> {
+    let TerminalExecuteRequest {
+        session_id,
+        command,
+        args,
+        cwd,
+        timeout,
+        streaming,
+        ..
+    } = request;
+
+    let create_request = acp::CreateTerminalRequest {
+        session_id: session_id.clone(),
+        command,
+        args,
+        env: Vec::new(),
+        cwd,
+        output_byte_limit: Some(OUTPUT_BYTE_LIMIT),
+        meta: None,
+    };
+
+    let create_response = connection
+        .create_terminal(create_request)
+        .await
+        .map_err(|e| anyhow!("Failed to create terminal: {e}"))?;
+
+    let terminal_id = create_response.terminal_id;
+    let _ = event_tx.send(TerminalWorkerEvent::TerminalAttached {
+        terminal_id: terminal_id.0.as_ref().to_string(),
+    });
+
+    let result = if streaming {
+        stream_terminal_output(
+            connection.clone(),
+            &session_id,
+            &terminal_id,
+            timeout,
+            event_tx,
+        )
+        .await
+    } else {
+        wait_for_terminal_completion(connection.clone(), &session_id, &terminal_id, timeout).await
+    };
+
+    let release_request = acp::ReleaseTerminalRequest {
+        session_id,
+        terminal_id: terminal_id.clone(),
+        meta: None,
+    };
+
+    match (
+        result,
+        connection
+            .release_terminal(release_request)
+            .await
+            .map_err(|e| anyhow!("Failed to release terminal: {e}")),
+    ) {
+        (Ok(output), Ok(_)) => Ok(output),
+        (Ok(_), Err(release_err)) => Err(release_err),
+        (Err(err), Ok(_)) => Err(err),
+        (Err(err), Err(release_err)) => {
+            tracing::warn!("Failed to release terminal after error: {release_err}");
+            Err(err)
+        }
+    }
+}
+
+async fn stream_terminal_output(
+    connection: Arc<acp::AgentSideConnection>,
+    session_id: &acp::SessionId,
+    terminal_id: &acp::TerminalId,
+    timeout: Duration,
+    event_tx: &UnboundedSender<TerminalWorkerEvent>,
+) -> Result<CommandOutput> {
+    let deadline = Instant::now() + timeout;
+    let mut seen_len = 0usize;
+
+    loop {
+        let output_response = connection
+            .terminal_output(acp::TerminalOutputRequest {
+                session_id: session_id.clone(),
+                terminal_id: terminal_id.clone(),
+                meta: None,
+            })
+            .await
+            .map_err(|e| anyhow!("Failed to get terminal output: {e}"))?;
+
+        let output_current = output_response.output;
+
+        if output_current.len() < seen_len {
+            // The client truncated the buffer from the front. Reset our cursor.
+            seen_len = 0;
+        }
+
+        if output_current.len() > seen_len {
+            let chunk = output_current[seen_len..].to_string();
+            let _ = event_tx.send(TerminalWorkerEvent::OutputChunk(chunk));
+            seen_len = output_current.len();
+        }
+
+        if output_response.truncated {
+            tracing::warn!("ACP terminal output truncated for session {}", session_id.0);
+        }
+
+        if let Some(status) = output_response.exit_status {
+            let success = status.exit_code.map(|code| code == 0).unwrap_or(false);
+
+            return Ok(CommandOutput {
+                success,
+                output: output_current,
+            });
+        }
+
+        if Instant::now() >= deadline {
+            let _ = connection
+                .kill_terminal_command(acp::KillTerminalCommandRequest {
+                    session_id: session_id.clone(),
+                    terminal_id: terminal_id.clone(),
+                    meta: None,
+                })
+                .await
+                .map_err(|e| anyhow!("Failed to kill terminal after timeout: {e}"))?;
+
+            return Err(anyhow!("Command timed out after {:?}", timeout));
+        }
+
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+async fn wait_for_terminal_completion(
+    connection: Arc<acp::AgentSideConnection>,
+    session_id: &acp::SessionId,
+    terminal_id: &acp::TerminalId,
+    timeout: Duration,
+) -> Result<CommandOutput> {
+    let wait_future = connection.wait_for_terminal_exit(acp::WaitForTerminalExitRequest {
+        session_id: session_id.clone(),
+        terminal_id: terminal_id.clone(),
+        meta: None,
+    });
+
+    let wait_response = tokio::time::timeout(timeout, wait_future)
+        .await
+        .map_err(|_| anyhow!("Command timed out after {:?}", timeout))?
+        .map_err(|e| anyhow!("Failed to wait for terminal exit: {e}"))?;
+
+    let output_response = connection
+        .terminal_output(acp::TerminalOutputRequest {
+            session_id: session_id.clone(),
+            terminal_id: terminal_id.clone(),
+            meta: None,
+        })
+        .await
+        .map_err(|e| anyhow!("Failed to read terminal output: {e}"))?;
+
+    let success = output_response
+        .exit_status
+        .or(Some(wait_response.exit_status))
+        .and_then(|status| status.exit_code)
+        .map(|code| code == 0)
+        .unwrap_or(false);
+
+    Ok(CommandOutput {
+        success,
+        output: output_response.output,
+    })
 }
 
 #[cfg(test)]
@@ -259,27 +371,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_command_line() {
-        let (cmd, args) = ACPTerminalCommandExecutor::parse_command_line("ls -la /tmp");
-        assert_eq!(cmd, "ls");
-        assert_eq!(args, vec!["-la", "/tmp"]);
-
-        let (cmd, args) = ACPTerminalCommandExecutor::parse_command_line("echo hello");
-        assert_eq!(cmd, "echo");
-        assert_eq!(args, vec!["hello"]);
-
-        let (cmd, args) = ACPTerminalCommandExecutor::parse_command_line("simple-command");
-        assert_eq!(cmd, "simple-command");
-        assert!(args.is_empty());
+    fn parse_command_line_handles_quotes() {
+        let (command, args) =
+            ACPTerminalCommandExecutor::parse_command_line("cargo test --package \"my crate\"")
+                .unwrap();
+        assert_eq!(command, "cargo");
+        assert_eq!(args, vec!["test", "--package", "my crate"]);
     }
 
-    #[tokio::test]
-    async fn test_executor_creation() {
-        // This test would require a mock AgentSideConnection
-        // For now, just test that the timeout setting works
-        let session_id = acp::SessionId("test-session".to_string().into());
-
-        // We can't easily create a mock AgentSideConnection here, so we'll skip this test
-        // In a real implementation, you'd want to create a mock or test double
+    #[test]
+    fn parse_command_line_errors_on_empty_input() {
+        let err = ACPTerminalCommandExecutor::parse_command_line("").unwrap_err();
+        assert!(err.to_string().contains("empty"));
     }
 }

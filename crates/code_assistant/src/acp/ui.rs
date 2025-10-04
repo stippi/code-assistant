@@ -43,6 +43,7 @@ struct ToolCallState {
     output_stream: Option<String>,
     final_output: Option<String>,
     status_message: Option<String>,
+    terminal_id: Option<acp::TerminalId>,
 }
 
 impl ToolCallState {
@@ -57,6 +58,7 @@ impl ToolCallState {
             output_stream: None,
             final_output: None,
             status_message: None,
+            terminal_id: None,
         }
     }
 
@@ -106,12 +108,23 @@ impl ToolCallState {
     }
 
     fn append_output_chunk(&mut self, chunk: &str) {
+        if self.terminal_id.is_some() {
+            return;
+        }
         if chunk.is_empty() {
             return;
         }
         self.output_stream
             .get_or_insert_with(String::new)
             .push_str(chunk);
+    }
+
+    fn set_terminal(&mut self, terminal_id: &str) {
+        if terminal_id.is_empty() {
+            return;
+        }
+
+        self.terminal_id = Some(acp::TerminalId(Arc::<str>::from(terminal_id.to_string())));
     }
 
     fn raw_input(&self) -> Option<JsonValue> {
@@ -162,6 +175,11 @@ impl ToolCallState {
 
     fn build_content(&self, base_path: Option<&Path>) -> Option<Vec<acp::ToolCallContent>> {
         let mut content = Vec::new();
+        if let Some(terminal_id) = &self.terminal_id {
+            content.push(acp::ToolCallContent::Terminal {
+                terminal_id: terminal_id.clone(),
+            });
+        }
         let is_failed = matches!(self.status, acp::ToolCallStatus::Failed);
 
         if let Some(diff_content) = self.diff_content(base_path) {
@@ -563,6 +581,27 @@ impl UserInterface for ACPUserUI {
                 let chunk = chunk.clone();
                 let tool_call_update = self.update_tool_call(tool_id, |state| {
                     state.append_output_chunk(&chunk);
+                });
+
+                self.queue_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update));
+            }
+            DisplayFragment::ToolTerminal {
+                tool_id,
+                terminal_id,
+            } => {
+                if tool_id.is_empty() || terminal_id.is_empty() {
+                    tracing::warn!(
+                        "ACPUserUI: ToolTerminal fragment missing tool_id or terminal_id"
+                    );
+                    return Err(UIError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "ToolTerminal fragment missing identifiers".to_string(),
+                    )));
+                }
+
+                let terminal_id = terminal_id.clone();
+                let tool_call_update = self.update_tool_call(tool_id, |state| {
+                    state.set_terminal(&terminal_id);
                 });
 
                 self.queue_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update));

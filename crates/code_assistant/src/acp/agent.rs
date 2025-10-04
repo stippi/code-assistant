@@ -42,6 +42,7 @@ pub struct ACPAgentImpl {
     /// Active UI instances for running prompts, keyed by session ID
     /// Used to signal cancellation to the prompt() wait loop
     active_uis: Arc<Mutex<HashMap<String, Arc<ACPUserUI>>>>,
+    client_capabilities: Arc<Mutex<Option<acp::ClientCapabilities>>>,
 }
 
 impl ACPAgentImpl {
@@ -58,6 +59,7 @@ impl ACPAgentImpl {
             session_update_tx,
             next_session_counter: Cell::new(0),
             active_uis: Arc::new(Mutex::new(HashMap::new())),
+            client_capabilities: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -117,7 +119,7 @@ impl acp::Agent for ACPAgentImpl {
     #[allow(clippy::manual_async_fn)]
     fn initialize<'life0, 'async_trait>(
         &'life0 self,
-        _arguments: acp::InitializeRequest,
+        arguments: acp::InitializeRequest,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<Output = Result<acp::InitializeResponse, acp::Error>>
@@ -128,8 +130,15 @@ impl acp::Agent for ACPAgentImpl {
         Self: 'async_trait,
         'life0: 'async_trait,
     {
+        let client_capabilities = self.client_capabilities.clone();
+
         Box::pin(async move {
             tracing::info!("ACP: Received initialize request");
+
+            {
+                let mut caps = client_capabilities.lock().await;
+                *caps = Some(arguments.client_capabilities.clone());
+            }
 
             Ok(acp::InitializeResponse {
                 protocol_version: acp::V1,
@@ -322,12 +331,18 @@ impl acp::Agent for ACPAgentImpl {
         let session_update_tx = self.session_update_tx.clone();
         let llm_config = self.llm_config.clone();
         let active_uis = self.active_uis.clone();
+        let client_capabilities = self.client_capabilities.clone();
 
         Box::pin(async move {
             tracing::info!(
                 "ACP: Received prompt for session: {}",
                 arguments.session_id.0
             );
+
+            let terminal_supported = {
+                let caps = client_capabilities.lock().await;
+                caps.as_ref().map(|caps| caps.terminal).unwrap_or(false)
+            };
 
             let base_path = {
                 let manager = session_manager.lock().await;
@@ -398,17 +413,20 @@ impl acp::Agent for ACPAgentImpl {
 
             // Use ACP Terminal Command Executor if client connection is available
             let command_executor: Box<dyn crate::utils::command::CommandExecutor> = {
-                if let Some(client_conn) = get_acp_client_connection() {
+                if terminal_supported && get_acp_client_connection().is_some() {
                     tracing::info!(
                         "ACP: Using ACPTerminalCommandExecutor for session {}",
                         arguments.session_id.0
                     );
                     Box::new(crate::acp::ACPTerminalCommandExecutor::new(
                         arguments.session_id.clone(),
-                        client_conn,
                     ))
                 } else {
-                    tracing::warn!("ACP: No client connection available, falling back to DefaultCommandExecutor");
+                    if terminal_supported {
+                        tracing::warn!("ACP: No client connection available, falling back to DefaultCommandExecutor");
+                    } else {
+                        tracing::info!("ACP: Client does not advertise terminal support; using DefaultCommandExecutor");
+                    }
                     Box::new(DefaultCommandExecutor)
                 }
             };

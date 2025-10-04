@@ -48,6 +48,7 @@ async-trait = "0.1"
 dotenv = "0.15"
 dirs = "5.0"
 md5 = "0.7.0"
+shell-words = "1.1"
 
 # Date and time handling
 chrono = { version = "0.4", features = ["serde"] }

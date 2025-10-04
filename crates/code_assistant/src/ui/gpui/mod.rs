@@ -1004,6 +1004,14 @@ impl Gpui {
                         container.append_tool_output(tool_id, chunk, cx);
                     });
                 }
+                DisplayFragment::ToolTerminal {
+                    tool_id,
+                    terminal_id,
+                } => {
+                    tracing::debug!(
+                        "GPUI: Tool {tool_id} attached terminal {terminal_id}; GUI terminal embedding unsupported"
+                    );
+                }
                 DisplayFragment::ReasoningComplete => {
                     self.update_container(container, cx, |container, cx| {
                         container.complete_reasoning(cx);
@@ -1340,6 +1348,14 @@ impl UserInterface for Gpui {
                     tool_id: tool_id.clone(),
                     chunk: chunk.clone(),
                 });
+            }
+            DisplayFragment::ToolTerminal {
+                tool_id,
+                terminal_id,
+            } => {
+                tracing::debug!(
+                    "GPUI: Tool {tool_id} attached terminal {terminal_id}; no dedicated UI hook"
+                );
             }
             DisplayFragment::ReasoningComplete => {
                 self.push_event(UiEvent::CompleteReasoning);

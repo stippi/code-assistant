@@ -84,6 +84,17 @@ impl<'a> StreamingCallback for ToolOutputStreamer<'a> {
 
         Ok(())
     }
+
+    fn on_terminal_attached(&self, terminal_id: &str) -> Result<()> {
+        let fragment = DisplayFragment::ToolTerminal {
+            tool_id: self.tool_id.clone(),
+            terminal_id: terminal_id.to_string(),
+        };
+
+        let _ = self.ui.display_fragment(&fragment);
+
+        Ok(())
+    }
 }
 
 // Tool implementation

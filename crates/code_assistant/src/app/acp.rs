@@ -1,5 +1,5 @@
 use super::AgentRunConfig;
-use crate::acp::{set_acp_client_connection, ACPAgentImpl};
+use crate::acp::{register_terminal_worker, set_acp_client_connection, ACPAgentImpl};
 use crate::persistence::FileSessionPersistence;
 use crate::session::{AgentConfig, SessionManager};
 use agent_client_protocol::Client;
@@ -88,9 +88,10 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
                     tokio::task::spawn_local(fut);
                 });
 
-            // Set the global connection for use by the ACPTerminalCommandExecutor
+            // Set the global connection for use by ACP components
             let conn_arc = Arc::new(conn);
             set_acp_client_connection(conn_arc.clone());
+            register_terminal_worker(conn_arc.clone());
 
             // Kick off a background task to send session notifications to the client
             let conn_for_notifications = conn_arc.clone();
