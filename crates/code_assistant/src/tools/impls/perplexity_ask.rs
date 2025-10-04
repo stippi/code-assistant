@@ -116,6 +116,7 @@ impl Tool for PerplexityAskTool {
                 ToolScope::AgentWithDiffBlocks,
             ],
             hidden: false,
+            title_template: None, // Uses default tool name
         }
     }
 

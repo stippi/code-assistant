@@ -163,6 +163,10 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
             DisplayFragment::ToolOutput { tool_id, chunk } => {
                 println!("  [{i}] ToolOutput(tool_id: {tool_id}, chunk: {chunk:?})")
             }
+            DisplayFragment::ToolTerminal {
+                tool_id,
+                terminal_id,
+            } => println!("  [{i}] ToolTerminal(tool_id: {tool_id}, terminal_id: {terminal_id})"),
             DisplayFragment::ReasoningComplete => println!("  [{i}] ReasoningComplete"),
         }
     }
@@ -205,6 +209,16 @@ pub fn fragments_match(expected: &DisplayFragment, actual: &DisplayFragment) -> 
             DisplayFragment::ReasoningSummaryDelta(expected_delta),
             DisplayFragment::ReasoningSummaryDelta(actual_delta),
         ) => expected_delta == actual_delta,
+        (
+            DisplayFragment::ToolTerminal {
+                terminal_id: expected_terminal,
+                ..
+            },
+            DisplayFragment::ToolTerminal {
+                terminal_id: actual_terminal,
+                ..
+            },
+        ) => expected_terminal == actual_terminal,
         _ => false,
     }
 }

@@ -113,6 +113,7 @@ impl Tool for WriteFileTool {
                 ToolScope::AgentWithDiffBlocks,
             ],
             hidden: false,
+            title_template: Some("Writing {path}"),
         }
     }
 

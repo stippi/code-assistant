@@ -123,6 +123,7 @@ impl Tool for EditTool {
             })),
             supported_scopes: &[ToolScope::McpServer, ToolScope::Agent],
             hidden: false,
+            title_template: Some("Editing {path}"),
         }
     }
 

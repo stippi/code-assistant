@@ -696,8 +696,11 @@ impl Gpui {
             UiEvent::StreamingStarted(request_id) => {
                 let mut queue = self.message_queue.lock().unwrap();
 
+                // Grab the last container so we can reuse it without holding the lock
+                let last_container = queue.last().cloned();
+
                 // Check if we need to create a new assistant container
-                let needs_new_container = if let Some(last) = queue.last() {
+                let needs_new_container = if let Some(last) = last_container.as_ref() {
                     cx.update_entity(last, |message, _cx| message.is_user_message())
                         .expect("Failed to update entity")
                 } else {
@@ -714,13 +717,18 @@ impl Gpui {
                         })
                         .expect("Failed to create new container");
                     queue.push(assistant_container);
-                } else {
-                    // Use existing assistant container
-                    self.update_last_message(cx, |container, cx| {
+                } else if let Some(last_container) = last_container {
+                    // Drop the queue lock before updating the container to avoid re-locking
+                    drop(queue);
+                    self.update_container(&last_container, cx, |container, cx| {
                         container.set_current_request_id(request_id);
                         cx.notify();
                     });
+                    return;
                 }
+
+                // Drop the lock before falling through to avoid holding it longer than necessary
+                drop(queue);
             }
             UiEvent::StreamingStopped {
                 id,
@@ -995,6 +1003,14 @@ impl Gpui {
                     self.update_container(container, cx, |container, cx| {
                         container.append_tool_output(tool_id, chunk, cx);
                     });
+                }
+                DisplayFragment::ToolTerminal {
+                    tool_id,
+                    terminal_id,
+                } => {
+                    tracing::debug!(
+                        "GPUI: Tool {tool_id} attached terminal {terminal_id}; GUI terminal embedding unsupported"
+                    );
                 }
                 DisplayFragment::ReasoningComplete => {
                     self.update_container(container, cx, |container, cx| {
@@ -1332,6 +1348,14 @@ impl UserInterface for Gpui {
                     tool_id: tool_id.clone(),
                     chunk: chunk.clone(),
                 });
+            }
+            DisplayFragment::ToolTerminal {
+                tool_id,
+                terminal_id,
+            } => {
+                tracing::debug!(
+                    "GPUI: Tool {tool_id} attached terminal {terminal_id}; no dedicated UI hook"
+                );
             }
             DisplayFragment::ReasoningComplete => {
                 self.push_event(UiEvent::CompleteReasoning);
