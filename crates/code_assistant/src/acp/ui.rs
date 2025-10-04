@@ -152,7 +152,10 @@ impl ToolCallState {
     }
 
     fn diff_content(&self, base_path: Option<&Path>) -> Option<acp::ToolCallContent> {
-        if !matches!(self.tool_name.as_deref(), Some("edit")) {
+        if !matches!(
+            self.tool_name.as_deref(),
+            Some("edit") | Some("write_file") | Some("replace_in_file")
+        ) {
             return None;
         }
 
@@ -175,39 +178,47 @@ impl ToolCallState {
 
     fn build_content(&self, base_path: Option<&Path>) -> Option<Vec<acp::ToolCallContent>> {
         let mut content = Vec::new();
+        let is_failed = matches!(self.status, acp::ToolCallStatus::Failed);
+
+        // Always add terminal content first if present
         if let Some(terminal_id) = &self.terminal_id {
             content.push(acp::ToolCallContent::Terminal {
                 terminal_id: terminal_id.clone(),
             });
         }
-        let is_failed = matches!(self.status, acp::ToolCallStatus::Failed);
 
+        // For file modification tools (edit, write_file, replace_in_file), use diff content
         if let Some(diff_content) = self.diff_content(base_path) {
             content.push(diff_content);
-        } else if !self.parameters.is_empty() {
+        } else if self.terminal_id.is_some() && !self.parameters.is_empty() {
+            // For terminal tools, show parameters (like the command being run)
             let mut lines = Vec::new();
             for (name, value) in &self.parameters {
                 lines.push(format!("{name}: {}", value.value));
             }
             content.push(text_content(lines.join("\n")));
+        } else {
+            // For all other tools, put the full output as the primary content
+            if let Some(output) = self.output_text() {
+                if !output.is_empty() {
+                    content.push(text_content(output));
+                }
+            }
         }
 
+        // Add error messages for failed tools
         if is_failed {
             if let Some(message) = &self.status_message {
                 if !message.is_empty() {
-                    content.push(text_content(message.clone()));
-                }
-            }
+                    // Only add status message if it's different from the output
+                    let should_add_status = self
+                        .output_text()
+                        .map(|output| message.trim() != output.trim())
+                        .unwrap_or(true);
 
-            if let Some(output) = self.output_text() {
-                if !output.is_empty()
-                    && !self
-                        .status_message
-                        .as_ref()
-                        .map(|msg| msg.trim() == output.trim())
-                        .unwrap_or(false)
-                {
-                    content.push(text_content(output));
+                    if should_add_status {
+                        content.push(text_content(message.clone()));
+                    }
                 }
             }
         }
@@ -784,6 +795,59 @@ mod tests {
                 other => panic!("unexpected content: {other:?}"),
             },
             other => panic!("unexpected update: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_call_content_prioritizes_output_over_parameters() {
+        let mut state = ToolCallState::new("tool-1");
+        state.set_tool_name("read_files");
+        state.append_parameter("paths", "[\"file1.txt\", \"file2.txt\"]");
+        state.append_output_chunk("Successfully loaded the following file(s):\n");
+        state.append_output_chunk(">>>>> FILE: file1.txt\nContent of file 1\n");
+        state.append_output_chunk(">>>>> FILE: file2.txt\nContent of file 2\n");
+
+        let content = state
+            .build_content(None)
+            .expect("content should be emitted");
+
+        // Should contain the full output, not just parameters
+        assert_eq!(content.len(), 1);
+        match &content[0] {
+            acp::ToolCallContent::Content {
+                content: acp::ContentBlock::Text(acp::TextContent { text, .. }),
+            } => {
+                assert!(text.contains("Successfully loaded the following file(s)"));
+                assert!(text.contains("Content of file 1"));
+                assert!(text.contains("Content of file 2"));
+                assert!(!text.contains("paths: [\"file1.txt\", \"file2.txt\"]"));
+            }
+            other => panic!("expected text content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edit_tool_still_uses_diff_content() {
+        let mut state = ToolCallState::new("tool-1");
+        state.set_tool_name("edit");
+        state.append_parameter("path", "test.txt");
+        state.append_parameter("old_text", "old content");
+        state.append_parameter("new_text", "new content");
+        state.append_output_chunk("File edited successfully");
+
+        let content = state
+            .build_content(None)
+            .expect("content should be emitted");
+
+        // Should contain diff content, not output
+        assert_eq!(content.len(), 1);
+        match &content[0] {
+            acp::ToolCallContent::Diff { diff } => {
+                assert_eq!(diff.path.to_string_lossy(), "test.txt");
+                assert_eq!(diff.old_text.as_deref(), Some("old content"));
+                assert_eq!(diff.new_text, "new content");
+            }
+            other => panic!("expected diff content, got {other:?}"),
         }
     }
 }
