@@ -69,7 +69,7 @@ impl ToolCallState {
     }
 
     fn kind(&self) -> acp::ToolKind {
-        self.kind.clone().unwrap_or(acp::ToolKind::Other)
+        self.kind.unwrap_or(acp::ToolKind::Other)
     }
 
     fn status(&self) -> acp::ToolCallStatus {
@@ -263,7 +263,7 @@ impl ToolCallState {
             id: self.id.clone(),
             meta: None,
             fields: acp::ToolCallUpdateFields {
-                kind: self.kind.clone(),
+                kind: self.kind,
                 status: Some(self.status()),
                 title: self.title.clone(),
                 content: self.build_content(base_path),
