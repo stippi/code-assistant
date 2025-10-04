@@ -74,6 +74,7 @@ impl Tool for ListProjectsTool {
             })),
             supported_scopes: &[ToolScope::McpServer],
             hidden: false,
+            title_template: None, // Uses default tool name
         }
     }
 

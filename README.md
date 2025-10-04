@@ -14,6 +14,8 @@ An AI coding assistant built in Rust that provides both command-line and graphic
 
 **Multiple Interface Options**: Choose between a modern GUI built on Zed's GPUI framework, traditional terminal interface, or headless MCP server mode for integration with MCP clients such as Claude Desktop.
 
+**Agent Client Protocol (ACP) Support**: Full compatibility with the [Agent Client Protocol](https://agentclientprotocol.com/) standard, enabling seamless integration with ACP-compatible editors like [Zed](https://zed.dev). See Zed's documentation on [adding custom agents](https://zed.dev/docs/ai/external-agents#add-custom-agents) for setup instructions.
+
 **Intelligent Project Exploration**: Autonomously builds understanding of codebases through working memory that tracks file structures, dependencies, and project context.
 
 **Auto-Loaded Repository Guidance**: Automatically includes `AGENTS.md` (or `CLAUDE.md` fallback) from the project root in the assistant's system context to align behavior with repo-specific instructions.
@@ -93,6 +95,18 @@ code-assistant --task "Add error handling" --provider openai --model gpt-5
 code-assistant server
 ```
 
+### ACP Agent Mode
+
+```bash
+# Run as ACP-compatible agent
+code-assistant acp
+
+# With specific provider and model
+code-assistant acp --provider openai --model gpt-5-codex
+```
+
+The ACP mode enables integration with editors that support the [Agent Client Protocol](https://agentclientprotocol.com/), such as [Zed](https://zed.dev). When running in ACP mode, the code-assistant communicates via JSON-RPC over stdin/stdout, supporting features like pending messages, real-time streaming, and tool execution with proper permission handling.
+
 ## Configuration
 
 <details>
@@ -153,6 +167,36 @@ code-assistant --provider ollama --model llama2 --num-ctx 4096
 ```
 
 **Other providers**: Vertex AI (Google), OpenRouter, Groq, MistralAI
+</details>
+
+<details>
+<summary>Zed Editor Integration (ACP)</summary>
+
+Configure in Zed settings (**Extensions** → **Installed** → **Assistant** → **Settings**):
+
+```json
+{
+  "agent_servers": {
+    "Code-Assistant": {
+      "command": "/path/to/code-assistant/target/release/code-assistant",
+      "args": [
+        "acp",
+        "--provider",
+        "anthropic",
+        "--model",
+        "claude-sonnet-4-5"
+      ],
+      "env": {
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+Replace the path with your actual installation location and configure your preferred provider. The agent will appear in Zed's assistant panel and support all ACP features including pending messages, real-time streaming, and interactive tool execution.
+
+For detailed setup instructions, see [Zed's documentation on adding custom agents](https://zed.dev/docs/ai/external-agents#add-custom-agents).
 </details>
 
 <details>

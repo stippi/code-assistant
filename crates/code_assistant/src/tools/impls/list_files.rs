@@ -159,6 +159,7 @@ impl Tool for ListFilesTool {
                 ToolScope::AgentWithDiffBlocks,
             ],
             hidden: false,
+            title_template: Some("Listing files in {paths}"),
         }
     }
 

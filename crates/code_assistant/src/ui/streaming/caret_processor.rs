@@ -760,7 +760,8 @@ impl CaretStreamProcessor {
                 DisplayFragment::ToolName { .. }
                 | DisplayFragment::ToolParameter { .. }
                 | DisplayFragment::ToolEnd { .. }
-                | DisplayFragment::ToolOutput { .. } => {
+                | DisplayFragment::ToolOutput { .. }
+                | DisplayFragment::ToolTerminal { .. } => {
                     // Skip tool-related fragments for hidden tools
                     return Ok(());
                 }
@@ -907,7 +908,7 @@ impl CaretStreamProcessor {
                             buffered_fragments.push(fragment);
                         }
                     }
-                    DisplayFragment::ToolOutput { .. } => {
+                    DisplayFragment::ToolOutput { .. } | DisplayFragment::ToolTerminal { .. } => {
                         // Tool output - emit immediately (we've already decided to allow the tool)
                         self.ui.display_fragment(&fragment)?;
                     }

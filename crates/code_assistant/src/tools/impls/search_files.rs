@@ -273,6 +273,7 @@ impl Tool for SearchFilesTool {
                 ToolScope::AgentWithDiffBlocks,
             ],
             hidden: false,
+            title_template: Some("Searching for '{regex}'"),
         }
     }
 

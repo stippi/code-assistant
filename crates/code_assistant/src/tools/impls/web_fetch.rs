@@ -97,6 +97,7 @@ impl Tool for WebFetchTool {
                 ToolScope::AgentWithDiffBlocks,
             ],
             hidden: false,
+            title_template: Some("Fetching {url}"),
         }
     }
 

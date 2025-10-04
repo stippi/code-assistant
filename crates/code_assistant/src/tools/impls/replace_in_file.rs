@@ -145,6 +145,7 @@ impl Tool for ReplaceInFileTool {
             })),
             supported_scopes: &[ToolScope::AgentWithDiffBlocks],
             hidden: false,
+            title_template: Some("Replacing in {path}"),
         }
     }
 

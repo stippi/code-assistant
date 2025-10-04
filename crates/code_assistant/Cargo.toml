@@ -48,6 +48,7 @@ async-trait = "0.1"
 dotenv = "0.15"
 dirs = "5.0"
 md5 = "0.7.0"
+shell-words = "1.1"
 
 # Date and time handling
 chrono = { version = "0.4", features = ["serde"] }
@@ -67,6 +68,10 @@ base64 = "0.22"
 
 # Image processing
 image = "0.25"
+
+# Agent Client Protocol
+agent-client-protocol = "0.4"
+tokio-util = { version = "0.7", features = ["compat"] }
 
 [dev-dependencies]
 axum = "0.7"
