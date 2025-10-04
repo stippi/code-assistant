@@ -1,6 +1,5 @@
 use agent_client_protocol as acp;
 use anyhow::Result;
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -33,12 +32,9 @@ pub fn get_acp_client_connection() -> Option<Arc<acp::AgentSideConnection>> {
 
 pub struct ACPAgentImpl {
     session_manager: Arc<Mutex<SessionManager>>,
-    #[allow(dead_code)]
     agent_config: AgentConfig,
     llm_config: LLMClientConfig,
     session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
-    #[allow(dead_code)]
-    next_session_counter: Cell<u64>,
     /// Active UI instances for running prompts, keyed by session ID
     /// Used to signal cancellation to the prompt() wait loop
     active_uis: Arc<Mutex<HashMap<String, Arc<ACPUserUI>>>>,
@@ -57,61 +53,9 @@ impl ACPAgentImpl {
             agent_config,
             llm_config,
             session_update_tx,
-            next_session_counter: Cell::new(0),
             active_uis: Arc::new(Mutex::new(HashMap::new())),
             client_capabilities: Arc::new(Mutex::new(None)),
         }
-    }
-
-    /// Generate a unique session ID
-    #[allow(dead_code)]
-    fn generate_session_id(&self) -> String {
-        let counter = self.next_session_counter.get();
-        self.next_session_counter.set(counter + 1);
-        format!("acp-session-{counter}")
-    }
-
-    /// Replay session history by loading messages and converting to DisplayFragments
-    #[allow(dead_code)]
-    async fn replay_session_history(&self, session_id: &str) -> Result<()> {
-        use crate::ui::streaming::create_stream_processor;
-
-        let (tool_syntax, messages, base_path) = {
-            let manager = self.session_manager.lock().await;
-            let session_instance = manager
-                .get_session(session_id)
-                .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-
-            (
-                session_instance.session.tool_syntax,
-                session_instance.session.messages.clone(),
-                session_instance.session.init_path.clone(),
-            )
-        };
-
-        // Create a UI for this session
-        let ui = Arc::new(ACPUserUI::new(
-            acp::SessionId(session_id.to_string().into()),
-            self.session_update_tx.clone(),
-            base_path,
-        ));
-
-        // Create stream processor to extract fragments
-        let mut processor = create_stream_processor(tool_syntax, ui.clone(), 0);
-
-        // Process each message to extract and send fragments
-        for message in messages {
-            let fragments = processor
-                .extract_fragments_from_message(&message)
-                .map_err(|e| anyhow::anyhow!("Failed to extract fragments: {}", e))?;
-
-            for fragment in fragments {
-                ui.display_fragment(&fragment)
-                    .map_err(|e| anyhow::anyhow!("Failed to display fragment: {}", e))?;
-            }
-        }
-
-        Ok(())
     }
 }
 
