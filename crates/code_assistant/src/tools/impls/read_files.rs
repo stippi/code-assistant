@@ -141,6 +141,7 @@ impl Tool for ReadFilesTool {
                 ToolScope::AgentWithDiffBlocks,
             ],
             hidden: false,
+            title_template: Some("Reading {paths}"),
         }
     }
 

@@ -114,6 +114,7 @@ impl Tool for WebSearchTool {
                 ToolScope::AgentWithDiffBlocks,
             ],
             hidden: false,
+            title_template: Some("Searching web for '{query}'"),
         }
     }
 

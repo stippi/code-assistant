@@ -142,6 +142,7 @@ impl Tool for ExecuteCommandTool {
                 ToolScope::AgentWithDiffBlocks,
             ],
             hidden: false,
+            title_template: Some("Running: {command_line}"),
         }
     }
 

@@ -24,4 +24,7 @@ pub struct ToolSpec {
     pub supported_scopes: &'static [ToolScope],
     /// Whether this tool should be hidden from UI display
     pub hidden: bool,
+    /// Optional template for generating dynamic titles from parameters
+    /// Use {parameter_name} placeholders, e.g. "Reading {paths}" or "Searching for '{regex}'"
+    pub title_template: Option<&'static str>,
 }
