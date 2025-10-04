@@ -638,3 +638,46 @@ impl UserInterface for ACPUserUI {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_call_state_includes_terminal_content() {
+        let mut state = ToolCallState::new("tool-1");
+        state.set_tool_name("execute_command");
+        state.append_parameter("command", "npm test");
+        state.append_output_chunk("running…\n");
+
+        state.set_terminal("term-123");
+        let content = state
+            .build_content(None)
+            .expect("content should be emitted");
+
+        assert!(matches!(
+            content.first(),
+            Some(acp::ToolCallContent::Terminal { terminal_id })
+                if terminal_id.0.as_ref() == "term-123"
+        ));
+
+        assert!(content.iter().any(|item| matches!(
+            item,
+            acp::ToolCallContent::Content {
+                content: acp::ContentBlock::Text(acp::TextContent { text, .. })
+            } if text.contains("command: npm test")
+        )));
+    }
+
+    #[test]
+    fn tool_output_stops_streaming_after_terminal_attached() {
+        let mut state = ToolCallState::new("tool-1");
+        state.append_output_chunk("line one\n");
+        assert_eq!(state.output_text().as_deref(), Some("line one\n"));
+
+        state.set_terminal("term-123");
+        state.append_output_chunk("line two\n");
+
+        assert_eq!(state.output_text().as_deref(), Some("line one\n"));
+    }
+}
