@@ -2,7 +2,7 @@ use agent_client_protocol as acp;
 use anyhow::Result;
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::acp::types::convert_prompt_to_content_blocks;
@@ -14,6 +14,22 @@ use crate::session::{AgentConfig, SessionManager};
 use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
 use llm::factory::{create_llm_client, LLMClientConfig};
+
+/// Global connection to the ACP client
+/// Since there's only one connection per agent process, this is acceptable
+static ACP_CLIENT_CONNECTION: OnceLock<Arc<acp::AgentSideConnection>> = OnceLock::new();
+
+/// Set the global ACP client connection
+pub fn set_acp_client_connection(connection: Arc<acp::AgentSideConnection>) {
+    if ACP_CLIENT_CONNECTION.set(connection).is_err() {
+        tracing::warn!("ACP client connection was already set");
+    }
+}
+
+/// Get the global ACP client connection
+pub fn get_acp_client_connection() -> Option<Arc<acp::AgentSideConnection>> {
+    ACP_CLIENT_CONNECTION.get().cloned()
+}
 
 pub struct ACPAgentImpl {
     session_manager: Arc<Mutex<SessionManager>>,
@@ -110,13 +126,21 @@ impl acp::Agent for ACPAgentImpl {
                 protocol_version: acp::V1,
                 agent_capabilities: acp::AgentCapabilities {
                     load_session: true,
+                    mcp_capabilities: acp::McpCapabilities {
+                        http: false,
+                        sse: false,
+                        meta: None,
+                    },
                     prompt_capabilities: acp::PromptCapabilities {
                         image: true,
                         audio: false,
                         embedded_context: true,
+                        meta: None,
                     },
+                    meta: None,
                 },
                 auth_methods: Vec::new(),
+                meta: None,
             })
         }
     }
@@ -173,6 +197,8 @@ impl acp::Agent for ACPAgentImpl {
 
             Ok(acp::NewSessionResponse {
                 session_id: acp::SessionId(session_id.into()),
+                modes: None, // TODO: Support modes like "Plan", "Architect" and "Code".
+                meta: None,
             })
         }
     }
@@ -291,8 +317,10 @@ impl acp::Agent for ACPAgentImpl {
                             content: acp::ContentBlock::Text(acp::TextContent {
                                 annotations: None,
                                 text: format!("ERROR: {error_msg}"),
+                                meta: None,
                             }),
                         },
+                        meta: None,
                     },
                     tx,
                 ));
@@ -312,13 +340,30 @@ impl acp::Agent for ACPAgentImpl {
                     uis.remove(arguments.session_id.0.as_ref());
                     return Ok(acp::PromptResponse {
                         stop_reason: acp::StopReason::EndTurn,
+                        meta: None,
                     });
                 }
             };
 
             // Create project manager and command executor
             let project_manager = Box::new(DefaultProjectManager::new());
-            let command_executor = Box::new(DefaultCommandExecutor);
+
+            // Use ACP Terminal Command Executor if client connection is available
+            let command_executor: Box<dyn crate::utils::command::CommandExecutor> = {
+                if let Some(client_conn) = get_acp_client_connection() {
+                    tracing::info!(
+                        "ACP: Using ACPTerminalCommandExecutor for session {}",
+                        arguments.session_id.0
+                    );
+                    Box::new(crate::acp::ACPTerminalCommandExecutor::new(
+                        arguments.session_id.clone(),
+                        client_conn,
+                    ))
+                } else {
+                    tracing::warn!("ACP: No client connection available, falling back to DefaultCommandExecutor");
+                    Box::new(DefaultCommandExecutor)
+                }
+            };
 
             // Mark session as connected so ProxyUI forwards to our UI
             {
@@ -334,6 +379,7 @@ impl acp::Agent for ACPAgentImpl {
                     uis.remove(arguments.session_id.0.as_ref());
                     return Ok(acp::PromptResponse {
                         stop_reason: acp::StopReason::EndTurn,
+                        meta: None,
                     });
                 }
             }
@@ -361,6 +407,7 @@ impl acp::Agent for ACPAgentImpl {
                 uis.remove(arguments.session_id.0.as_ref());
                 return Ok(acp::PromptResponse {
                     stop_reason: acp::StopReason::EndTurn,
+                    meta: None,
                 });
             }
 
@@ -406,6 +453,7 @@ impl acp::Agent for ACPAgentImpl {
 
                     return Ok(acp::PromptResponse {
                         stop_reason: acp::StopReason::Cancelled,
+                        meta: None,
                     });
                 }
             }
@@ -431,6 +479,7 @@ impl acp::Agent for ACPAgentImpl {
 
             Ok(acp::PromptResponse {
                 stop_reason: acp::StopReason::EndTurn,
+                meta: None,
             })
         }
     }

@@ -7,11 +7,13 @@ pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBloc
         DisplayFragment::PlainText(text) => acp::ContentBlock::Text(acp::TextContent {
             annotations: None,
             text: text.clone(),
+            meta: None,
         }),
         // Thinking text is just regular text in ACP (no special annotation)
         DisplayFragment::ThinkingText(text) => acp::ContentBlock::Text(acp::TextContent {
             annotations: None,
             text: text.clone(),
+            meta: None,
         }),
         DisplayFragment::Image { media_type, data } => {
             acp::ContentBlock::Image(acp::ImageContent {
@@ -19,6 +21,7 @@ pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBloc
                 data: data.clone(),
                 mime_type: media_type.clone(),
                 uri: None,
+                meta: None,
             })
         }
         // Tool-related fragments are not converted to content blocks
@@ -35,6 +38,7 @@ pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBloc
             acp::ContentBlock::Text(acp::TextContent {
                 annotations: None,
                 text: String::new(),
+                meta: None,
             })
         }
     }

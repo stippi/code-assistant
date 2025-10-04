@@ -154,6 +154,7 @@ impl ToolCallState {
             path: resolve_path(path, base_path),
             old_text,
             new_text,
+            meta: None,
         };
 
         Some(acp::ToolCallContent::Diff { diff })
@@ -217,6 +218,7 @@ impl ToolCallState {
         Some(vec![acp::ToolCallLocation {
             path: resolved,
             line,
+            meta: None,
         }])
     }
 
@@ -234,12 +236,14 @@ impl ToolCallState {
             locations: self.build_locations(base_path).unwrap_or_default(),
             raw_input: self.raw_input(),
             raw_output: self.raw_output(),
+            meta: None,
         }
     }
 
     fn to_update(&self, base_path: Option<&Path>) -> acp::ToolCallUpdate {
         acp::ToolCallUpdate {
             id: self.id.clone(),
+            meta: None,
             fields: acp::ToolCallUpdateFields {
                 kind: self.kind.clone(),
                 status: Some(self.status()),
@@ -271,6 +275,7 @@ fn text_content(text: String) -> acp::ToolCallContent {
         content: acp::ContentBlock::Text(acp::TextContent {
             annotations: None,
             text,
+            meta: None,
         }),
     }
 }
@@ -316,6 +321,7 @@ impl ACPUserUI {
                 acp::SessionNotification {
                     session_id: self.session_id.clone(),
                     update,
+                    meta: None,
                 },
                 tx,
             ))
@@ -373,6 +379,7 @@ impl ACPUserUI {
         let notification = acp::SessionNotification {
             session_id: self.session_id.clone(),
             update,
+            meta: None,
         };
 
         if let Err(e) = self.session_update_tx.send((notification, ack_tx)) {
@@ -396,6 +403,7 @@ impl UserInterface for ACPUserUI {
                     content: acp::ContentBlock::Text(acp::TextContent {
                         annotations: None,
                         text: content,
+                        meta: None,
                     }),
                 })
                 .await?;
@@ -411,6 +419,7 @@ impl UserInterface for ACPUserUI {
                                     data: content,
                                     mime_type,
                                     uri: None,
+                                    meta: None,
                                 }),
                             })
                             .await?;
@@ -566,6 +575,7 @@ impl UserInterface for ACPUserUI {
                     content: acp::ContentBlock::Text(acp::TextContent {
                         annotations: None,
                         text: delta.clone(),
+                        meta: None,
                     }),
                 });
             }

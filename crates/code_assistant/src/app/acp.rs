@@ -1,5 +1,5 @@
 use super::AgentRunConfig;
-use crate::acp::ACPAgentImpl;
+use crate::acp::{set_acp_client_connection, ACPAgentImpl};
 use crate::persistence::FileSessionPersistence;
 use crate::session::{AgentConfig, SessionManager};
 use agent_client_protocol::Client;
@@ -88,10 +88,17 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
                     tokio::task::spawn_local(fut);
                 });
 
+            // Set the global connection for use by the ACPTerminalCommandExecutor
+            let conn_arc = Arc::new(conn);
+            set_acp_client_connection(conn_arc.clone());
+
             // Kick off a background task to send session notifications to the client
+            let conn_for_notifications = conn_arc.clone();
             tokio::task::spawn_local(async move {
                 while let Some((session_notification, tx)) = session_update_rx.recv().await {
-                    let result = conn.session_notification(session_notification).await;
+                    let result = conn_for_notifications
+                        .session_notification(session_notification)
+                        .await;
                     if let Err(e) = result {
                         tracing::error!("Failed to send session notification: {}", e);
                         break;
