@@ -115,11 +115,20 @@ impl ACPAgentImpl {
 
 impl acp::Agent for ACPAgentImpl {
     #[allow(clippy::manual_async_fn)]
-    fn initialize(
-        &self,
+    fn initialize<'life0, 'async_trait>(
+        &'life0 self,
         _arguments: acp::InitializeRequest,
-    ) -> impl std::future::Future<Output = Result<acp::InitializeResponse, acp::Error>> {
-        async move {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<acp::InitializeResponse, acp::Error>>
+                + 'async_trait,
+        >,
+    >
+    where
+        Self: 'async_trait,
+        'life0: 'async_trait,
+    {
+        Box::pin(async move {
             tracing::info!("ACP: Received initialize request");
 
             Ok(acp::InitializeResponse {
@@ -142,29 +151,47 @@ impl acp::Agent for ACPAgentImpl {
                 auth_methods: Vec::new(),
                 meta: None,
             })
-        }
+        })
     }
 
     #[allow(clippy::manual_async_fn)]
-    fn authenticate(
-        &self,
+    fn authenticate<'life0, 'async_trait>(
+        &'life0 self,
         _arguments: acp::AuthenticateRequest,
-    ) -> impl std::future::Future<Output = Result<(), acp::Error>> {
-        async move {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<acp::AuthenticateResponse, acp::Error>>
+                + 'async_trait,
+        >,
+    >
+    where
+        Self: 'async_trait,
+        'life0: 'async_trait,
+    {
+        Box::pin(async move {
             tracing::info!("ACP: Received authenticate request");
-            Ok(())
-        }
+            Ok(acp::AuthenticateResponse { meta: None })
+        })
     }
 
-    fn new_session(
-        &self,
+    fn new_session<'life0, 'async_trait>(
+        &'life0 self,
         arguments: acp::NewSessionRequest,
-    ) -> impl std::future::Future<Output = Result<acp::NewSessionResponse, acp::Error>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<acp::NewSessionResponse, acp::Error>>
+                + 'async_trait,
+        >,
+    >
+    where
+        Self: 'async_trait,
+        'life0: 'async_trait,
+    {
         let session_manager = self.session_manager.clone();
         let llm_config = self.llm_config.clone();
         let agent_config = self.agent_config.clone();
 
-        async move {
+        Box::pin(async move {
             tracing::info!("ACP: Creating new session with cwd: {:?}", arguments.cwd);
 
             // Update the agent config to use the provided cwd
@@ -200,17 +227,26 @@ impl acp::Agent for ACPAgentImpl {
                 modes: None, // TODO: Support modes like "Plan", "Architect" and "Code".
                 meta: None,
             })
-        }
+        })
     }
 
-    fn load_session(
-        &self,
+    fn load_session<'life0, 'async_trait>(
+        &'life0 self,
         arguments: acp::LoadSessionRequest,
-    ) -> impl std::future::Future<Output = Result<(), acp::Error>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<acp::LoadSessionResponse, acp::Error>>
+                + 'async_trait,
+        >,
+    >
+    where
+        Self: 'async_trait,
+        'life0: 'async_trait,
+    {
         let session_manager = self.session_manager.clone();
         let session_update_tx = self.session_update_tx.clone();
 
-        async move {
+        Box::pin(async move {
             tracing::info!("ACP: Loading session: {}", arguments.session_id.0);
 
             // Load session into manager
@@ -262,20 +298,32 @@ impl acp::Agent for ACPAgentImpl {
 
             tracing::info!("ACP: Loaded session: {}", arguments.session_id.0);
 
-            Ok(())
-        }
+            Ok(acp::LoadSessionResponse {
+                modes: None,
+                meta: None,
+            })
+        })
     }
 
-    fn prompt(
-        &self,
+    fn prompt<'life0, 'async_trait>(
+        &'life0 self,
         arguments: acp::PromptRequest,
-    ) -> impl std::future::Future<Output = Result<acp::PromptResponse, acp::Error>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<acp::PromptResponse, acp::Error>>
+                + 'async_trait,
+        >,
+    >
+    where
+        Self: 'async_trait,
+        'life0: 'async_trait,
+    {
         let session_manager = self.session_manager.clone();
         let session_update_tx = self.session_update_tx.clone();
         let llm_config = self.llm_config.clone();
         let active_uis = self.active_uis.clone();
 
-        async move {
+        Box::pin(async move {
             tracing::info!(
                 "ACP: Received prompt for session: {}",
                 arguments.session_id.0
@@ -481,17 +529,21 @@ impl acp::Agent for ACPAgentImpl {
                 stop_reason: acp::StopReason::EndTurn,
                 meta: None,
             })
-        }
+        })
     }
 
-    fn cancel(
-        &self,
+    fn cancel<'life0, 'async_trait>(
+        &'life0 self,
         args: acp::CancelNotification,
-    ) -> impl std::future::Future<Output = Result<(), acp::Error>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), acp::Error>> + 'async_trait>>
+    where
+        Self: 'async_trait,
+        'life0: 'async_trait,
+    {
         let session_manager = self.session_manager.clone();
         let active_uis = self.active_uis.clone();
 
-        async move {
+        Box::pin(async move {
             tracing::info!("ACP: Received cancel for session: {}", args.session_id.0);
 
             // Signal the UI to stop (this makes prompt() loop exit)
@@ -516,6 +568,6 @@ impl acp::Agent for ACPAgentImpl {
             }
 
             Ok(())
-        }
+        })
     }
 }
