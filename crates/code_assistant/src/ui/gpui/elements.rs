@@ -512,7 +512,6 @@ impl MessageContainer {
     }
 
     fn finish_any_thinking_blocks(&self, cx: &mut Context<Self>) {
-        use tracing::warn;
         let elements = self.elements.lock().unwrap();
 
         // Mark any previous thinking blocks as completed and not generating
@@ -520,21 +519,12 @@ impl MessageContainer {
             element.update(cx, |view, cx| {
                 if let Some(thinking_block) = view.block.as_thinking_mut() {
                     if !thinking_block.is_completed {
-                        warn!(
-                            "Finishing thinking block - is_reasoning: {}, items: {}",
-                            thinking_block.is_reasoning_block(),
-                            thinking_block.reasoning_summary_items.len()
-                        );
-
                         // Finalize any reasoning content before marking as completed
                         thinking_block.complete_reasoning();
 
-                        let items_after = thinking_block.reasoning_summary_items.len();
                         thinking_block.is_completed = true;
                         thinking_block.end_time = std::time::Instant::now();
                         view.set_generating(false);
-
-                        warn!("Finished thinking block - items after: {}", items_after);
 
                         cx.notify();
                     }

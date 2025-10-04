@@ -40,6 +40,11 @@ pub enum DisplayFragment {
     ToolEnd { id: String },
     /// Streaming tool output chunk
     ToolOutput { tool_id: String, chunk: String },
+    /// Tool attached a terminal on the client side
+    ToolTerminal {
+        tool_id: String,
+        terminal_id: String,
+    },
     /// OpenAI reasoning summary started a new item
     ReasoningSummaryStart,
     /// OpenAI reasoning summary delta for the current item

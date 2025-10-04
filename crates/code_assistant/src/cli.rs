@@ -11,6 +11,45 @@ pub enum Mode {
         #[arg(short, long)]
         verbose: bool,
     },
+
+    /// Run as ACP (Agent Client Protocol) agent
+    Acp {
+        /// Enable verbose logging
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Path to the code directory to analyze
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+
+        /// LLM provider to use
+        #[arg(short = 'p', long, default_value = "anthropic")]
+        provider: LLMProviderType,
+
+        /// Model name to use (provider-specific)
+        #[arg(short = 'm', long)]
+        model: Option<String>,
+
+        /// API base URL for the LLM provider to use
+        #[arg(long)]
+        base_url: Option<String>,
+
+        /// Path to AI Core configuration file
+        #[arg(long)]
+        aicore_config: Option<PathBuf>,
+
+        /// Context window size (in tokens, only relevant for Ollama)
+        #[arg(long, default_value_t = 8192)]
+        num_ctx: usize,
+
+        /// Tool invocation syntax ('native' = tools via API, 'xml' and 'caret' = custom system message)
+        #[arg(long, default_value = "native")]
+        tool_syntax: ToolSyntax,
+
+        /// Use the legacy diff format for file editing (enables replace_in_file tool instead of edit)
+        #[arg(long)]
+        use_diff_format: bool,
+    },
 }
 
 /// Define the application arguments
@@ -130,6 +169,17 @@ mod tests {
         match args.mode {
             Some(Mode::Server { verbose }) => assert!(verbose),
             _ => panic!("Expected server mode"),
+        }
+    }
+
+    #[test]
+    fn test_acp_mode() {
+        let args =
+            Args::try_parse_from(["test", "acp", "--verbose"]).expect("Failed to parse acp args");
+
+        match args.mode {
+            Some(Mode::Acp { verbose, .. }) => assert!(verbose),
+            _ => panic!("Expected acp mode"),
         }
     }
 }

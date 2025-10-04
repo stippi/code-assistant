@@ -262,6 +262,12 @@ impl UserInterface for MockUI {
             crate::ui::DisplayFragment::ToolOutput { chunk, .. } => {
                 self.streaming.lock().unwrap().push(chunk.clone());
             }
+            crate::ui::DisplayFragment::ToolTerminal { terminal_id, .. } => {
+                self.streaming
+                    .lock()
+                    .unwrap()
+                    .push(format!("[terminal:{terminal_id}]"));
+            }
             crate::ui::DisplayFragment::ReasoningSummaryStart => {
                 // Ignore start markers in mock output
             }

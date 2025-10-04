@@ -12,6 +12,10 @@ pub struct CommandOutput {
 /// Callback trait for streaming command output
 pub trait StreamingCallback: Send + Sync {
     fn on_output_chunk(&self, chunk: &str) -> Result<()>;
+
+    fn on_terminal_attached(&self, _terminal_id: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]

@@ -378,6 +378,16 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Get a session instance by ID
+    pub fn get_session(&self, session_id: &str) -> Option<&SessionInstance> {
+        self.active_sessions.get(session_id)
+    }
+
+    /// Get a mutable session instance by ID
+    pub fn get_session_mut(&mut self, session_id: &str) -> Option<&mut SessionInstance> {
+        self.active_sessions.get_mut(session_id)
+    }
+
     /// Get the LLM config for a session, if any
     pub fn get_session_llm_config(&self, session_id: &str) -> Result<Option<LlmSessionConfig>> {
         if let Some(instance) = self.active_sessions.get(session_id) {

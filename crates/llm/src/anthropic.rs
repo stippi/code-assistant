@@ -773,7 +773,10 @@ impl AnthropicClient {
 
         // Add model-specific headers for thinking-enabled models
         if self.supports_thinking() {
-            request_builder = request_builder.header("anthropic-beta", "output-128k-2025-02-19");
+            request_builder = request_builder.header(
+                "anthropic-beta",
+                "output-128k-2025-02-19,interleaved-thinking-2025-05-14",
+            );
         }
 
         let response = request_builder

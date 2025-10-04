@@ -387,6 +387,14 @@ impl UserInterface for TerminalTuiUI {
                 // For now, just log it - we'll implement proper streaming display later
                 trace!("Tool {} streaming output: {}", tool_id, chunk);
             }
+            DisplayFragment::ToolTerminal {
+                tool_id,
+                terminal_id,
+            } => {
+                debug!(
+                    "Tool {tool_id} attached client terminal {terminal_id}; terminal UI has no live view"
+                );
+            }
             DisplayFragment::ReasoningComplete => {
                 // For terminal UI, no specific action needed for reasoning completion
             }
