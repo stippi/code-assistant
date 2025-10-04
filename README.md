@@ -1,7 +1,6 @@
 # Code Assistant
 
 [![CI](https://github.com/stippi/code-assistant/actions/workflows/build.yml/badge.svg)](https://github.com/stippi/code-assistant/actions/workflows/build.yml)
-
 [![Trust Score](https://archestra.ai/mcp-catalog/api/badge/quality/stippi/code-assistant)](https://archestra.ai/mcp-catalog/stippi__code-assistant)
 
 An AI coding assistant built in Rust that provides both command-line and graphical interfaces for autonomous code analysis and modification.
