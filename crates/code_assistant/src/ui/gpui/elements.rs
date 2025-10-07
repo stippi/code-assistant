@@ -594,26 +594,12 @@ impl MessageContainer {
     pub fn complete_reasoning(&self, cx: &mut Context<Self>) {
         use tracing::warn;
         let elements = self.elements.lock().unwrap();
-        warn!(
-            "MessageContainer::complete_reasoning called, elements: {}",
-            elements.len()
-        );
 
         if let Some(last) = elements.last() {
             last.update(cx, |view, cx| {
                 if let Some(thinking_block) = view.block.as_thinking_mut() {
-                    warn!(
-                        "About to complete reasoning - items: {}, generating: {}",
-                        thinking_block.reasoning_summary_items.len(),
-                        view.is_generating
-                    );
                     thinking_block.complete_reasoning();
-                    let items_after = thinking_block.reasoning_summary_items.len();
                     view.set_generating(false);
-                    warn!(
-                        "After completing reasoning - items: {}, generating: {}",
-                        items_after, view.is_generating
-                    );
                     cx.notify();
                 } else {
                     warn!("Last element is not a thinking block");
