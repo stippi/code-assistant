@@ -119,6 +119,11 @@ fn select_prompt_file<'a>(mapping: &'a PromptMapping, model_hint: Option<&str>) 
                 return &prompt.file;
             }
         }
+
+        warn!(
+            "No matching system prompt for model hint '{}'; using default prompt '{}'.",
+            hint, mapping.default_prompt
+        );
     }
 
     &mapping.default_prompt
@@ -134,16 +139,25 @@ fn read_prompt_file(file_name: &str) -> Option<String> {
 }
 
 fn load_prompt_mapping() -> PromptMapping {
-    EmbeddedSystemPrompts::get("mapping.json")
-        .and_then(|file| serde_json::from_slice::<RawPromptMapping>(file.data.as_ref()).ok())
-        .map(prepare_prompt_mapping)
-        .unwrap_or_else(|| {
-            warn!("Failed to load system prompt mapping; using defaults");
+    match EmbeddedSystemPrompts::get("mapping.json") {
+        Some(file) => match serde_json::from_slice::<RawPromptMapping>(file.data.as_ref()) {
+            Ok(raw_mapping) => prepare_prompt_mapping(raw_mapping),
+            Err(err) => {
+                warn!("Failed to deserialize system prompt mapping: {err}; using defaults");
+                prepare_prompt_mapping(RawPromptMapping {
+                    default_prompt: default_prompt_name(),
+                    prompts: Vec::new(),
+                })
+            }
+        },
+        None => {
+            warn!("System prompt mapping file 'mapping.json' not found; using defaults");
             prepare_prompt_mapping(RawPromptMapping {
                 default_prompt: default_prompt_name(),
                 prompts: Vec::new(),
             })
-        })
+        }
+    }
 }
 
 fn prepare_prompt_mapping(raw: RawPromptMapping) -> PromptMapping {
