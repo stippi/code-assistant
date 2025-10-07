@@ -116,6 +116,10 @@ fn select_prompt_file<'a>(mapping: &'a PromptMapping, model_hint: Option<&str>) 
                 .iter()
                 .any(|substr| hint_lower.contains(substr))
             {
+                warn!(
+                    "Using system prompt for model hint '{}': '{}'.",
+                    hint, &prompt.file
+                );
                 return &prompt.file;
             }
         }
@@ -123,6 +127,11 @@ fn select_prompt_file<'a>(mapping: &'a PromptMapping, model_hint: Option<&str>) 
         warn!(
             "No matching system prompt for model hint '{}'; using default prompt '{}'.",
             hint, mapping.default_prompt
+        );
+    } else {
+        warn!(
+            "No model hint provided; using default prompt '{}'.",
+            mapping.default_prompt
         );
     }
 
