@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
 
+use crate::agent::{Agent, AgentComponents, AgentOptions};
 use crate::config::ProjectManager;
 use crate::persistence::{
     generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, LlmSessionConfig,
@@ -41,6 +42,15 @@ pub struct AgentConfig {
     pub init_path: Option<PathBuf>,
     pub initial_project: String,
     pub use_diff_blocks: bool,
+}
+
+/// Resources required to launch an agent for a user message.
+pub struct AgentLaunchResources {
+    pub llm_provider: Box<dyn LLMProvider>,
+    pub project_manager: Box<dyn ProjectManager>,
+    pub command_executor: Box<dyn CommandExecutor>,
+    pub ui: Arc<dyn UserInterface>,
+    pub model_hint: Option<String>,
 }
 
 impl SessionManager {
@@ -161,11 +171,15 @@ impl SessionManager {
         &mut self,
         session_id: &str,
         content_blocks: Vec<llm::ContentBlock>,
-        llm_provider: Box<dyn LLMProvider>,
-        project_manager: Box<dyn ProjectManager>,
-        command_executor: Box<dyn CommandExecutor>,
-        ui: Arc<dyn UserInterface>,
+        resources: AgentLaunchResources,
     ) -> Result<()> {
+        let AgentLaunchResources {
+            llm_provider,
+            project_manager,
+            command_executor,
+            ui,
+            model_hint,
+        } = resources;
         // Prepare session - need to scope the mutable borrow carefully
         let (
             tool_syntax,
@@ -255,15 +269,21 @@ impl SessionManager {
             session_manager_ref,
         ));
 
-        let mut agent = crate::agent::Agent::new(
+        let components = AgentComponents {
             llm_provider,
-            tool_syntax,
             project_manager,
             command_executor,
-            proxy_ui,
-            state_storage,
+            ui: proxy_ui,
+            state_persistence: state_storage,
+        };
+
+        let options = AgentOptions {
+            tool_syntax,
             init_path,
-        );
+            model_hint,
+        };
+
+        let mut agent = Agent::new(components, options);
 
         // Configure diff blocks format based on session setting
         if use_diff_blocks {

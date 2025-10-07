@@ -1,5 +1,6 @@
 use crate::config::DefaultProjectManager;
 use crate::persistence::{ChatMetadata, DraftAttachment};
+use crate::session::AgentLaunchResources;
 use crate::ui::UserInterface;
 use crate::utils::{content::content_blocks_from, DefaultCommandExecutor};
 use llm::factory::{create_llm_client, LLMClientConfig};
@@ -300,20 +301,21 @@ async fn handle_send_user_message(
             })
             .unwrap_or_else(|| cfg.as_ref().clone());
 
+        let model_hint = effective_config.model.clone();
         let llm_client = create_llm_client(effective_config).await;
 
         match llm_client {
             Ok(client) => {
+                let launch_resources = AgentLaunchResources {
+                    llm_provider: client,
+                    project_manager,
+                    command_executor,
+                    ui: user_interface,
+                    model_hint,
+                };
                 let mut manager = multi_session_manager.lock().await;
                 manager
-                    .start_agent_for_message(
-                        session_id,
-                        content_blocks,
-                        client,
-                        project_manager,
-                        command_executor,
-                        user_interface,
-                    )
+                    .start_agent_for_message(session_id, content_blocks, launch_resources)
                     .await
             }
             Err(e) => {

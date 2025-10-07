@@ -1,0 +1,11 @@
+{
+  "default_prompt": "default.md",
+  "prompts": [
+    {
+      "file": "codex.md",
+      "model_substrings": [
+        "codex"
+      ]
+    }
+  ]
+}

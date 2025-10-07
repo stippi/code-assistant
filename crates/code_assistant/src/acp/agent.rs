@@ -9,7 +9,7 @@ use crate::acp::ACPUserUI;
 use crate::config::DefaultProjectManager;
 use crate::persistence::LlmSessionConfig;
 use crate::session::instance::SessionActivityState;
-use crate::session::{AgentConfig, SessionManager};
+use crate::session::{AgentConfig, AgentLaunchResources, SessionManager};
 use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
 use llm::factory::{create_llm_client, LLMClientConfig};
@@ -336,6 +336,8 @@ impl acp::Agent for ACPAgentImpl {
             // Convert prompt content blocks
             let content_blocks = convert_prompt_to_content_blocks(arguments.prompt);
 
+            let model_hint = llm_config.model.clone();
+
             // Create LLM client
             let llm_client = match create_llm_client(llm_config).await {
                 Ok(client) => client,
@@ -396,15 +398,20 @@ impl acp::Agent for ACPAgentImpl {
 
             // Start agent
             if let Err(e) = async {
+                let launch_resources = AgentLaunchResources {
+                    llm_provider: llm_client,
+                    project_manager,
+                    command_executor,
+                    ui: ui.clone(),
+                    model_hint,
+                };
+
                 let mut manager = session_manager.lock().await;
                 manager
                     .start_agent_for_message(
                         &arguments.session_id.0,
                         content_blocks,
-                        llm_client,
-                        project_manager,
-                        command_executor,
-                        ui.clone(),
+                        launch_resources,
                     )
                     .await
             }

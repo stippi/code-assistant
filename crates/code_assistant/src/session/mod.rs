@@ -9,7 +9,7 @@ pub mod instance;
 pub mod manager;
 
 // Main session manager
-pub use manager::{AgentConfig, SessionManager};
+pub use manager::{AgentConfig, AgentLaunchResources, SessionManager};
 
 /// State data needed to restore an agent session
 #[derive(Debug, Clone)]

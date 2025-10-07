@@ -1,6 +1,6 @@
 use super::AgentRunConfig;
 use crate::config::DefaultProjectManager;
-use crate::session::{AgentConfig, SessionManager};
+use crate::session::{AgentConfig, AgentLaunchResources, SessionManager};
 use crate::ui::{self, UserInterface};
 use crate::utils::DefaultCommandExecutor;
 use anyhow::Result;
@@ -107,15 +107,20 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 .expect("Failed to create LLM client");
 
                 {
+                    let launch_resources = AgentLaunchResources {
+                        llm_provider: llm_client,
+                        project_manager,
+                        command_executor,
+                        ui: user_interface,
+                        model_hint: model.clone(),
+                    };
+
                     let mut manager = multi_session_manager.lock().await;
                     manager
                         .start_agent_for_message(
                             &session_id,
                             vec![llm::ContentBlock::new_text(initial_task)],
-                            llm_client,
-                            project_manager,
-                            command_executor,
-                            user_interface,
+                            launch_resources,
                         )
                         .await
                         .expect("Failed to start agent with initial task");

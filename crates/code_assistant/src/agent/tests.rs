@@ -381,15 +381,21 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
     ]);
     let mock_llm_ref = mock_llm.clone();
 
-    let mut agent = Agent::new(
-        Box::new(mock_llm),
-        ToolSyntax::Native,
-        Box::new(MockProjectManager::new()),
-        Box::new(create_command_executor_mock()),
-        Arc::new(MockUI::default()),
-        Box::new(MockStatePersistence::new()),
-        Some(PathBuf::from("./test_path")),
-    );
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+    };
+
+    let options = AgentOptions {
+        tool_syntax: ToolSyntax::Native,
+        init_path: Some(PathBuf::from("./test_path")),
+        model_hint: None,
+    };
+
+    let mut agent = Agent::new(components, options);
     agent.disable_naming_reminders();
 
     agent.start_with_task("Test task".to_string()).await?;
@@ -493,15 +499,21 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
     ]);
     let mock_llm_ref = mock_llm.clone();
 
-    let mut agent = Agent::new(
-        Box::new(mock_llm),
-        ToolSyntax::Xml,
-        Box::new(MockProjectManager::new()),
-        Box::new(create_command_executor_mock()),
-        Arc::new(MockUI::default()),
-        Box::new(MockStatePersistence::new()),
-        Some(PathBuf::from("./test_path")),
-    );
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+    };
+
+    let options = AgentOptions {
+        tool_syntax: ToolSyntax::Xml,
+        init_path: Some(PathBuf::from("./test_path")),
+        model_hint: None,
+    };
+
+    let mut agent = Agent::new(components, options);
     agent.disable_naming_reminders();
 
     // Add an initial user message like the working test does
@@ -614,15 +626,21 @@ async fn test_parse_error_handling() -> Result<()> {
     ]);
     let mock_llm_ref = mock_llm.clone();
 
-    let mut agent = Agent::new(
-        Box::new(mock_llm),
-        ToolSyntax::Native,
-        Box::new(MockProjectManager::new()),
-        Box::new(create_command_executor_mock()),
-        Arc::new(MockUI::default()),
-        Box::new(MockStatePersistence::new()),
-        Some(PathBuf::from("./test_path")),
-    );
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+    };
+
+    let options = AgentOptions {
+        tool_syntax: ToolSyntax::Native,
+        init_path: Some(PathBuf::from("./test_path")),
+        model_hint: None,
+    };
+
+    let mut agent = Agent::new(components, options);
     agent.disable_naming_reminders();
 
     agent.start_with_task("Test task".to_string()).await?;
@@ -1112,15 +1130,21 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     let ui = Arc::new(MockUI::default());
     let state_persistence = Box::new(MockStatePersistence::new());
 
-    let mut agent = Agent::new(
+    let components = AgentComponents {
         llm_provider,
-        ToolSyntax::Xml,
         project_manager,
         command_executor,
         ui,
         state_persistence,
-        None,
-    );
+    };
+
+    let options = AgentOptions {
+        tool_syntax: ToolSyntax::Xml,
+        init_path: None,
+        model_hint: None,
+    };
+
+    let mut agent = Agent::new(components, options);
 
     // Test case 1: User message with text content should get reminder
     let messages = vec![Message {

@@ -15,9 +15,25 @@ use llm::{
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tracing::{debug, trace, warn};
+
+/// Runtime components required to construct an `Agent`.
+pub struct AgentComponents {
+    pub llm_provider: Box<dyn LLMProvider>,
+    pub project_manager: Box<dyn ProjectManager>,
+    pub command_executor: Box<dyn CommandExecutor>,
+    pub ui: Arc<dyn UserInterface>,
+    pub state_persistence: Box<dyn AgentStatePersistence>,
+}
+
+/// Configuration options that tailor an `Agent` instance.
+pub struct AgentOptions {
+    pub tool_syntax: ToolSyntax,
+    pub init_path: Option<PathBuf>,
+    pub model_hint: Option<String>,
+}
 
 use super::ToolSyntax;
 
@@ -48,8 +64,10 @@ pub struct Agent {
     initial_project: String,
     // Store the history of tool executions
     tool_executions: Vec<crate::agent::types::ToolExecution>,
-    // Cached system message
-    cached_system_message: OnceLock<String>,
+    // Cached system prompts keyed by model hint
+    cached_system_prompts: HashMap<String, String>,
+    // Optional model identifier used for prompt selection
+    model_hint: Option<String>,
     // Counter for generating unique request IDs
     next_request_id: u64,
     // Session ID for this agent instance
@@ -80,16 +98,22 @@ impl Agent {
         }
     }
 
-    pub fn new(
-        llm_provider: Box<dyn LLMProvider>,
-        tool_syntax: ToolSyntax,
-        project_manager: Box<dyn ProjectManager>,
-        command_executor: Box<dyn CommandExecutor>,
-        ui: Arc<dyn UserInterface>,
-        state_persistence: Box<dyn AgentStatePersistence>,
-        init_path: Option<PathBuf>,
-    ) -> Self {
-        Self {
+    pub fn new(components: AgentComponents, options: AgentOptions) -> Self {
+        let AgentComponents {
+            llm_provider,
+            project_manager,
+            command_executor,
+            ui,
+            state_persistence,
+        } = components;
+
+        let AgentOptions {
+            tool_syntax,
+            init_path,
+            model_hint,
+        } = options;
+
+        let mut this = Self {
             working_memory: WorkingMemory::default(),
             llm_provider,
             tool_syntax,
@@ -102,25 +126,46 @@ impl Agent {
             init_path,
             initial_project: String::new(),
             tool_executions: Vec::new(),
-            cached_system_message: OnceLock::new(),
+            cached_system_prompts: HashMap::new(),
             next_request_id: 1, // Start from 1
             session_id: None,
             session_name: String::new(),
             enable_naming_reminders: true, // Enabled by default
             pending_message_ref: None,
-        }
+            model_hint: None,
+        };
+
+        this.set_model_hint(model_hint);
+        this
     }
 
     /// Enable diff blocks format for file editing (uses replace_in_file tool instead of edit)
     pub fn enable_diff_blocks(&mut self) {
         self.tool_scope = ToolScope::AgentWithDiffBlocks;
         // Clear cached system message so it gets regenerated with the new scope
-        self.cached_system_message = OnceLock::new();
+        self.invalidate_system_message_cache();
     }
 
     /// Set the shared pending message reference from SessionInstance
     pub fn set_pending_message_ref(&mut self, pending_ref: Arc<Mutex<Option<String>>>) {
         self.pending_message_ref = Some(pending_ref);
+    }
+
+    /// Update the model hint used for selecting system prompts
+    pub fn set_model_hint(&mut self, model_hint: Option<String>) {
+        let normalized = model_hint.and_then(|hint| {
+            let trimmed = hint.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        if self.model_hint != normalized {
+            self.model_hint = normalized;
+            self.invalidate_system_message_cache();
+        }
     }
 
     /// Disable naming reminders (used for tests)
@@ -357,6 +402,11 @@ impl Agent {
         &mut self,
         session_state: crate::session::SessionState,
     ) -> Result<()> {
+        let model_hint = session_state
+            .llm_config
+            .as_ref()
+            .and_then(|cfg| cfg.model.clone());
+
         // Restore all state components
         self.session_id = Some(session_state.session_id);
         self.message_history = session_state.messages;
@@ -369,6 +419,7 @@ impl Agent {
         self.init_path = session_state.init_path;
         self.initial_project = session_state.initial_project;
         self.session_name = session_state.name;
+        self.set_model_hint(model_hint);
 
         // Restore next_request_id from session, or calculate from existing messages for backward compatibility
         self.next_request_id = session_state.next_request_id.unwrap_or_else(|| {
@@ -590,14 +641,23 @@ impl Agent {
     }
 
     /// Get the appropriate system prompt based on tool mode
-    fn get_system_prompt(&self) -> String {
-        // Check if we already have a cached system message
-        if let Some(cached) = self.cached_system_message.get() {
+    fn get_system_prompt(&mut self) -> String {
+        let cache_key = self
+            .model_hint
+            .as_deref()
+            .map(|hint| hint.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        if let Some(cached) = self.cached_system_prompts.get(&cache_key) {
             return cached.clone();
         }
 
         // Generate the system message using the tools module
-        let mut system_message = generate_system_message(self.tool_syntax, self.tool_scope);
+        let mut system_message = generate_system_message(
+            self.tool_syntax,
+            self.tool_scope,
+            self.model_hint.as_deref(),
+        );
 
         // Add project information
         let mut project_info = String::new();
@@ -637,8 +697,9 @@ impl Agent {
             system_message.push_str(&guidance_section);
         }
 
-        // Cache the system message
-        let _ = self.cached_system_message.set(system_message.clone());
+        // Cache the system message for the current model hint
+        self.cached_system_prompts
+            .insert(cache_key, system_message.clone());
 
         system_message
     }
@@ -682,9 +743,8 @@ impl Agent {
     }
 
     /// Invalidate the cached system message to force regeneration
-    #[allow(dead_code)]
     pub fn invalidate_system_message_cache(&mut self) {
-        self.cached_system_message = OnceLock::new();
+        self.cached_system_prompts.clear();
     }
 
     /// Convert ToolResult blocks to Text blocks for custom tool-syntax mode
