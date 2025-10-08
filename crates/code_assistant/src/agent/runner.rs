@@ -1,7 +1,8 @@
 use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
-use crate::persistence::ChatMetadata;
+use crate::persistence::{ChatMetadata, LlmSessionConfig};
+use crate::session::SessionConfig;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{generate_system_message, ParserRegistry, ToolRequest};
 use crate::types::*;
@@ -15,9 +16,18 @@ use llm::{
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tracing::{debug, trace, warn};
+
+/// Runtime components required to construct an `Agent`.
+pub struct AgentComponents {
+    pub llm_provider: Box<dyn LLMProvider>,
+    pub project_manager: Box<dyn ProjectManager>,
+    pub command_executor: Box<dyn CommandExecutor>,
+    pub ui: Arc<dyn UserInterface>,
+    pub state_persistence: Box<dyn AgentStatePersistence>,
+}
 
 use super::ToolSyntax;
 
@@ -34,7 +44,7 @@ enum LoopFlow {
 pub struct Agent {
     working_memory: WorkingMemory,
     llm_provider: Box<dyn LLMProvider>,
-    tool_syntax: ToolSyntax,
+    session_config: SessionConfig,
     tool_scope: ToolScope,
     project_manager: Box<dyn ProjectManager>,
     command_executor: Box<dyn CommandExecutor>,
@@ -42,14 +52,14 @@ pub struct Agent {
     state_persistence: Box<dyn AgentStatePersistence>,
     // Store all messages exchanged
     message_history: Vec<Message>,
-    // Path provided during agent initialization
-    init_path: Option<PathBuf>,
-    // Name of the initial project
-    initial_project: String,
     // Store the history of tool executions
     tool_executions: Vec<crate::agent::types::ToolExecution>,
-    // Cached system message
-    cached_system_message: OnceLock<String>,
+    // Cached system prompts keyed by model hint
+    cached_system_prompts: HashMap<String, String>,
+    // Optional model identifier used for prompt selection
+    model_hint: Option<String>,
+    // LLM configuration associated with this session
+    session_llm_config: Option<LlmSessionConfig>,
     // Counter for generating unique request IDs
     next_request_id: u64,
     // Session ID for this agent instance
@@ -80,47 +90,73 @@ impl Agent {
         }
     }
 
-    pub fn new(
-        llm_provider: Box<dyn LLMProvider>,
-        tool_syntax: ToolSyntax,
-        project_manager: Box<dyn ProjectManager>,
-        command_executor: Box<dyn CommandExecutor>,
-        ui: Arc<dyn UserInterface>,
-        state_persistence: Box<dyn AgentStatePersistence>,
-        init_path: Option<PathBuf>,
-    ) -> Self {
-        Self {
+    pub fn new(components: AgentComponents, session_config: SessionConfig) -> Self {
+        let AgentComponents {
+            llm_provider,
+            project_manager,
+            command_executor,
+            ui,
+            state_persistence,
+        } = components;
+
+        let mut this = Self {
             working_memory: WorkingMemory::default(),
             llm_provider,
-            tool_syntax,
+            session_config,
             tool_scope: ToolScope::Agent, // Default to Agent scope
             project_manager,
             ui,
             command_executor,
             state_persistence,
             message_history: Vec::new(),
-            init_path,
-            initial_project: String::new(),
             tool_executions: Vec::new(),
-            cached_system_message: OnceLock::new(),
+            cached_system_prompts: HashMap::new(),
+            session_llm_config: None,
             next_request_id: 1, // Start from 1
             session_id: None,
             session_name: String::new(),
             enable_naming_reminders: true, // Enabled by default
             pending_message_ref: None,
+            model_hint: None,
+        };
+        if this.session_config.use_diff_blocks {
+            this.tool_scope = ToolScope::AgentWithDiffBlocks;
         }
+        this
     }
 
     /// Enable diff blocks format for file editing (uses replace_in_file tool instead of edit)
     pub fn enable_diff_blocks(&mut self) {
         self.tool_scope = ToolScope::AgentWithDiffBlocks;
+        self.session_config.use_diff_blocks = true;
         // Clear cached system message so it gets regenerated with the new scope
-        self.cached_system_message = OnceLock::new();
+        self.invalidate_system_message_cache();
+    }
+
+    fn tool_syntax(&self) -> ToolSyntax {
+        self.session_config.tool_syntax
     }
 
     /// Set the shared pending message reference from SessionInstance
     pub fn set_pending_message_ref(&mut self, pending_ref: Arc<Mutex<Option<String>>>) {
         self.pending_message_ref = Some(pending_ref);
+    }
+
+    /// Update the model hint used for selecting system prompts
+    pub fn set_model_hint(&mut self, model_hint: Option<String>) {
+        let normalized = model_hint.and_then(|hint| {
+            let trimmed = hint.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        if self.model_hint != normalized {
+            self.model_hint = normalized;
+            self.invalidate_system_message_cache();
+        }
     }
 
     /// Disable naming reminders (used for tests)
@@ -189,11 +225,11 @@ impl Agent {
                 total_usage,
                 last_usage,
                 tokens_limit,
-                tool_syntax: self.tool_syntax,
-                initial_project: if self.initial_project.is_empty() {
+                tool_syntax: self.tool_syntax(),
+                initial_project: if self.session_config.initial_project.is_empty() {
                     "unknown".to_string()
                 } else {
-                    self.initial_project.clone()
+                    self.session_config.initial_project.clone()
                 },
             }
         })
@@ -212,10 +248,9 @@ impl Agent {
                 messages: self.message_history.clone(),
                 tool_executions: self.tool_executions.clone(),
                 working_memory: self.working_memory.clone(),
-                init_path: self.init_path.clone(),
-                initial_project: self.initial_project.clone(),
+                config: self.session_config.clone(),
                 next_request_id: Some(self.next_request_id),
-                llm_config: None, // Agent runner doesn't track LLM config currently
+                llm_config: self.session_llm_config.clone(),
             };
             self.state_persistence.save_agent_state(session_state)?;
         }
@@ -366,9 +401,23 @@ impl Agent {
         );
         self.tool_executions = session_state.tool_executions;
         self.working_memory = session_state.working_memory;
-        self.init_path = session_state.init_path;
-        self.initial_project = session_state.initial_project;
+        self.session_config = session_state.config;
+        if self.session_config.use_diff_blocks {
+            self.enable_diff_blocks();
+        } else {
+            self.session_config.use_diff_blocks = false;
+            self.tool_scope = ToolScope::Agent;
+            self.invalidate_system_message_cache();
+        }
         self.session_name = session_state.name;
+        self.session_llm_config = session_state.llm_config;
+        if let Some(model_hint) = self
+            .session_llm_config
+            .as_ref()
+            .and_then(|cfg| cfg.model.clone())
+        {
+            self.set_model_hint(Some(model_hint));
+        }
 
         // Restore next_request_id from session, or calculate from existing messages for backward compatibility
         self.next_request_id = session_state.next_request_id.unwrap_or_else(|| {
@@ -399,19 +448,19 @@ impl Agent {
         self.working_memory.available_projects = Vec::new();
 
         // Reset the initial project
-        self.initial_project = String::new();
+        self.session_config.initial_project = String::new();
 
         self.init_working_memory_projects()
     }
 
     fn init_working_memory_projects(&mut self) -> Result<()> {
         // If a path was provided in args, add it as a temporary project
-        if let Some(path) = &self.init_path {
+        if let Some(path) = &self.session_config.init_path {
             // Add as temporary project and get its name
             let project_name = self.project_manager.add_temporary_project(path.clone())?;
 
             // Store the name of the initial project
-            self.initial_project = project_name.clone();
+            self.session_config.initial_project = project_name.clone();
 
             // Create initial file tree for this project
             let mut explorer = self
@@ -452,7 +501,7 @@ impl Agent {
         llm_response: &llm::LLMResponse,
         request_counter: u64,
     ) -> Result<(Vec<ToolRequest>, LoopFlow, llm::LLMResponse)> {
-        let parser = ParserRegistry::get(self.tool_syntax);
+        let parser = ParserRegistry::get(self.tool_syntax());
         match parser.extract_requests(llm_response, request_counter, 0) {
             Ok((requests, truncated_response)) => {
                 if requests.is_empty() && !self.has_pending_message() {
@@ -464,7 +513,7 @@ impl Agent {
             Err(e) => {
                 let error_text = Self::format_error_for_user(&e);
 
-                let error_msg = match self.tool_syntax {
+                let error_msg = match self.tool_syntax() {
                     ToolSyntax::Native => {
                         // For native mode, keep text message since parsing errors occur before
                         // we have any LLM-provided tool IDs to reference
@@ -590,25 +639,41 @@ impl Agent {
     }
 
     /// Get the appropriate system prompt based on tool mode
-    fn get_system_prompt(&self) -> String {
-        // Check if we already have a cached system message
-        if let Some(cached) = self.cached_system_message.get() {
+    fn get_system_prompt(&mut self) -> String {
+        let cache_key = self
+            .model_hint
+            .as_deref()
+            .map(|hint| hint.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        if let Some(cached) = self.cached_system_prompts.get(&cache_key) {
             return cached.clone();
         }
 
         // Generate the system message using the tools module
-        let mut system_message = generate_system_message(self.tool_syntax, self.tool_scope);
+        let mut system_message = generate_system_message(
+            self.tool_syntax(),
+            self.tool_scope,
+            self.model_hint.as_deref(),
+        );
 
         // Add project information
         let mut project_info = String::new();
 
         // Add information about the initial project if available
-        if !self.initial_project.is_empty() {
+        if !self.session_config.initial_project.is_empty() {
             project_info.push_str("\n\n# Project Information\n\n");
-            project_info.push_str(&format!("## Initial Project: {}\n\n", self.initial_project));
+            project_info.push_str(&format!(
+                "## Initial Project: {}\n\n",
+                self.session_config.initial_project
+            ));
 
             // Add file tree for the initial project if available
-            if let Some(tree) = self.working_memory.file_trees.get(&self.initial_project) {
+            if let Some(tree) = self
+                .working_memory
+                .file_trees
+                .get(&self.session_config.initial_project)
+            {
                 project_info.push_str("### File Structure:\n");
                 project_info.push_str(&format!("```\n{tree}\n```\n\n"));
             }
@@ -637,8 +702,9 @@ impl Agent {
             system_message.push_str(&guidance_section);
         }
 
-        // Cache the system message
-        let _ = self.cached_system_message.set(system_message.clone());
+        // Cache the system message for the current model hint
+        self.cached_system_prompts
+            .insert(cache_key, system_message.clone());
 
         system_message
     }
@@ -647,8 +713,8 @@ impl Agent {
     /// Prefers AGENTS.md when both exist. Returns (file_name, content) on success.
     fn read_repository_guidance(&self) -> Option<(String, String)> {
         // Determine search root
-        let root_path = if !self.initial_project.is_empty() {
-            PathBuf::from(&self.initial_project)
+        let root_path = if !self.session_config.initial_project.is_empty() {
+            PathBuf::from(&self.session_config.initial_project)
         } else {
             std::env::current_dir().ok()?
         };
@@ -682,9 +748,8 @@ impl Agent {
     }
 
     /// Invalidate the cached system message to force regeneration
-    #[allow(dead_code)]
     pub fn invalidate_system_message_cache(&mut self) {
-        self.cached_system_message = OnceLock::new();
+        self.cached_system_prompts.clear();
     }
 
     /// Convert ToolResult blocks to Text blocks for custom tool-syntax mode
@@ -826,7 +891,7 @@ impl Agent {
 
         // Convert messages based on tool syntax
         // Native mode keeps ToolUse blocks, all other syntaxes convert to text
-        let converted_messages = match self.tool_syntax {
+        let converted_messages = match self.tool_syntax() {
             ToolSyntax::Native => messages_with_reminder, // No conversion needed
             _ => self.convert_tool_results_to_text(messages_with_reminder), // Convert ToolResults to Text
         };
@@ -834,7 +899,7 @@ impl Agent {
         let request = LLMRequest {
             messages: converted_messages,
             system_prompt: self.get_system_prompt(),
-            tools: match self.tool_syntax {
+            tools: match self.tool_syntax() {
                 ToolSyntax::Native => {
                     Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
                         ToolRegistry::global().get_tool_definitions_for_scope(self.tool_scope),
@@ -865,7 +930,7 @@ impl Agent {
         */
 
         // Create a StreamProcessor with the UI and request ID
-        let parser = ParserRegistry::get(self.tool_syntax);
+        let parser = ParserRegistry::get(self.tool_syntax());
         let processor = Arc::new(Mutex::new(
             parser.stream_processor(self.ui.clone(), request_id),
         ));
@@ -1224,6 +1289,7 @@ impl Agent {
         &mut self,
         updated_request: &ToolRequest,
     ) -> Result<()> {
+        let tool_syntax = self.tool_syntax();
         // Find the most recent assistant message that contains the tool call
         for message in self.message_history.iter_mut().rev() {
             if message.role == MessageRole::Assistant {
@@ -1249,7 +1315,7 @@ impl Agent {
                         if let Ok(updated_text) = Self::update_tool_call_in_text_static(
                             text,
                             updated_request,
-                            self.tool_syntax,
+                            tool_syntax,
                         ) {
                             *text = updated_text;
                             debug!("Updated tool call {} in text message", updated_request.id);

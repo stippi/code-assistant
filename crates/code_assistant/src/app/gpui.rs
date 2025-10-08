@@ -1,6 +1,6 @@
 use super::AgentRunConfig;
 use crate::config::DefaultProjectManager;
-use crate::session::{AgentConfig, SessionManager};
+use crate::session::{SessionConfig, SessionManager};
 use crate::ui::{self, UserInterface};
 use crate::utils::DefaultCommandExecutor;
 use anyhow::Result;
@@ -20,16 +20,18 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     let root_path = config.path.canonicalize()?;
     let persistence = crate::persistence::FileSessionPersistence::new();
 
-    let agent_config = AgentConfig {
-        tool_syntax: config.tool_syntax,
+    let session_config_template = SessionConfig {
         init_path: Some(root_path.clone()),
         initial_project: String::new(),
+        tool_syntax: config.tool_syntax,
         use_diff_blocks: config.use_diff_format,
     };
 
     // Create the new SessionManager
-    let multi_session_manager =
-        Arc::new(Mutex::new(SessionManager::new(persistence, agent_config)));
+    let multi_session_manager = Arc::new(Mutex::new(SessionManager::new(
+        persistence,
+        session_config_template,
+    )));
 
     // Clone GUI before moving it into thread
     let gui_for_thread = gui.clone();
@@ -52,19 +54,19 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 // Task provided - create new session and start agent
                 debug!("Creating initial session with task: {}", initial_task);
 
-                let session_id = {
-                    let llm_config = crate::persistence::LlmSessionConfig {
-                        provider: provider.clone(),
-                        model: model.clone(),
-                        base_url: base_url.clone(),
-                        aicore_config: aicore_config.clone(),
-                        num_ctx,
-                        record_path: record.clone(),
-                    };
+                let session_llm_config = crate::persistence::LlmSessionConfig {
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    base_url: base_url.clone(),
+                    aicore_config: aicore_config.clone(),
+                    num_ctx,
+                    record_path: record.clone(),
+                };
 
+                let session_id = {
                     let mut manager = multi_session_manager.lock().await;
                     manager
-                        .create_session_with_config(None, Some(llm_config))
+                        .create_session_with_config(None, None, Some(session_llm_config.clone()))
                         .unwrap()
                 };
 
@@ -166,7 +168,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
 
                         let mut manager = multi_session_manager.lock().await;
                         manager
-                            .create_session_with_config(None, Some(llm_config))
+                            .create_session_with_config(None, None, Some(llm_config))
                             .unwrap_or_else(|e| {
                                 error!("Failed to create new session: {}", e);
                                 // Return a fallback session ID if creation fails

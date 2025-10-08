@@ -1,7 +1,7 @@
 use super::AgentRunConfig;
 use crate::acp::{register_terminal_worker, set_acp_client_connection, ACPAgentImpl};
 use crate::persistence::FileSessionPersistence;
-use crate::session::{AgentConfig, SessionManager};
+use crate::session::{SessionConfig, SessionManager};
 use agent_client_protocol::Client;
 use anyhow::Result;
 use llm::factory::LLMClientConfig;
@@ -41,10 +41,10 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     info!("Starting ACP agent mode, logging to {}", log_path);
 
     // Prepare configuration
-    let agent_config = AgentConfig {
-        tool_syntax: config.tool_syntax,
+    let session_config_template = SessionConfig {
         init_path: Some(config.path.canonicalize()?),
         initial_project: String::new(),
+        tool_syntax: config.tool_syntax,
         use_diff_blocks: config.use_diff_format,
     };
 
@@ -63,7 +63,7 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     let persistence = FileSessionPersistence::new();
     let session_manager = Arc::new(Mutex::new(SessionManager::new(
         persistence,
-        agent_config.clone(),
+        session_config_template.clone(),
     )));
 
     // Setup stdio transport
@@ -74,7 +74,12 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     let (session_update_tx, mut session_update_rx) = mpsc::unbounded_channel();
 
     // Create the agent
-    let agent = ACPAgentImpl::new(session_manager, agent_config, llm_config, session_update_tx);
+    let agent = ACPAgentImpl::new(
+        session_manager,
+        session_config_template,
+        llm_config,
+        session_update_tx,
+    );
 
     // Use LocalSet for non-Send futures from agent-client-protocol,
     // but the spawned futures will themselves spawn agent tasks on the multi-threaded runtime

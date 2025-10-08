@@ -1,7 +1,9 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::Mutex;
+use tracing::{debug, info};
 
 #[cfg(test)]
 use crate::agent::ToolExecution;
@@ -11,13 +13,7 @@ use crate::types::WorkingMemory;
 use llm::Message;
 
 use crate::persistence::{ChatSession, SerializedToolExecution};
-use crate::session::SessionManager;
-use crate::types::ToolSyntax;
-
-use std::time::SystemTime;
-use tracing::{debug, info};
-
-use crate::session::SessionState;
+use crate::session::{SessionManager, SessionState};
 
 /// Trait for persisting agent state
 /// This abstracts away the storage mechanism from the Agent implementation
@@ -90,20 +86,14 @@ const STATE_FILE: &str = ".code-assistant.state.json";
 #[derive(Clone)]
 pub struct FileStatePersistence {
     state_file_path: PathBuf,
-    tool_syntax: ToolSyntax,
-    use_diff_blocks: bool,
 }
 
 impl FileStatePersistence {
     #[allow(dead_code)]
-    pub fn new(working_dir: &Path, tool_syntax: ToolSyntax, use_diff_blocks: bool) -> Self {
+    pub fn new(working_dir: &Path) -> Self {
         let state_file_path = working_dir.join(STATE_FILE);
         info!("Using state file: {}", state_file_path.display());
-        Self {
-            state_file_path,
-            tool_syntax,
-            use_diff_blocks,
-        }
+        Self { state_file_path }
     }
 
     /// Load agent state from the state file if it exists
@@ -122,7 +112,8 @@ impl FileStatePersistence {
             self.state_file_path.display()
         );
         let json = std::fs::read_to_string(&self.state_file_path)?;
-        let session: ChatSession = serde_json::from_str(&json)?;
+        let mut session: ChatSession = serde_json::from_str(&json)?;
+        session.ensure_config();
 
         info!(
             "Loaded agent state with {} messages",
@@ -143,30 +134,29 @@ impl AgentStatePersistence for FileStatePersistence {
         debug!("Saving agent state to {}", self.state_file_path.display());
 
         // Convert tool executions to serialized form
-        let serialized_executions: Result<Vec<SerializedToolExecution>> = state
-            .tool_executions
-            .iter()
-            .map(|te| te.serialize())
-            .collect();
+        let SessionState {
+            session_id,
+            name,
+            messages,
+            tool_executions,
+            working_memory,
+            config,
+            next_request_id,
+            llm_config,
+        } = state;
+
+        let serialized_executions: Result<Vec<SerializedToolExecution>> =
+            tool_executions.iter().map(|te| te.serialize()).collect();
 
         let serialized_executions = serialized_executions?;
 
         // Create a ChatSession with the current state
-        let session = ChatSession {
-            id: state.session_id,
-            name: state.name,
-            created_at: SystemTime::now(),
-            updated_at: SystemTime::now(),
-            messages: state.messages,
-            tool_executions: serialized_executions,
-            working_memory: state.working_memory,
-            init_path: state.init_path,
-            initial_project: state.initial_project,
-            tool_syntax: self.tool_syntax,
-            use_diff_blocks: self.use_diff_blocks,
-            next_request_id: state.next_request_id.unwrap_or(0),
-            llm_config: state.llm_config,
-        };
+        let mut session = ChatSession::new_empty(session_id, name, config, llm_config);
+        session.messages = messages;
+        session.tool_executions = serialized_executions;
+        session.working_memory = working_memory;
+        session.next_request_id = next_request_id.unwrap_or(0);
+        session.updated_at = SystemTime::now();
 
         // Save to file
         let json = serde_json::to_string_pretty(&session)?;

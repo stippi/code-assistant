@@ -1,6 +1,7 @@
 use crate::app::AgentRunConfig;
 use crate::persistence::FileSessionPersistence;
-use crate::session::manager::{AgentConfig, SessionManager};
+use crate::session::manager::SessionManager;
+use crate::session::SessionConfig;
 use crate::ui::backend::{handle_backend_events, BackendEvent, BackendResponse};
 use crate::ui::terminal::{
     input::{InputManager, KeyEventResult},
@@ -140,19 +141,19 @@ impl TerminalTuiApp {
         let session_persistence = FileSessionPersistence::new();
 
         // Setup agent configuration
-        let agent_config = AgentConfig {
-            tool_syntax: config.tool_syntax,
+        let session_config_template = SessionConfig {
             init_path: Some(root_path.clone()),
             initial_project: root_path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("unknown")
                 .to_string(),
+            tool_syntax: config.tool_syntax,
             use_diff_blocks: config.use_diff_format,
         };
 
         // Create session manager
-        let session_manager = SessionManager::new(session_persistence, agent_config);
+        let session_manager = SessionManager::new(session_persistence, session_config_template);
         let multi_session_manager = Arc::new(Mutex::new(session_manager));
 
         // Create terminal UI and wrap as UserInterface

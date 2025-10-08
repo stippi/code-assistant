@@ -9,7 +9,7 @@ use crate::acp::ACPUserUI;
 use crate::config::DefaultProjectManager;
 use crate::persistence::LlmSessionConfig;
 use crate::session::instance::SessionActivityState;
-use crate::session::{AgentConfig, SessionManager};
+use crate::session::{SessionConfig, SessionManager};
 use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
 use llm::factory::{create_llm_client, LLMClientConfig};
@@ -32,7 +32,7 @@ pub fn get_acp_client_connection() -> Option<Arc<acp::AgentSideConnection>> {
 
 pub struct ACPAgentImpl {
     session_manager: Arc<Mutex<SessionManager>>,
-    agent_config: AgentConfig,
+    session_config_template: SessionConfig,
     llm_config: LLMClientConfig,
     session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     /// Active UI instances for running prompts, keyed by session ID
@@ -44,13 +44,13 @@ pub struct ACPAgentImpl {
 impl ACPAgentImpl {
     pub fn new(
         session_manager: Arc<Mutex<SessionManager>>,
-        agent_config: AgentConfig,
+        session_config_template: SessionConfig,
         llm_config: LLMClientConfig,
         session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     ) -> Self {
         Self {
             session_manager,
-            agent_config,
+            session_config_template,
             llm_config,
             session_update_tx,
             active_uis: Arc::new(Mutex::new(HashMap::new())),
@@ -142,14 +142,14 @@ impl acp::Agent for ACPAgentImpl {
     {
         let session_manager = self.session_manager.clone();
         let llm_config = self.llm_config.clone();
-        let agent_config = self.agent_config.clone();
+        let session_config_template = self.session_config_template.clone();
 
         Box::pin(async move {
             tracing::info!("ACP: Creating new session with cwd: {:?}", arguments.cwd);
 
             // Update the agent config to use the provided cwd
-            let mut session_agent_config = agent_config;
-            session_agent_config.init_path = Some(arguments.cwd);
+            let mut session_config = session_config_template.clone();
+            session_config.init_path = Some(arguments.cwd.clone());
 
             let llm_session_config = LlmSessionConfig {
                 provider: llm_config.provider,
@@ -162,11 +162,12 @@ impl acp::Agent for ACPAgentImpl {
 
             let session_id = {
                 let mut manager = session_manager.lock().await;
-                // Update the manager's agent config for this session
-                // Actually, we need to pass this differently...
-                // For now, let's just use it when we start the agent
                 manager
-                    .create_session_with_config(None, Some(llm_session_config))
+                    .create_session_with_config(
+                        None,
+                        Some(session_config),
+                        Some(llm_session_config),
+                    )
                     .map_err(|e| {
                         tracing::error!("Failed to create session: {}", e);
                         acp::Error::internal_error()
@@ -220,9 +221,9 @@ impl acp::Agent for ACPAgentImpl {
                     .ok_or_else(acp::Error::internal_error)?;
 
                 (
-                    session_instance.session.tool_syntax,
+                    session_instance.session.config.tool_syntax,
                     session_instance.session.messages.clone(),
-                    session_instance.session.init_path.clone(),
+                    session_instance.session.config.init_path.clone(),
                 )
             };
 
@@ -292,7 +293,7 @@ impl acp::Agent for ACPAgentImpl {
                 let manager = session_manager.lock().await;
                 manager
                     .get_session(&arguments.session_id.0)
-                    .and_then(|session| session.session.init_path.clone())
+                    .and_then(|session| session.session.config.init_path.clone())
             };
 
             // Create UI for this session
@@ -335,6 +336,15 @@ impl acp::Agent for ACPAgentImpl {
 
             // Convert prompt content blocks
             let content_blocks = convert_prompt_to_content_blocks(arguments.prompt);
+
+            let session_llm_config = LlmSessionConfig {
+                provider: llm_config.provider.clone(),
+                model: llm_config.model.clone(),
+                base_url: llm_config.base_url.clone(),
+                aicore_config: llm_config.aicore_config.clone(),
+                num_ctx: llm_config.num_ctx,
+                record_path: llm_config.record_path.clone(),
+            };
 
             // Create LLM client
             let llm_client = match create_llm_client(llm_config).await {
@@ -397,6 +407,10 @@ impl acp::Agent for ACPAgentImpl {
             // Start agent
             if let Err(e) = async {
                 let mut manager = session_manager.lock().await;
+                manager.set_session_llm_config(
+                    &arguments.session_id.0,
+                    Some(session_llm_config.clone()),
+                )?;
                 manager
                     .start_agent_for_message(
                         &arguments.session_id.0,

@@ -1,18 +1,17 @@
 use anyhow::Result;
 use llm::Message;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
 
+use crate::agent::{Agent, AgentComponents};
 use crate::config::ProjectManager;
 use crate::persistence::{
     generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, LlmSessionConfig,
 };
 use crate::session::instance::SessionInstance;
-use crate::session::SessionState;
-use crate::types::{ToolSyntax, WorkingMemory};
+use crate::session::{SessionConfig, SessionState};
 use crate::ui::UserInterface;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
@@ -30,59 +29,45 @@ pub struct SessionManager {
     /// The currently UI-active session ID
     active_session_id: Option<String>,
 
-    /// Shared configuration for creating agents
-    agent_config: AgentConfig,
-}
-
-/// Configuration needed to create new agents
-#[derive(Clone)]
-pub struct AgentConfig {
-    pub tool_syntax: ToolSyntax,
-    pub init_path: Option<PathBuf>,
-    pub initial_project: String,
-    pub use_diff_blocks: bool,
+    /// Template configuration applied to each new session
+    session_config_template: SessionConfig,
 }
 
 impl SessionManager {
     /// Create a new SessionManager
-    pub fn new(persistence: FileSessionPersistence, agent_config: AgentConfig) -> Self {
+    pub fn new(
+        persistence: FileSessionPersistence,
+        session_config_template: SessionConfig,
+    ) -> Self {
         Self {
             persistence,
             active_sessions: HashMap::new(),
             active_session_id: None,
-            agent_config,
+            session_config_template,
         }
     }
 
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
-        self.create_session_with_config(name, None)
+        self.create_session_with_config(name, None, None)
     }
 
     /// Create a new session with optional LLM config and return its ID
     pub fn create_session_with_config(
         &mut self,
         name: Option<String>,
+        session_config_override: Option<SessionConfig>,
         llm_config: Option<LlmSessionConfig>,
     ) -> Result<String> {
         let session_id = generate_session_id();
         let session_name = name.unwrap_or_default(); // Empty string if no name provided
 
-        let session = ChatSession {
-            id: session_id.clone(),
-            name: session_name,
-            created_at: SystemTime::now(),
-            updated_at: SystemTime::now(),
-            messages: Vec::new(),
-            tool_executions: Vec::new(),
-            working_memory: WorkingMemory::default(),
-            init_path: self.agent_config.init_path.clone(),
-            initial_project: self.agent_config.initial_project.clone(),
-            tool_syntax: self.agent_config.tool_syntax,
-            use_diff_blocks: self.agent_config.use_diff_blocks,
-            next_request_id: 1,
+        let session = ChatSession::new_empty(
+            session_id.clone(),
+            session_name,
+            session_config_override.unwrap_or_else(|| self.session_config_template.clone()),
             llm_config,
-        };
+        );
 
         // Save to persistence
         self.persistence.save_chat_session(&session)?;
@@ -167,15 +152,7 @@ impl SessionManager {
         ui: Arc<dyn UserInterface>,
     ) -> Result<()> {
         // Prepare session - need to scope the mutable borrow carefully
-        let (
-            tool_syntax,
-            use_diff_blocks,
-            init_path,
-            proxy_ui,
-            session_state,
-            activity_state_ref,
-            pending_message_ref,
-        ) = {
+        let (session_config, proxy_ui, session_state, activity_state_ref, pending_message_ref) = {
             let session_instance = self
                 .active_sessions
                 .get_mut(session_id)
@@ -195,9 +172,7 @@ impl SessionManager {
 
             // Clone all needed data to avoid borrowing conflicts
             let name = session_instance.session.name.clone();
-            let tool_syntax = session_instance.session.tool_syntax;
-            let use_diff_blocks = session_instance.session.use_diff_blocks;
-            let init_path = session_instance.session.init_path.clone();
+            let session_config = session_instance.session.config.clone();
             let proxy_ui = session_instance.create_proxy_ui(ui.clone());
             let activity_state_ref = session_instance.activity_state.clone();
             let pending_message_ref = session_instance.pending_message.clone();
@@ -213,8 +188,7 @@ impl SessionManager {
                     .map(|se| se.deserialize())
                     .collect::<Result<Vec<_>>>()?,
                 working_memory: session_instance.session.working_memory.clone(),
-                init_path: session_instance.session.init_path.clone(),
-                initial_project: session_instance.session.initial_project.clone(),
+                config: session_config.clone(),
                 next_request_id: Some(session_instance.session.next_request_id),
                 llm_config: session_instance.session.llm_config.clone(),
             };
@@ -224,9 +198,7 @@ impl SessionManager {
                 .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
 
             (
-                tool_syntax,
-                use_diff_blocks,
-                init_path,
+                session_config,
                 proxy_ui,
                 session_state,
                 activity_state_ref,
@@ -248,27 +220,22 @@ impl SessionManager {
         // Create agent components
         let session_manager_ref = Arc::new(Mutex::new(SessionManager::new(
             self.persistence.clone(),
-            self.agent_config.clone(),
+            self.session_config_template.clone(),
         )));
 
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
             session_manager_ref,
         ));
 
-        let mut agent = crate::agent::Agent::new(
+        let components = AgentComponents {
             llm_provider,
-            tool_syntax,
             project_manager,
             command_executor,
-            proxy_ui,
-            state_storage,
-            init_path,
-        );
+            ui: proxy_ui,
+            state_persistence: state_storage,
+        };
 
-        // Configure diff blocks format based on session setting
-        if use_diff_blocks {
-            agent.enable_diff_blocks();
-        }
+        let mut agent = Agent::new(components, session_config.clone());
 
         // Set the shared pending message reference
         agent.set_pending_message_ref(pending_message_ref);
@@ -401,6 +368,27 @@ impl SessionManager {
         }
     }
 
+    /// Update the persisted LLM config for a session
+    pub fn set_session_llm_config(
+        &mut self,
+        session_id: &str,
+        llm_config: Option<LlmSessionConfig>,
+    ) -> Result<()> {
+        let mut session = self
+            .persistence
+            .load_chat_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+
+        session.llm_config = llm_config.clone();
+        self.persistence.save_chat_session(&session)?;
+
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.llm_config = llm_config;
+        }
+
+        Ok(())
+    }
+
     /// Get the latest session ID for auto-resuming
     pub fn get_latest_session_id(&self) -> Result<Option<String>> {
         self.persistence.get_latest_session_id()
@@ -428,8 +416,8 @@ impl SessionManager {
             .map(|te| te.serialize())
             .collect::<Result<Vec<_>>>()?;
         session.working_memory = state.working_memory;
-        session.init_path = state.init_path;
-        session.initial_project = state.initial_project;
+        session.config = state.config;
+        session.llm_config = state.llm_config;
         session.next_request_id = state.next_request_id.unwrap_or(0);
         session.updated_at = SystemTime::now();
 

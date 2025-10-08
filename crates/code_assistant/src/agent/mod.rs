@@ -7,5 +7,5 @@ pub mod types;
 
 pub use crate::types::ToolSyntax;
 // pub use persistence::FileStatePersistence;
-pub use runner::Agent;
+pub use runner::{Agent, AgentComponents};
 pub use types::ToolExecution;
