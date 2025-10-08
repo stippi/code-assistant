@@ -118,7 +118,6 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                             project_manager,
                             command_executor,
                             user_interface,
-                            Some(session_llm_config),
                         )
                         .await
                         .expect("Failed to start agent with initial task");

@@ -407,6 +407,10 @@ impl acp::Agent for ACPAgentImpl {
             // Start agent
             if let Err(e) = async {
                 let mut manager = session_manager.lock().await;
+                manager.set_session_llm_config(
+                    &arguments.session_id.0,
+                    Some(session_llm_config.clone()),
+                )?;
                 manager
                     .start_agent_for_message(
                         &arguments.session_id.0,
@@ -415,7 +419,6 @@ impl acp::Agent for ACPAgentImpl {
                         project_manager,
                         command_executor,
                         ui.clone(),
-                        Some(session_llm_config),
                     )
                     .await
             }

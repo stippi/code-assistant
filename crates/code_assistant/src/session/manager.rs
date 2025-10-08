@@ -150,7 +150,6 @@ impl SessionManager {
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         ui: Arc<dyn UserInterface>,
-        session_llm_config: Option<LlmSessionConfig>,
     ) -> Result<()> {
         // Prepare session - need to scope the mutable borrow carefully
         let (session_config, proxy_ui, session_state, activity_state_ref, pending_message_ref) = {
@@ -178,14 +177,6 @@ impl SessionManager {
             let activity_state_ref = session_instance.activity_state.clone();
             let pending_message_ref = session_instance.pending_message.clone();
 
-            let resolved_session_llm_config = session_llm_config
-                .clone()
-                .or_else(|| session_instance.session.llm_config.clone());
-
-            if resolved_session_llm_config.is_some() {
-                session_instance.session.llm_config = resolved_session_llm_config.clone();
-            }
-
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
                 name,
@@ -199,7 +190,7 @@ impl SessionManager {
                 working_memory: session_instance.session.working_memory.clone(),
                 config: session_config.clone(),
                 next_request_id: Some(session_instance.session.next_request_id),
-                llm_config: resolved_session_llm_config.clone(),
+                llm_config: session_instance.session.llm_config.clone(),
             };
 
             // Set activity state
@@ -375,6 +366,27 @@ impl SessionManager {
                 None => Ok(None),
             }
         }
+    }
+
+    /// Update the persisted LLM config for a session
+    pub fn set_session_llm_config(
+        &mut self,
+        session_id: &str,
+        llm_config: Option<LlmSessionConfig>,
+    ) -> Result<()> {
+        let mut session = self
+            .persistence
+            .load_chat_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+
+        session.llm_config = llm_config.clone();
+        self.persistence.save_chat_session(&session)?;
+
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.llm_config = llm_config;
+        }
+
+        Ok(())
     }
 
     /// Get the latest session ID for auto-resuming

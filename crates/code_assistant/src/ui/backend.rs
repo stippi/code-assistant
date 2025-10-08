@@ -299,17 +299,27 @@ async fn handle_send_user_message(
         match llm_client {
             Ok(client) => {
                 let mut manager = multi_session_manager.lock().await;
-                manager
-                    .start_agent_for_message(
-                        session_id,
-                        content_blocks,
-                        client,
-                        project_manager,
-                        command_executor,
-                        user_interface,
-                        session_llm_config,
-                    )
-                    .await
+                if let Err(e) = manager.set_session_llm_config(
+                    session_id,
+                    session_llm_config.clone(),
+                ) {
+                    error!(
+                        "Failed to persist LLM config for session {}: {}",
+                        session_id, e
+                    );
+                    Err(e)
+                } else {
+                    manager
+                        .start_agent_for_message(
+                            session_id,
+                            content_blocks,
+                            client,
+                            project_manager,
+                            command_executor,
+                            user_interface,
+                        )
+                        .await
+                }
             }
             Err(e) => {
                 error!("Failed to create LLM client: {}", e);
