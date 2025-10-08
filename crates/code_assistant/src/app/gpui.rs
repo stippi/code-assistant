@@ -1,6 +1,6 @@
 use super::AgentRunConfig;
 use crate::config::DefaultProjectManager;
-use crate::session::{AgentConfig, AgentLaunchResources, SessionConfig, SessionManager};
+use crate::session::{SessionConfig, SessionManager};
 use crate::ui::{self, UserInterface};
 use crate::utils::DefaultCommandExecutor;
 use anyhow::Result;
@@ -20,18 +20,18 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     let root_path = config.path.canonicalize()?;
     let persistence = crate::persistence::FileSessionPersistence::new();
 
-    let agent_config = AgentConfig {
-        session_config: SessionConfig {
-            init_path: Some(root_path.clone()),
-            initial_project: String::new(),
-            tool_syntax: config.tool_syntax,
-            use_diff_blocks: config.use_diff_format,
-        },
+    let session_config_template = SessionConfig {
+        init_path: Some(root_path.clone()),
+        initial_project: String::new(),
+        tool_syntax: config.tool_syntax,
+        use_diff_blocks: config.use_diff_format,
     };
 
     // Create the new SessionManager
-    let multi_session_manager =
-        Arc::new(Mutex::new(SessionManager::new(persistence, agent_config)));
+    let multi_session_manager = Arc::new(Mutex::new(SessionManager::new(
+        persistence,
+        session_config_template,
+    )));
 
     // Clone GUI before moving it into thread
     let gui_for_thread = gui.clone();
@@ -109,20 +109,16 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 .expect("Failed to create LLM client");
 
                 {
-                    let launch_resources = AgentLaunchResources {
-                        llm_provider: llm_client,
-                        project_manager,
-                        command_executor,
-                        ui: user_interface,
-                        session_llm_config: Some(session_llm_config),
-                    };
-
                     let mut manager = multi_session_manager.lock().await;
                     manager
                         .start_agent_for_message(
                             &session_id,
                             vec![llm::ContentBlock::new_text(initial_task)],
-                            launch_resources,
+                            llm_client,
+                            project_manager,
+                            command_executor,
+                            user_interface,
+                            Some(session_llm_config),
                         )
                         .await
                         .expect("Failed to start agent with initial task");

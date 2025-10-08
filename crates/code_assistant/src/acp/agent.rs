@@ -9,7 +9,7 @@ use crate::acp::ACPUserUI;
 use crate::config::DefaultProjectManager;
 use crate::persistence::LlmSessionConfig;
 use crate::session::instance::SessionActivityState;
-use crate::session::{AgentConfig, AgentLaunchResources, SessionManager};
+use crate::session::{SessionConfig, SessionManager};
 use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
 use llm::factory::{create_llm_client, LLMClientConfig};
@@ -32,7 +32,7 @@ pub fn get_acp_client_connection() -> Option<Arc<acp::AgentSideConnection>> {
 
 pub struct ACPAgentImpl {
     session_manager: Arc<Mutex<SessionManager>>,
-    agent_config: AgentConfig,
+    session_config_template: SessionConfig,
     llm_config: LLMClientConfig,
     session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     /// Active UI instances for running prompts, keyed by session ID
@@ -44,13 +44,13 @@ pub struct ACPAgentImpl {
 impl ACPAgentImpl {
     pub fn new(
         session_manager: Arc<Mutex<SessionManager>>,
-        agent_config: AgentConfig,
+        session_config_template: SessionConfig,
         llm_config: LLMClientConfig,
         session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     ) -> Self {
         Self {
             session_manager,
-            agent_config,
+            session_config_template,
             llm_config,
             session_update_tx,
             active_uis: Arc::new(Mutex::new(HashMap::new())),
@@ -142,7 +142,7 @@ impl acp::Agent for ACPAgentImpl {
     {
         let session_manager = self.session_manager.clone();
         let llm_config = self.llm_config.clone();
-        let session_config_template = self.agent_config.session_config.clone();
+        let session_config_template = self.session_config_template.clone();
 
         Box::pin(async move {
             tracing::info!("ACP: Creating new session with cwd: {:?}", arguments.cwd);
@@ -406,20 +406,16 @@ impl acp::Agent for ACPAgentImpl {
 
             // Start agent
             if let Err(e) = async {
-                let launch_resources = AgentLaunchResources {
-                    llm_provider: llm_client,
-                    project_manager,
-                    command_executor,
-                    ui: ui.clone(),
-                    session_llm_config: Some(session_llm_config),
-                };
-
                 let mut manager = session_manager.lock().await;
                 manager
                     .start_agent_for_message(
                         &arguments.session_id.0,
                         content_blocks,
-                        launch_resources,
+                        llm_client,
+                        project_manager,
+                        command_executor,
+                        ui.clone(),
+                        Some(session_llm_config),
                     )
                     .await
             }

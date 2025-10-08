@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
 
-use crate::agent::{Agent, AgentComponents, AgentOptions};
+use crate::agent::{Agent, AgentComponents};
 use crate::config::ProjectManager;
 use crate::persistence::{
     generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, LlmSessionConfig,
@@ -29,33 +29,21 @@ pub struct SessionManager {
     /// The currently UI-active session ID
     active_session_id: Option<String>,
 
-    /// Shared configuration for creating agents
-    agent_config: AgentConfig,
-}
-
-/// Configuration needed to create new agents
-#[derive(Clone)]
-pub struct AgentConfig {
-    pub session_config: SessionConfig,
-}
-
-/// Resources required to launch an agent for a user message.
-pub struct AgentLaunchResources {
-    pub llm_provider: Box<dyn LLMProvider>,
-    pub project_manager: Box<dyn ProjectManager>,
-    pub command_executor: Box<dyn CommandExecutor>,
-    pub ui: Arc<dyn UserInterface>,
-    pub session_llm_config: Option<LlmSessionConfig>,
+    /// Template configuration applied to each new session
+    session_config_template: SessionConfig,
 }
 
 impl SessionManager {
     /// Create a new SessionManager
-    pub fn new(persistence: FileSessionPersistence, agent_config: AgentConfig) -> Self {
+    pub fn new(
+        persistence: FileSessionPersistence,
+        session_config_template: SessionConfig,
+    ) -> Self {
         Self {
             persistence,
             active_sessions: HashMap::new(),
             active_session_id: None,
-            agent_config,
+            session_config_template,
         }
     }
 
@@ -77,7 +65,7 @@ impl SessionManager {
         let session = ChatSession::new_empty(
             session_id.clone(),
             session_name,
-            session_config_override.unwrap_or_else(|| self.agent_config.session_config.clone()),
+            session_config_override.unwrap_or_else(|| self.session_config_template.clone()),
             llm_config,
         );
 
@@ -158,15 +146,12 @@ impl SessionManager {
         &mut self,
         session_id: &str,
         content_blocks: Vec<llm::ContentBlock>,
-        resources: AgentLaunchResources,
+        llm_provider: Box<dyn LLMProvider>,
+        project_manager: Box<dyn ProjectManager>,
+        command_executor: Box<dyn CommandExecutor>,
+        ui: Arc<dyn UserInterface>,
+        session_llm_config: Option<LlmSessionConfig>,
     ) -> Result<()> {
-        let AgentLaunchResources {
-            llm_provider,
-            project_manager,
-            command_executor,
-            ui,
-            session_llm_config,
-        } = resources;
         // Prepare session - need to scope the mutable borrow carefully
         let (session_config, proxy_ui, session_state, activity_state_ref, pending_message_ref) = {
             let session_instance = self
@@ -244,7 +229,7 @@ impl SessionManager {
         // Create agent components
         let session_manager_ref = Arc::new(Mutex::new(SessionManager::new(
             self.persistence.clone(),
-            self.agent_config.clone(),
+            self.session_config_template.clone(),
         )));
 
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
@@ -259,11 +244,7 @@ impl SessionManager {
             state_persistence: state_storage,
         };
 
-        let options = AgentOptions {
-            session_config: session_config.clone(),
-        };
-
-        let mut agent = Agent::new(components, options);
+        let mut agent = Agent::new(components, session_config.clone());
 
         // Set the shared pending message reference
         agent.set_pending_message_ref(pending_message_ref);

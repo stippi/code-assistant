@@ -29,11 +29,6 @@ pub struct AgentComponents {
     pub state_persistence: Box<dyn AgentStatePersistence>,
 }
 
-/// Configuration options that tailor an `Agent` instance.
-pub struct AgentOptions {
-    pub session_config: SessionConfig,
-}
-
 use super::ToolSyntax;
 
 /// Defines control flow for the agent loop.
@@ -95,7 +90,7 @@ impl Agent {
         }
     }
 
-    pub fn new(components: AgentComponents, options: AgentOptions) -> Self {
+    pub fn new(components: AgentComponents, session_config: SessionConfig) -> Self {
         let AgentComponents {
             llm_provider,
             project_manager,
@@ -103,8 +98,6 @@ impl Agent {
             ui,
             state_persistence,
         } = components;
-
-        let AgentOptions { session_config } = options;
 
         let mut this = Self {
             working_memory: WorkingMemory::default(),

@@ -390,16 +390,14 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         state_persistence: Box::new(MockStatePersistence::new()),
     };
 
-    let options = AgentOptions {
-        session_config: SessionConfig {
-            init_path: Some(PathBuf::from("./test_path")),
-            initial_project: String::new(),
-            tool_syntax: ToolSyntax::Native,
-            use_diff_blocks: false,
-        },
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
     };
 
-    let mut agent = Agent::new(components, options);
+    let mut agent = Agent::new(components, session_config);
     agent.disable_naming_reminders();
 
     agent.start_with_task("Test task".to_string()).await?;
@@ -511,16 +509,14 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         state_persistence: Box::new(MockStatePersistence::new()),
     };
 
-    let options = AgentOptions {
-        session_config: SessionConfig {
-            init_path: Some(PathBuf::from("./test_path")),
-            initial_project: String::new(),
-            tool_syntax: ToolSyntax::Xml,
-            use_diff_blocks: false,
-        },
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Xml,
+        use_diff_blocks: false,
     };
 
-    let mut agent = Agent::new(components, options);
+    let mut agent = Agent::new(components, session_config);
     agent.disable_naming_reminders();
 
     // Add an initial user message like the working test does
@@ -641,16 +637,14 @@ async fn test_parse_error_handling() -> Result<()> {
         state_persistence: Box::new(MockStatePersistence::new()),
     };
 
-    let options = AgentOptions {
-        session_config: SessionConfig {
-            init_path: Some(PathBuf::from("./test_path")),
-            initial_project: String::new(),
-            tool_syntax: ToolSyntax::Native,
-            use_diff_blocks: false,
-        },
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
     };
 
-    let mut agent = Agent::new(components, options);
+    let mut agent = Agent::new(components, session_config);
     agent.disable_naming_reminders();
 
     agent.start_with_task("Test task".to_string()).await?;
@@ -1147,16 +1141,14 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         state_persistence,
     };
 
-    let options = AgentOptions {
-        session_config: SessionConfig {
-            init_path: None,
-            initial_project: String::new(),
-            tool_syntax: ToolSyntax::Xml,
-            use_diff_blocks: false,
-        },
+    let session_config = SessionConfig {
+        init_path: None,
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Xml,
+        use_diff_blocks: false,
     };
 
-    let mut agent = Agent::new(components, options);
+    let mut agent = Agent::new(components, session_config);
 
     // Test case 1: User message with text content should get reminder
     let messages = vec![Message {

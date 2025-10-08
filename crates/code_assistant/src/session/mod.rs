@@ -10,7 +10,7 @@ pub mod instance;
 pub mod manager;
 
 // Main session manager
-pub use manager::{AgentConfig, AgentLaunchResources, SessionManager};
+pub use manager::SessionManager;
 
 /// Static configuration stored with each session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
