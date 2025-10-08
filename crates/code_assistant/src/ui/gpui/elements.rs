@@ -592,7 +592,6 @@ impl MessageContainer {
 
     /// Complete reasoning for the most recent thinking block
     pub fn complete_reasoning(&self, cx: &mut Context<Self>) {
-        use tracing::warn;
         let elements = self.elements.lock().unwrap();
 
         if let Some(last) = elements.last() {
@@ -601,12 +600,8 @@ impl MessageContainer {
                     thinking_block.complete_reasoning();
                     view.set_generating(false);
                     cx.notify();
-                } else {
-                    warn!("Last element is not a thinking block");
                 }
             });
-        } else {
-            warn!("No elements found");
         }
     }
 }
