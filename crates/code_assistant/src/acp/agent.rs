@@ -142,14 +142,14 @@ impl acp::Agent for ACPAgentImpl {
     {
         let session_manager = self.session_manager.clone();
         let llm_config = self.llm_config.clone();
-        let agent_config = self.agent_config.clone();
+        let session_config_template = self.agent_config.session_config.clone();
 
         Box::pin(async move {
             tracing::info!("ACP: Creating new session with cwd: {:?}", arguments.cwd);
 
             // Update the agent config to use the provided cwd
-            let mut _session_agent_config = agent_config;
-            _session_agent_config.session_config.init_path = Some(arguments.cwd);
+            let mut session_config = session_config_template.clone();
+            session_config.init_path = Some(arguments.cwd.clone());
 
             let llm_session_config = LlmSessionConfig {
                 provider: llm_config.provider,
@@ -162,11 +162,12 @@ impl acp::Agent for ACPAgentImpl {
 
             let session_id = {
                 let mut manager = session_manager.lock().await;
-                // Update the manager's agent config for this session
-                // Actually, we need to pass this differently...
-                // For now, let's just use it when we start the agent
                 manager
-                    .create_session_with_config(None, Some(llm_session_config))
+                    .create_session_with_config(
+                        None,
+                        Some(session_config),
+                        Some(llm_session_config),
+                    )
                     .map_err(|e| {
                         tracing::error!("Failed to create session: {}", e);
                         acp::Error::internal_error()

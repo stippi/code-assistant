@@ -66,7 +66,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 let session_id = {
                     let mut manager = multi_session_manager.lock().await;
                     manager
-                        .create_session_with_config(None, Some(session_llm_config.clone()))
+                        .create_session_with_config(None, None, Some(session_llm_config.clone()))
                         .unwrap()
                 };
 
@@ -173,7 +173,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
 
                         let mut manager = multi_session_manager.lock().await;
                         manager
-                            .create_session_with_config(None, Some(llm_config))
+                            .create_session_with_config(None, None, Some(llm_config))
                             .unwrap_or_else(|e| {
                                 error!("Failed to create new session: {}", e);
                                 // Return a fallback session ID if creation fails

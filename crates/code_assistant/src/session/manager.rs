@@ -61,13 +61,14 @@ impl SessionManager {
 
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
-        self.create_session_with_config(name, None)
+        self.create_session_with_config(name, None, None)
     }
 
     /// Create a new session with optional LLM config and return its ID
     pub fn create_session_with_config(
         &mut self,
         name: Option<String>,
+        session_config_override: Option<SessionConfig>,
         llm_config: Option<LlmSessionConfig>,
     ) -> Result<String> {
         let session_id = generate_session_id();
@@ -76,7 +77,7 @@ impl SessionManager {
         let session = ChatSession::new_empty(
             session_id.clone(),
             session_name,
-            self.agent_config.session_config.clone(),
+            session_config_override.unwrap_or_else(|| self.agent_config.session_config.clone()),
             llm_config,
         );
 
