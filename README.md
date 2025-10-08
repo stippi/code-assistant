@@ -24,6 +24,13 @@ An AI coding assistant built in Rust that provides both command-line and graphic
 ## Installation
 
 ```bash
+// On macOS or Linux, install Rust tool chain via rustup:
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+// On macOS, you need the metal tool chain:
+xcodebuild -downloadComponent MetalToolchain
+
+// Then clone the repo and build it:
 git clone https://github.com/stippi/code-assistant
 cd code-assistant
 cargo build --release
