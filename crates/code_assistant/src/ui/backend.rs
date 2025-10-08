@@ -1,5 +1,5 @@
 use crate::config::DefaultProjectManager;
-use crate::persistence::{ChatMetadata, DraftAttachment};
+use crate::persistence::{ChatMetadata, DraftAttachment, LlmSessionConfig};
 use crate::session::AgentLaunchResources;
 use crate::ui::UserInterface;
 use crate::utils::{content::content_blocks_from, DefaultCommandExecutor};
@@ -281,25 +281,19 @@ async fn handle_send_user_message(
         let user_interface = ui.clone();
 
         // Check if session has stored LLM config, otherwise use global config
-        let llm_config = {
+        let session_config = {
             let manager = multi_session_manager.lock().await;
             manager.get_session_llm_config(session_id).unwrap_or(None)
         };
 
-        let effective_config = llm_config
-            .map(|session_config| {
-                llm::factory::LLMClientConfig {
-                    provider: session_config.provider,
-                    model: session_config.model,
-                    base_url: session_config.base_url,
-                    aicore_config: session_config.aicore_config,
-                    num_ctx: session_config.num_ctx,
-                    record_path: session_config.record_path,
-                    playback_path: None,  // Always None for session config
-                    fast_playback: false, // Always false for session config
-                }
-            })
+        let effective_config = session_config
+            .as_ref()
+            .map(llm_client_config_from_session_config)
             .unwrap_or_else(|| cfg.as_ref().clone());
+
+        let session_llm_config = session_config
+            .clone()
+            .or_else(|| Some(session_config_from_client(&effective_config)));
 
         let model_hint = effective_config.model.clone();
         let llm_client = create_llm_client(effective_config).await;
@@ -312,6 +306,7 @@ async fn handle_send_user_message(
                     command_executor,
                     ui: user_interface,
                     model_hint,
+                    session_llm_config,
                 };
                 let mut manager = multi_session_manager.lock().await;
                 manager
@@ -420,5 +415,29 @@ async fn handle_request_pending_message_edit(
                 message: format!("Failed to get pending message: {e}"),
             }
         }
+    }
+}
+
+fn llm_client_config_from_session_config(config: &LlmSessionConfig) -> LLMClientConfig {
+    LLMClientConfig {
+        provider: config.provider.clone(),
+        model: config.model.clone(),
+        base_url: config.base_url.clone(),
+        aicore_config: config.aicore_config.clone(),
+        num_ctx: config.num_ctx,
+        record_path: config.record_path.clone(),
+        playback_path: None,
+        fast_playback: false,
+    }
+}
+
+fn session_config_from_client(config: &LLMClientConfig) -> LlmSessionConfig {
+    LlmSessionConfig {
+        provider: config.provider.clone(),
+        model: config.model.clone(),
+        base_url: config.base_url.clone(),
+        aicore_config: config.aicore_config.clone(),
+        num_ctx: config.num_ctx,
+        record_path: config.record_path.clone(),
     }
 }

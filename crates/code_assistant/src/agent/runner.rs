@@ -402,11 +402,6 @@ impl Agent {
         &mut self,
         session_state: crate::session::SessionState,
     ) -> Result<()> {
-        let model_hint = session_state
-            .llm_config
-            .as_ref()
-            .and_then(|cfg| cfg.model.clone());
-
         // Restore all state components
         self.session_id = Some(session_state.session_id);
         self.message_history = session_state.messages;
@@ -419,7 +414,13 @@ impl Agent {
         self.init_path = session_state.init_path;
         self.initial_project = session_state.initial_project;
         self.session_name = session_state.name;
-        self.set_model_hint(model_hint);
+        if let Some(model_hint) = session_state
+            .llm_config
+            .as_ref()
+            .and_then(|cfg| cfg.model.clone())
+        {
+            self.set_model_hint(Some(model_hint));
+        }
 
         // Restore next_request_id from session, or calculate from existing messages for backward compatibility
         self.next_request_id = session_state.next_request_id.unwrap_or_else(|| {

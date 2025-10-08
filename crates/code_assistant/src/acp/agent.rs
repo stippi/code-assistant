@@ -336,6 +336,15 @@ impl acp::Agent for ACPAgentImpl {
             // Convert prompt content blocks
             let content_blocks = convert_prompt_to_content_blocks(arguments.prompt);
 
+            let session_llm_config = LlmSessionConfig {
+                provider: llm_config.provider.clone(),
+                model: llm_config.model.clone(),
+                base_url: llm_config.base_url.clone(),
+                aicore_config: llm_config.aicore_config.clone(),
+                num_ctx: llm_config.num_ctx,
+                record_path: llm_config.record_path.clone(),
+            };
+
             let model_hint = llm_config.model.clone();
 
             // Create LLM client
@@ -404,6 +413,7 @@ impl acp::Agent for ACPAgentImpl {
                     command_executor,
                     ui: ui.clone(),
                     model_hint,
+                    session_llm_config: Some(session_llm_config),
                 };
 
                 let mut manager = session_manager.lock().await;

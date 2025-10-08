@@ -52,19 +52,19 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 // Task provided - create new session and start agent
                 debug!("Creating initial session with task: {}", initial_task);
 
-                let session_id = {
-                    let llm_config = crate::persistence::LlmSessionConfig {
-                        provider: provider.clone(),
-                        model: model.clone(),
-                        base_url: base_url.clone(),
-                        aicore_config: aicore_config.clone(),
-                        num_ctx,
-                        record_path: record.clone(),
-                    };
+                let session_llm_config = crate::persistence::LlmSessionConfig {
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    base_url: base_url.clone(),
+                    aicore_config: aicore_config.clone(),
+                    num_ctx,
+                    record_path: record.clone(),
+                };
 
+                let session_id = {
                     let mut manager = multi_session_manager.lock().await;
                     manager
-                        .create_session_with_config(None, Some(llm_config))
+                        .create_session_with_config(None, Some(session_llm_config.clone()))
                         .unwrap()
                 };
 
@@ -113,6 +113,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                         command_executor,
                         ui: user_interface,
                         model_hint: model.clone(),
+                        session_llm_config: Some(session_llm_config),
                     };
 
                     let mut manager = multi_session_manager.lock().await;

@@ -51,6 +51,7 @@ pub struct AgentLaunchResources {
     pub command_executor: Box<dyn CommandExecutor>,
     pub ui: Arc<dyn UserInterface>,
     pub model_hint: Option<String>,
+    pub session_llm_config: Option<LlmSessionConfig>,
 }
 
 impl SessionManager {
@@ -179,6 +180,7 @@ impl SessionManager {
             command_executor,
             ui,
             model_hint,
+            session_llm_config,
         } = resources;
         // Prepare session - need to scope the mutable borrow carefully
         let (
@@ -216,6 +218,14 @@ impl SessionManager {
             let activity_state_ref = session_instance.activity_state.clone();
             let pending_message_ref = session_instance.pending_message.clone();
 
+            let resolved_session_llm_config = session_llm_config
+                .clone()
+                .or_else(|| session_instance.session.llm_config.clone());
+
+            if resolved_session_llm_config.is_some() {
+                session_instance.session.llm_config = resolved_session_llm_config.clone();
+            }
+
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
                 name,
@@ -230,7 +240,7 @@ impl SessionManager {
                 init_path: session_instance.session.init_path.clone(),
                 initial_project: session_instance.session.initial_project.clone(),
                 next_request_id: Some(session_instance.session.next_request_id),
-                llm_config: session_instance.session.llm_config.clone(),
+                llm_config: resolved_session_llm_config.clone(),
             };
 
             // Set activity state
