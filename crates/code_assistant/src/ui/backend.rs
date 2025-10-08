@@ -299,10 +299,9 @@ async fn handle_send_user_message(
         match llm_client {
             Ok(client) => {
                 let mut manager = multi_session_manager.lock().await;
-                if let Err(e) = manager.set_session_llm_config(
-                    session_id,
-                    session_llm_config.clone(),
-                ) {
+                if let Err(e) =
+                    manager.set_session_llm_config(session_id, session_llm_config.clone())
+                {
                     error!(
                         "Failed to persist LLM config for session {}: {}",
                         session_id, e
