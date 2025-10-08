@@ -148,8 +148,8 @@ impl acp::Agent for ACPAgentImpl {
             tracing::info!("ACP: Creating new session with cwd: {:?}", arguments.cwd);
 
             // Update the agent config to use the provided cwd
-            let mut session_agent_config = agent_config;
-            session_agent_config.init_path = Some(arguments.cwd);
+            let mut _session_agent_config = agent_config;
+            _session_agent_config.session_config.init_path = Some(arguments.cwd);
 
             let llm_session_config = LlmSessionConfig {
                 provider: llm_config.provider,
@@ -220,9 +220,9 @@ impl acp::Agent for ACPAgentImpl {
                     .ok_or_else(acp::Error::internal_error)?;
 
                 (
-                    session_instance.session.tool_syntax,
+                    session_instance.session.config.tool_syntax,
                     session_instance.session.messages.clone(),
-                    session_instance.session.init_path.clone(),
+                    session_instance.session.config.init_path.clone(),
                 )
             };
 
@@ -292,7 +292,7 @@ impl acp::Agent for ACPAgentImpl {
                 let manager = session_manager.lock().await;
                 manager
                     .get_session(&arguments.session_id.0)
-                    .and_then(|session| session.session.init_path.clone())
+                    .and_then(|session| session.session.config.init_path.clone())
             };
 
             // Create UI for this session
@@ -344,8 +344,6 @@ impl acp::Agent for ACPAgentImpl {
                 num_ctx: llm_config.num_ctx,
                 record_path: llm_config.record_path.clone(),
             };
-
-            let model_hint = llm_config.model.clone();
 
             // Create LLM client
             let llm_client = match create_llm_client(llm_config).await {
@@ -412,7 +410,6 @@ impl acp::Agent for ACPAgentImpl {
                     project_manager,
                     command_executor,
                     ui: ui.clone(),
-                    model_hint,
                     session_llm_config: Some(session_llm_config),
                 };
 

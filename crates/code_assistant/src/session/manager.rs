@@ -1,7 +1,6 @@
 use anyhow::Result;
 use llm::Message;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
@@ -12,8 +11,7 @@ use crate::persistence::{
     generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, LlmSessionConfig,
 };
 use crate::session::instance::SessionInstance;
-use crate::session::SessionState;
-use crate::types::{ToolSyntax, WorkingMemory};
+use crate::session::{SessionConfig, SessionState};
 use crate::ui::UserInterface;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
@@ -38,10 +36,7 @@ pub struct SessionManager {
 /// Configuration needed to create new agents
 #[derive(Clone)]
 pub struct AgentConfig {
-    pub tool_syntax: ToolSyntax,
-    pub init_path: Option<PathBuf>,
-    pub initial_project: String,
-    pub use_diff_blocks: bool,
+    pub session_config: SessionConfig,
 }
 
 /// Resources required to launch an agent for a user message.
@@ -50,7 +45,6 @@ pub struct AgentLaunchResources {
     pub project_manager: Box<dyn ProjectManager>,
     pub command_executor: Box<dyn CommandExecutor>,
     pub ui: Arc<dyn UserInterface>,
-    pub model_hint: Option<String>,
     pub session_llm_config: Option<LlmSessionConfig>,
 }
 
@@ -79,21 +73,12 @@ impl SessionManager {
         let session_id = generate_session_id();
         let session_name = name.unwrap_or_default(); // Empty string if no name provided
 
-        let session = ChatSession {
-            id: session_id.clone(),
-            name: session_name,
-            created_at: SystemTime::now(),
-            updated_at: SystemTime::now(),
-            messages: Vec::new(),
-            tool_executions: Vec::new(),
-            working_memory: WorkingMemory::default(),
-            init_path: self.agent_config.init_path.clone(),
-            initial_project: self.agent_config.initial_project.clone(),
-            tool_syntax: self.agent_config.tool_syntax,
-            use_diff_blocks: self.agent_config.use_diff_blocks,
-            next_request_id: 1,
+        let session = ChatSession::new_empty(
+            session_id.clone(),
+            session_name,
+            self.agent_config.session_config.clone(),
             llm_config,
-        };
+        );
 
         // Save to persistence
         self.persistence.save_chat_session(&session)?;
@@ -179,19 +164,10 @@ impl SessionManager {
             project_manager,
             command_executor,
             ui,
-            model_hint,
             session_llm_config,
         } = resources;
         // Prepare session - need to scope the mutable borrow carefully
-        let (
-            tool_syntax,
-            use_diff_blocks,
-            init_path,
-            proxy_ui,
-            session_state,
-            activity_state_ref,
-            pending_message_ref,
-        ) = {
+        let (session_config, proxy_ui, session_state, activity_state_ref, pending_message_ref) = {
             let session_instance = self
                 .active_sessions
                 .get_mut(session_id)
@@ -211,9 +187,7 @@ impl SessionManager {
 
             // Clone all needed data to avoid borrowing conflicts
             let name = session_instance.session.name.clone();
-            let tool_syntax = session_instance.session.tool_syntax;
-            let use_diff_blocks = session_instance.session.use_diff_blocks;
-            let init_path = session_instance.session.init_path.clone();
+            let session_config = session_instance.session.config.clone();
             let proxy_ui = session_instance.create_proxy_ui(ui.clone());
             let activity_state_ref = session_instance.activity_state.clone();
             let pending_message_ref = session_instance.pending_message.clone();
@@ -237,8 +211,7 @@ impl SessionManager {
                     .map(|se| se.deserialize())
                     .collect::<Result<Vec<_>>>()?,
                 working_memory: session_instance.session.working_memory.clone(),
-                init_path: session_instance.session.init_path.clone(),
-                initial_project: session_instance.session.initial_project.clone(),
+                config: session_config.clone(),
                 next_request_id: Some(session_instance.session.next_request_id),
                 llm_config: resolved_session_llm_config.clone(),
             };
@@ -248,9 +221,7 @@ impl SessionManager {
                 .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
 
             (
-                tool_syntax,
-                use_diff_blocks,
-                init_path,
+                session_config,
                 proxy_ui,
                 session_state,
                 activity_state_ref,
@@ -288,17 +259,10 @@ impl SessionManager {
         };
 
         let options = AgentOptions {
-            tool_syntax,
-            init_path,
-            model_hint,
+            session_config: session_config.clone(),
         };
 
         let mut agent = Agent::new(components, options);
-
-        // Configure diff blocks format based on session setting
-        if use_diff_blocks {
-            agent.enable_diff_blocks();
-        }
 
         // Set the shared pending message reference
         agent.set_pending_message_ref(pending_message_ref);
@@ -458,8 +422,8 @@ impl SessionManager {
             .map(|te| te.serialize())
             .collect::<Result<Vec<_>>>()?;
         session.working_memory = state.working_memory;
-        session.init_path = state.init_path;
-        session.initial_project = state.initial_project;
+        session.config = state.config;
+        session.llm_config = state.llm_config;
         session.next_request_id = state.next_request_id.unwrap_or(0);
         session.updated_at = SystemTime::now();
 

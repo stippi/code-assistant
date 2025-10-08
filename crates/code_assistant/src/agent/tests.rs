@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::persistence::MockStatePersistence;
+use crate::session::SessionConfig;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
     create_command_executor_mock, create_test_response, create_test_response_text,
@@ -390,9 +391,12 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
     };
 
     let options = AgentOptions {
-        tool_syntax: ToolSyntax::Native,
-        init_path: Some(PathBuf::from("./test_path")),
-        model_hint: None,
+        session_config: SessionConfig {
+            init_path: Some(PathBuf::from("./test_path")),
+            initial_project: String::new(),
+            tool_syntax: ToolSyntax::Native,
+            use_diff_blocks: false,
+        },
     };
 
     let mut agent = Agent::new(components, options);
@@ -508,9 +512,12 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
     };
 
     let options = AgentOptions {
-        tool_syntax: ToolSyntax::Xml,
-        init_path: Some(PathBuf::from("./test_path")),
-        model_hint: None,
+        session_config: SessionConfig {
+            init_path: Some(PathBuf::from("./test_path")),
+            initial_project: String::new(),
+            tool_syntax: ToolSyntax::Xml,
+            use_diff_blocks: false,
+        },
     };
 
     let mut agent = Agent::new(components, options);
@@ -635,9 +642,12 @@ async fn test_parse_error_handling() -> Result<()> {
     };
 
     let options = AgentOptions {
-        tool_syntax: ToolSyntax::Native,
-        init_path: Some(PathBuf::from("./test_path")),
-        model_hint: None,
+        session_config: SessionConfig {
+            init_path: Some(PathBuf::from("./test_path")),
+            initial_project: String::new(),
+            tool_syntax: ToolSyntax::Native,
+            use_diff_blocks: false,
+        },
     };
 
     let mut agent = Agent::new(components, options);
@@ -736,73 +746,72 @@ async fn test_parse_error_handling() -> Result<()> {
 fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
     use crate::persistence::ChatSession;
     use crate::session::instance::SessionInstance;
-    use std::time::SystemTime;
 
     // Create a session with mixed messages including failed tool error messages
-    let session = ChatSession {
-        id: "test-session".to_string(),
-        name: "Test Session".to_string(),
-        created_at: SystemTime::now(),
-        updated_at: SystemTime::now(),
-        messages: vec![
-            // Regular user message - should be included
-            Message {
-                role: MessageRole::User,
-                content: MessageContent::Text("Hello, please help me".to_string()),
-                request_id: None,
-                usage: None,
-            },
-            // Assistant response
-            Message {
-                role: MessageRole::Assistant,
-                content: MessageContent::Text("I'll help you".to_string()),
-                request_id: Some(1),
-                usage: None,
-            },
-            // Parse error message in XML mode - should be filtered out
-            Message {
-                role: MessageRole::User,
-                content: MessageContent::Structured(vec![ContentBlock::new_error_tool_result(
-                    "tool-1-0",
-                    "Tool error: Unknown tool 'invalid_tool'. Please use only available tools.",
-                )]),
-                request_id: None,
-                usage: None,
-            },
-            // Regular tool result - should be filtered out
-            Message {
-                role: MessageRole::User,
-                content: MessageContent::Structured(vec![ContentBlock::new_tool_result(
-                    "regular-tool-123",
-                    "File contents here",
-                )]),
-                request_id: None,
-                usage: None,
-            },
-            // Empty user message (legacy) - should be filtered out
-            Message {
-                role: MessageRole::User,
-                content: MessageContent::Text("".to_string()),
-                request_id: None,
-                usage: None,
-            },
-            // Another regular user message - should be included
-            Message {
-                role: MessageRole::User,
-                content: MessageContent::Text("Thank you for the help!".to_string()),
-                request_id: None,
-                usage: None,
-            },
-        ],
-        tool_executions: Vec::new(),
-        working_memory: crate::types::WorkingMemory::default(),
-        init_path: None,
-        initial_project: String::new(),
-        tool_syntax: ToolSyntax::Xml,
-        use_diff_blocks: false,
-        next_request_id: 1,
-        llm_config: None,
-    };
+    let mut session = ChatSession::new_empty(
+        "test-session".to_string(),
+        "Test Session".to_string(),
+        SessionConfig {
+            init_path: None,
+            initial_project: String::new(),
+            tool_syntax: ToolSyntax::Xml,
+            use_diff_blocks: false,
+        },
+        None,
+    );
+    session.messages = vec![
+        // Regular user message - should be included
+        Message {
+            role: MessageRole::User,
+            content: MessageContent::Text("Hello, please help me".to_string()),
+            request_id: None,
+            usage: None,
+        },
+        // Assistant response
+        Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Text("I'll help you".to_string()),
+            request_id: Some(1),
+            usage: None,
+        },
+        // Parse error message in XML mode - should be filtered out
+        Message {
+            role: MessageRole::User,
+            content: MessageContent::Structured(vec![ContentBlock::new_error_tool_result(
+                "tool-1-0",
+                "Tool error: Unknown tool 'invalid_tool'. Please use only available tools.",
+            )]),
+            request_id: None,
+            usage: None,
+        },
+        // Regular tool result - should be filtered out
+        Message {
+            role: MessageRole::User,
+            content: MessageContent::Structured(vec![ContentBlock::new_tool_result(
+                "regular-tool-123",
+                "File contents here",
+            )]),
+            request_id: None,
+            usage: None,
+        },
+        // Empty user message (legacy) - should be filtered out
+        Message {
+            role: MessageRole::User,
+            content: MessageContent::Text("".to_string()),
+            request_id: None,
+            usage: None,
+        },
+        // Another regular user message - should be included
+        Message {
+            role: MessageRole::User,
+            content: MessageContent::Text("Thank you for the help!".to_string()),
+            request_id: None,
+            usage: None,
+        },
+    ];
+    session.tool_executions = Vec::new();
+    session.working_memory = crate::types::WorkingMemory::default();
+    session.next_request_id = 1;
 
     let session_instance = SessionInstance::new(session);
 
@@ -1139,9 +1148,12 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     };
 
     let options = AgentOptions {
-        tool_syntax: ToolSyntax::Xml,
-        init_path: None,
-        model_hint: None,
+        session_config: SessionConfig {
+            init_path: None,
+            initial_project: String::new(),
+            tool_syntax: ToolSyntax::Xml,
+            use_diff_blocks: false,
+        },
     };
 
     let mut agent = Agent::new(components, options);

@@ -295,7 +295,6 @@ async fn handle_send_user_message(
             .clone()
             .or_else(|| Some(session_config_from_client(&effective_config)));
 
-        let model_hint = effective_config.model.clone();
         let llm_client = create_llm_client(effective_config).await;
 
         match llm_client {
@@ -305,7 +304,6 @@ async fn handle_send_user_message(
                     project_manager,
                     command_executor,
                     ui: user_interface,
-                    model_hint,
                     session_llm_config,
                 };
                 let mut manager = multi_session_manager.lock().await;

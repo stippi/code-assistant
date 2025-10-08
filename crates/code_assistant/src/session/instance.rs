@@ -194,7 +194,8 @@ impl SessionInstance {
         let mut events = Vec::new();
 
         // Convert session messages to UI data
-        let mut messages_data = self.convert_messages_to_ui_data(self.session.tool_syntax)?;
+        let mut messages_data =
+            self.convert_messages_to_ui_data(self.session.config.tool_syntax)?;
         let tool_results = self.convert_tool_executions_to_ui_data()?;
 
         // If currently streaming, add incomplete message as additional MessageData
@@ -233,8 +234,8 @@ impl SessionInstance {
             total_usage: self.calculate_total_usage(),
             last_usage: self.get_last_usage(),
             tokens_limit: None, // Will be updated by persistence layer if available
-            tool_syntax: self.session.tool_syntax,
-            initial_project: self.session.initial_project.clone(),
+            tool_syntax: self.session.config.tool_syntax,
+            initial_project: self.session.config.initial_project.clone(),
         };
 
         events.push(UiEvent::UpdateSessionMetadata { metadata });

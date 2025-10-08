@@ -1,6 +1,6 @@
 use super::AgentRunConfig;
 use crate::config::DefaultProjectManager;
-use crate::session::{AgentConfig, AgentLaunchResources, SessionManager};
+use crate::session::{AgentConfig, AgentLaunchResources, SessionConfig, SessionManager};
 use crate::ui::{self, UserInterface};
 use crate::utils::DefaultCommandExecutor;
 use anyhow::Result;
@@ -21,10 +21,12 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     let persistence = crate::persistence::FileSessionPersistence::new();
 
     let agent_config = AgentConfig {
-        tool_syntax: config.tool_syntax,
-        init_path: Some(root_path.clone()),
-        initial_project: String::new(),
-        use_diff_blocks: config.use_diff_format,
+        session_config: SessionConfig {
+            init_path: Some(root_path.clone()),
+            initial_project: String::new(),
+            tool_syntax: config.tool_syntax,
+            use_diff_blocks: config.use_diff_format,
+        },
     };
 
     // Create the new SessionManager
@@ -112,7 +114,6 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                         project_manager,
                         command_executor,
                         ui: user_interface,
-                        model_hint: model.clone(),
                         session_llm_config: Some(session_llm_config),
                     };
 

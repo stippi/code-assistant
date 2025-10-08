@@ -1,7 +1,7 @@
 use super::AgentRunConfig;
 use crate::acp::{register_terminal_worker, set_acp_client_connection, ACPAgentImpl};
 use crate::persistence::FileSessionPersistence;
-use crate::session::{AgentConfig, SessionManager};
+use crate::session::{AgentConfig, SessionConfig, SessionManager};
 use agent_client_protocol::Client;
 use anyhow::Result;
 use llm::factory::LLMClientConfig;
@@ -42,10 +42,12 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
 
     // Prepare configuration
     let agent_config = AgentConfig {
-        tool_syntax: config.tool_syntax,
-        init_path: Some(config.path.canonicalize()?),
-        initial_project: String::new(),
-        use_diff_blocks: config.use_diff_format,
+        session_config: SessionConfig {
+            init_path: Some(config.path.canonicalize()?),
+            initial_project: String::new(),
+            tool_syntax: config.tool_syntax,
+            use_diff_blocks: config.use_diff_format,
+        },
     };
 
     let llm_config = LLMClientConfig {

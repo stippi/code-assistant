@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
+use crate::session::SessionConfig;
 use crate::tools::ToolRequest;
 use crate::types::{ToolSyntax, WorkingMemory};
 
@@ -40,22 +41,93 @@ pub struct ChatSession {
     pub tool_executions: Vec<SerializedToolExecution>,
     /// Working memory state
     pub working_memory: WorkingMemory,
-    /// Initial project path (if any)
-    pub init_path: Option<PathBuf>,
-    /// Initial project name
-    pub initial_project: String,
-    /// Tool syntax used for this session (XML or Native)
-    #[serde(alias = "tool_mode")]
-    pub tool_syntax: ToolSyntax,
-    /// Whether this session uses diff blocks format (replace_in_file vs edit tool)
+    /// Persistent session configuration
     #[serde(default)]
-    pub use_diff_blocks: bool,
+    pub config: SessionConfig,
     /// Counter for generating unique request IDs within this session
     #[serde(default)]
     pub next_request_id: u64,
     /// LLM configuration for this session
     #[serde(default)]
     pub llm_config: Option<LlmSessionConfig>,
+    /// Legacy fields kept for backward compatibility with existing session files
+    #[serde(rename = "init_path", default, skip_serializing_if = "Option::is_none")]
+    legacy_init_path: Option<PathBuf>,
+    #[serde(
+        rename = "initial_project",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    legacy_initial_project: Option<String>,
+    #[serde(
+        rename = "tool_syntax",
+        alias = "tool_mode",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    legacy_tool_syntax: Option<ToolSyntax>,
+    #[serde(
+        rename = "use_diff_blocks",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    legacy_use_diff_blocks: Option<bool>,
+}
+
+impl ChatSession {
+    /// Merge any legacy top-level fields into the nested SessionConfig.
+    pub fn ensure_config(&mut self) {
+        if let Some(init_path) = self.legacy_init_path.take() {
+            self.config.init_path = Some(init_path);
+        }
+        if let Some(initial_project) = self.legacy_initial_project.take() {
+            if !initial_project.is_empty() {
+                self.config.initial_project = initial_project;
+            }
+        }
+        if let Some(tool_syntax) = self.legacy_tool_syntax.take() {
+            self.config.tool_syntax = tool_syntax;
+        }
+        if let Some(use_diff_blocks) = self.legacy_use_diff_blocks.take() {
+            self.config.use_diff_blocks = use_diff_blocks;
+        }
+    }
+
+    /// Create a new empty chat session using the provided configuration.
+    pub fn new_empty(
+        id: String,
+        name: String,
+        config: SessionConfig,
+        llm_config: Option<LlmSessionConfig>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            created_at: SystemTime::now(),
+            updated_at: SystemTime::now(),
+            messages: Vec::new(),
+            tool_executions: Vec::new(),
+            working_memory: WorkingMemory::default(),
+            config,
+            next_request_id: 1,
+            llm_config,
+            legacy_init_path: None,
+            legacy_initial_project: None,
+            legacy_tool_syntax: None,
+            legacy_use_diff_blocks: None,
+        }
+    }
+}
+
+/// A helper to obtain the tool syntax for this session without exposing legacy fields.
+impl ChatSession {
+    pub fn tool_syntax(&self) -> ToolSyntax {
+        self.config.tool_syntax
+    }
+
+    pub fn initial_project(&self) -> &str {
+        &self.config.initial_project
+    }
 }
 
 /// Serialized representation of a tool execution
@@ -125,9 +197,12 @@ impl FileSessionPersistence {
     }
 
     pub fn save_chat_session(&mut self, session: &ChatSession) -> Result<()> {
+        let mut session = session.clone();
+        session.ensure_config();
+
         let session_path = self.chat_file_path(&session.id)?;
         debug!("Saving chat session to {}", session_path.display());
-        let json = serde_json::to_string_pretty(session)?;
+        let json = serde_json::to_string_pretty(&session)?;
         std::fs::write(session_path, json)?;
 
         // Update metadata
@@ -140,7 +215,7 @@ impl FileSessionPersistence {
         };
 
         // Calculate usage information
-        let (total_usage, last_usage, tokens_limit) = calculate_session_usage(session);
+        let (total_usage, last_usage, tokens_limit) = calculate_session_usage(&session);
 
         // Update or add metadata for this session
         let new_metadata = ChatMetadata {
@@ -152,8 +227,8 @@ impl FileSessionPersistence {
             total_usage,
             last_usage,
             tokens_limit,
-            tool_syntax: session.tool_syntax,
-            initial_project: session.initial_project.clone(),
+            tool_syntax: session.tool_syntax(),
+            initial_project: session.initial_project().to_string(),
         };
 
         if let Some(existing) = metadata_list.iter_mut().find(|m| m.id == session.id) {
@@ -176,7 +251,8 @@ impl FileSessionPersistence {
 
         debug!("Loading chat session from {}", session_path.display());
         let json = std::fs::read_to_string(session_path)?;
-        let session = serde_json::from_str(&json)?;
+        let mut session: ChatSession = serde_json::from_str(&json)?;
+        session.ensure_config();
         Ok(Some(session))
     }
 
@@ -277,7 +353,8 @@ impl FileSessionPersistence {
 
                     debug!(
                         "Rebuilding metadata for session {}: initial_project='{}'",
-                        session.id, session.initial_project
+                        session.id,
+                        session.initial_project()
                     );
 
                     let metadata = ChatMetadata {
@@ -289,8 +366,8 @@ impl FileSessionPersistence {
                         total_usage,
                         last_usage,
                         tokens_limit,
-                        tool_syntax: session.tool_syntax,
-                        initial_project: session.initial_project.clone(),
+                        tool_syntax: session.tool_syntax(),
+                        initial_project: session.initial_project().to_string(),
                     };
 
                     metadata_list.push(metadata);
