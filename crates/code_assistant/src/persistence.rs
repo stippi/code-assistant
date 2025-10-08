@@ -1,5 +1,4 @@
 use anyhow::Result;
-use llm::factory::LLMProviderType;
 use llm::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -12,14 +11,12 @@ use crate::session::SessionConfig;
 use crate::tools::ToolRequest;
 use crate::types::{ToolSyntax, WorkingMemory};
 
-/// Configuration for LLM provider per session
+/// Model configuration for a session
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LlmSessionConfig {
-    pub provider: LLMProviderType,
-    pub model: Option<String>,
-    pub base_url: Option<String>,
-    pub aicore_config: Option<PathBuf>,
-    pub num_ctx: usize,
+pub struct SessionModelConfig {
+    /// Display name of the model from models.json
+    pub model_name: String,
+    /// Optional recording path for this session
     pub record_path: Option<PathBuf>,
     // Note: playback and fast_playback are runtime toggles, not persisted
 }
@@ -47,9 +44,9 @@ pub struct ChatSession {
     /// Counter for generating unique request IDs within this session
     #[serde(default)]
     pub next_request_id: u64,
-    /// LLM configuration for this session
+    /// Model configuration for this session
     #[serde(default)]
-    pub llm_config: Option<LlmSessionConfig>,
+    pub model_config: Option<SessionModelConfig>,
     /// Legacy fields kept for backward compatibility with existing session files
     #[serde(rename = "init_path", default, skip_serializing_if = "Option::is_none")]
     legacy_init_path: Option<PathBuf>,
@@ -98,7 +95,7 @@ impl ChatSession {
         id: String,
         name: String,
         config: SessionConfig,
-        llm_config: Option<LlmSessionConfig>,
+        model_config: Option<SessionModelConfig>,
     ) -> Self {
         Self {
             id,
@@ -110,7 +107,7 @@ impl ChatSession {
             working_memory: WorkingMemory::default(),
             config,
             next_request_id: 1,
-            llm_config,
+            model_config,
             legacy_init_path: None,
             legacy_initial_project: None,
             legacy_tool_syntax: None,

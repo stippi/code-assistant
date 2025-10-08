@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use crate::agent::{Agent, AgentComponents};
 use crate::config::ProjectManager;
 use crate::persistence::{
-    generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, LlmSessionConfig,
+    generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig,
 };
 use crate::session::instance::SessionInstance;
 use crate::session::{SessionConfig, SessionState};
@@ -52,12 +52,12 @@ impl SessionManager {
         self.create_session_with_config(name, None, None)
     }
 
-    /// Create a new session with optional LLM config and return its ID
+    /// Create a new session with optional model config and return its ID
     pub fn create_session_with_config(
         &mut self,
         name: Option<String>,
         session_config_override: Option<SessionConfig>,
-        llm_config: Option<LlmSessionConfig>,
+        model_config: Option<SessionModelConfig>,
     ) -> Result<String> {
         let session_id = generate_session_id();
         let session_name = name.unwrap_or_default(); // Empty string if no name provided
@@ -66,7 +66,7 @@ impl SessionManager {
             session_id.clone(),
             session_name,
             session_config_override.unwrap_or_else(|| self.session_config_template.clone()),
-            llm_config,
+            model_config,
         );
 
         // Save to persistence
@@ -190,7 +190,7 @@ impl SessionManager {
                 working_memory: session_instance.session.working_memory.clone(),
                 config: session_config.clone(),
                 next_request_id: Some(session_instance.session.next_request_id),
-                llm_config: session_instance.session.llm_config.clone(),
+                model_config: session_instance.session.model_config.clone(),
             };
 
             // Set activity state
@@ -355,35 +355,35 @@ impl SessionManager {
         self.active_sessions.get_mut(session_id)
     }
 
-    /// Get the LLM config for a session, if any
-    pub fn get_session_llm_config(&self, session_id: &str) -> Result<Option<LlmSessionConfig>> {
+    /// Get the model config for a session, if any
+    pub fn get_session_model_config(&self, session_id: &str) -> Result<Option<SessionModelConfig>> {
         if let Some(instance) = self.active_sessions.get(session_id) {
-            Ok(instance.session.llm_config.clone())
+            Ok(instance.session.model_config.clone())
         } else {
             // Load from persistence
             match self.persistence.load_chat_session(session_id)? {
-                Some(session) => Ok(session.llm_config),
+                Some(session) => Ok(session.model_config),
                 None => Ok(None),
             }
         }
     }
 
-    /// Update the persisted LLM config for a session
-    pub fn set_session_llm_config(
+    /// Update the persisted model config for a session
+    pub fn set_session_model_config(
         &mut self,
         session_id: &str,
-        llm_config: Option<LlmSessionConfig>,
+        model_config: Option<SessionModelConfig>,
     ) -> Result<()> {
         let mut session = self
             .persistence
             .load_chat_session(session_id)?
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
 
-        session.llm_config = llm_config.clone();
+        session.model_config = model_config.clone();
         self.persistence.save_chat_session(&session)?;
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
-            instance.session.llm_config = llm_config;
+            instance.session.model_config = model_config;
         }
 
         Ok(())
@@ -417,7 +417,7 @@ impl SessionManager {
             .collect::<Result<Vec<_>>>()?;
         session.working_memory = state.working_memory;
         session.config = state.config;
-        session.llm_config = state.llm_config;
+        session.model_config = state.model_config;
         session.next_request_id = state.next_request_id.unwrap_or(0);
         session.updated_at = SystemTime::now();
 

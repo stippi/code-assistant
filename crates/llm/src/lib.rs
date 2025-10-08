@@ -27,6 +27,7 @@ pub mod ollama;
 pub mod openai;
 pub mod openai_responses;
 pub mod openrouter;
+pub mod provider_config;
 pub mod recording;
 pub mod streaming;
 pub mod types;

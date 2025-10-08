@@ -1,5 +1,6 @@
 use crate::auth::TokenManager;
 use crate::config::{AiCoreConfig, DeploymentConfig};
+use crate::provider_config::{ConfigurationSystem, ModelConfig, ProviderConfig};
 use crate::{
     recording::PlaybackState, AiCoreClient, AnthropicClient, CerebrasClient, GroqClient,
     LLMProvider, MistralAiClient, OllamaClient, OpenAIClient, OpenAIResponsesClient,
@@ -7,6 +8,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
+
 use std::path::PathBuf;
 
 #[derive(ValueEnum, Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -34,6 +36,95 @@ pub struct LLMClientConfig {
     pub record_path: Option<PathBuf>,
     pub playback_path: Option<PathBuf>,
     pub fast_playback: bool,
+}
+
+/// Create an LLM client using the new model-based configuration system
+pub async fn create_llm_client_from_model(
+    model_name: &str,
+    playback_path: Option<PathBuf>,
+    fast_playback: bool,
+) -> Result<Box<dyn LLMProvider>> {
+    let config_system = ConfigurationSystem::load()?;
+    let (model_config, provider_config) = config_system.get_model_with_provider(model_name)?;
+
+    create_llm_client_from_configs(model_config, provider_config, playback_path, fast_playback)
+        .await
+}
+
+/// Create an LLM client from model and provider configurations
+pub async fn create_llm_client_from_configs(
+    model_config: &ModelConfig,
+    provider_config: &ProviderConfig,
+    playback_path: Option<PathBuf>,
+    fast_playback: bool,
+) -> Result<Box<dyn LLMProvider>> {
+    // Build optional playback state once
+    let playback_state = if let Some(path) = &playback_path {
+        let state = PlaybackState::from_file(path, fast_playback)?;
+        if state.session_count() == 0 {
+            return Err(anyhow::anyhow!("Recording file contains no sessions"));
+        }
+        Some(state)
+    } else {
+        None
+    };
+
+    // Parse provider type
+    let provider_type = match provider_config.provider.as_str() {
+        "ai-core" => LLMProviderType::AiCore,
+        "anthropic" => LLMProviderType::Anthropic,
+        "cerebras" => LLMProviderType::Cerebras,
+        "groq" => LLMProviderType::Groq,
+        "mistral-ai" => LLMProviderType::MistralAI,
+        "ollama" => LLMProviderType::Ollama,
+        "openai" => LLMProviderType::OpenAI,
+        "openai-responses" => LLMProviderType::OpenAIResponses,
+        "openrouter" => LLMProviderType::OpenRouter,
+        "vertex" => LLMProviderType::Vertex,
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unknown provider type: {}",
+                provider_config.provider
+            ))
+        }
+    };
+
+    // Extract recording path from model config if present
+    let record_path = model_config
+        .config
+        .get("record_path")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from);
+
+    match provider_type {
+        LLMProviderType::AiCore => {
+            create_ai_core_client(model_config, provider_config, record_path).await
+        }
+        LLMProviderType::Anthropic => {
+            create_anthropic_client(model_config, provider_config, record_path, playback_state)
+                .await
+        }
+        LLMProviderType::Cerebras => create_cerebras_client(model_config, provider_config).await,
+        LLMProviderType::Groq => create_groq_client(model_config, provider_config).await,
+        LLMProviderType::MistralAI => create_mistral_client(model_config, provider_config).await,
+        LLMProviderType::OpenAI => create_openai_client(model_config, provider_config).await,
+        LLMProviderType::OpenAIResponses => {
+            create_openai_responses_client(
+                model_config,
+                provider_config,
+                playback_state,
+                record_path,
+            )
+            .await
+        }
+        LLMProviderType::Vertex => {
+            create_vertex_client(model_config, provider_config, record_path).await
+        }
+        LLMProviderType::Ollama => create_ollama_client(model_config, provider_config).await,
+        LLMProviderType::OpenRouter => {
+            create_openrouter_client(model_config, provider_config).await
+        }
+    }
 }
 
 pub async fn create_llm_client(config: LLMClientConfig) -> Result<Box<dyn LLMProvider>> {
@@ -265,4 +356,329 @@ pub async fn create_llm_client(config: LLMClientConfig) -> Result<Box<dyn LLMPro
             Ok(Box::new(OpenRouterClient::new(api_key, model, base_url)))
         }
     }
+}
+// Helper functions for creating clients with the new configuration system
+
+async fn create_ai_core_client(
+    model_config: &ModelConfig,
+    provider_config: &ProviderConfig,
+    record_path: Option<PathBuf>,
+) -> Result<Box<dyn LLMProvider>> {
+    let config = &provider_config.config;
+
+    let client_id = config
+        .get("client_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("client_id not found in AI Core provider config"))?;
+
+    let client_secret = config
+        .get("client_secret")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("client_secret not found in AI Core provider config"))?;
+
+    let token_url = config
+        .get("token_url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("token_url not found in AI Core provider config"))?;
+
+    let api_base_url = config
+        .get("api_base_url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("api_base_url not found in AI Core provider config"))?;
+
+    let models = config
+        .get("models")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| anyhow::anyhow!("models not found in AI Core provider config"))?;
+
+    let deployment_uuid = models
+        .get(&model_config.id)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No deployment found for model '{}' in AI Core config",
+                model_config.id
+            )
+        })?;
+
+    let deployment_config = DeploymentConfig {
+        client_id: client_id.to_string(),
+        client_secret: client_secret.to_string(),
+        token_url: token_url.to_string(),
+        api_base_url: api_base_url.to_string(),
+    };
+
+    let token_manager = TokenManager::new(&deployment_config)
+        .await
+        .context("Failed to initialize token manager")?;
+
+    let api_url = format!(
+        "{}/deployments/{}",
+        api_base_url.trim_end_matches('/'),
+        deployment_uuid
+    );
+
+    let client = if let Some(path) = record_path {
+        AiCoreClient::new_with_recorder(token_manager, api_url, path)
+    } else {
+        AiCoreClient::new(token_manager, api_url)
+    };
+
+    Ok(Box::new(client))
+}
+
+async fn create_anthropic_client(
+    model_config: &ModelConfig,
+    provider_config: &ProviderConfig,
+    record_path: Option<PathBuf>,
+    playback_state: Option<PlaybackState>,
+) -> Result<Box<dyn LLMProvider>> {
+    let config = &provider_config.config;
+
+    let api_key = config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("api_key not found in Anthropic provider config"))?;
+
+    let default_base_url = AnthropicClient::default_base_url();
+    let base_url = config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&default_base_url);
+
+    let mut client = if let Some(path) = record_path {
+        AnthropicClient::new_with_recorder(
+            api_key.to_string(),
+            model_config.id.clone(),
+            base_url.to_string(),
+            path,
+        )
+    } else {
+        AnthropicClient::new(
+            api_key.to_string(),
+            model_config.id.clone(),
+            base_url.to_string(),
+        )
+    };
+
+    if let Some(state) = playback_state {
+        client = client.with_playback(state);
+    }
+
+    Ok(Box::new(client))
+}
+
+async fn create_cerebras_client(
+    model_config: &ModelConfig,
+    provider_config: &ProviderConfig,
+) -> Result<Box<dyn LLMProvider>> {
+    let config = &provider_config.config;
+
+    let api_key = config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("api_key not found in Cerebras provider config"))?;
+
+    let default_base_url = CerebrasClient::default_base_url();
+    let base_url = config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&default_base_url);
+
+    Ok(Box::new(CerebrasClient::new(
+        api_key.to_string(),
+        model_config.id.clone(),
+        base_url.to_string(),
+    )))
+}
+
+async fn create_groq_client(
+    model_config: &ModelConfig,
+    provider_config: &ProviderConfig,
+) -> Result<Box<dyn LLMProvider>> {
+    let config = &provider_config.config;
+
+    let api_key = config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("api_key not found in Groq provider config"))?;
+
+    let default_base_url = GroqClient::default_base_url();
+    let base_url = config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&default_base_url);
+
+    Ok(Box::new(GroqClient::new(
+        api_key.to_string(),
+        model_config.id.clone(),
+        base_url.to_string(),
+    )))
+}
+
+async fn create_mistral_client(
+    model_config: &ModelConfig,
+    provider_config: &ProviderConfig,
+) -> Result<Box<dyn LLMProvider>> {
+    let config = &provider_config.config;
+
+    let api_key = config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("api_key not found in Mistral provider config"))?;
+
+    let default_base_url = MistralAiClient::default_base_url();
+    let base_url = config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&default_base_url);
+
+    Ok(Box::new(MistralAiClient::new(
+        api_key.to_string(),
+        model_config.id.clone(),
+        base_url.to_string(),
+    )))
+}
+
+async fn create_openai_client(
+    model_config: &ModelConfig,
+    provider_config: &ProviderConfig,
+) -> Result<Box<dyn LLMProvider>> {
+    let config = &provider_config.config;
+
+    let api_key = config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("api_key not found in OpenAI provider config"))?;
+
+    let default_base_url = OpenAIClient::default_base_url();
+    let base_url = config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&default_base_url);
+
+    Ok(Box::new(OpenAIClient::new(
+        api_key.to_string(),
+        model_config.id.clone(),
+        base_url.to_string(),
+    )))
+}
+
+async fn create_openai_responses_client(
+    model_config: &ModelConfig,
+    provider_config: &ProviderConfig,
+    playback_state: Option<PlaybackState>,
+    record_path: Option<PathBuf>,
+) -> Result<Box<dyn LLMProvider>> {
+    let config = &provider_config.config;
+
+    let api_key = config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("api_key not found in OpenAI provider config"))?;
+
+    let default_base_url = OpenAIResponsesClient::default_base_url();
+    let base_url = config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&default_base_url);
+
+    let mut client = OpenAIResponsesClient::new(
+        api_key.to_string(),
+        model_config.id.clone(),
+        base_url.to_string(),
+    );
+
+    if let Some(state) = playback_state {
+        client = client.with_playback(state);
+    }
+
+    if let Some(path) = record_path {
+        client = client.with_recorder(path);
+    }
+
+    Ok(Box::new(client))
+}
+
+async fn create_vertex_client(
+    model_config: &ModelConfig,
+    provider_config: &ProviderConfig,
+    record_path: Option<PathBuf>,
+) -> Result<Box<dyn LLMProvider>> {
+    let config = &provider_config.config;
+
+    let api_key = config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("api_key not found in Vertex provider config"))?;
+
+    let default_base_url = VertexClient::default_base_url();
+    let base_url = config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&default_base_url);
+
+    if let Some(path) = record_path {
+        Ok(Box::new(VertexClient::new_with_recorder(
+            api_key.to_string(),
+            model_config.id.clone(),
+            base_url.to_string(),
+            path,
+        )))
+    } else {
+        Ok(Box::new(VertexClient::new(
+            api_key.to_string(),
+            model_config.id.clone(),
+            base_url.to_string(),
+        )))
+    }
+}
+
+async fn create_ollama_client(
+    model_config: &ModelConfig,
+    provider_config: &ProviderConfig,
+) -> Result<Box<dyn LLMProvider>> {
+    let config = &provider_config.config;
+
+    let default_base_url = OllamaClient::default_base_url();
+    let base_url = config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&default_base_url);
+
+    let num_ctx = model_config
+        .config
+        .get("num_ctx")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(8192) as usize;
+
+    Ok(Box::new(OllamaClient::new(
+        model_config.id.clone(),
+        base_url.to_string(),
+        num_ctx,
+    )))
+}
+
+async fn create_openrouter_client(
+    model_config: &ModelConfig,
+    provider_config: &ProviderConfig,
+) -> Result<Box<dyn LLMProvider>> {
+    let config = &provider_config.config;
+
+    let api_key = config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("api_key not found in OpenRouter provider config"))?;
+
+    let default_base_url = OpenRouterClient::default_base_url();
+    let base_url = config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&default_base_url);
+
+    Ok(Box::new(OpenRouterClient::new(
+        api_key.to_string(),
+        model_config.id.clone(),
+        base_url.to_string(),
+    )))
 }

@@ -1,5 +1,5 @@
 use crate::config::DefaultProjectManager;
-use crate::persistence::{ChatMetadata, DraftAttachment, LlmSessionConfig};
+use crate::persistence::{ChatMetadata, DraftAttachment, SessionModelConfig};
 use crate::ui::UserInterface;
 use crate::utils::{content::content_blocks_from, DefaultCommandExecutor};
 use llm::factory::{create_llm_client, LLMClientConfig};
@@ -282,17 +282,12 @@ async fn handle_send_user_message(
         // Check if session has stored LLM config, otherwise use global config
         let session_config = {
             let manager = multi_session_manager.lock().await;
-            manager.get_session_llm_config(session_id).unwrap_or(None)
+            manager.get_session_model_config(session_id).unwrap_or(None)
         };
 
-        let effective_config = session_config
-            .as_ref()
-            .map(llm_client_config_from_session_config)
-            .unwrap_or_else(|| cfg.as_ref().clone());
-
-        let session_llm_config = session_config
-            .clone()
-            .or_else(|| Some(session_config_from_client(&effective_config)));
+        // TODO: This will be replaced in Phase 4 with proper model-based configuration
+        let effective_config = cfg.as_ref().clone();
+        let session_llm_config = session_config.clone();
 
         let llm_client = create_llm_client(effective_config).await;
 
@@ -300,7 +295,7 @@ async fn handle_send_user_message(
             Ok(client) => {
                 let mut manager = multi_session_manager.lock().await;
                 if let Err(e) =
-                    manager.set_session_llm_config(session_id, session_llm_config.clone())
+                    manager.set_session_model_config(session_id, session_llm_config.clone())
                 {
                     error!(
                         "Failed to persist LLM config for session {}: {}",
@@ -425,26 +420,11 @@ async fn handle_request_pending_message_edit(
     }
 }
 
-fn llm_client_config_from_session_config(config: &LlmSessionConfig) -> LLMClientConfig {
-    LLMClientConfig {
-        provider: config.provider.clone(),
-        model: config.model.clone(),
-        base_url: config.base_url.clone(),
-        aicore_config: config.aicore_config.clone(),
-        num_ctx: config.num_ctx,
-        record_path: config.record_path.clone(),
-        playback_path: None,
-        fast_playback: false,
-    }
+// TODO: These functions will be replaced in Phase 4 with proper model-based configuration
+fn _llm_client_config_from_session_config(_config: &SessionModelConfig) -> LLMClientConfig {
+    panic!("This function needs to be replaced with model-based configuration in Phase 4")
 }
 
-fn session_config_from_client(config: &LLMClientConfig) -> LlmSessionConfig {
-    LlmSessionConfig {
-        provider: config.provider.clone(),
-        model: config.model.clone(),
-        base_url: config.base_url.clone(),
-        aicore_config: config.aicore_config.clone(),
-        num_ctx: config.num_ctx,
-        record_path: config.record_path.clone(),
-    }
+fn _session_config_from_client(_config: &LLMClientConfig) -> SessionModelConfig {
+    panic!("This function needs to be replaced with model-based configuration in Phase 4")
 }

@@ -4,7 +4,7 @@ use crate::persistence::FileSessionPersistence;
 use crate::session::{SessionConfig, SessionManager};
 use agent_client_protocol::Client;
 use anyhow::Result;
-use llm::factory::LLMClientConfig;
+use llm::factory::create_llm_client_from_model;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -48,16 +48,11 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
         use_diff_blocks: config.use_diff_format,
     };
 
-    let llm_config = LLMClientConfig {
-        provider: config.provider,
-        model: config.model,
-        base_url: config.base_url,
-        aicore_config: config.aicore_config,
-        num_ctx: config.num_ctx,
-        record_path: config.record,
-        playback_path: config.playback,
-        fast_playback: config.fast_playback,
-    };
+    // Get model name or use default
+    let model_name = config
+        .model
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Model name is required for ACP mode"))?;
 
     // Create session manager
     let persistence = FileSessionPersistence::new();
@@ -77,7 +72,9 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     let agent = ACPAgentImpl::new(
         session_manager,
         session_config_template,
-        llm_config,
+        model_name.clone(),
+        config.playback.clone(),
+        config.fast_playback,
         session_update_tx,
     );
 

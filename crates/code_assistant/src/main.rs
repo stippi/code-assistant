@@ -24,16 +24,17 @@ use anyhow::Result;
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    // Handle list commands first
+    if args.handle_list_commands()? {
+        return Ok(());
+    }
+
     match args.mode {
         Some(Mode::Server { verbose }) => app::server::run(verbose).await,
         Some(Mode::Acp {
             verbose,
             path,
-            provider,
             model,
-            base_url,
-            aicore_config,
-            num_ctx,
             tool_syntax,
             use_diff_format,
         }) => {
@@ -46,11 +47,7 @@ async fn main() -> Result<()> {
                 path,
                 task: None,
                 continue_task: false,
-                provider,
                 model,
-                base_url,
-                aicore_config,
-                num_ctx,
                 tool_syntax,
                 use_diff_format,
                 record: None,
@@ -78,11 +75,7 @@ async fn main() -> Result<()> {
                 path: args.path,
                 task: args.task,
                 continue_task: args.continue_task,
-                provider: args.provider,
                 model: args.model,
-                base_url: args.base_url,
-                aicore_config: args.aicore_config,
-                num_ctx: args.num_ctx,
                 tool_syntax: args.tool_syntax,
                 use_diff_format: args.use_diff_format,
                 record: args.record,

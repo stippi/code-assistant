@@ -11,6 +11,7 @@ use crate::ui::terminal::{
 };
 use crate::ui::UserInterface;
 use anyhow::Result;
+use llm::factory::create_llm_client_from_model;
 use llm::factory::LLMClientConfig;
 use ratatui::crossterm::event::{self, Event};
 use std::sync::Arc;
@@ -169,30 +170,39 @@ impl TerminalTuiApp {
         let (backend_response_tx, backend_response_rx) =
             async_channel::unbounded::<BackendResponse>();
 
-        // Create LLM client config
-        let llm_config = Arc::new(LLMClientConfig {
-            provider: config.provider.clone(),
-            model: config.model.clone(),
-            base_url: config.base_url.clone(),
-            aicore_config: config.aicore_config.clone(),
-            num_ctx: config.num_ctx,
-            record_path: config.record.clone(),
-            playback_path: config.playback.clone(),
-            fast_playback: config.fast_playback,
-        });
+        // Get model name or use default
+        let model_name = config
+            .model
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Model name is required"))?;
 
         // Spawn backend handler
         let backend_task = {
             let multi_session_manager = multi_session_manager.clone();
-            let llm_config = llm_config.clone();
+            let model_name_for_backend = model_name.clone();
             let ui = ui.clone();
+            let record_path = config.record.clone();
+            let playback_path = config.playback.clone();
+            let fast_playback = config.fast_playback;
 
             tokio::spawn(async move {
+                // TODO: Replace with proper model-based backend in Phase 4
+                let temp_llm_config = Arc::new(LLMClientConfig {
+                    provider: llm::factory::LLMProviderType::Anthropic,
+                    model: Some(model_name_for_backend),
+                    base_url: None,
+                    aicore_config: None,
+                    num_ctx: 8192,
+                    record_path,
+                    playback_path,
+                    fast_playback,
+                });
+
                 handle_backend_events(
                     backend_event_rx,
                     backend_response_tx,
                     multi_session_manager,
-                    llm_config,
+                    temp_llm_config,
                     ui,
                 )
                 .await;

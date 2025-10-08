@@ -7,12 +7,12 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use crate::acp::types::convert_prompt_to_content_blocks;
 use crate::acp::ACPUserUI;
 use crate::config::DefaultProjectManager;
-use crate::persistence::LlmSessionConfig;
+use crate::persistence::SessionModelConfig;
 use crate::session::instance::SessionActivityState;
 use crate::session::{SessionConfig, SessionManager};
 use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
-use llm::factory::{create_llm_client, LLMClientConfig};
+use llm::factory::create_llm_client_from_model;
 
 /// Global connection to the ACP client
 /// Since there's only one connection per agent process, this is acceptable
@@ -33,7 +33,9 @@ pub fn get_acp_client_connection() -> Option<Arc<acp::AgentSideConnection>> {
 pub struct ACPAgentImpl {
     session_manager: Arc<Mutex<SessionManager>>,
     session_config_template: SessionConfig,
-    llm_config: LLMClientConfig,
+    model_name: String,
+    playback_path: Option<std::path::PathBuf>,
+    fast_playback: bool,
     session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     /// Active UI instances for running prompts, keyed by session ID
     /// Used to signal cancellation to the prompt() wait loop
@@ -45,13 +47,17 @@ impl ACPAgentImpl {
     pub fn new(
         session_manager: Arc<Mutex<SessionManager>>,
         session_config_template: SessionConfig,
-        llm_config: LLMClientConfig,
+        model_name: String,
+        playback_path: Option<std::path::PathBuf>,
+        fast_playback: bool,
         session_update_tx: mpsc::UnboundedSender<(acp::SessionNotification, oneshot::Sender<()>)>,
     ) -> Self {
         Self {
             session_manager,
             session_config_template,
-            llm_config,
+            model_name,
+            playback_path,
+            fast_playback,
             session_update_tx,
             active_uis: Arc::new(Mutex::new(HashMap::new())),
             client_capabilities: Arc::new(Mutex::new(None)),
@@ -141,7 +147,9 @@ impl acp::Agent for ACPAgentImpl {
         'life0: 'async_trait,
     {
         let session_manager = self.session_manager.clone();
-        let llm_config = self.llm_config.clone();
+        let model_name = self.model_name.clone();
+        let playback_path = self.playback_path.clone();
+        let fast_playback = self.fast_playback;
         let session_config_template = self.session_config_template.clone();
 
         Box::pin(async move {
@@ -151,23 +159,15 @@ impl acp::Agent for ACPAgentImpl {
             let mut session_config = session_config_template.clone();
             session_config.init_path = Some(arguments.cwd.clone());
 
-            let llm_session_config = LlmSessionConfig {
-                provider: llm_config.provider,
-                model: llm_config.model,
-                base_url: llm_config.base_url,
-                aicore_config: llm_config.aicore_config,
-                num_ctx: llm_config.num_ctx,
-                record_path: llm_config.record_path,
-            };
+            let session_model_config = Some(SessionModelConfig {
+                model_name: model_name.clone(),
+                record_path: None, // Recording is handled at the client level now
+            });
 
             let session_id = {
                 let mut manager = session_manager.lock().await;
                 manager
-                    .create_session_with_config(
-                        None,
-                        Some(session_config),
-                        Some(llm_session_config),
-                    )
+                    .create_session_with_config(None, Some(session_config), session_model_config)
                     .map_err(|e| {
                         tracing::error!("Failed to create session: {}", e);
                         acp::Error::internal_error()
@@ -274,7 +274,9 @@ impl acp::Agent for ACPAgentImpl {
     {
         let session_manager = self.session_manager.clone();
         let session_update_tx = self.session_update_tx.clone();
-        let llm_config = self.llm_config.clone();
+        let model_name = self.model_name.clone();
+        let playback_path = self.playback_path.clone();
+        let fast_playback = self.fast_playback;
         let active_uis = self.active_uis.clone();
         let client_capabilities = self.client_capabilities.clone();
 
@@ -337,30 +339,28 @@ impl acp::Agent for ACPAgentImpl {
             // Convert prompt content blocks
             let content_blocks = convert_prompt_to_content_blocks(arguments.prompt);
 
-            let session_llm_config = LlmSessionConfig {
-                provider: llm_config.provider.clone(),
-                model: llm_config.model.clone(),
-                base_url: llm_config.base_url.clone(),
-                aicore_config: llm_config.aicore_config.clone(),
-                num_ctx: llm_config.num_ctx,
-                record_path: llm_config.record_path.clone(),
-            };
+            let session_model_config = Some(SessionModelConfig {
+                model_name: model_name.clone(),
+                record_path: None, // Recording is handled at the client level now
+            });
 
             // Create LLM client
-            let llm_client = match create_llm_client(llm_config).await {
-                Ok(client) => client,
-                Err(e) => {
-                    let error_msg = format!("Failed to create LLM client: {e}");
-                    tracing::error!("{}", error_msg);
-                    send_error(error_msg).await;
-                    let mut uis = active_uis.lock().await;
-                    uis.remove(arguments.session_id.0.as_ref());
-                    return Ok(acp::PromptResponse {
-                        stop_reason: acp::StopReason::EndTurn,
-                        meta: None,
-                    });
-                }
-            };
+            let llm_client =
+                match create_llm_client_from_model(&model_name, playback_path, fast_playback).await
+                {
+                    Ok(client) => client,
+                    Err(e) => {
+                        let error_msg = format!("Failed to create LLM client: {e}");
+                        tracing::error!("{}", error_msg);
+                        send_error(error_msg).await;
+                        let mut uis = active_uis.lock().await;
+                        uis.remove(arguments.session_id.0.as_ref());
+                        return Ok(acp::PromptResponse {
+                            stop_reason: acp::StopReason::EndTurn,
+                            meta: None,
+                        });
+                    }
+                };
 
             // Create project manager and command executor
             let project_manager = Box::new(DefaultProjectManager::new());
@@ -407,9 +407,9 @@ impl acp::Agent for ACPAgentImpl {
             // Start agent
             if let Err(e) = async {
                 let mut manager = session_manager.lock().await;
-                manager.set_session_llm_config(
+                manager.set_session_model_config(
                     &arguments.session_id.0,
-                    Some(session_llm_config.clone()),
+                    session_model_config.clone(),
                 )?;
                 manager
                     .start_agent_for_message(

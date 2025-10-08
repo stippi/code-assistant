@@ -1,7 +1,7 @@
 use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
-use crate::persistence::{ChatMetadata, LlmSessionConfig};
+use crate::persistence::{ChatMetadata, SessionModelConfig};
 use crate::session::SessionConfig;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{generate_system_message, ParserRegistry, ToolRequest};
@@ -58,8 +58,8 @@ pub struct Agent {
     cached_system_prompts: HashMap<String, String>,
     // Optional model identifier used for prompt selection
     model_hint: Option<String>,
-    // LLM configuration associated with this session
-    session_llm_config: Option<LlmSessionConfig>,
+    // Model configuration associated with this session
+    session_model_config: Option<SessionModelConfig>,
     // Counter for generating unique request IDs
     next_request_id: u64,
     // Session ID for this agent instance
@@ -111,7 +111,7 @@ impl Agent {
             message_history: Vec::new(),
             tool_executions: Vec::new(),
             cached_system_prompts: HashMap::new(),
-            session_llm_config: None,
+            session_model_config: None,
             next_request_id: 1, // Start from 1
             session_id: None,
             session_name: String::new(),
@@ -250,7 +250,7 @@ impl Agent {
                 working_memory: self.working_memory.clone(),
                 config: self.session_config.clone(),
                 next_request_id: Some(self.next_request_id),
-                llm_config: self.session_llm_config.clone(),
+                model_config: self.session_model_config.clone(),
             };
             self.state_persistence.save_agent_state(session_state)?;
         }
@@ -410,11 +410,11 @@ impl Agent {
             self.invalidate_system_message_cache();
         }
         self.session_name = session_state.name;
-        self.session_llm_config = session_state.llm_config;
+        self.session_model_config = session_state.model_config;
         if let Some(model_hint) = self
-            .session_llm_config
+            .session_model_config
             .as_ref()
-            .and_then(|cfg| cfg.model.clone())
+            .map(|cfg| cfg.model_name.clone())
         {
             self.set_model_hint(Some(model_hint));
         }
