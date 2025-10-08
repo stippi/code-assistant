@@ -157,123 +157,148 @@ The system currently supports these providers (from `LLMProviderType` enum):
 
 ## Implementation Phases
 
-### Phase 1: Configuration System Foundation
+### ✅ Phase 1: Configuration System Foundation - COMPLETED
 
-**1.1 Create New Configuration Types**
-- Create `crates/llm/src/provider_config.rs`:
-  - `ProviderConfig` struct with `label`, `provider`, `config` fields
-  - `ProvidersConfig` type (HashMap of provider ID to ProviderConfig)
-  - `ModelConfig` struct with `provider`, `id`, `config` fields
-  - `ModelsConfig` type (HashMap of model display name to ModelConfig)
-  - Loading functions for both config files with env var substitution
+**✅ 1.1 Create New Configuration Types**
+- ✅ Created `crates/llm/src/provider_config.rs`:
+  - ✅ `ProviderConfig` struct with `label`, `provider`, `config` fields
+  - ✅ `ProvidersConfig` type (HashMap of provider ID to ProviderConfig)
+  - ✅ `ModelConfig` struct with `provider`, `id`, `config` fields
+  - ✅ `ModelsConfig` type (HashMap of model display name to ModelConfig)
+  - ✅ `ConfigurationSystem` with loading functions for both config files
+  - ✅ Environment variable substitution (${VAR_NAME} format)
+  - ✅ Comprehensive tests for configuration loading and validation
 
-**1.2 Create Example Configuration Files**
-- Create `providers.example.json` in project root with all supported providers
-- Create `models.example.json` in project root with example model configurations
-- Update README.md with new configuration instructions
+**✅ 1.2 Create Example Configuration Files**
+- ✅ `providers.example.json` exists in project root with all supported providers
+- ✅ `models.example.json` exists in project root with example model configurations
+- ⚠️ README.md update pending (Phase 6)
 
-### Phase 2: Core Integration
+### ✅ Phase 2: Core Integration - COMPLETED
 
-**2.1 Update Session Persistence**
-- Modify `crates/code_assistant/src/persistence.rs`:
-  - Replace `LlmSessionConfig` with new `SessionModelConfig` containing only `model_name`
-  - Remove all old provider-specific fields (provider, base_url, aicore_config, etc.)
-  - Update session creation/loading to use model-based config
+**✅ 2.1 Update Session Persistence**
+- ✅ Modified `crates/code_assistant/src/persistence.rs`:
+  - ✅ Replaced `LlmSessionConfig` with new `SessionModelConfig` containing only `model_name` and `record_path`
+  - ✅ Removed all old provider-specific fields (provider, base_url, aicore_config, num_ctx)
+  - ✅ Updated session creation/loading to use model-based config
+  - ✅ Maintained backward compatibility for existing session files
 
-**2.2 Update Session Manager**
-- Modify `crates/code_assistant/src/session/manager.rs`:
-  - Add model selection methods
-  - Add `change_session_model()` method for mid-session changes
-  - Update agent creation to use new config system
+**✅ 2.2 Update Session Manager**
+- ✅ Modified `crates/code_assistant/src/session/manager.rs`:
+  - ✅ Replaced `get_session_llm_config()` with `get_session_model_config()`
+  - ✅ Replaced `set_session_llm_config()` with `set_session_model_config()`
+  - ✅ Updated agent creation to use new config system
+  - 🔄 Mid-session model changes not yet implemented (requires UI components)
 
-**2.3 Update Agent Runner**
-- Modify `crates/code_assistant/src/agent/runner.rs`:
-  - Update LLM client creation to use model configs
-  - Add model change handling
-  - Preserve existing model hint functionality
+**✅ 2.3 Update Agent Runner**
+- ✅ Modified `crates/code_assistant/src/agent/runner.rs`:
+  - ✅ Replaced `session_llm_config` field with `session_model_config`
+  - ✅ Updated LLM client creation to use model configs
+  - ✅ Preserved existing model hint functionality
 
-### Phase 3: CLI Integration
+### ✅ Phase 3: CLI Integration - COMPLETED
 
-**3.1 Replace CLI Arguments**
-- Modify `crates/code_assistant/src/cli.rs`:
-  - Replace all old provider-specific arguments with single `--model` argument
-  - Remove: `--provider`, `--base-url`, `--aicore-config`, `--num-ctx` etc.
-  - Add `--list-models` and `--list-providers` commands
-  - Update help text and examples for new system only
+**✅ 3.1 Replace CLI Arguments**
+- ✅ Modified `crates/code_assistant/src/cli.rs`:
+  - ✅ Replaced all old provider-specific arguments with single `--model` argument
+  - ✅ Removed: `--provider`, `--base-url`, `--aicore-config`, `--num-ctx` etc.
+  - ✅ Added `--list-models` and `--list-providers` commands
+  - ✅ Updated help text for new system
+  - ✅ Added `Args::handle_list_commands()` and `Args::get_model_name()` methods
 
-**3.2 Update Application Initialization**
-- Modify application startup to:
-  - Load provider and model configurations
-  - Resolve model selection from CLI args
-  - Require valid model configuration or show helpful error
+**✅ 3.2 Update Application Initialization**
+- ✅ Modified application startup to:
+  - ✅ Load provider and model configurations via `ConfigurationSystem::load()`
+  - ✅ Handle list commands and exit appropriately
+  - ✅ Updated `AgentRunConfig` to use model-based approach
+  - ✅ Show helpful error messages when configurations are missing
 
-### Phase 4: GPUI Interface
+### ✅ Phase 4: Factory System Integration - COMPLETED
 
-**4.1 Add Model Selection Dropdown**
-- Create `crates/code_assistant/src/ui/gpui/model_selector.rs`:
-  - Model selection dropdown component
-  - Integration with session manager
-  - Update session config for model switching
+**✅ 4.1 Create New Factory Functions**
+- ✅ Added `create_llm_client_from_model()` function for model-based client creation
+- ✅ Added `create_llm_client_from_configs()` for direct config-based creation
+- ✅ Implemented individual client creation functions for all providers:
+  - ✅ `create_ai_core_client()` - Handles AI Core deployment configurations
+  - ✅ `create_anthropic_client()` - Supports recording and playback
+  - ✅ `create_cerebras_client()`, `create_groq_client()`, `create_mistral_client()`
+  - ✅ `create_openai_client()`, `create_openai_responses_client()` - With reasoning support
+  - ✅ `create_vertex_client()`, `create_ollama_client()`, `create_openrouter_client()`
 
-**4.2 Update Input Area**
-- Modify `crates/code_assistant/src/ui/gpui/input_area.rs`:
-  - Add model selector underneath input area
-  - Handle model selection events
-  - Handle model change notifications
+**✅ 4.2 Update Provider Integration**
+- ✅ Updated ACP agent to use model-based configuration
+- ✅ Maintained backward compatibility with old `create_llm_client()` function
+- ✅ Factory now uses provider clients' `default_base_url()` methods as single source of truth
+- ✅ All provider-specific configurations (API keys, base URLs) loaded from config files
 
-### Phase 5: Terminal UI Integration
+**✅ 4.3 Update Application Integration**
+- ✅ Updated ACP mode to use new factory functions
+- 🔄 Terminal and GPUI modes use temporary bridge functions (to be cleaned up in Phase 7)
 
-**5.1 Add Slash Command Support**
-- Create `crates/code_assistant/src/ui/terminal/commands.rs`:
-  - `/model` command for listing available models
-  - `/model <name>` command for switching models
-  - `/provider` command for listing providers
+### 🔄 Phase 5: UI Components - PARTIALLY COMPLETED
 
-**5.2 Update Terminal Input Handler**
-- Modify `crates/code_assistant/src/ui/terminal/input.rs`:
-  - Detect slash commands
-  - Route to command handler
-  - Show command help and completion
+**❌ 5.1 GPUI Model Selection (TODO)**
+- ❌ Create `crates/code_assistant/src/ui/gpui/model_selector.rs`:
+  - ❌ Model selection dropdown component
+  - ❌ Integration with session manager
+  - ❌ Update session config for model switching
 
-**5.3 Update Terminal State**
-- Modify `crates/code_assistant/src/ui/terminal/state.rs`:
-  - Track current model selection
-  - Handle model change events
-  - Update display to show current model
+**❌ 5.2 GPUI Input Area Updates (TODO)**
+- ❌ Modify `crates/code_assistant/src/ui/gpui/input_area.rs`:
+  - ❌ Add model selector underneath input area
+  - ❌ Handle model selection events
+  - ❌ Handle model change notifications
 
-### Phase 6: Testing and Documentation
+**❌ 5.3 Terminal UI Integration (TODO)**
+- ❌ Create `crates/code_assistant/src/ui/terminal/commands.rs`:
+  - ❌ `/model` command for listing available models
+  - ❌ `/model <name>` command for switching models
+  - ❌ `/provider` command for listing providers
 
-**6.1 Update Tests**
-- Update `crates/code_assistant/src/tests/mocks.rs`:
-  - Add mock provider and model configs
-  - Update MockLLMProvider for new system
-- Update integration tests for new configuration system
-- Add tests for model switching functionality
+**❌ 5.4 Terminal Input Handler Updates (TODO)**
+- ❌ Modify `crates/code_assistant/src/ui/terminal/input.rs`:
+  - ❌ Detect slash commands
+  - ❌ Route to command handler
+  - ❌ Show command help and completion
 
-**6.2 Update Documentation**
-- Update README.md with new configuration system only
-- Remove all references to old CLI arguments and env var patterns
-- Document slash commands and UI controls
-- Add troubleshooting section for new config system
+**❌ 5.5 Terminal State Updates (TODO)**
+- ❌ Modify `crates/code_assistant/src/ui/terminal/state.rs`:
+  - ❌ Track current model selection
+  - ❌ Handle model change events
+  - ❌ Update display to show current model
 
-### Phase 7: Clean Up Legacy Code
+### ❌ Phase 6: Testing and Documentation - TODO
 
-**7.1 Clean Up Factory Code**
-- Keep `create_llm_client()` function but ensure it only gets called with config-derived parameters
-- Keep `LLMClientConfig` struct - it's still the right abstraction for client creation
-- Keep `LLMProviderType` enum - it maps to the "provider" field in providers.json
-- Remove any CLI-specific code paths that bypass the config system
+**❌ 6.1 Update Tests (TODO)**
+- ❌ Update `crates/code_assistant/src/tests/mocks.rs`:
+  - ❌ Add mock provider and model configs
+  - ❌ Update MockLLMProvider for new system
+- ❌ Update integration tests for new configuration system
+- ❌ Add tests for model switching functionality
 
-**7.2 Remove Old Configuration System**
-- Delete `crates/llm/src/config.rs` entirely
-- Remove AI Core specific configuration types
-- Clean up imports in `crates/llm/src/lib.rs`
+**❌ 6.2 Update Documentation (TODO)**
+- ❌ Update README.md with new configuration system only
+- ❌ Remove all references to old CLI arguments and env var patterns
+- ❌ Document slash commands and UI controls
+- ❌ Add troubleshooting section for new config system
 
-**7.3 Final Code Cleanup**
-- Remove any remaining references to old CLI arguments
-- Clean up unused imports across all files
-- Remove temporary stub functions added during implementation
-- Run `cargo clippy` and fix any warnings about dead code
+### ❌ Phase 7: Clean Up Legacy Code - TODO
+
+**❌ 7.1 Clean Up Factory Code (TODO)**
+- ❌ Remove temporary bridge functions in terminal and GPUI apps
+- ❌ Update backend system to use new factory functions directly
+- ❌ Remove any CLI-specific code paths that bypass the config system
+
+**❌ 7.2 Remove Old Configuration System (TODO)**
+- ❌ Delete `crates/llm/src/config.rs` entirely (currently still needed for AI Core)
+- ❌ Remove AI Core specific configuration types
+- ❌ Clean up imports in `crates/llm/src/lib.rs`
+
+**❌ 7.3 Final Code Cleanup (TODO)**
+- ❌ Remove any remaining references to old CLI arguments
+- ❌ Clean up unused imports across all files
+- ❌ Remove temporary stub functions added during implementation
+- ❌ Run `cargo clippy` and fix any warnings about dead code
 
 ## File Changes Summary
 
@@ -349,3 +374,60 @@ Users will need to:
 4. Set API keys directly in config files or continue using environment variables
 
 This approach results in cleaner, more maintainable code without the complexity of supporting legacy systems.
+
+## Current Status and Next Steps
+
+### ✅ COMPLETED FUNCTIONALITY
+
+**Core System (Phases 1-4):**
+- ✅ **Configuration System**: Full provider and model configuration via JSON files
+- ✅ **CLI Integration**: `--list-models`, `--list-providers`, and `--model <name>` commands working
+- ✅ **Session Persistence**: Sessions store only model names, not provider details
+- ✅ **Factory System**: LLM clients created from model configurations
+- ✅ **Provider Integration**: All providers use their own `default_base_url()` methods
+- ✅ **ACP Mode**: Fully updated to use new model-based system
+
+**Working Commands:**
+```bash
+# List available models
+cargo run -- --list-models
+
+# List available providers
+cargo run -- --list-providers
+
+# ACP mode with model selection
+cargo run -- acp --model "Claude Sonnet 4.5"
+```
+
+**Configuration Files:**
+- ✅ `providers.json` and `models.json` with environment variable substitution
+- ✅ Support for all existing providers (Anthropic, OpenAI, Ollama, AI Core, etc.)
+- ✅ Flexible model configurations with provider-specific settings
+
+### 🔄 REMAINING WORK (Phases 5-7)
+
+**Phase 5: UI Components**
+- ❌ GPUI model selection dropdown
+- ❌ Terminal slash commands (`/model`, `/provider`)
+- ❌ Model switching in active sessions
+
+**Phase 6: Testing and Documentation**
+- ❌ Comprehensive test coverage for new system
+- ❌ Updated README.md and documentation
+- ❌ Integration tests for model switching
+
+**Phase 7: Code Cleanup**
+- ❌ Remove temporary bridge functions
+- ❌ Clean up legacy configuration code
+- ❌ Remove unused imports and dead code
+
+### 🚀 READY FOR USE
+
+The core model selection system is functional and ready for use in ACP mode. Users can:
+
+1. **Configure providers and models** via JSON files
+2. **List available options** with CLI commands
+3. **Select models** for ACP sessions
+4. **Use all existing providers** with the new system
+
+The remaining phases focus on UI enhancements and code cleanup rather than core functionality.
