@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Configuration for a single provider instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,13 +66,17 @@ impl ConfigurationSystem {
 
     /// Load providers configuration from file
     pub fn load_providers_config(custom_path: Option<PathBuf>) -> Result<ProvidersConfig> {
-        let config_path = custom_path.unwrap_or_else(Self::default_providers_path);
+        let custom_path_ref = custom_path.as_ref();
+        let (config_path, searched_paths) =
+            Self::determine_config_path("providers.json", custom_path_ref);
 
         if !config_path.exists() {
-            return Err(anyhow::anyhow!(
-                "Providers configuration file not found: {}\n\
-                Please copy providers.example.json to providers.json and configure your API keys.",
-                config_path.display()
+            return Err(Self::missing_config_error(
+                "Providers",
+                &config_path,
+                &searched_paths,
+                "providers.example.json",
+                custom_path_ref.is_some(),
             ));
         }
 
@@ -95,13 +99,17 @@ impl ConfigurationSystem {
 
     /// Load models configuration from file
     pub fn load_models_config(custom_path: Option<PathBuf>) -> Result<ModelsConfig> {
-        let config_path = custom_path.unwrap_or_else(Self::default_models_path);
+        let custom_path_ref = custom_path.as_ref();
+        let (config_path, searched_paths) =
+            Self::determine_config_path("models.json", custom_path_ref);
 
         if !config_path.exists() {
-            return Err(anyhow::anyhow!(
-                "Models configuration file not found: {}\n\
-                Please copy models.example.json to models.json and configure your preferred models.",
-                config_path.display()
+            return Err(Self::missing_config_error(
+                "Models",
+                &config_path,
+                &searched_paths,
+                "models.example.json",
+                custom_path_ref.is_some(),
             ));
         }
 
@@ -116,18 +124,14 @@ impl ConfigurationSystem {
 
     /// Get the default path for providers configuration
     pub fn default_providers_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-            .join("code-assistant")
-            .join("providers.json")
+        let (path, _) = Self::determine_config_path("providers.json", None);
+        path
     }
 
     /// Get the default path for models configuration
     pub fn default_models_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-            .join("code-assistant")
-            .join("models.json")
+        let (path, _) = Self::determine_config_path("models.json", None);
+        path
     }
 
     /// Get a model configuration by display name
@@ -239,6 +243,103 @@ impl ConfigurationSystem {
             }
         }
         Ok(())
+    }
+
+    /// Determine the configuration path to use along with all searched locations
+    fn determine_config_path(
+        filename: &str,
+        custom_path: Option<&PathBuf>,
+    ) -> (PathBuf, Vec<PathBuf>) {
+        if let Some(path) = custom_path {
+            return (path.clone(), vec![path.clone()]);
+        }
+
+        let mut searched_paths = Vec::new();
+        for base_dir in Self::config_directories() {
+            let candidate = base_dir.join(filename);
+            if !searched_paths.iter().any(|existing| existing == &candidate) {
+                let exists = candidate.exists();
+                searched_paths.push(candidate.clone());
+                if exists {
+                    return (candidate, searched_paths);
+                }
+            }
+        }
+
+        let fallback = searched_paths
+            .first()
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from(filename));
+        (fallback, searched_paths)
+    }
+
+    /// Compute all directories that may contain configuration files, ordered by priority
+    fn config_directories() -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+
+        if let Ok(custom_dir) = std::env::var("CODE_ASSISTANT_CONFIG_DIR") {
+            Self::push_unique_dir(&mut dirs, PathBuf::from(custom_dir));
+        }
+        if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
+            Self::push_unique_dir(&mut dirs, PathBuf::from(xdg_config).join("code-assistant"));
+        }
+        if let Some(home_dir) = dirs::home_dir() {
+            Self::push_unique_dir(&mut dirs, home_dir.join(".config").join("code-assistant"));
+        }
+        if let Some(system_config) = dirs::config_dir() {
+            Self::push_unique_dir(&mut dirs, system_config.join("code-assistant"));
+        }
+        if let Ok(current_dir) = std::env::current_dir() {
+            Self::push_unique_dir(&mut dirs, current_dir.join("code-assistant"));
+        }
+
+        if dirs.is_empty() {
+            dirs.push(PathBuf::from("code-assistant"));
+        }
+
+        dirs
+    }
+
+    /// Insert a path into the list while keeping only unique entries
+    fn push_unique_dir(dirs: &mut Vec<PathBuf>, candidate: PathBuf) {
+        if !dirs.iter().any(|existing| existing == &candidate) {
+            dirs.push(candidate);
+        }
+    }
+
+    /// Build a helpful missing configuration error message
+    fn missing_config_error(
+        config_label: &str,
+        resolved_path: &Path,
+        searched_paths: &[PathBuf],
+        example_file: &str,
+        custom: bool,
+    ) -> anyhow::Error {
+        if custom {
+            return anyhow::anyhow!(
+                "{config_label} configuration file not found: {}\nPlease ensure the path is correct.",
+                resolved_path.display()
+            );
+        }
+
+        let searched_display = if searched_paths.is_empty() {
+            "  (no search paths available)".to_string()
+        } else {
+            searched_paths
+                .iter()
+                .map(|path| format!("  {}", path.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        anyhow::anyhow!(
+            "{config_label} configuration file not found.\n\
+            Searched locations:\n{searched}\n\n\
+            Please copy {example_file} to {target} and configure it.",
+            searched = searched_display,
+            example_file = example_file,
+            target = resolved_path.display(),
+        )
     }
 }
 

@@ -262,9 +262,6 @@ impl InputArea {
         div()
             .id("input-area")
             .flex_none() // Important: don't grow or shrink
-            .bg(cx.theme().popover)
-            .border_t_1()
-            .border_color(cx.theme().border)
             .flex()
             .flex_col() // Column to accommodate attachments area
             .gap_2()
@@ -294,6 +291,7 @@ impl InputArea {
                     .child({
                         div()
                             .flex_1()
+                            .bg(cx.theme().popover)
                             .border(if is_focused { px(2.) } else { px(1.) })
                             .p(if is_focused { px(0.) } else { px(1.) })
                             .border_color(if is_focused {

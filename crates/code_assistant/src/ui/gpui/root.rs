@@ -809,35 +809,26 @@ impl Render for RootView {
                             )
                             // Status popover - positioned at bottom center
                             .children(self.render_status_popover(cx))
-                            // Model selector above input area
+                            // Input area and model selector combined at the bottom
                             .child(
                                 div()
                                     .flex_none()
-                                    .px_4()
-                                    .py_2()
+                                    .bg(cx.theme().background)
                                     .border_t_1()
                                     .border_color(cx.theme().border)
-                                    .bg(cx.theme().background)
+                                    .flex()
+                                    .flex_col()
+                                    // Input area at the top
+                                    .child(self.input_area.clone())
+                                    // Model selector below input area
                                     .child(
                                         div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child("Model:"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .w(px(200.))
-                                                    .child(self.model_selector.clone()),
-                                            ),
+                                            .flex_none()
+                                            .px_4()
+                                            .py_2()
+                                            .child(self.model_selector.clone()),
                                     ),
-                            )
-                            // Input area at the bottom - now using the InputArea component
-                            .child(self.input_area.clone()),
+                            ),
                     )
                     // Right sidebar with memory view - only show if not collapsed
                     .when(!self.memory_collapsed, |s| {

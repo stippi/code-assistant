@@ -55,7 +55,13 @@ impl EventEmitter<ModelSelectorEvent> for ModelSelector {}
 impl ModelSelector {
     /// Create a new model selector
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let config = ConfigurationSystem::load().ok().map(Arc::new);
+        let config = match ConfigurationSystem::load() {
+            Ok(config) => Some(Arc::new(config)),
+            Err(err) => {
+                warn!(error = ?err, "Failed to load configuration system for model selector");
+                None
+            }
+        };
 
         // Build model items with display information
         let model_items = if let Some(ref config) = config {
@@ -140,7 +146,16 @@ impl ModelSelector {
 
     /// Refresh the available models (useful when configuration changes)
     pub fn refresh_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let config = ConfigurationSystem::load().ok().map(Arc::new);
+        let config = match ConfigurationSystem::load() {
+            Ok(config) => Some(Arc::new(config)),
+            Err(err) => {
+                warn!(
+                    error = ?err,
+                    "Failed to load configuration system for model selector refresh"
+                );
+                None
+            }
+        };
 
         let model_items = if let Some(ref config) = config {
             let mut models = config.list_models();
@@ -154,7 +169,6 @@ impl ModelSelector {
                 })
                 .collect()
         } else {
-            warn!("Failed to load configuration system for model selector refresh");
             Vec::new()
         };
 
@@ -174,10 +188,12 @@ impl Focusable for ModelSelector {
 
 impl Render for ModelSelector {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        Dropdown::new(&self.dropdown_state)
-            .placeholder("Select Model")
-            .with_size(Size::Small)
-            .cleanable()
+        gpui::div().text_size(gpui::px(12.)).child(
+            Dropdown::new(&self.dropdown_state)
+                .placeholder("Select Model")
+                .with_size(Size::Small)
+                .cleanable(),
+        )
     }
 }
 
