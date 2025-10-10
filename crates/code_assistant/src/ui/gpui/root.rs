@@ -55,7 +55,7 @@ impl RootView {
         let input_area = cx.new(|cx| InputArea::new(window, cx));
 
         // Create the model selector
-        let model_selector = cx.new(ModelSelector::new);
+        let model_selector = cx.new(|cx| ModelSelector::new(window, cx));
 
         // Subscribe to input area events
         let input_area_subscription =
@@ -259,9 +259,6 @@ impl RootView {
                         error!("Failed to lock backend event sender");
                     }
                 }
-            }
-            ModelSelectorEvent::DropdownToggled { is_open: _ } => {
-                // Handle dropdown state changes if needed
             }
         }
     }
@@ -598,15 +595,16 @@ impl Focusable for RootView {
 impl Render for RootView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Get current chat state from global Gpui
-        let (chat_sessions, current_session_id, current_activity_state) =
+        let (chat_sessions, current_session_id, current_activity_state, current_model) =
             if let Some(gpui) = cx.try_global::<Gpui>() {
                 (
                     gpui.get_chat_sessions(),
                     gpui.get_current_session_id(),
                     gpui.current_session_activity_state.lock().unwrap().clone(),
+                    gpui.get_current_model(),
                 )
             } else {
-                (Vec::new(), None, None)
+                (Vec::new(), None, None, None)
             };
 
         // Update chat sidebar if needed
@@ -629,6 +627,18 @@ impl Render for RootView {
                     cx,
                 );
             }
+        }
+
+        // Update model selector with current model only if it has changed
+        let selected_model = self.model_selector.read(cx).current_model(cx);
+        if selected_model != current_model {
+            debug!(
+                "Current model changed from {:?} to {:?}",
+                selected_model, current_model
+            );
+            self.model_selector.update(cx, |model_selector, cx| {
+                model_selector.set_current_model(current_model, window, cx);
+            });
         }
 
         // Update InputArea with current agent state

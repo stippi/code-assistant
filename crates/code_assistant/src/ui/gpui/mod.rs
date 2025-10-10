@@ -92,6 +92,9 @@ pub struct Gpui {
 
     // Error state management
     current_error: Arc<Mutex<Option<String>>>,
+
+    // Current model selection
+    current_model: Arc<Mutex<Option<String>>>,
 }
 
 fn init(cx: &mut App) {
@@ -281,6 +284,9 @@ impl Gpui {
 
             // Error state management
             current_error: Arc::new(Mutex::new(None)),
+
+            // Current model selection
+            current_model: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -944,6 +950,13 @@ impl Gpui {
                     message.complete_reasoning(cx);
                 });
             }
+            UiEvent::UpdateCurrentModel { model_name } => {
+                debug!("UI: UpdateCurrentModel event with model: {}", model_name);
+                // Store the current model
+                *self.current_model.lock().unwrap() = Some(model_name);
+                // Refresh UI to update the model selector
+                cx.refresh().expect("Failed to refresh windows");
+            }
         }
     }
 
@@ -1061,6 +1074,10 @@ impl Gpui {
 
     pub fn get_current_error(&self) -> Option<String> {
         self.current_error.lock().unwrap().clone()
+    }
+
+    pub fn get_current_model(&self) -> Option<String> {
+        self.current_model.lock().unwrap().clone()
     }
 
     // Extended draft management methods with attachments
@@ -1231,10 +1248,20 @@ impl Gpui {
             }
             BackendResponse::ModelSwitched {
                 session_id: _,
-                model_name: _,
+                model_name,
             } => {
-                debug!("Received BackendResponse::ModelSwitched");
-                // TODO: Update model display in GPUI when model selector is implemented
+                debug!("Received BackendResponse::ModelSwitched: {}", model_name);
+                self.push_event(UiEvent::UpdateCurrentModel {
+                    model_name: model_name.clone(),
+                });
+            }
+            BackendResponse::SessionCancelled { session_id } => {
+                debug!("Received BackendResponse::SessionCancelled: {}", session_id);
+                // Clear the stop request since the session has been cancelled
+                self.session_stop_requests
+                    .lock()
+                    .unwrap()
+                    .remove(&session_id);
             }
         }
     }

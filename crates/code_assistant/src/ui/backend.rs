@@ -1,8 +1,10 @@
 use crate::config::DefaultProjectManager;
 use crate::persistence::{ChatMetadata, DraftAttachment, SessionModelConfig};
+use crate::session::SessionManager;
 use crate::ui::UserInterface;
 use crate::utils::{content::content_blocks_from, DefaultCommandExecutor};
-use llm::factory::{create_llm_client, LLMClientConfig};
+use llm::factory::create_llm_client_from_model;
+
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace};
@@ -34,6 +36,9 @@ pub enum BackendEvent {
         attachments: Vec<DraftAttachment>,
     },
     RequestPendingMessageEdit {
+        session_id: String,
+    },
+    CancelSession {
         session_id: String,
     },
 
@@ -73,13 +78,15 @@ pub enum BackendResponse {
         session_id: String,
         model_name: String,
     },
+    SessionCancelled {
+        session_id: String,
+    },
 }
 
 pub async fn handle_backend_events(
     backend_event_rx: async_channel::Receiver<BackendEvent>,
     backend_response_tx: async_channel::Sender<BackendResponse>,
     multi_session_manager: Arc<Mutex<crate::session::SessionManager>>,
-    cfg: Arc<LLMClientConfig>,
     ui: Arc<dyn UserInterface>,
 ) {
     debug!("Backend event handler started");
@@ -112,7 +119,6 @@ pub async fn handle_backend_events(
                     &session_id,
                     &message,
                     &attachments,
-                    &cfg,
                     &ui,
                 )
                 .await
@@ -140,6 +146,10 @@ pub async fn handle_backend_events(
                 session_id,
                 model_name,
             } => Some(handle_switch_model(&multi_session_manager, &session_id, &model_name).await),
+
+            BackendEvent::CancelSession { session_id } => {
+                Some(handle_cancel_session(&multi_session_manager, &session_id).await)
+            }
         };
 
         // Send response back to UI only if there is one
@@ -264,7 +274,6 @@ async fn handle_send_user_message(
     session_id: &str,
     message: &str,
     attachments: &[DraftAttachment],
-    cfg: &Arc<LLMClientConfig>,
     ui: &Arc<dyn UserInterface>,
 ) -> Option<BackendResponse> {
     debug!(
@@ -294,26 +303,35 @@ async fn handle_send_user_message(
         let command_executor = Box::new(DefaultCommandExecutor);
         let user_interface = ui.clone();
 
-        // Check if session has stored LLM config, otherwise use global config
+        // Check if session has stored model config, otherwise use global config
         let session_config = {
             let manager = multi_session_manager.lock().await;
             manager.get_session_model_config(session_id).unwrap_or(None)
         };
 
-        // TODO: This will be replaced in Phase 4 with proper model-based configuration
-        let effective_config = cfg.as_ref().clone();
-        let session_llm_config = session_config.clone();
-
-        let llm_client = create_llm_client(effective_config).await;
+        // Use model-based configuration system
+        let llm_client = if let Some(ref session_config) = session_config {
+            // Use session's stored model
+            create_llm_client_from_model(
+                &session_config.model_name,
+                session_config.record_path.clone(),
+                false,
+            )
+            .await
+        } else {
+            // No session config - this should not happen in the new system
+            return Some(BackendResponse::Error {
+                message: "Session has no model configuration. Please ensure all sessions are created with a model.".to_string(),
+            });
+        };
 
         match llm_client {
             Ok(client) => {
                 let mut manager = multi_session_manager.lock().await;
-                if let Err(e) =
-                    manager.set_session_model_config(session_id, session_llm_config.clone())
+                if let Err(e) = manager.set_session_model_config(session_id, session_config.clone())
                 {
                     error!(
-                        "Failed to persist LLM config for session {}: {}",
+                        "Failed to persist model config for session {}: {}",
                         session_id, e
                     );
                     Err(e)
@@ -476,11 +494,29 @@ async fn handle_switch_model(
     }
 }
 
-// TODO: These functions will be replaced in Phase 4 with proper model-based configuration
-fn _llm_client_config_from_session_config(_config: &SessionModelConfig) -> LLMClientConfig {
-    panic!("This function needs to be replaced with model-based configuration in Phase 4")
-}
+async fn handle_cancel_session(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+) -> BackendResponse {
+    debug!("Backend: Cancelling session {}", session_id);
 
-fn _session_config_from_client(_config: &LLMClientConfig) -> SessionModelConfig {
-    panic!("This function needs to be replaced with model-based configuration in Phase 4")
+    let result = {
+        let mut manager = multi_session_manager.lock().await;
+        manager.cancel_session(session_id).await
+    };
+
+    match result {
+        Ok(()) => {
+            debug!("Successfully cancelled session {}", session_id);
+            BackendResponse::SessionCancelled {
+                session_id: session_id.to_string(),
+            }
+        }
+        Err(e) => {
+            error!("Failed to cancel session {}: {}", session_id, e);
+            BackendResponse::Error {
+                message: format!("Failed to cancel session: {e}"),
+            }
+        }
+    }
 }

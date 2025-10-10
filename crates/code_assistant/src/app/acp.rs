@@ -4,7 +4,7 @@ use crate::persistence::FileSessionPersistence;
 use crate::session::{SessionConfig, SessionManager};
 use agent_client_protocol::Client;
 use anyhow::Result;
-use llm::factory::create_llm_client_from_model;
+
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};

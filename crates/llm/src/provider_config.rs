@@ -116,12 +116,18 @@ impl ConfigurationSystem {
 
     /// Get the default path for providers configuration
     pub fn default_providers_path() -> PathBuf {
-        PathBuf::from("providers.json")
+        dirs::config_dir()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            .join("code-assistant")
+            .join("providers.json")
     }
 
     /// Get the default path for models configuration
     pub fn default_models_path() -> PathBuf {
-        PathBuf::from("models.json")
+        dirs::config_dir()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            .join("code-assistant")
+            .join("models.json")
     }
 
     /// Get a model configuration by display name
@@ -167,10 +173,10 @@ impl ConfigurationSystem {
     /// Substitute environment variables in provider configurations
     fn substitute_env_vars_in_providers(mut config: ProvidersConfig) -> Result<ProvidersConfig> {
         for (provider_id, provider_config) in &mut config {
-            provider_config.config =
-                Self::substitute_env_vars_in_value(provider_config.config.clone()).with_context(
-                    || format!("Failed to substitute env vars in provider: {}", provider_id),
-                )?;
+            provider_config.config = Self::substitute_env_vars_in_value(
+                provider_config.config.clone(),
+            )
+            .with_context(|| format!("Failed to substitute env vars in provider: {provider_id}"))?;
         }
         Ok(config)
     }
@@ -204,13 +210,13 @@ impl ConfigurationSystem {
         // Find all ${VAR_NAME} patterns
         while let Some(start) = result.find("${") {
             let end = result[start..].find('}').ok_or_else(|| {
-                anyhow::anyhow!("Unclosed environment variable substitution: {}", input)
+                anyhow::anyhow!("Unclosed environment variable substitution: {input}")
             })?;
             let end = start + end;
 
             let var_name = &result[start + 2..end];
             let var_value = std::env::var(var_name)
-                .with_context(|| format!("Environment variable not set: {}", var_name))?;
+                .with_context(|| format!("Environment variable not set: {var_name}"))?;
 
             result.replace_range(start..=end, &var_value);
         }

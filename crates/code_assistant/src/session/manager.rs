@@ -49,7 +49,35 @@ impl SessionManager {
 
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
-        self.create_session_with_config(name, None, None)
+        // Always create sessions with a default model config
+        let default_model_config = self.get_default_model_config();
+        self.create_session_with_config(name, None, Some(default_model_config))
+    }
+
+    /// Get the default model configuration
+    fn get_default_model_config(&self) -> SessionModelConfig {
+        // Load configuration and get the first available model
+        match llm::provider_config::ConfigurationSystem::load() {
+            Ok(config_system) => {
+                let mut models = config_system.list_models();
+                models.sort();
+                let model_name = models.into_iter().next().unwrap_or_else(|| {
+                    tracing::error!("No models available in configuration");
+                    "default".to_string()
+                });
+                SessionModelConfig {
+                    model_name,
+                    record_path: None,
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to load configuration system: {}", e);
+                SessionModelConfig {
+                    model_name: "default".to_string(),
+                    record_path: None,
+                }
+            }
+        }
     }
 
     /// Create a new session with optional model config and return its ID
@@ -593,5 +621,22 @@ impl SessionManager {
 
         let pending = session_instance.pending_message.lock().unwrap();
         Ok(pending.clone())
+    }
+
+    /// Cancel any running agent for the specified session
+    pub async fn cancel_session(&mut self, session_id: &str) -> Result<()> {
+        debug!("Cancelling session: {}", session_id);
+
+        // Check if session exists
+        if !self.active_sessions.contains_key(session_id) {
+            return Err(anyhow::anyhow!("Session not found: {}", session_id));
+        }
+
+        // The actual cancellation mechanism depends on the UI implementation
+        // The UI's should_streaming_continue() method will check for cancellation requests
+        // For now, we just log the cancellation request
+        debug!("Session {} marked for cancellation", session_id);
+
+        Ok(())
     }
 }

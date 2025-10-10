@@ -12,7 +12,6 @@ use crate::ui::terminal::{
 use crate::ui::UserInterface;
 use anyhow::Result;
 
-use llm::factory::LLMClientConfig;
 use ratatui::crossterm::event::{self, Event};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -85,9 +84,17 @@ async fn event_loop(
                                         crate::session::instance::SessionActivityState::Idle
                                     ) {
                                         // Agent is running, send cancel request
-                                        // This would need to be implemented similar to GPUI's cancel mechanism
-                                        debug!("Escape pressed - would cancel running agent");
-                                        // TODO: Implement agent cancellation for terminal UI
+                                        debug!("Escape pressed - cancelling running agent");
+                                        let current_session_id = {
+                                            let state = app_state.lock().await;
+                                            state.current_session_id.clone()
+                                        };
+
+                                        if let Some(session_id) = current_session_id {
+                                            let _ = backend_event_tx
+                                                .send(BackendEvent::CancelSession { session_id })
+                                                .await;
+                                        }
                                     }
                                 }
                             }
@@ -236,39 +243,16 @@ impl TerminalTuiApp {
         let (backend_response_tx, backend_response_rx) =
             async_channel::unbounded::<BackendResponse>();
 
-        // Get model name or use default
-        let model_name = config
-            .model
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Model name is required"))?;
-
         // Spawn backend handler
         let backend_task = {
             let multi_session_manager = multi_session_manager.clone();
-            let model_name_for_backend = model_name.clone();
             let ui = ui.clone();
-            let record_path = config.record.clone();
-            let playback_path = config.playback.clone();
-            let fast_playback = config.fast_playback;
 
             tokio::spawn(async move {
-                // TODO: Replace with proper model-based backend in Phase 4
-                let temp_llm_config = Arc::new(LLMClientConfig {
-                    provider: llm::factory::LLMProviderType::Anthropic,
-                    model: Some(model_name_for_backend),
-                    base_url: None,
-                    aicore_config: None,
-                    num_ctx: 8192,
-                    record_path,
-                    playback_path,
-                    fast_playback,
-                });
-
                 handle_backend_events(
                     backend_event_rx,
                     backend_response_tx,
                     multi_session_manager,
-                    temp_llm_config,
                     ui,
                 )
                 .await;
@@ -398,6 +382,10 @@ impl TerminalTuiApp {
                             state.set_info_message(Some(format!(
                                 "Switched to model: {model_name}",
                             )));
+                        }
+                        BackendResponse::SessionCancelled { session_id: _ } => {
+                            debug!("Session cancelled");
+                            // No specific action needed for terminal UI
                         }
                     }
                 }

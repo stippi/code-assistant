@@ -590,7 +590,8 @@ impl UserInterface for ACPUserUI {
             | UiEvent::RequestPendingMessageEdit { .. }
             | UiEvent::UpdatePendingMessage { .. }
             | UiEvent::DisplayError { .. }
-            | UiEvent::ClearError => {
+            | UiEvent::ClearError
+            | UiEvent::UpdateCurrentModel { .. } => {
                 // These are UI management events, not relevant for ACP
             }
         }

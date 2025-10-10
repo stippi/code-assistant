@@ -4,7 +4,7 @@ use crate::session::{SessionConfig, SessionManager};
 use crate::ui::{self, UserInterface};
 use crate::utils::DefaultCommandExecutor;
 use anyhow::Result;
-use llm::factory::{create_llm_client_from_model, LLMClientConfig, LLMProviderType};
+use llm::factory::create_llm_client_from_model;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
@@ -50,19 +50,36 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 // Task provided - create new session and start agent
                 debug!("Creating initial session with task: {}", initial_task);
 
-                // TODO: Replace with proper model selection in Phase 3
-                let session_model_config =
-                    model
-                        .as_ref()
-                        .map(|m| crate::persistence::SessionModelConfig {
-                            model_name: m.clone(),
-                            record_path: record.clone(),
-                        });
+                // Use the specified model or default to the first available model
+                let model_name = if let Some(m) = model.as_ref() {
+                    m.clone()
+                } else {
+                    // Load configuration and get the first available model
+                    match llm::provider_config::ConfigurationSystem::load() {
+                        Ok(config_system) => {
+                            let mut models = config_system.list_models();
+                            models.sort();
+                            models.into_iter().next().unwrap_or_else(|| {
+                                error!("No models available in configuration");
+                                "default".to_string()
+                            })
+                        }
+                        Err(e) => {
+                            error!("Failed to load configuration system: {}", e);
+                            "default".to_string()
+                        }
+                    }
+                };
+
+                let session_model_config = crate::persistence::SessionModelConfig {
+                    model_name,
+                    record_path: record.clone(),
+                };
 
                 let session_id = {
                     let mut manager = multi_session_manager.lock().await;
                     manager
-                        .create_session_with_config(None, None, session_model_config.clone())
+                        .create_session_with_config(None, None, Some(session_model_config.clone()))
                         .unwrap()
                 };
 
@@ -153,18 +170,35 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
 
                     // Create a new session automatically
                     let new_session_id = {
-                        // TODO: Replace with proper model selection in Phase 3
-                        let model_config =
-                            model
-                                .as_ref()
-                                .map(|m| crate::persistence::SessionModelConfig {
-                                    model_name: m.clone(),
-                                    record_path: record.clone(),
-                                });
+                        // Use the specified model or default to the first available model
+                        let model_name = if let Some(m) = model.as_ref() {
+                            m.clone()
+                        } else {
+                            // Load configuration and get the first available model
+                            match llm::provider_config::ConfigurationSystem::load() {
+                                Ok(config_system) => {
+                                    let mut models = config_system.list_models();
+                                    models.sort();
+                                    models.into_iter().next().unwrap_or_else(|| {
+                                        error!("No models available in configuration");
+                                        "default".to_string()
+                                    })
+                                }
+                                Err(e) => {
+                                    error!("Failed to load configuration system: {}", e);
+                                    "default".to_string()
+                                }
+                            }
+                        };
+
+                        let model_config = crate::persistence::SessionModelConfig {
+                            model_name,
+                            record_path: record.clone(),
+                        };
 
                         let mut manager = multi_session_manager.lock().await;
                         manager
-                            .create_session_with_config(None, None, model_config)
+                            .create_session_with_config(None, None, Some(model_config))
                             .unwrap_or_else(|e| {
                                 error!("Failed to create new session: {}", e);
                                 // Return a fallback session ID if creation fails
@@ -196,23 +230,10 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 }
             }
 
-            // TODO: Replace with proper model-based configuration in Phase 4
-            let cfg = Arc::new(LLMClientConfig {
-                provider: LLMProviderType::Anthropic,
-                model,
-                base_url: None,
-                aicore_config: None,
-                num_ctx: 8192,
-                record_path: record,
-                playback_path: playback,
-                fast_playback,
-            });
-
             crate::ui::backend::handle_backend_events(
                 backend_event_rx,
                 backend_response_tx,
                 multi_session_manager,
-                cfg,
                 Arc::new(gui_for_thread) as Arc<dyn crate::ui::UserInterface>,
             )
             .await;
