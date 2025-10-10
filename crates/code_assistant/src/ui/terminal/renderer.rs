@@ -70,6 +70,8 @@ pub struct TerminalRenderer<B: Backend> {
     pending_user_message: Option<String>,
     /// Current error message to display
     current_error: Option<String>,
+    /// Current info message to display
+    info_message: Option<String>,
     /// Last computed overflow (how many rows have been promoted so far); used to promote only deltas
     pub last_overflow: u16,
     /// Maximum rows for input area (including 1 for content min + border)
@@ -94,6 +96,7 @@ impl<B: Backend> TerminalRenderer<B> {
             live_message: None,
             pending_user_message: None,
             current_error: None,
+            info_message: None,
             last_overflow: 0,
             max_input_rows: 5, // max input height (content lines + border line)
             spinner_state: SpinnerState::Hidden,
@@ -298,7 +301,7 @@ impl<B: Backend> TerminalRenderer<B> {
         // Reserve one blank line as gap above input (at the very bottom)
         cursor_y = cursor_y.saturating_sub(1);
 
-        // Reserve space for status area (error takes priority over pending message)
+        // Reserve space for status area (error takes priority over info/pending message)
         let status_height = if let Some(ref error_msg) = self.current_error {
             let rendered_height = self.render_message_content_to_buffer(
                 error_msg,
@@ -307,6 +310,12 @@ impl<B: Backend> TerminalRenderer<B> {
                 width,
             );
             // Add a small gap above error message
+            cursor_y = cursor_y.saturating_sub(1);
+            rendered_height + 1
+        } else if let Some(ref info_msg) = self.info_message {
+            let rendered_height =
+                self.render_message_content_to_buffer(info_msg, &mut scratch, &mut cursor_y, width);
+            // Add a small gap above info message
             cursor_y = cursor_y.saturating_sub(1);
             rendered_height + 1
         } else if let Some(ref pending_msg) = self.pending_user_message {
@@ -617,6 +626,16 @@ impl<B: Backend> TerminalRenderer<B> {
     /// Check if there's currently an error being displayed
     pub fn has_error(&self) -> bool {
         self.current_error.is_some()
+    }
+
+    /// Set an info message to display
+    pub fn set_info(&mut self, info_message: String) {
+        self.info_message = Some(info_message);
+    }
+
+    /// Clear the current info message
+    pub fn clear_info(&mut self) {
+        self.info_message = None;
     }
 }
 

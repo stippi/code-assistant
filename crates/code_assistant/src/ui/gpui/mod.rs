@@ -11,6 +11,7 @@ pub mod image;
 pub mod input_area;
 mod memory;
 mod messages;
+pub mod model_selector;
 pub mod parameter_renderers;
 mod path_util;
 mod root;
@@ -1227,6 +1228,13 @@ impl Gpui {
                         self.push_event(UiEvent::UpdatePendingMessage { message });
                     }
                 }
+            }
+            BackendResponse::ModelSwitched {
+                session_id: _,
+                model_name: _,
+            } => {
+                debug!("Received BackendResponse::ModelSwitched");
+                // TODO: Update model display in GPUI when model selector is implemented
             }
         }
     }

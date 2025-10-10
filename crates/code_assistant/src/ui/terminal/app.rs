@@ -11,7 +11,7 @@ use crate::ui::terminal::{
 };
 use crate::ui::UserInterface;
 use anyhow::Result;
-use llm::factory::create_llm_client_from_model;
+
 use llm::factory::LLMClientConfig;
 use ratatui::crossterm::event::{self, Event};
 use std::sync::Arc;
@@ -26,9 +26,19 @@ async fn event_loop(
     backend_event_tx: async_channel::Sender<BackendEvent>,
 ) -> Result<()> {
     loop {
-        // Render the UI
+        // Sync state and render the UI
         {
             let mut renderer_guard = renderer.lock().await;
+            let state = app_state.lock().await;
+
+            // Sync info message from state to renderer
+            if let Some(ref info_msg) = state.info_message {
+                renderer_guard.set_info(info_msg.clone());
+            } else {
+                renderer_guard.clear_info();
+            }
+
+            drop(state); // Release the lock before rendering
             renderer_guard.render(&input_manager.textarea)?;
         }
 
@@ -49,10 +59,19 @@ async fn event_loop(
                                 renderer_guard.has_error()
                             };
 
+                            let has_info = {
+                                let state = app_state.lock().await;
+                                state.info_message.is_some()
+                            };
+
                             if has_error {
                                 // Clear the error
                                 let mut renderer_guard = renderer.lock().await;
                                 renderer_guard.clear_error();
+                            } else if has_info {
+                                // Clear the info message
+                                let mut state = app_state.lock().await;
+                                state.set_info_message(None);
                             } else {
                                 // Check if agent is running and cancel it
                                 let activity_state = {
@@ -104,6 +123,53 @@ async fn event_loop(
                         }
                         KeyEventResult::Continue => {
                             // Do nothing, just continue the loop
+                        }
+                        KeyEventResult::ShowInfo(info_text) => {
+                            // Display info message in the UI
+                            let mut state = app_state.lock().await;
+                            state.set_info_message(Some(info_text));
+                        }
+                        KeyEventResult::SwitchModel(model_name) => {
+                            // Handle model switching
+                            let current_session_id = {
+                                let state = app_state.lock().await;
+                                state.current_session_id.clone()
+                            };
+
+                            if let Some(session_id) = current_session_id {
+                                let event = BackendEvent::SwitchModel {
+                                    session_id,
+                                    model_name: model_name.clone(),
+                                };
+
+                                let _ = backend_event_tx.send(event).await;
+
+                                // Update state
+                                let mut state = app_state.lock().await;
+                                state.update_current_model(Some(model_name.clone()));
+                                state.set_info_message(Some(format!(
+                                    "Switched to model: {model_name}",
+                                )));
+                            } else {
+                                let mut state = app_state.lock().await;
+                                state.set_info_message(Some(
+                                    "No active session to switch model".to_string(),
+                                ));
+                            }
+                        }
+                        KeyEventResult::ShowCurrentModel => {
+                            let current_model = {
+                                let state = app_state.lock().await;
+                                state.current_model.clone()
+                            };
+
+                            let message = match current_model {
+                                Some(model) => format!("Current model: {model}"),
+                                None => "No model selected".to_string(),
+                            };
+
+                            let mut state = app_state.lock().await;
+                            state.set_info_message(Some(message));
                         }
                     }
                 }
@@ -286,6 +352,7 @@ impl TerminalTuiApp {
         // Spawn a background task to translate backend responses into UiEvents
         {
             let ui_clone = ui.clone();
+            let app_state_clone = self.app_state.clone();
             tokio::spawn(async move {
                 while let Ok(resp) = backend_response_rx.recv().await {
                     match resp {
@@ -321,6 +388,17 @@ impl TerminalTuiApp {
                         }
                         BackendResponse::SessionCreated { .. } => {}
                         BackendResponse::SessionDeleted { .. } => {}
+                        BackendResponse::ModelSwitched {
+                            session_id: _,
+                            model_name,
+                        } => {
+                            // Update current model in app state
+                            let mut state = app_state_clone.lock().await;
+                            state.update_current_model(Some(model_name.clone()));
+                            state.set_info_message(Some(format!(
+                                "Switched to model: {model_name}",
+                            )));
+                        }
                     }
                 }
             });

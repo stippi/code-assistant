@@ -36,6 +36,12 @@ pub enum BackendEvent {
     RequestPendingMessageEdit {
         session_id: String,
     },
+
+    // Model management
+    SwitchModel {
+        session_id: String,
+        model_name: String,
+    },
 }
 
 // Response from backend to UI
@@ -62,6 +68,10 @@ pub enum BackendResponse {
     PendingMessageUpdated {
         session_id: String,
         message: Option<String>,
+    },
+    ModelSwitched {
+        session_id: String,
+        model_name: String,
     },
 }
 
@@ -125,6 +135,11 @@ pub async fn handle_backend_events(
             BackendEvent::RequestPendingMessageEdit { session_id } => {
                 Some(handle_request_pending_message_edit(&multi_session_manager, &session_id).await)
             }
+
+            BackendEvent::SwitchModel {
+                session_id,
+                model_name,
+            } => Some(handle_switch_model(&multi_session_manager, &session_id, &model_name).await),
         };
 
         // Send response back to UI only if there is one
@@ -415,6 +430,47 @@ async fn handle_request_pending_message_edit(
             );
             BackendResponse::Error {
                 message: format!("Failed to get pending message: {e}"),
+            }
+        }
+    }
+}
+
+async fn handle_switch_model(
+    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    session_id: &str,
+    model_name: &str,
+) -> BackendResponse {
+    debug!(
+        "Switching model for session {} to {}",
+        session_id, model_name
+    );
+
+    // Create new session model config
+    let new_model_config = SessionModelConfig {
+        model_name: model_name.to_string(),
+        record_path: None, // Keep existing recording path if any
+    };
+
+    let result = {
+        let mut manager = multi_session_manager.lock().await;
+        manager.set_session_model_config(session_id, Some(new_model_config))
+    };
+
+    match result {
+        Ok(()) => {
+            info!(
+                "Successfully switched model for session {} to {}",
+                session_id, model_name
+            );
+            BackendResponse::ModelSwitched {
+                session_id: session_id.to_string(),
+                model_name: model_name.to_string(),
+            }
+        }
+        Err(e) => {
+            error!("Failed to switch model for session {}: {}", session_id, e);
+            BackendResponse::Error {
+                message: format!("Failed to switch model: {e}"),
             }
         }
     }

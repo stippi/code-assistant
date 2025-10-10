@@ -4,6 +4,8 @@ use ratatui::{
 };
 use tui_textarea::TextArea;
 
+use super::commands::{CommandProcessor, CommandResult};
+
 /// Result of handling a key event
 #[derive(Debug, PartialEq)]
 pub enum KeyEventResult {
@@ -15,17 +17,26 @@ pub enum KeyEventResult {
     SendMessage(String),
     /// Escape key was pressed - main loop decides what to do
     Escape,
+    /// Display information message
+    ShowInfo(String),
+    /// Switch to a different model
+    SwitchModel(String),
+    /// Show current model information
+    ShowCurrentModel,
 }
 
 /// Manages the input area using tui-textarea
 pub struct InputManager {
     pub textarea: TextArea<'static>,
+    command_processor: Option<CommandProcessor>,
 }
 
 impl InputManager {
     pub fn new() -> Self {
+        let command_processor = CommandProcessor::new().ok();
         Self {
             textarea: Self::create_text_area(),
+            command_processor,
         }
     }
 
@@ -59,7 +70,30 @@ impl InputManager {
                 let content = self.get_content();
                 if !content.is_empty() {
                     self.clear();
-                    KeyEventResult::SendMessage(content)
+
+                    // Check if this is a slash command
+                    if let Some(ref processor) = self.command_processor {
+                        match processor.process_command(&content) {
+                            CommandResult::Continue => KeyEventResult::SendMessage(content),
+                            CommandResult::Help(help_text) => KeyEventResult::ShowInfo(help_text),
+                            CommandResult::ListModels => {
+                                KeyEventResult::ShowInfo(processor.get_models_list())
+                            }
+                            CommandResult::ListProviders => {
+                                KeyEventResult::ShowInfo(processor.get_providers_list())
+                            }
+                            CommandResult::SwitchModel(model_name) => {
+                                KeyEventResult::SwitchModel(model_name)
+                            }
+                            CommandResult::ShowCurrentModel => KeyEventResult::ShowCurrentModel,
+                            CommandResult::InvalidCommand(error) => {
+                                KeyEventResult::ShowInfo(format!("Error: {error}"))
+                            }
+                        }
+                    } else {
+                        // Command processor not available, treat as regular message
+                        KeyEventResult::SendMessage(content)
+                    }
                 } else {
                     KeyEventResult::Continue
                 }
