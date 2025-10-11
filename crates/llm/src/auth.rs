@@ -1,4 +1,3 @@
-use crate::config::DeploymentConfig;
 use anyhow::Result;
 use base64::engine::{general_purpose, Engine};
 use std::sync::Arc;
@@ -24,13 +23,17 @@ struct TokenInfo {
 }
 
 impl TokenManager {
-    pub async fn new(config: &DeploymentConfig) -> Result<Arc<Self>> {
+    pub async fn new(
+        client_id: String,
+        client_secret: String,
+        token_url: String,
+    ) -> Result<Arc<Self>> {
         tracing::debug!("Creating new TokenManager...");
 
         let manager = Arc::new(Self {
-            client_id: config.client_id.clone(),
-            client_secret: config.client_secret.clone(),
-            token_url: config.token_url.clone(),
+            client_id,
+            client_secret,
+            token_url,
             current_token: RwLock::new(None),
         });
 

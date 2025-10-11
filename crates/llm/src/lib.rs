@@ -18,7 +18,6 @@ pub mod aicore_invoke;
 pub mod anthropic;
 pub mod auth;
 pub mod cerebras;
-pub mod config;
 pub mod display;
 pub mod factory;
 pub mod groq;
