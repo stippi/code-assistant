@@ -148,8 +148,6 @@ impl acp::Agent for ACPAgentImpl {
     {
         let session_manager = self.session_manager.clone();
         let model_name = self.model_name.clone();
-        let playback_path = self.playback_path.clone();
-        let fast_playback = self.fast_playback;
         let session_config_template = self.session_config_template.clone();
 
         Box::pin(async move {
