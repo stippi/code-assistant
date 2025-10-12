@@ -12,6 +12,7 @@ use crate::persistence::{
 };
 use crate::session::instance::SessionInstance;
 use crate::session::{SessionConfig, SessionState};
+use crate::ui::ui_events::UiEvent;
 use crate::ui::UserInterface;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
@@ -151,19 +152,62 @@ impl SessionManager {
             self.load_session(&session_id)?;
         }
 
-        // Activate new session and generate UI events
-        let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-        session_instance.set_ui_connected(true);
+        // Ensure the session has a model configuration and capture it for UI update
+        let mut needs_persist = false;
+        {
+            let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
+            session_instance.set_ui_connected(true);
 
-        // Reload session from persistence to get latest state
-        // This ensures we see any changes made by agents since session was loaded
-        session_instance.reload_from_persistence(&self.persistence)?;
+            // Reload session from persistence to get latest state
+            // This ensures we see any changes made by agents since session was loaded
+            session_instance.reload_from_persistence(&self.persistence)?;
+        }
+
+        let model_name_for_event = {
+            let existing_model_name = {
+                let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
+                session_instance
+                    .session
+                    .model_config
+                    .as_ref()
+                    .map(|config| config.model_name.clone())
+            };
+
+            if let Some(model_name) = existing_model_name {
+                model_name
+            } else {
+                let default_model_config = self.get_default_model_config();
+                let model_name = default_model_config.model_name.clone();
+                {
+                    let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
+                    session_instance.session.model_config = Some(default_model_config);
+                }
+                needs_persist = true;
+                model_name
+            }
+        };
 
         // Generate UI events for connecting to this session
-        let ui_events = session_instance.generate_session_connect_events()?;
+        let mut ui_events = {
+            let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
+            session_instance.generate_session_connect_events()?
+        };
+
+        ui_events.push(UiEvent::UpdateCurrentModel {
+            model_name: model_name_for_event.clone(),
+        });
 
         // Set as active
-        self.active_session_id = Some(session_id);
+        self.active_session_id = Some(session_id.clone());
+
+        // Persist session if we had to backfill a default model configuration
+        if needs_persist {
+            let session_snapshot = {
+                let session_instance = self.active_sessions.get(&session_id).unwrap();
+                session_instance.session.clone()
+            };
+            self.persistence.save_chat_session(&session_snapshot)?;
+        }
 
         Ok(ui_events)
     }
