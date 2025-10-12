@@ -55,43 +55,22 @@ impl EventEmitter<ModelSelectorEvent> for ModelSelector {}
 impl ModelSelector {
     /// Create a new model selector
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let config = match ConfigurationSystem::load() {
-            Ok(config) => Some(Arc::new(config)),
-            Err(err) => {
-                warn!(error = ?err, "Failed to load configuration system for model selector");
-                None
-            }
-        };
-
-        // Build model items with display information
-        let model_items = if let Some(ref config) = config {
-            let mut models = config.list_models();
-            models.sort();
-
-            models
-                .into_iter()
-                .map(|model_name| {
-                    let display_info = Self::get_model_display_info(&config, &model_name);
-                    ModelItem::new(model_name, display_info)
-                })
-                .collect()
-        } else {
-            warn!("Failed to load configuration system for model selector");
-            Vec::new()
-        };
-
         let dropdown_state =
-            cx.new(|cx| DropdownState::new(SearchableVec::new(model_items), None, window, cx));
+            cx.new(|cx| DropdownState::new(SearchableVec::new(Vec::new()), None, window, cx));
 
         // Subscribe to dropdown events once during construction
         let dropdown_subscription =
             cx.subscribe_in(&dropdown_state, window, Self::on_dropdown_event);
 
-        Self {
+        let mut selector = Self {
             dropdown_state,
-            config,
+            config: None,
             _dropdown_subscription: dropdown_subscription,
-        }
+        };
+
+        selector.refresh_models(window, cx);
+
+        selector
     }
 
     /// Set the current model
@@ -164,7 +143,7 @@ impl ModelSelector {
             models
                 .into_iter()
                 .map(|model_name| {
-                    let display_info = Self::get_model_display_info(&config, &model_name);
+                    let display_info = Self::get_model_display_info(config, &model_name);
                     ModelItem::new(model_name, display_info)
                 })
                 .collect()
@@ -195,14 +174,6 @@ impl Render for ModelSelector {
                 .cleanable(),
         )
     }
-}
-
-/// Helper function to create a model selector view
-pub fn model_selector(
-    window: &mut Window,
-    cx: &mut Context<impl Sized>,
-) -> gpui::Entity<ModelSelector> {
-    cx.new(|cx| ModelSelector::new(window, cx))
 }
 
 #[cfg(test)]
