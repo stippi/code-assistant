@@ -1,8 +1,6 @@
 use gpui::{prelude::*, Context, Entity, EventEmitter, Focusable, Render, Window};
-use gpui_component::{
-    dropdown::{Dropdown, DropdownEvent, DropdownItem, DropdownState, SearchableVec},
-    Sizable, Size,
-};
+use gpui_component::dropdown::{Dropdown, DropdownEvent, DropdownItem, DropdownState};
+use gpui_component::{Sizable, Size};
 use llm::provider_config::ConfigurationSystem;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -45,7 +43,7 @@ impl DropdownItem for ModelItem {
 
 /// Model selector dropdown component using gpui-component's Dropdown
 pub struct ModelSelector {
-    dropdown_state: Entity<DropdownState<SearchableVec<ModelItem>>>,
+    dropdown_state: Entity<DropdownState<Vec<ModelItem>>>,
     config: Option<Arc<ConfigurationSystem>>,
     _dropdown_subscription: gpui::Subscription,
 }
@@ -56,7 +54,7 @@ impl ModelSelector {
     /// Create a new model selector
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let dropdown_state =
-            cx.new(|cx| DropdownState::new(SearchableVec::new(Vec::new()), None, window, cx));
+            cx.new(|cx| DropdownState::new(Vec::<ModelItem>::new(), None, window, cx));
 
         // Subscribe to dropdown events once during construction
         let dropdown_subscription =
@@ -104,8 +102,8 @@ impl ModelSelector {
     /// Handle dropdown events
     fn on_dropdown_event(
         &mut self,
-        _: &Entity<DropdownState<SearchableVec<ModelItem>>>,
-        event: &DropdownEvent<SearchableVec<ModelItem>>,
+        _: &Entity<DropdownState<Vec<ModelItem>>>,
+        event: &DropdownEvent<Vec<ModelItem>>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -152,7 +150,7 @@ impl ModelSelector {
         };
 
         self.dropdown_state.update(cx, |state, cx| {
-            state.set_items(SearchableVec::new(model_items), window, cx);
+            state.set_items(model_items, window, cx);
         });
 
         self.config = config;

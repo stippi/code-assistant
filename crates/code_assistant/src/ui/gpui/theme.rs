@@ -33,6 +33,10 @@ pub fn custom_dark_theme() -> gpui_component::theme::ThemeColor {
     colors.success = rgb(0x47D136).into();
     colors.warning = rgb(0xFD8E3F).into();
 
+    // Accent colors (hover/selection highlights)
+    colors.accent = rgba(0x333333FF).into();
+    colors.accent_foreground = rgba(0xD6D6D6FF).into();
+
     colors
 }
 
@@ -67,6 +71,10 @@ pub fn custom_light_theme() -> gpui_component::theme::ThemeColor {
     // Tool status colors
     colors.success = rgb(0x2BB517).into();
     colors.warning = rgb(0xDD7B30).into();
+
+    // Accent colors (hover/selection highlights)
+    colors.accent = rgba(0xD6D6D6FF).into();
+    colors.accent_foreground = rgba(0x333333FF).into();
 
     colors
 }
