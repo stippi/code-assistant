@@ -1,6 +1,8 @@
-use gpui::{prelude::*, Context, Entity, EventEmitter, Focusable, Render, Window};
-use gpui_component::dropdown::{Dropdown, DropdownEvent, DropdownItem, DropdownState};
-use gpui_component::{Sizable, Size};
+use gpui::{div, prelude::*, Context, Entity, EventEmitter, Focusable, Render, Window};
+use gpui_component::{
+    dropdown::{Dropdown, DropdownEvent, DropdownItem, DropdownState},
+    Icon, Sizable, Size,
+};
 use llm::provider_config::ConfigurationSystem;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -16,12 +18,17 @@ pub enum ModelSelectorEvent {
 #[derive(Clone, Debug)]
 pub struct ModelItem {
     name: String,
-    display_info: String,
+    provider_label: String,
+    icon_path: Option<String>,
 }
 
 impl ModelItem {
-    pub fn new(name: String, display_info: String) -> Self {
-        Self { name, display_info }
+    pub fn new(name: String, provider_label: String, icon_path: Option<String>) -> Self {
+        Self {
+            name,
+            provider_label,
+            icon_path,
+        }
     }
 }
 
@@ -33,7 +40,32 @@ impl DropdownItem for ModelItem {
     }
 
     fn display_title(&self) -> Option<gpui::AnyElement> {
-        Some(self.display_info.clone().into_any_element())
+        let mut row = div().flex().items_center().gap_2().min_w_0();
+
+        if let Some(icon_path) = &self.icon_path {
+            row = row.child(
+                Icon::default()
+                    .path(icon_path.clone())
+                    .with_size(Size::Small),
+            );
+        }
+
+        row = row.child(
+            div()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().min_w_0().text_ellipsis().child(self.name.clone()))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_ellipsis()
+                        .child(format!("• {}", self.provider_label)),
+                ),
+        );
+
+        Some(row.into_any_element())
     }
 
     fn value(&self) -> &Self::Value {
@@ -90,15 +122,6 @@ impl ModelSelector {
         self.dropdown_state.read(cx).selected_value().cloned()
     }
 
-    /// Get model display info (name + provider)
-    fn get_model_display_info(config: &ConfigurationSystem, model_name: &str) -> String {
-        if let Ok((_model_config, provider_config)) = config.get_model_with_provider(model_name) {
-            format!("{} ({})", model_name, provider_config.label)
-        } else {
-            model_name.to_string()
-        }
-    }
-
     /// Handle dropdown events
     fn on_dropdown_event(
         &mut self,
@@ -135,16 +158,28 @@ impl ModelSelector {
         };
 
         let model_items = if let Some(ref config) = config {
-            let mut models = config.list_models();
-            models.sort();
-
-            models
-                .into_iter()
-                .map(|model_name| {
-                    let display_info = Self::get_model_display_info(config, &model_name);
-                    ModelItem::new(model_name, display_info)
+            let mut items: Vec<ModelItem> = config
+                .models
+                .iter()
+                .filter_map(|(model_name, model_config)| {
+                    let provider_config = config.providers.get(&model_config.provider)?;
+                    let icon_path =
+                        provider_icon_path(&provider_config.provider).map(|path| path.to_string());
+                    Some(ModelItem::new(
+                        model_name.clone(),
+                        provider_config.label.clone(),
+                        icon_path,
+                    ))
                 })
-                .collect()
+                .collect();
+
+            items.sort_by(|a, b| {
+                a.provider_label
+                    .cmp(&b.provider_label)
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+
+            items
         } else {
             Vec::new()
         };
@@ -154,6 +189,21 @@ impl ModelSelector {
         });
 
         self.config = config;
+    }
+}
+
+fn provider_icon_path(provider_type: &str) -> Option<&'static str> {
+    match provider_type {
+        "openai" | "openai-responses" => Some("icons/ai_open_ai.svg"),
+        "anthropic" => Some("icons/ai_anthropic.svg"),
+        "vertex" => Some("icons/ai_google.svg"),
+        "mistral-ai" => Some("icons/ai_mistral.svg"),
+        "openrouter" => Some("icons/ai_open_router.svg"),
+        "ollama" => Some("icons/ai_ollama.svg"),
+        "ai-core" => Some("icons/brain.svg"),
+        "cerebras" => Some("icons/brain.svg"),
+        "groq" => Some("icons/brain.svg"),
+        _ => None,
     }
 }
 
