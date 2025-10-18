@@ -13,7 +13,10 @@ use crate::ui::UserInterface;
 use anyhow::Result;
 
 use ratatui::crossterm::event::{self, Event};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -22,6 +25,7 @@ async fn event_loop(
     mut input_manager: InputManager,
     renderer: Arc<Mutex<ProductionTerminalRenderer>>,
     app_state: Arc<Mutex<AppState>>,
+    cancel_flag: Arc<AtomicBool>,
     backend_event_tx: async_channel::Sender<BackendEvent>,
 ) -> Result<()> {
     loop {
@@ -72,29 +76,35 @@ async fn event_loop(
                                 let mut state = app_state.lock().await;
                                 state.set_info_message(None);
                             } else {
-                                // Check if agent is running and cancel it
-                                let activity_state = {
+                                // Capture current activity/session in one lock to reduce lag
+                                let (activity_state, current_session_id) = {
                                     let state = app_state.lock().await;
-                                    state.activity_state.clone()
+                                    (
+                                        state.activity_state.clone(),
+                                        state.current_session_id.clone(),
+                                    )
                                 };
 
-                                if let Some(state) = activity_state {
-                                    if !matches!(
-                                        state,
-                                        crate::session::instance::SessionActivityState::Idle
-                                    ) {
-                                        // Agent is running, send cancel request
-                                        debug!("Escape pressed - cancelling running agent");
-                                        let current_session_id = {
-                                            let state = app_state.lock().await;
-                                            state.current_session_id.clone()
-                                        };
+                                if let Some(session_id) = current_session_id {
+                                    cancel_flag.store(true, Ordering::SeqCst);
+                                    debug!(
+                                        "Escape pressed - cancellation flag set for session {} (state: {:?})",
+                                        session_id, activity_state
+                                    );
 
-                                        if let Some(session_id) = current_session_id {
-                                            let _ = backend_event_tx
-                                                .send(BackendEvent::CancelSession { session_id })
-                                                .await;
-                                        }
+                                    let mut state = app_state.lock().await;
+                                    if matches!(
+                                        activity_state,
+                                        Some(crate::session::instance::SessionActivityState::Idle)
+                                    ) {
+                                        state.set_info_message(Some(
+                                            "No agent is currently running.".to_string(),
+                                        ));
+                                    } else {
+                                        state.set_info_message(Some(
+                                            "Cancellation requested...".to_string(),
+                                        ));
+                                        debug!("Cancellation requested for session {}", session_id);
                                     }
                                 }
                             }
@@ -113,11 +123,14 @@ async fn event_loop(
 
                                 let event = match activity_state {
                                     Some(crate::session::instance::SessionActivityState::Idle)
-                                    | None => BackendEvent::SendUserMessage {
-                                        session_id,
-                                        message,
-                                        attachments: Vec::new(),
-                                    },
+                                    | None => {
+                                        cancel_flag.store(false, Ordering::SeqCst);
+                                        BackendEvent::SendUserMessage {
+                                            session_id,
+                                            message,
+                                            attachments: Vec::new(),
+                                        }
+                                    }
                                     _ => BackendEvent::QueueUserMessage {
                                         session_id,
                                         message,
@@ -387,10 +400,6 @@ impl TerminalTuiApp {
                                 "Switched to model: {model_name}",
                             )));
                         }
-                        BackendResponse::SessionCancelled { session_id: _ } => {
-                            debug!("Session cancelled");
-                            // No specific action needed for terminal UI
-                        }
                     }
                 }
             });
@@ -435,6 +444,7 @@ impl TerminalTuiApp {
                 "Welcome to Code Assistant Terminal UI!\n\
                 Type your message and press Enter to send.\n\
                 Use Shift+Enter for multi-line input.\n\
+                Press Esc to stop the current response.\n\
                 Press Ctrl+C to quit.\n\
                 \n\
                 Debug logs are written to: {}\n\n",
@@ -457,6 +467,7 @@ impl TerminalTuiApp {
             input_manager,
             renderer.clone(),
             self.app_state.clone(),
+            terminal_ui.cancel_flag.clone(),
             backend_event_tx,
         ));
 

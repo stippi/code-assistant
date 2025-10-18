@@ -38,9 +38,6 @@ pub enum BackendEvent {
     RequestPendingMessageEdit {
         session_id: String,
     },
-    CancelSession {
-        session_id: String,
-    },
 
     // Model management
     SwitchModel {
@@ -78,15 +75,12 @@ pub enum BackendResponse {
         session_id: String,
         model_name: String,
     },
-    SessionCancelled {
-        session_id: String,
-    },
 }
 
 pub async fn handle_backend_events(
     backend_event_rx: async_channel::Receiver<BackendEvent>,
     backend_response_tx: async_channel::Sender<BackendResponse>,
-    multi_session_manager: Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: Arc<Mutex<SessionManager>>,
     ui: Arc<dyn UserInterface>,
 ) {
     debug!("Backend event handler started");
@@ -146,10 +140,6 @@ pub async fn handle_backend_events(
                 session_id,
                 model_name,
             } => Some(handle_switch_model(&multi_session_manager, &session_id, &model_name).await),
-
-            BackendEvent::CancelSession { session_id } => {
-                Some(handle_cancel_session(&multi_session_manager, &session_id).await)
-            }
         };
 
         // Send response back to UI only if there is one
@@ -165,7 +155,7 @@ pub async fn handle_backend_events(
 }
 
 async fn handle_list_sessions(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
 ) -> BackendResponse {
     let sessions = {
         let manager = multi_session_manager.lock().await;
@@ -186,7 +176,7 @@ async fn handle_list_sessions(
 }
 
 async fn handle_create_session(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     name: Option<String>,
 ) -> BackendResponse {
     let create_result = {
@@ -209,7 +199,7 @@ async fn handle_create_session(
 }
 
 async fn handle_load_session(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     session_id: &str,
     ui: &Arc<dyn UserInterface>,
 ) -> Option<BackendResponse> {
@@ -243,7 +233,7 @@ async fn handle_load_session(
 }
 
 async fn handle_delete_session(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     session_id: &str,
 ) -> BackendResponse {
     debug!("DeleteSession requested: {}", session_id);
@@ -270,7 +260,7 @@ async fn handle_delete_session(
 }
 
 async fn handle_send_user_message(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     session_id: &str,
     message: &str,
     attachments: &[DraftAttachment],
@@ -371,7 +361,7 @@ async fn handle_send_user_message(
 }
 
 async fn handle_queue_user_message(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     session_id: &str,
     message: &str,
     attachments: &[DraftAttachment],
@@ -416,7 +406,7 @@ async fn handle_queue_user_message(
 }
 
 async fn handle_request_pending_message_edit(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     session_id: &str,
 ) -> BackendResponse {
     debug!("Request pending message edit for session {}", session_id);
@@ -454,7 +444,7 @@ async fn handle_request_pending_message_edit(
 }
 
 async fn handle_switch_model(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     session_id: &str,
     model_name: &str,
 ) -> BackendResponse {
@@ -489,33 +479,6 @@ async fn handle_switch_model(
             error!("Failed to switch model for session {}: {}", session_id, e);
             BackendResponse::Error {
                 message: format!("Failed to switch model: {e}"),
-            }
-        }
-    }
-}
-
-async fn handle_cancel_session(
-    multi_session_manager: &Arc<Mutex<SessionManager>>,
-    session_id: &str,
-) -> BackendResponse {
-    debug!("Backend: Cancelling session {}", session_id);
-
-    let result = {
-        let mut manager = multi_session_manager.lock().await;
-        manager.cancel_session(session_id).await
-    };
-
-    match result {
-        Ok(()) => {
-            debug!("Successfully cancelled session {}", session_id);
-            BackendResponse::SessionCancelled {
-                session_id: session_id.to_string(),
-            }
-        }
-        Err(e) => {
-            error!("Failed to cancel session {}: {}", session_id, e);
-            BackendResponse::Error {
-                message: format!("Failed to cancel session: {e}"),
             }
         }
     }

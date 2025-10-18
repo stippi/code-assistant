@@ -1255,14 +1255,6 @@ impl Gpui {
                     model_name: model_name.clone(),
                 });
             }
-            BackendResponse::SessionCancelled { session_id } => {
-                debug!("Received BackendResponse::SessionCancelled: {}", session_id);
-                // Clear the stop request since the session has been cancelled
-                self.session_stop_requests
-                    .lock()
-                    .unwrap()
-                    .remove(&session_id);
-            }
         }
     }
 }

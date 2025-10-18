@@ -654,21 +654,4 @@ impl SessionManager {
         let pending = session_instance.pending_message.lock().unwrap();
         Ok(pending.clone())
     }
-
-    /// Cancel any running agent for the specified session
-    pub async fn cancel_session(&mut self, session_id: &str) -> Result<()> {
-        debug!("Cancelling session: {}", session_id);
-
-        // Check if session exists
-        if !self.active_sessions.contains_key(session_id) {
-            return Err(anyhow::anyhow!("Session not found: {}", session_id));
-        }
-
-        // The actual cancellation mechanism depends on the UI implementation
-        // The UI's should_streaming_continue() method will check for cancellation requests
-        // For now, we just log the cancellation request
-        debug!("Session {} marked for cancellation", session_id);
-
-        Ok(())
-    }
 }
