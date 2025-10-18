@@ -223,29 +223,3 @@ impl Render for ModelSelector {
         )
     }
 }
-
-#[cfg(test)]
-mod tests {
-    // use super::*;
-
-    // Note: These tests would need a proper GPUI test environment
-    // For now, they serve as documentation of expected behavior
-
-    #[test]
-    fn test_model_selector_creation() {
-        // This test would need a mock GPUI context
-        // let cx = &mut test_context();
-        // let selector = ModelSelector::new(cx);
-        // assert_eq!(selector.current_model(), None);
-        // assert!(!selector.is_open);
-    }
-
-    #[test]
-    fn test_model_selection() {
-        // This test would verify model selection behavior
-        // let cx = &mut test_context();
-        // let mut selector = ModelSelector::new(cx);
-        // selector.select_model("Test Model".to_string(), cx);
-        // assert_eq!(selector.current_model(), Some(&"Test Model".to_string()));
-    }
-}
