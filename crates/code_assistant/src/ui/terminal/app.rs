@@ -227,7 +227,11 @@ impl TerminalTuiApp {
         };
 
         // Create session manager
-        let session_manager = SessionManager::new(session_persistence, session_config_template);
+        let session_manager = SessionManager::new(
+            session_persistence,
+            session_config_template,
+            config.model.clone(),
+        );
         let multi_session_manager = Arc::new(Mutex::new(session_manager));
 
         // Create terminal UI and wrap as UserInterface

@@ -101,6 +101,55 @@ impl Args {
         <Args as Parser>::parse()
     }
 
+    /// Resolve a model name, ensuring it exists in the configuration and providing a fallback.
+    pub fn resolve_model_name(model: Option<String>) -> anyhow::Result<String> {
+        let config = ConfigurationSystem::load()?;
+
+        if let Some(model) = model {
+            let trimmed = model.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "Model name cannot be empty. Use --list-models to see available models."
+                );
+            }
+
+            if config.get_model(trimmed).is_some() {
+                return Ok(trimmed.to_string());
+            }
+
+            anyhow::bail!(
+                "Model '{}' not found in configuration. Use --list-models to see available models.",
+                trimmed
+            );
+        }
+
+        let mut models = config.list_models();
+
+        if models.is_empty() {
+            anyhow::bail!(
+                "No models configured. Please:\n\
+                1. Copy models.example.json to models.json\n\
+                2. Copy providers.example.json to providers.json\n\
+                3. Configure your API keys\n\
+                4. Specify a model with --model <name> or use --list-models to see available options"
+            );
+        }
+
+        // Look for common model names as defaults
+        let preferred_defaults = ["Claude Sonnet 4.5", "GPT-5", "Claude Opus 4", "GPT-4.1"];
+        for default in &preferred_defaults {
+            if models.iter().any(|entry| entry == default) {
+                return Ok(default.to_string());
+            }
+        }
+
+        models.sort();
+        Ok(models
+            .first()
+            .expect("models vector is non-empty due to earlier check")
+            .clone())
+    }
+
     /// Handle model and provider listing commands
     pub fn handle_list_commands(&self) -> anyhow::Result<bool> {
         if self.list_models || self.list_providers {
@@ -141,35 +190,7 @@ impl Args {
 
     /// Get the model name, with fallback to a default if none specified
     pub fn get_model_name(&self) -> anyhow::Result<String> {
-        if let Some(model) = &self.model {
-            return Ok(model.clone());
-        }
-
-        // Try to find a reasonable default model
-        let config = ConfigurationSystem::load()?;
-        let models = config.list_models();
-
-        // Look for common model names as defaults
-        let preferred_defaults = ["Claude Sonnet 4.5", "GPT-5", "Claude Opus 4", "GPT-4.1"];
-
-        for default in &preferred_defaults {
-            if models.contains(&default.to_string()) {
-                return Ok(default.to_string());
-            }
-        }
-
-        // If no preferred defaults found, use the first available model
-        if let Some(first_model) = models.first() {
-            return Ok(first_model.clone());
-        }
-
-        Err(anyhow::anyhow!(
-            "No model specified and no models configured. Please:\n\
-            1. Copy models.example.json to models.json\n\
-            2. Copy providers.example.json to providers.json\n\
-            3. Configure your API keys\n\
-            4. Specify a model with --model <name> or use --list-models to see available options"
-        ))
+        Self::resolve_model_name(self.model.clone())
     }
 }
 

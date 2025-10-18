@@ -13,7 +13,7 @@ pub struct AgentRunConfig {
     pub path: PathBuf,
     pub task: Option<String>,
     pub continue_task: bool,
-    pub model: Option<String>,
+    pub model: String,
     pub tool_syntax: ToolSyntax,
     pub use_diff_format: bool,
     pub record: Option<PathBuf>,

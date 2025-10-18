@@ -32,6 +32,9 @@ pub struct SessionManager {
 
     /// Template configuration applied to each new session
     session_config_template: SessionConfig,
+
+    /// Default model name to use when creating sessions
+    default_model_name: String,
 }
 
 impl SessionManager {
@@ -39,45 +42,29 @@ impl SessionManager {
     pub fn new(
         persistence: FileSessionPersistence,
         session_config_template: SessionConfig,
+        default_model_name: String,
     ) -> Self {
         Self {
             persistence,
             active_sessions: HashMap::new(),
             active_session_id: None,
             session_config_template,
+            default_model_name,
         }
     }
 
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
         // Always create sessions with a default model config
-        let default_model_config = self.get_default_model_config();
+        let default_model_config = self.default_model_config();
         self.create_session_with_config(name, None, Some(default_model_config))
     }
 
     /// Get the default model configuration
-    fn get_default_model_config(&self) -> SessionModelConfig {
-        // Load configuration and get the first available model
-        match llm::provider_config::ConfigurationSystem::load() {
-            Ok(config_system) => {
-                let mut models = config_system.list_models();
-                models.sort();
-                let model_name = models.into_iter().next().unwrap_or_else(|| {
-                    tracing::error!("No models available in configuration");
-                    "default".to_string()
-                });
-                SessionModelConfig {
-                    model_name,
-                    record_path: None,
-                }
-            }
-            Err(e) => {
-                tracing::error!("Failed to load configuration system: {}", e);
-                SessionModelConfig {
-                    model_name: "default".to_string(),
-                    record_path: None,
-                }
-            }
+    fn default_model_config(&self) -> SessionModelConfig {
+        SessionModelConfig {
+            model_name: self.default_model_name.clone(),
+            record_path: None,
         }
     }
 
@@ -176,7 +163,7 @@ impl SessionManager {
             if let Some(model_name) = existing_model_name {
                 model_name
             } else {
-                let default_model_config = self.get_default_model_config();
+                let default_model_config = self.default_model_config();
                 let model_name = default_model_config.model_name.clone();
                 {
                     let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
@@ -293,6 +280,7 @@ impl SessionManager {
         let session_manager_ref = Arc::new(Mutex::new(SessionManager::new(
             self.persistence.clone(),
             self.session_config_template.clone(),
+            self.default_model_name.clone(),
         )));
 
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(

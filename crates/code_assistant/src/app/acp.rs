@@ -48,17 +48,15 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
         use_diff_blocks: config.use_diff_format,
     };
 
-    // Get model name or use default
-    let model_name = config
-        .model
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Model name is required for ACP mode"))?;
+    // Model name has already been validated during CLI parsing
+    let model_name = config.model.clone();
 
     // Create session manager
     let persistence = FileSessionPersistence::new();
     let session_manager = Arc::new(Mutex::new(SessionManager::new(
         persistence,
         session_config_template.clone(),
+        model_name.clone(),
     )));
 
     // Setup stdio transport

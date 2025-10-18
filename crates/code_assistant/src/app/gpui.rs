@@ -27,16 +27,19 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         use_diff_blocks: config.use_diff_format,
     };
 
+    let default_model = config.model.clone();
+
     // Create the new SessionManager
     let multi_session_manager = Arc::new(Mutex::new(SessionManager::new(
         persistence,
         session_config_template,
+        default_model.clone(),
     )));
 
     // Clone GUI before moving it into thread
     let gui_for_thread = gui.clone();
     let task_clone = config.task.clone();
-    let model = config.model.clone();
+    let model = default_model;
     let record = config.record.clone();
     let playback = config.playback.clone();
     let fast_playback = config.fast_playback;
@@ -50,12 +53,8 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 // Task provided - create new session and start agent
                 debug!("Creating initial session with task: {}", initial_task);
 
-                // Use the specified model or default to the first available model
-                let model_name =
-                    llm::provider_config::ConfigurationSystem::validate_model_name(model.clone());
-
                 let session_model_config = crate::persistence::SessionModelConfig {
-                    model_name,
+                    model_name: model.clone(),
                     record_path: record.clone(),
                 };
 
@@ -91,18 +90,10 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 let user_interface: Arc<dyn crate::ui::UserInterface> =
                     Arc::new(gui_for_thread.clone());
 
-                let llm_client = if let Some(ref model_name) = model {
-                    create_llm_client_from_model(model_name, playback.clone(), fast_playback)
-                } else {
-                    // Use default model if none specified
-                    create_llm_client_from_model(
-                        "Claude Sonnet 4.5",
-                        playback.clone(),
-                        fast_playback,
-                    )
-                }
-                .await
-                .expect("Failed to create LLM client");
+                let llm_client =
+                    create_llm_client_from_model(&model, playback.clone(), fast_playback)
+                        .await
+                        .expect("Failed to create LLM client");
 
                 {
                     let mut manager = multi_session_manager.lock().await;
@@ -153,14 +144,8 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
 
                     // Create a new session automatically
                     let new_session_id = {
-                        // Use the specified model or default to the first available model
-                        let model_name =
-                            llm::provider_config::ConfigurationSystem::validate_model_name(
-                                model.clone(),
-                            );
-
                         let model_config = crate::persistence::SessionModelConfig {
-                            model_name,
+                            model_name: model.clone(),
                             record_path: record.clone(),
                         };
 

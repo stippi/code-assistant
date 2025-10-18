@@ -43,11 +43,13 @@ async fn main() -> Result<()> {
                 anyhow::bail!("Path '{}' is not a directory", path.display());
             }
 
+            let model_name = Args::resolve_model_name(model)?;
+
             let config = app::AgentRunConfig {
                 path,
                 task: None,
                 continue_task: false,
-                model,
+                model: model_name.clone(),
                 tool_syntax,
                 use_diff_format,
                 record: None,
@@ -71,11 +73,13 @@ async fn main() -> Result<()> {
                 anyhow::bail!("Path '{}' is not a directory", args.path.display());
             }
 
+            let model_name = args.get_model_name()?;
+
             let config = app::AgentRunConfig {
                 path: args.path,
                 task: args.task,
                 continue_task: args.continue_task,
-                model: args.model,
+                model: model_name,
                 tool_syntax: args.tool_syntax,
                 use_diff_format: args.use_diff_format,
                 record: args.record,
