@@ -1247,13 +1247,24 @@ impl Gpui {
                 }
             }
             BackendResponse::ModelSwitched {
-                session_id: _,
+                session_id,
                 model_name,
             } => {
-                debug!("Received BackendResponse::ModelSwitched: {}", model_name);
-                self.push_event(UiEvent::UpdateCurrentModel {
-                    model_name: model_name.clone(),
-                });
+                let current_session_id = self.current_session_id.lock().unwrap().clone();
+                if current_session_id.as_deref() == Some(session_id.as_str()) {
+                    debug!(
+                        "Received BackendResponse::ModelSwitched for active session {}: {}",
+                        session_id, model_name
+                    );
+                    self.push_event(UiEvent::UpdateCurrentModel {
+                        model_name: model_name.clone(),
+                    });
+                } else {
+                    debug!(
+                        "Ignoring BackendResponse::ModelSwitched for session {} (current: {:?})",
+                        session_id, current_session_id
+                    );
+                }
             }
         }
     }
