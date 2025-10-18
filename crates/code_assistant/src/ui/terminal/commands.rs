@@ -126,26 +126,3 @@ impl CommandProcessor {
         output
     }
 }
-
-#[cfg(test)]
-mod tests {
-    // use super::*;
-
-    // Note: These tests would need mock configurations to run properly
-    // For now, they serve as documentation of expected behavior
-
-    #[test]
-    fn test_command_parsing() {
-        // This test would need a mock ConfigurationSystem
-        // let processor = CommandProcessor::new().unwrap();
-
-        // Test cases that should work:
-        // assert!(matches!(processor.process_command("/help"), CommandResult::Help(_)));
-        // assert!(matches!(processor.process_command("/model"), CommandResult::ListModels));
-        // assert!(matches!(processor.process_command("/model Claude Sonnet 4.5"), CommandResult::SwitchModel(_)));
-        // assert!(matches!(processor.process_command("/provider"), CommandResult::ListProviders));
-        // assert!(matches!(processor.process_command("/current"), CommandResult::ShowCurrentModel));
-        // assert!(matches!(processor.process_command("/invalid"), CommandResult::InvalidCommand(_)));
-        // assert!(matches!(processor.process_command("regular message"), CommandResult::Continue));
-    }
-}
