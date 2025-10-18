@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tracing::error;
 
 /// Configuration for a single provider instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +133,29 @@ impl ConfigurationSystem {
     pub fn default_models_path() -> PathBuf {
         let (path, _) = Self::determine_config_path("models.json", None);
         path
+    }
+
+    pub fn validate_model_name(model: Option<String>) -> String {
+        // Use the specified model or default to the first available model
+        if let Some(m) = model.as_ref() {
+            m.clone()
+        } else {
+            // Load configuration and get the first available model
+            match Self::load() {
+                Ok(config_system) => {
+                    let mut models = config_system.list_models();
+                    models.sort();
+                    models.into_iter().next().unwrap_or_else(|| {
+                        error!("No models available in configuration");
+                        "default".to_string()
+                    })
+                }
+                Err(e) => {
+                    error!("Failed to load configuration system: {}", e);
+                    "default".to_string()
+                }
+            }
+        }
     }
 
     /// Get a model configuration by display name

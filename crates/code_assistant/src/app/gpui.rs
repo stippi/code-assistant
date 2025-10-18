@@ -51,25 +51,8 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 debug!("Creating initial session with task: {}", initial_task);
 
                 // Use the specified model or default to the first available model
-                let model_name = if let Some(m) = model.as_ref() {
-                    m.clone()
-                } else {
-                    // Load configuration and get the first available model
-                    match llm::provider_config::ConfigurationSystem::load() {
-                        Ok(config_system) => {
-                            let mut models = config_system.list_models();
-                            models.sort();
-                            models.into_iter().next().unwrap_or_else(|| {
-                                error!("No models available in configuration");
-                                "default".to_string()
-                            })
-                        }
-                        Err(e) => {
-                            error!("Failed to load configuration system: {}", e);
-                            "default".to_string()
-                        }
-                    }
-                };
+                let model_name =
+                    llm::provider_config::ConfigurationSystem::validate_model_name(model.clone());
 
                 let session_model_config = crate::persistence::SessionModelConfig {
                     model_name,
@@ -171,25 +154,10 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                     // Create a new session automatically
                     let new_session_id = {
                         // Use the specified model or default to the first available model
-                        let model_name = if let Some(m) = model.as_ref() {
-                            m.clone()
-                        } else {
-                            // Load configuration and get the first available model
-                            match llm::provider_config::ConfigurationSystem::load() {
-                                Ok(config_system) => {
-                                    let mut models = config_system.list_models();
-                                    models.sort();
-                                    models.into_iter().next().unwrap_or_else(|| {
-                                        error!("No models available in configuration");
-                                        "default".to_string()
-                                    })
-                                }
-                                Err(e) => {
-                                    error!("Failed to load configuration system: {}", e);
-                                    "default".to_string()
-                                }
-                            }
-                        };
+                        let model_name =
+                            llm::provider_config::ConfigurationSystem::validate_model_name(
+                                model.clone(),
+                            );
 
                         let model_config = crate::persistence::SessionModelConfig {
                             model_name,
