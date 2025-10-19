@@ -169,6 +169,7 @@ pub struct VertexClient {
     model: String,
     base_url: String,
     recorder: Option<APIRecorder>,
+    custom_config: Option<serde_json::Value>,
 }
 
 impl VertexClient {
@@ -184,6 +185,7 @@ impl VertexClient {
             model,
             base_url,
             recorder: None,
+            custom_config: None,
         }
     }
 
@@ -200,7 +202,14 @@ impl VertexClient {
             model,
             base_url,
             recorder: Some(APIRecorder::new(recording_path)),
+            custom_config: None,
         }
+    }
+
+    /// Set custom model configuration to be merged into API requests
+    pub fn with_custom_config(mut self, custom_config: serde_json::Value) -> Self {
+        self.custom_config = Some(custom_config);
+        self
     }
 
     fn get_url(&self, streaming: bool) -> String {
@@ -351,10 +360,17 @@ impl VertexClient {
     ) -> Result<(LLMResponse, VertexRateLimitInfo)> {
         let url = self.get_url(false);
 
+        let mut request_json = serde_json::to_value(request)?;
+
+        // Apply custom model configuration if present
+        if let Some(ref custom_config) = self.custom_config {
+            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+        }
+
         trace!(
             "Sending Vertex request to {}:\n{}",
             self.model,
-            serde_json::to_string_pretty(request)?
+            serde_json::to_string_pretty(&request_json)?
         );
 
         let response = self
@@ -362,7 +378,7 @@ impl VertexClient {
             .post(&url)
             .query(&[("key", &self.api_key)])
             .header("Content-Type", "application/json")
-            .json(request)
+            .json(&request_json)
             .send()
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;
@@ -461,17 +477,24 @@ impl VertexClient {
         request_id: u64,
         streaming_callback: &StreamingCallback,
     ) -> Result<(LLMResponse, VertexRateLimitInfo)> {
+        let mut request_json = serde_json::to_value(request)?;
+
+        // Apply custom model configuration if present
+        if let Some(ref custom_config) = self.custom_config {
+            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+        }
+
         // Start recording if a recorder is available
         if let Some(recorder) = &self.recorder {
-            let request_json = serde_json::to_value(request)?;
-            recorder.start_recording(request_json)?;
+            recorder.start_recording(request_json.clone())?;
         }
+
         let response = self
             .client
             .post(self.get_url(true))
             .query(&[("key", &self.api_key), ("alt", &"sse".to_string())])
             .header("Content-Type", "application/json")
-            .json(request)
+            .json(&request_json)
             .send()
             .await
             .map_err(|e| ApiError::NetworkError(e.to_string()))?;

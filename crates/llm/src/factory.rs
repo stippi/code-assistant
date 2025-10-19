@@ -7,8 +7,143 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
-
+use serde_json::Value;
 use std::path::PathBuf;
+
+// ============================================================================
+// Helper Functions for Factory
+// ============================================================================
+
+/// Trait for providers that support custom configuration
+trait WithCustomConfig: Sized {
+    fn with_custom_config(self, custom_config: Value) -> Self;
+}
+
+/// Apply custom model configuration to a client if present
+fn apply_custom_config<T: WithCustomConfig>(client: T, model_config: &ModelConfig) -> T {
+    if !model_config.config.is_null()
+        && model_config
+            .config
+            .as_object()
+            .is_some_and(|o| !o.is_empty())
+    {
+        client.with_custom_config(model_config.config.clone())
+    } else {
+        client
+    }
+}
+
+/// Extract API key from provider config
+fn get_api_key(config: &Value, provider_name: &str) -> Result<String> {
+    config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("api_key not found in {} provider config", provider_name))
+}
+
+/// Extract base URL from provider config with default fallback
+fn get_base_url(config: &Value, default_url: &str) -> String {
+    config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or(default_url)
+        .to_string()
+}
+
+// Implement WithCustomConfig trait for all providers that support it
+impl WithCustomConfig for AnthropicClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+impl WithCustomConfig for OpenAIClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+impl WithCustomConfig for CerebrasClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+impl WithCustomConfig for GroqClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+impl WithCustomConfig for OpenRouterClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+impl WithCustomConfig for OllamaClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+impl WithCustomConfig for MistralAiClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+impl WithCustomConfig for OpenAIResponsesClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+impl WithCustomConfig for VertexClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+impl WithCustomConfig for AiCoreClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+// ============================================================================
+// Macro for Simple Provider Factory Functions
+// ============================================================================
+
+/// Macro to generate factory functions for providers with standard api_key + base_url pattern
+macro_rules! simple_provider_factory {
+    ($func_name:ident, $client_type:ty, $provider_name:expr) => {
+        async fn $func_name(
+            model_config: &ModelConfig,
+            provider_config: &ProviderConfig,
+        ) -> Result<Box<dyn LLMProvider>> {
+            let api_key = get_api_key(&provider_config.config, $provider_name)?;
+            let base_url =
+                get_base_url(&provider_config.config, &<$client_type>::default_base_url());
+
+            let client = <$client_type>::new(api_key, model_config.id.clone(), base_url);
+            let client = apply_custom_config(client, model_config);
+            Ok(Box::new(client))
+        }
+    };
+}
+
+// Use the macro to generate factory functions for simple providers
+simple_provider_factory!(create_cerebras_client, CerebrasClient, "Cerebras");
+simple_provider_factory!(create_groq_client, GroqClient, "Groq");
+simple_provider_factory!(create_mistral_client, MistralAiClient, "MistralAI");
+simple_provider_factory!(create_openai_client, OpenAIClient, "OpenAI");
+simple_provider_factory!(create_openrouter_client, OpenRouterClient, "OpenRouter");
+
+// ============================================================================
+// Provider Types and Configuration
+// ============================================================================
 
 #[derive(ValueEnum, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum LLMProviderType {
@@ -188,6 +323,7 @@ async fn create_ai_core_client(
         AiCoreClient::new(token_manager, api_url)
     };
 
+    let client = apply_custom_config(client, model_config);
     Ok(Box::new(client))
 }
 
@@ -197,180 +333,23 @@ async fn create_anthropic_client(
     record_path: Option<PathBuf>,
     playback_state: Option<PlaybackState>,
 ) -> Result<Box<dyn LLMProvider>> {
-    let config = &provider_config.config;
-
-    let api_key = config
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("api_key not found in Anthropic provider config"))?;
-
-    let default_base_url = AnthropicClient::default_base_url();
-    let base_url = config
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&default_base_url);
+    let api_key = get_api_key(&provider_config.config, "Anthropic")?;
+    let base_url = get_base_url(
+        &provider_config.config,
+        &AnthropicClient::default_base_url(),
+    );
 
     let mut client = if let Some(path) = record_path {
-        AnthropicClient::new_with_recorder(
-            api_key.to_string(),
-            model_config.id.clone(),
-            base_url.to_string(),
-            path,
-        )
+        AnthropicClient::new_with_recorder(api_key, model_config.id.clone(), base_url, path)
     } else {
-        AnthropicClient::new(
-            api_key.to_string(),
-            model_config.id.clone(),
-            base_url.to_string(),
-        )
+        AnthropicClient::new(api_key, model_config.id.clone(), base_url)
     };
 
     if let Some(state) = playback_state {
         client = client.with_playback(state);
     }
 
-    // Apply custom model configuration if present
-    if !model_config.config.is_null()
-        && model_config
-            .config
-            .as_object()
-            .map_or(false, |o| !o.is_empty())
-    {
-        client = client.with_custom_config(model_config.config.clone());
-    }
-
-    Ok(Box::new(client))
-}
-
-async fn create_cerebras_client(
-    model_config: &ModelConfig,
-    provider_config: &ProviderConfig,
-) -> Result<Box<dyn LLMProvider>> {
-    let config = &provider_config.config;
-
-    let api_key = config
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("api_key not found in Cerebras provider config"))?;
-
-    let default_base_url = CerebrasClient::default_base_url();
-    let base_url = config
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&default_base_url);
-
-    let mut client = CerebrasClient::new(
-        api_key.to_string(),
-        model_config.id.clone(),
-        base_url.to_string(),
-    );
-
-    // Apply custom model configuration if present
-    if !model_config.config.is_null()
-        && model_config
-            .config
-            .as_object()
-            .map_or(false, |o| !o.is_empty())
-    {
-        client = client.with_custom_config(model_config.config.clone());
-    }
-
-    Ok(Box::new(client))
-}
-
-async fn create_groq_client(
-    model_config: &ModelConfig,
-    provider_config: &ProviderConfig,
-) -> Result<Box<dyn LLMProvider>> {
-    let config = &provider_config.config;
-
-    let api_key = config
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("api_key not found in Groq provider config"))?;
-
-    let default_base_url = GroqClient::default_base_url();
-    let base_url = config
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&default_base_url);
-
-    let mut client = GroqClient::new(
-        api_key.to_string(),
-        model_config.id.clone(),
-        base_url.to_string(),
-    );
-
-    // Apply custom model configuration if present
-    if !model_config.config.is_null()
-        && model_config
-            .config
-            .as_object()
-            .map_or(false, |o| !o.is_empty())
-    {
-        client = client.with_custom_config(model_config.config.clone());
-    }
-
-    Ok(Box::new(client))
-}
-
-async fn create_mistral_client(
-    model_config: &ModelConfig,
-    provider_config: &ProviderConfig,
-) -> Result<Box<dyn LLMProvider>> {
-    let config = &provider_config.config;
-
-    let api_key = config
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("api_key not found in Mistral provider config"))?;
-
-    let default_base_url = MistralAiClient::default_base_url();
-    let base_url = config
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&default_base_url);
-
-    Ok(Box::new(MistralAiClient::new(
-        api_key.to_string(),
-        model_config.id.clone(),
-        base_url.to_string(),
-    )))
-}
-
-async fn create_openai_client(
-    model_config: &ModelConfig,
-    provider_config: &ProviderConfig,
-) -> Result<Box<dyn LLMProvider>> {
-    let config = &provider_config.config;
-
-    let api_key = config
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("api_key not found in OpenAI provider config"))?;
-
-    let default_base_url = OpenAIClient::default_base_url();
-    let base_url = config
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&default_base_url);
-
-    let mut client = OpenAIClient::new(
-        api_key.to_string(),
-        model_config.id.clone(),
-        base_url.to_string(),
-    );
-
-    // Apply custom model configuration if present
-    if !model_config.config.is_null()
-        && model_config
-            .config
-            .as_object()
-            .map_or(false, |o| !o.is_empty())
-    {
-        client = client.with_custom_config(model_config.config.clone());
-    }
-
+    let client = apply_custom_config(client, model_config);
     Ok(Box::new(client))
 }
 
@@ -407,6 +386,7 @@ async fn create_openai_responses_client(
         client = client.with_recorder(path);
     }
 
+    let client = apply_custom_config(client, model_config);
     Ok(Box::new(client))
 }
 
@@ -428,87 +408,32 @@ async fn create_vertex_client(
         .and_then(|v| v.as_str())
         .unwrap_or(&default_base_url);
 
-    if let Some(path) = record_path {
-        Ok(Box::new(VertexClient::new_with_recorder(
+    let client = if let Some(path) = record_path {
+        VertexClient::new_with_recorder(
             api_key.to_string(),
             model_config.id.clone(),
             base_url.to_string(),
             path,
-        )))
+        )
     } else {
-        Ok(Box::new(VertexClient::new(
+        VertexClient::new(
             api_key.to_string(),
             model_config.id.clone(),
             base_url.to_string(),
-        )))
-    }
+        )
+    };
+
+    let client = apply_custom_config(client, model_config);
+    Ok(Box::new(client))
 }
 
 async fn create_ollama_client(
     model_config: &ModelConfig,
     provider_config: &ProviderConfig,
 ) -> Result<Box<dyn LLMProvider>> {
-    let config = &provider_config.config;
+    let base_url = get_base_url(&provider_config.config, &OllamaClient::default_base_url());
 
-    let default_base_url = OllamaClient::default_base_url();
-    let base_url = config
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&default_base_url);
-
-    let num_ctx = model_config
-        .config
-        .get("num_ctx")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(8192) as usize;
-
-    let mut client = OllamaClient::new(model_config.id.clone(), base_url.to_string(), num_ctx);
-
-    // Apply custom model configuration if present
-    if !model_config.config.is_null()
-        && model_config
-            .config
-            .as_object()
-            .map_or(false, |o| !o.is_empty())
-    {
-        client = client.with_custom_config(model_config.config.clone());
-    }
-
-    Ok(Box::new(client))
-}
-
-async fn create_openrouter_client(
-    model_config: &ModelConfig,
-    provider_config: &ProviderConfig,
-) -> Result<Box<dyn LLMProvider>> {
-    let config = &provider_config.config;
-
-    let api_key = config
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("api_key not found in OpenRouter provider config"))?;
-
-    let default_base_url = OpenRouterClient::default_base_url();
-    let base_url = config
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&default_base_url);
-
-    let mut client = OpenRouterClient::new(
-        api_key.to_string(),
-        model_config.id.clone(),
-        base_url.to_string(),
-    );
-
-    // Apply custom model configuration if present
-    if !model_config.config.is_null()
-        && model_config
-            .config
-            .as_object()
-            .map_or(false, |o| !o.is_empty())
-    {
-        client = client.with_custom_config(model_config.config.clone());
-    }
-
+    let client = OllamaClient::new(model_config.id.clone(), base_url);
+    let client = apply_custom_config(client, model_config);
     Ok(Box::new(client))
 }

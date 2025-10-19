@@ -790,13 +790,7 @@ async fn test_vertex_provider() -> Result<()> {
 async fn test_ollama_provider() -> Result<()> {
     run_provider_tests(
         "Ollama",
-        |url| {
-            Box::new(OllamaClient::new(
-                "llama2".to_string(),
-                url.to_string(),
-                4096,
-            ))
-        },
+        |url| Box::new(OllamaClient::new("llama2".to_string(), url.to_string())),
         OllamaMockGenerator,
     )
     .await

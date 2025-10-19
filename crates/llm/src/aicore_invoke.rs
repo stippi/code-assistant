@@ -72,6 +72,7 @@ impl RequestCustomizer for AiCoreRequestCustomizer {
 
 pub struct AiCoreClient {
     anthropic_client: AnthropicClient,
+    custom_config: Option<serde_json::Value>,
 }
 
 impl AiCoreClient {
@@ -94,7 +95,10 @@ impl AiCoreClient {
 
     pub fn new(token_manager: Arc<TokenManager>, base_url: String) -> Self {
         let anthropic_client = Self::create_anthropic_client(token_manager, base_url);
-        Self { anthropic_client }
+        Self {
+            anthropic_client,
+            custom_config: None,
+        }
     }
 
     /// Create a new client with recording capability
@@ -106,7 +110,19 @@ impl AiCoreClient {
         let anthropic_client =
             Self::create_anthropic_client(token_manager, base_url).with_recorder(recording_path);
 
-        Self { anthropic_client }
+        Self {
+            anthropic_client,
+            custom_config: None,
+        }
+    }
+
+    /// Set custom model configuration to be merged into API requests
+    pub fn with_custom_config(mut self, custom_config: serde_json::Value) -> Self {
+        self.anthropic_client = self
+            .anthropic_client
+            .with_custom_config(custom_config.clone());
+        self.custom_config = Some(custom_config);
+        self
     }
 }
 

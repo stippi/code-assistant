@@ -10,14 +10,8 @@ struct OllamaRequest {
     model: String,
     messages: Vec<OllamaMessage>,
     stream: bool,
-    options: OllamaOptions,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<serde_json::Value>>,
-}
-
-#[derive(Debug, Serialize)]
-struct OllamaOptions {
-    num_ctx: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -59,7 +53,6 @@ pub struct OllamaClient {
     client: Client,
     base_url: String,
     model: String,
-    num_ctx: usize,
     // Custom model configuration to merge into API requests
     custom_config: Option<serde_json::Value>,
 }
@@ -69,12 +62,11 @@ impl OllamaClient {
         "http://localhost:11434".to_string()
     }
 
-    pub fn new(model: String, base_url: String, num_ctx: usize) -> Self {
+    pub fn new(model: String, base_url: String) -> Self {
         Self {
             client: Client::new(),
             base_url,
             model,
-            num_ctx,
             custom_config: None,
         }
     }
@@ -501,9 +493,6 @@ impl LLMProvider for OllamaClient {
             model: self.model.clone(),
             messages,
             stream: false,
-            options: OllamaOptions {
-                num_ctx: self.num_ctx,
-            },
             tools: request.tools.map(|tools| {
                 tools
                     .into_iter()

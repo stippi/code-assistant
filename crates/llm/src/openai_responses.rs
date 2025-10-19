@@ -329,6 +329,7 @@ pub struct OpenAIResponsesClient {
     request_customizer: Box<dyn RequestCustomizer>,
     recorder: Option<APIRecorder>,
     playback: Option<PlaybackState>,
+    custom_config: Option<serde_json::Value>,
 }
 
 impl OpenAIResponsesClient {
@@ -345,6 +346,7 @@ impl OpenAIResponsesClient {
             request_customizer: Box::new(DefaultRequestCustomizer),
             recorder: None,
             playback: None,
+            custom_config: None,
         }
     }
 
@@ -362,6 +364,7 @@ impl OpenAIResponsesClient {
             request_customizer,
             recorder: None,
             playback: None,
+            custom_config: None,
         }
     }
 
@@ -374,6 +377,12 @@ impl OpenAIResponsesClient {
     /// Add playback capability to the client
     pub fn with_playback(mut self, playback_state: PlaybackState) -> Self {
         self.playback = Some(playback_state);
+        self
+    }
+
+    /// Set custom model configuration to be merged into API requests
+    pub fn with_custom_config(mut self, custom_config: serde_json::Value) -> Self {
+        self.custom_config = Some(custom_config);
         self
     }
 
@@ -702,6 +711,11 @@ impl OpenAIResponsesClient {
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<(LLMResponse, ResponsesRateLimitInfo)> {
         let mut request_json = serde_json::to_value(request)?;
+
+        // Apply custom model configuration if present
+        if let Some(ref custom_config) = self.custom_config {
+            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+        }
 
         // Allow request customizer to modify the request
         self.request_customizer
