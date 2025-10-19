@@ -1,7 +1,7 @@
-use gpui::{div, prelude::*, Context, Entity, EventEmitter, Focusable, Render, Window};
+use gpui::{div, prelude::*, px, Context, Entity, EventEmitter, Focusable, Render, Window};
 use gpui_component::{
     dropdown::{Dropdown, DropdownEvent, DropdownItem, DropdownState},
-    Icon, Sizable, Size,
+    ActiveTheme, Icon, Sizable, Size,
 };
 use llm::provider_config::ConfigurationSystem;
 use std::sync::Arc;
@@ -40,7 +40,7 @@ impl DropdownItem for ModelItem {
     }
 
     fn display_title(&self) -> Option<gpui::AnyElement> {
-        let mut row = div().flex().items_center().gap_2().min_w_0();
+        let mut row = div().flex().items_center().gap_1().min_w_0();
 
         if let Some(icon_path) = &self.icon_path {
             row = row.child(
@@ -55,14 +55,7 @@ impl DropdownItem for ModelItem {
                 .min_w_0()
                 .flex()
                 .items_center()
-                .gap_2()
-                .child(div().min_w_0().text_ellipsis().child(self.name.clone()))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_ellipsis()
-                        .child(format!("• {}", self.provider_label)),
-                ),
+                .child(div().min_w_0().text_ellipsis().child(self.name.clone())),
         );
 
         Some(row.into_any_element())
@@ -115,11 +108,6 @@ impl ModelSelector {
                 state.set_selected_value(&model_name, window, cx);
             });
         }
-    }
-
-    /// Get the current model
-    pub fn current_model(&self, cx: &gpui::App) -> Option<String> {
-        self.dropdown_state.read(cx).selected_value().cloned()
     }
 
     /// Handle dropdown events
@@ -214,12 +202,20 @@ impl Focusable for ModelSelector {
 }
 
 impl Render for ModelSelector {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        gpui::div().text_size(gpui::px(12.)).child(
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        gpui::div().text_color(cx.theme().muted_foreground).child(
             Dropdown::new(&self.dropdown_state)
                 .placeholder("Select Model")
-                .with_size(Size::Small)
-                .cleanable(),
+                .with_size(Size::XSmall)
+                .appearance(false)
+                .icon(
+                    Icon::default()
+                        .path("icons/chevron_up_down.svg")
+                        .with_size(Size::XSmall)
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .min_w(px(180.))
+                .max_w(px(280.)),
         )
     }
 }

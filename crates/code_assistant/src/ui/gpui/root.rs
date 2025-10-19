@@ -4,7 +4,6 @@ use super::file_icons;
 use super::input_area::{InputArea, InputAreaEvent};
 use super::memory::MemoryView;
 use super::messages::MessagesView;
-use super::model_selector::{ModelSelector, ModelSelectorEvent};
 use super::theme;
 use super::BackendEvent;
 use super::{CloseWindow, Gpui, UiEventSender};
@@ -24,7 +23,6 @@ pub struct RootView {
     memory_view: Entity<MemoryView>,
     chat_sidebar: Entity<ChatSidebar>,
     auto_scroll_container: Entity<AutoScrollContainer<MessagesView>>,
-    model_selector: Entity<ModelSelector>,
     recent_keystrokes: Vec<gpui::Keystroke>,
     focus_handle: FocusHandle,
     // Memory view state
@@ -36,7 +34,6 @@ pub struct RootView {
     // Subscription to input area events
     _input_area_subscription: Subscription,
     _chat_sidebar_subscription: Subscription,
-    _model_selector_subscription: Subscription,
 }
 
 impl RootView {
@@ -54,9 +51,6 @@ impl RootView {
         // Create the input area
         let input_area = cx.new(|cx| InputArea::new(window, cx));
 
-        // Create the model selector
-        let model_selector = cx.new(|cx| ModelSelector::new(window, cx));
-
         // Subscribe to input area events
         let input_area_subscription =
             cx.subscribe_in(&input_area, window, Self::on_input_area_event);
@@ -65,16 +59,11 @@ impl RootView {
         let chat_sidebar_subscription =
             cx.subscribe_in(&chat_sidebar, window, Self::on_chat_sidebar_event);
 
-        // Subscribe to model selector events
-        let model_selector_subscription =
-            cx.subscribe_in(&model_selector, window, Self::on_model_selector_event);
-
         let mut root_view = Self {
             input_area,
             memory_view,
             chat_sidebar,
             auto_scroll_container,
-            model_selector,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
             memory_collapsed: false,
@@ -83,7 +72,6 @@ impl RootView {
             chat_sessions: Vec::new(),
             _input_area_subscription: input_area_subscription,
             _chat_sidebar_subscription: chat_sidebar_subscription,
-            _model_selector_subscription: model_selector_subscription,
         };
 
         // Request initial chat session list
@@ -198,6 +186,23 @@ impl RootView {
                     }
                 }
             }
+            InputAreaEvent::ModelChanged { model_name } => {
+                debug!("Model selection changed to: {}", model_name);
+
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::SwitchModel {
+                            session_id: session_id.clone(),
+                            model_name: model_name.clone(),
+                        });
+                    } else {
+                        error!("Failed to lock backend event sender");
+                    }
+                }
+            }
         }
     }
 
@@ -230,36 +235,6 @@ impl RootView {
             }
         } else {
             error!("Failed to lock backend event sender");
-        }
-    }
-
-    /// Handle ModelSelector events
-    fn on_model_selector_event(
-        &mut self,
-        _model_selector: &Entity<ModelSelector>,
-        event: &ModelSelectorEvent,
-        _window: &mut gpui::Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            ModelSelectorEvent::ModelChanged { model_name } => {
-                debug!("Model selection changed to: {}", model_name);
-
-                // Send model switch event if we have an active session
-                if let Some(session_id) = &self.current_session_id {
-                    let gpui = cx
-                        .try_global::<Gpui>()
-                        .expect("Failed to obtain Gpui global");
-                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::SwitchModel {
-                            session_id: session_id.clone(),
-                            model_name: model_name.clone(),
-                        });
-                    } else {
-                        error!("Failed to lock backend event sender");
-                    }
-                }
-            }
         }
     }
 
@@ -629,15 +604,16 @@ impl Render for RootView {
             }
         }
 
-        // Update model selector with current model only if it has changed
-        let selected_model = self.model_selector.read(cx).current_model(cx);
+        // Ensure InputArea stays in sync with the current model
+        let selected_model = self.input_area.read(cx).current_model();
         if selected_model != current_model {
             debug!(
                 "Current model changed from {:?} to {:?}",
                 selected_model, current_model
             );
-            self.model_selector.update(cx, |model_selector, cx| {
-                model_selector.set_current_model(current_model, window, cx);
+            let model_to_set = current_model.clone();
+            self.input_area.update(cx, |input_area, cx| {
+                input_area.set_current_model(model_to_set, window, cx);
             });
         }
 
@@ -809,25 +785,14 @@ impl Render for RootView {
                             )
                             // Status popover - positioned at bottom center
                             .children(self.render_status_popover(cx))
-                            // Input area and model selector combined at the bottom
+                            // Input area sits at the bottom
                             .child(
                                 div()
                                     .flex_none()
                                     .bg(cx.theme().background)
                                     .border_t_1()
                                     .border_color(cx.theme().border)
-                                    .flex()
-                                    .flex_col()
-                                    // Input area at the top
-                                    .child(self.input_area.clone())
-                                    // Model selector below input area
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .px_4()
-                                            .py_2()
-                                            .child(self.model_selector.clone()),
-                                    ),
+                                    .child(self.input_area.clone()),
                             ),
                     )
                     // Right sidebar with memory view - only show if not collapsed
