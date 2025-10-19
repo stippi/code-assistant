@@ -309,6 +309,8 @@ pub struct OpenAIClient {
     // Customization points
     auth_provider: Box<dyn AuthProvider>,
     request_customizer: Box<dyn RequestCustomizer>,
+    // Custom model configuration to merge into API requests
+    custom_config: Option<serde_json::Value>,
 }
 
 impl OpenAIClient {
@@ -329,6 +331,7 @@ impl OpenAIClient {
             model_reasoning_efforts,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
+            custom_config: None,
         }
     }
 
@@ -351,7 +354,14 @@ impl OpenAIClient {
             model_reasoning_efforts,
             auth_provider,
             request_customizer,
+            custom_config: None,
         }
+    }
+
+    /// Set custom model configuration to be merged into API requests
+    pub fn with_custom_config(mut self, custom_config: serde_json::Value) -> Self {
+        self.custom_config = Some(custom_config);
+        self
     }
 
     fn get_url(&self, streaming: bool) -> String {
@@ -669,6 +679,11 @@ impl OpenAIClient {
     ) -> Result<(LLMResponse, OpenAIRateLimitInfo)> {
         let mut request_json = serde_json::to_value(request.clone().into_non_streaming())?;
 
+        // Apply custom model configuration if present
+        if let Some(ref custom_config) = self.custom_config {
+            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+        }
+
         // Allow request customizer to modify the request
         self.request_customizer
             .customize_request(&mut request_json)?;
@@ -771,6 +786,11 @@ impl OpenAIClient {
         let mut request_json = serde_json::to_value(request.clone().into_streaming())?;
 
         debug!("Sending streaming request: {}", request_json);
+
+        // Apply custom model configuration if present
+        if let Some(ref custom_config) = self.custom_config {
+            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+        }
 
         // Allow request customizer to modify the request
         self.request_customizer

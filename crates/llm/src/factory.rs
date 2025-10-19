@@ -229,6 +229,16 @@ async fn create_anthropic_client(
         client = client.with_playback(state);
     }
 
+    // Apply custom model configuration if present
+    if !model_config.config.is_null()
+        && model_config
+            .config
+            .as_object()
+            .map_or(false, |o| !o.is_empty())
+    {
+        client = client.with_custom_config(model_config.config.clone());
+    }
+
     Ok(Box::new(client))
 }
 
@@ -249,11 +259,23 @@ async fn create_cerebras_client(
         .and_then(|v| v.as_str())
         .unwrap_or(&default_base_url);
 
-    Ok(Box::new(CerebrasClient::new(
+    let mut client = CerebrasClient::new(
         api_key.to_string(),
         model_config.id.clone(),
         base_url.to_string(),
-    )))
+    );
+
+    // Apply custom model configuration if present
+    if !model_config.config.is_null()
+        && model_config
+            .config
+            .as_object()
+            .map_or(false, |o| !o.is_empty())
+    {
+        client = client.with_custom_config(model_config.config.clone());
+    }
+
+    Ok(Box::new(client))
 }
 
 async fn create_groq_client(
@@ -273,11 +295,23 @@ async fn create_groq_client(
         .and_then(|v| v.as_str())
         .unwrap_or(&default_base_url);
 
-    Ok(Box::new(GroqClient::new(
+    let mut client = GroqClient::new(
         api_key.to_string(),
         model_config.id.clone(),
         base_url.to_string(),
-    )))
+    );
+
+    // Apply custom model configuration if present
+    if !model_config.config.is_null()
+        && model_config
+            .config
+            .as_object()
+            .map_or(false, |o| !o.is_empty())
+    {
+        client = client.with_custom_config(model_config.config.clone());
+    }
+
+    Ok(Box::new(client))
 }
 
 async fn create_mistral_client(
@@ -321,11 +355,23 @@ async fn create_openai_client(
         .and_then(|v| v.as_str())
         .unwrap_or(&default_base_url);
 
-    Ok(Box::new(OpenAIClient::new(
+    let mut client = OpenAIClient::new(
         api_key.to_string(),
         model_config.id.clone(),
         base_url.to_string(),
-    )))
+    );
+
+    // Apply custom model configuration if present
+    if !model_config.config.is_null()
+        && model_config
+            .config
+            .as_object()
+            .map_or(false, |o| !o.is_empty())
+    {
+        client = client.with_custom_config(model_config.config.clone());
+    }
+
+    Ok(Box::new(client))
 }
 
 async fn create_openai_responses_client(
@@ -416,11 +462,19 @@ async fn create_ollama_client(
         .and_then(|v| v.as_u64())
         .unwrap_or(8192) as usize;
 
-    Ok(Box::new(OllamaClient::new(
-        model_config.id.clone(),
-        base_url.to_string(),
-        num_ctx,
-    )))
+    let mut client = OllamaClient::new(model_config.id.clone(), base_url.to_string(), num_ctx);
+
+    // Apply custom model configuration if present
+    if !model_config.config.is_null()
+        && model_config
+            .config
+            .as_object()
+            .map_or(false, |o| !o.is_empty())
+    {
+        client = client.with_custom_config(model_config.config.clone());
+    }
+
+    Ok(Box::new(client))
 }
 
 async fn create_openrouter_client(
@@ -440,9 +494,21 @@ async fn create_openrouter_client(
         .and_then(|v| v.as_str())
         .unwrap_or(&default_base_url);
 
-    Ok(Box::new(OpenRouterClient::new(
+    let mut client = OpenRouterClient::new(
         api_key.to_string(),
         model_config.id.clone(),
         base_url.to_string(),
-    )))
+    );
+
+    // Apply custom model configuration if present
+    if !model_config.config.is_null()
+        && model_config
+            .config
+            .as_object()
+            .map_or(false, |o| !o.is_empty())
+    {
+        client = client.with_custom_config(model_config.config.clone());
+    }
+
+    Ok(Box::new(client))
 }

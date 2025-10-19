@@ -1,26 +1,38 @@
 {
+
   "Claude Sonnet 4.5": {
     "provider": "anthropic-main",
     "id": "claude-sonnet-4-5",
     "config": {
-      "thinking_enabled": true,
-      "max_tokens": 8192
+      "max_tokens": 8192,
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 8192
+      }
     }
   },
+
   "Claude Sonnet 4.5 (Custom)": {
     "provider": "anthropic-custom",
     "id": "claude-sonnet-4-5",
     "config": {
-      "thinking_enabled": true,
-      "max_tokens": 4096
+      "max_tokens": 4096,
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 16384
+      }
     }
   },
+
   "Claude Opus 4": {
     "provider": "anthropic-main",
     "id": "claude-opus-4",
     "config": {
-      "thinking_enabled": true,
-      "max_tokens": 8192
+      "max_tokens": 8192,
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 10000
+      }
     }
   },
   "GPT-5": {
@@ -140,12 +152,11 @@
       "temperature": 0.7
     }
   },
+
   "AI Core Claude (Dev)": {
     "provider": "ai-core-dev",
     "id": "claude-sonnet-4",
-    "config": {
-      "thinking_enabled": true
-    }
+    "config": {}
   },
   "AI Core GPT-4 (Dev)": {
     "provider": "ai-core-dev",
@@ -154,12 +165,11 @@
       "temperature": 0.7
     }
   },
+
   "AI Core Claude (Prod)": {
     "provider": "ai-core-prod",
     "id": "claude-sonnet-4",
-    "config": {
-      "thinking_enabled": true
-    }
+    "config": {}
   },
   "AI Core GPT-4 (Prod)": {
     "provider": "ai-core-prod",

@@ -60,6 +60,8 @@ pub struct OllamaClient {
     base_url: String,
     model: String,
     num_ctx: usize,
+    // Custom model configuration to merge into API requests
+    custom_config: Option<serde_json::Value>,
 }
 
 impl OllamaClient {
@@ -73,7 +75,14 @@ impl OllamaClient {
             base_url,
             model,
             num_ctx,
+            custom_config: None,
         }
+    }
+
+    /// Set custom model configuration to be merged into API requests
+    pub fn with_custom_config(mut self, custom_config: serde_json::Value) -> Self {
+        self.custom_config = Some(custom_config);
+        self
     }
 
     fn get_url(&self) -> String {
@@ -231,15 +240,19 @@ impl OllamaClient {
         request: &OllamaRequest,
         request_id: u64,
     ) -> Result<LLMResponse> {
-        debug!(
-            "Sending request to Ollama: '{}'",
-            serde_json::to_string(request)?
-        );
+        let mut request_json = serde_json::to_value(request)?;
+
+        // Apply custom model configuration if present
+        if let Some(ref custom_config) = self.custom_config {
+            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+        }
+
+        debug!("Sending request to Ollama: '{}'", request_json);
 
         let response = self
             .client
             .post(self.get_url())
-            .json(request)
+            .json(&request_json)
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("Network error: {}", e))?;
@@ -305,15 +318,19 @@ impl OllamaClient {
         request_id: u64,
         streaming_callback: &StreamingCallback,
     ) -> Result<LLMResponse> {
-        debug!(
-            "Sending request to Ollama: '{}'",
-            serde_json::to_string(request)?
-        );
+        let mut request_json = serde_json::to_value(request)?;
+
+        // Apply custom model configuration if present
+        if let Some(ref custom_config) = self.custom_config {
+            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+        }
+
+        debug!("Sending request to Ollama: '{}'", request_json);
 
         let response = self
             .client
             .post(self.get_url())
-            .json(request)
+            .json(&request_json)
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("Network error: {}", e))?;

@@ -43,6 +43,12 @@ impl CerebrasClient {
             ),
         }
     }
+
+    /// Set custom model configuration to be merged into API requests
+    pub fn with_custom_config(mut self, custom_config: serde_json::Value) -> Self {
+        self.inner = self.inner.with_custom_config(custom_config);
+        self
+    }
 }
 
 #[async_trait]

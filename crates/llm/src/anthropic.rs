@@ -564,6 +564,9 @@ pub struct AnthropicClient {
     auth_provider: Box<dyn AuthProvider>,
     request_customizer: Box<dyn RequestCustomizer>,
     message_converter: Box<dyn MessageConverter>,
+
+    // Custom model configuration to merge into API requests
+    custom_config: Option<serde_json::Value>,
 }
 
 impl AnthropicClient {
@@ -593,6 +596,7 @@ impl AnthropicClient {
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
             message_converter: Box::new(DefaultMessageConverter::new()),
+            custom_config: None,
         }
     }
 
@@ -612,6 +616,7 @@ impl AnthropicClient {
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
             message_converter: Box::new(DefaultMessageConverter::new()),
+            custom_config: None,
         }
     }
 
@@ -632,6 +637,7 @@ impl AnthropicClient {
             auth_provider,
             request_customizer,
             message_converter,
+            custom_config: None,
         }
     }
 
@@ -644,6 +650,12 @@ impl AnthropicClient {
     /// Add playback capability to the client
     pub fn with_playback(mut self, playback_state: PlaybackState) -> Self {
         self.playback = Some(playback_state);
+        self
+    }
+
+    /// Set custom model configuration to be merged into API requests
+    pub fn with_custom_config(mut self, custom_config: serde_json::Value) -> Self {
+        self.custom_config = Some(custom_config);
         self
     }
 
@@ -1333,8 +1345,15 @@ impl LLMProvider for AnthropicClient {
         if let Some(tool_choice) = tool_choice {
             anthropic_request["tool_choice"] = tool_choice;
         }
+
         if let Some(tools) = tools {
             anthropic_request["tools"] = serde_json::to_value(tools)?;
+        }
+
+        // Apply custom model configuration if present
+        if let Some(ref custom_config) = self.custom_config {
+            anthropic_request =
+                crate::config_merge::merge_json(anthropic_request, custom_config.clone());
         }
 
         // Allow request customizer to modify the request
