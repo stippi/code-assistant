@@ -1,6 +1,6 @@
 use crate::types::ToolSyntax;
 use clap::{Parser, Subcommand};
-use llm::factory::LLMProviderType;
+use llm::provider_config::ConfigurationSystem;
 use std::path::PathBuf;
 
 #[derive(Subcommand, Debug)]
@@ -22,25 +22,9 @@ pub enum Mode {
         #[arg(long, default_value = ".")]
         path: PathBuf,
 
-        /// LLM provider to use
-        #[arg(short = 'p', long, default_value = "anthropic")]
-        provider: LLMProviderType,
-
-        /// Model name to use (provider-specific)
+        /// Model to use from models.json configuration
         #[arg(short = 'm', long)]
         model: Option<String>,
-
-        /// API base URL for the LLM provider to use
-        #[arg(long)]
-        base_url: Option<String>,
-
-        /// Path to AI Core configuration file
-        #[arg(long)]
-        aicore_config: Option<PathBuf>,
-
-        /// Context window size (in tokens, only relevant for Ollama)
-        #[arg(long, default_value_t = 8192)]
-        num_ctx: usize,
 
         /// Tool invocation syntax ('native' = tools via API, 'xml' and 'caret' = custom system message)
         #[arg(long, default_value = "native")]
@@ -79,25 +63,17 @@ pub struct Args {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// LLM provider to use
-    #[arg(short = 'p', long, default_value = "anthropic")]
-    pub provider: LLMProviderType,
-
-    /// Model name to use (provider-specific)
+    /// Model to use from models.json configuration
     #[arg(short = 'm', long)]
     pub model: Option<String>,
 
-    /// API base URL for the LLM provider to use
+    /// List available models and exit
     #[arg(long)]
-    pub base_url: Option<String>,
+    pub list_models: bool,
 
-    /// Path to AI Core configuration file
+    /// List available providers and exit
     #[arg(long)]
-    pub aicore_config: Option<PathBuf>,
-
-    /// Context window size (in tokens, only relevant for Ollama)
-    #[arg(long, default_value_t = 8192)]
-    pub num_ctx: usize,
+    pub list_providers: bool,
 
     /// Tool invocation syntax ('native' = tools via API, 'xml' and 'caret' = custom system message)
     #[arg(long, default_value = "native")]
@@ -124,6 +100,98 @@ impl Args {
     pub fn parse() -> Self {
         <Args as Parser>::parse()
     }
+
+    /// Resolve a model name, ensuring it exists in the configuration and providing a fallback.
+    pub fn resolve_model_name(model: Option<String>) -> anyhow::Result<String> {
+        let config = ConfigurationSystem::load()?;
+
+        if let Some(model) = model {
+            let trimmed = model.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!(
+                    "Model name cannot be empty. Use --list-models to see available models."
+                );
+            }
+
+            if config.get_model(trimmed).is_some() {
+                return Ok(trimmed.to_string());
+            }
+
+            anyhow::bail!(
+                "Model '{}' not found in configuration. Use --list-models to see available models.",
+                trimmed
+            );
+        }
+
+        let mut models = config.list_models();
+
+        if models.is_empty() {
+            anyhow::bail!(
+                "No models configured. Please:\n\
+                1. Copy models.example.json to models.json\n\
+                2. Copy providers.example.json to providers.json\n\
+                3. Configure your API keys\n\
+                4. Specify a model with --model <name> or use --list-models to see available options"
+            );
+        }
+
+        // Look for common model names as defaults
+        let preferred_defaults = ["Claude Sonnet 4.5", "GPT-5", "Claude Opus 4", "GPT-4.1"];
+        for default in &preferred_defaults {
+            if models.iter().any(|entry| entry == default) {
+                return Ok(default.to_string());
+            }
+        }
+
+        models.sort();
+        Ok(models
+            .first()
+            .expect("models vector is non-empty due to earlier check")
+            .clone())
+    }
+
+    /// Handle model and provider listing commands
+    pub fn handle_list_commands(&self) -> anyhow::Result<bool> {
+        if self.list_models || self.list_providers {
+            let config = ConfigurationSystem::load()?;
+
+            if self.list_models {
+                println!("Available models:");
+                let mut models: Vec<_> = config.list_models();
+                models.sort();
+                for model in models {
+                    if let Ok((model_config, provider_config)) =
+                        config.get_model_with_provider(&model)
+                    {
+                        println!(
+                            "  {} (provider: {}, id: {})",
+                            model, provider_config.label, model_config.id
+                        );
+                    }
+                }
+            }
+
+            if self.list_providers {
+                println!("Available providers:");
+                let mut providers: Vec<_> = config.list_providers();
+                providers.sort();
+                for provider_id in providers {
+                    if let Some(provider) = config.get_provider(&provider_id) {
+                        println!("  {} - {}", provider_id, provider.label);
+                    }
+                }
+            }
+
+            return Ok(true); // Indicates that we handled a list command and should exit
+        }
+
+        Ok(false) // No list command was handled
+    }
+
+    /// Get the model name, with fallback to a default if none specified
+    pub fn get_model_name(&self) -> anyhow::Result<String> {
+        Self::resolve_model_name(self.model.clone())
+    }
 }
 
 #[cfg(test)]
@@ -138,14 +206,12 @@ mod tests {
 
         assert_eq!(args.path, std::path::PathBuf::from("."));
         assert_eq!(args.verbose, 0);
-        assert_eq!(args.num_ctx, 8192);
         assert!(!args.ui);
         assert!(!args.continue_task);
         assert!(!args.fast_playback);
         assert!(!args.use_diff_format);
-
-        // Check provider default
-        matches!(args.provider, LLMProviderType::Anthropic);
+        assert!(!args.list_models);
+        assert!(!args.list_providers);
 
         // Check tool syntax default
         matches!(args.tool_syntax, ToolSyntax::Native);

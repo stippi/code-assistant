@@ -1,0 +1,171 @@
+{
+  "Claude Sonnet 4.5": {
+    "provider": "anthropic-main",
+    "id": "claude-sonnet-4-5",
+    "config": {
+      "thinking_enabled": true,
+      "max_tokens": 8192
+    }
+  },
+  "Claude Sonnet 4.5 (Custom)": {
+    "provider": "anthropic-custom",
+    "id": "claude-sonnet-4-5",
+    "config": {
+      "thinking_enabled": true,
+      "max_tokens": 4096
+    }
+  },
+  "Claude Opus 4": {
+    "provider": "anthropic-main",
+    "id": "claude-opus-4",
+    "config": {
+      "thinking_enabled": true,
+      "max_tokens": 8192
+    }
+  },
+  "GPT-5": {
+    "provider": "openai-main",
+    "id": "gpt-5",
+    "config": {
+      "temperature": 0.7,
+      "max_tokens": 8192
+    }
+  },
+  "GPT-5 High Reasoning": {
+    "provider": "openai-responses",
+    "id": "gpt-5",
+    "config": {
+      "thinking_budget": 10000,
+      "temperature": 0.7,
+      "max_tokens": 8192
+    }
+  },
+  "GPT-4.1": {
+    "provider": "openai-main",
+    "id": "gpt-4.1",
+    "config": {
+      "temperature": 0.8,
+      "max_tokens": 4096
+    }
+  },
+  "o3": {
+    "provider": "openai-responses",
+    "id": "o3",
+    "config": {
+      "reasoning_effort": "low",
+      "temperature": 0.7,
+      "max_tokens": 8192
+    }
+  },
+  "o4-mini": {
+    "provider": "openai-responses",
+    "id": "o4-mini",
+    "config": {
+      "reasoning_effort": "low",
+      "temperature": 0.7,
+      "max_tokens": 4096
+    }
+  },
+  "Llama 3.3 70B": {
+    "provider": "ollama-local",
+    "id": "llama3.3:70b",
+    "config": {
+      "num_ctx": 32768,
+      "temperature": 0.8
+    }
+  },
+  "Llama 3.3 8B": {
+    "provider": "ollama-local",
+    "id": "llama3.3:8b",
+    "config": {
+      "num_ctx": 16384,
+      "temperature": 0.8
+    }
+  },
+  "CodeLlama 34B": {
+    "provider": "ollama-local",
+    "id": "codellama:34b-instruct",
+    "config": {
+      "num_ctx": 16384,
+      "temperature": 0.3
+    }
+  },
+  "Qwen 3 Coder 480B": {
+    "provider": "groq-main",
+    "id": "qwen-3-coder-480b",
+    "config": {
+      "temperature": 0.7,
+      "top_p": 0.8
+    }
+  },
+  "Moonshot Kimi K2": {
+    "provider": "groq-main",
+    "id": "moonshotai/kimi-k2-instruct",
+    "config": {
+      "temperature": 0.6
+    }
+  },
+  "Cerebras GPT OSS 120B": {
+    "provider": "cerebras-main",
+    "id": "gpt-oss-120b",
+    "config": {
+      "temperature": 0.7
+    }
+  },
+  "Mistral Devstral Medium": {
+    "provider": "mistral-main",
+    "id": "devstral-medium-2507",
+    "config": {
+      "temperature": 0.7
+    }
+  },
+  "Gemini 2.5 Pro": {
+    "provider": "vertex-main",
+    "id": "gemini-2.5-pro-preview-06-05",
+    "config": {
+      "temperature": 0.8
+    }
+  },
+  "OpenRouter Claude Sonnet": {
+    "provider": "openrouter-main",
+    "id": "anthropic/claude-sonnet-4",
+    "config": {
+      "temperature": 0.7
+    }
+  },
+  "OpenRouter GPT-4": {
+    "provider": "openrouter-main",
+    "id": "openai/gpt-4-turbo",
+    "config": {
+      "temperature": 0.7
+    }
+  },
+  "AI Core Claude (Dev)": {
+    "provider": "ai-core-dev",
+    "id": "claude-sonnet-4",
+    "config": {
+      "thinking_enabled": true
+    }
+  },
+  "AI Core GPT-4 (Dev)": {
+    "provider": "ai-core-dev",
+    "id": "gpt-4",
+    "config": {
+      "temperature": 0.7
+    }
+  },
+  "AI Core Claude (Prod)": {
+    "provider": "ai-core-prod",
+    "id": "claude-sonnet-4",
+    "config": {
+      "thinking_enabled": true
+    }
+  },
+  "AI Core GPT-4 (Prod)": {
+    "provider": "ai-core-prod",
+    "id": "gpt-4",
+    "config": {
+      "temperature": 0.7
+    }
+  }
+}

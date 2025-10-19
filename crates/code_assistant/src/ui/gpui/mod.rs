@@ -11,6 +11,7 @@ pub mod image;
 pub mod input_area;
 mod memory;
 mod messages;
+pub mod model_selector;
 pub mod parameter_renderers;
 mod path_util;
 mod root;
@@ -91,6 +92,9 @@ pub struct Gpui {
 
     // Error state management
     current_error: Arc<Mutex<Option<String>>>,
+
+    // Current model selection
+    current_model: Arc<Mutex<Option<String>>>,
 }
 
 fn init(cx: &mut App) {
@@ -280,6 +284,9 @@ impl Gpui {
 
             // Error state management
             current_error: Arc::new(Mutex::new(None)),
+
+            // Current model selection
+            current_model: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -943,6 +950,13 @@ impl Gpui {
                     message.complete_reasoning(cx);
                 });
             }
+            UiEvent::UpdateCurrentModel { model_name } => {
+                debug!("UI: UpdateCurrentModel event with model: {}", model_name);
+                // Store the current model
+                *self.current_model.lock().unwrap() = Some(model_name);
+                // Refresh UI to update the model selector
+                cx.refresh().expect("Failed to refresh windows");
+            }
         }
     }
 
@@ -1060,6 +1074,10 @@ impl Gpui {
 
     pub fn get_current_error(&self) -> Option<String> {
         self.current_error.lock().unwrap().clone()
+    }
+
+    pub fn get_current_model(&self) -> Option<String> {
+        self.current_model.lock().unwrap().clone()
     }
 
     // Extended draft management methods with attachments
@@ -1226,6 +1244,26 @@ impl Gpui {
                     if current_session_id == &session_id {
                         self.push_event(UiEvent::UpdatePendingMessage { message });
                     }
+                }
+            }
+            BackendResponse::ModelSwitched {
+                session_id,
+                model_name,
+            } => {
+                let current_session_id = self.current_session_id.lock().unwrap().clone();
+                if current_session_id.as_deref() == Some(session_id.as_str()) {
+                    debug!(
+                        "Received BackendResponse::ModelSwitched for active session {}: {}",
+                        session_id, model_name
+                    );
+                    self.push_event(UiEvent::UpdateCurrentModel {
+                        model_name: model_name.clone(),
+                    });
+                } else {
+                    debug!(
+                        "Ignoring BackendResponse::ModelSwitched for session {} (current: {:?})",
+                        session_id, current_session_id
+                    );
                 }
             }
         }

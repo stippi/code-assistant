@@ -1,5 +1,5 @@
 use crate::agent::ToolExecution;
-use crate::persistence::LlmSessionConfig;
+use crate::persistence::SessionModelConfig;
 use crate::types::ToolSyntax;
 use llm::Message;
 use serde::{Deserialize, Serialize};
@@ -50,5 +50,5 @@ pub struct SessionState {
     pub working_memory: crate::types::WorkingMemory,
     pub config: SessionConfig,
     pub next_request_id: Option<u64>,
-    pub llm_config: Option<LlmSessionConfig>,
+    pub model_config: Option<SessionModelConfig>,
 }

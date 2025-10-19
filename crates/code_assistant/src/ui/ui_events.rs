@@ -110,4 +110,6 @@ pub enum UiEvent {
     AppendReasoningSummaryDelta { delta: String },
     /// Complete reasoning block
     CompleteReasoning,
+    /// Update the current model selection in the UI
+    UpdateCurrentModel { model_name: String },
 }

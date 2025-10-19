@@ -1,8 +1,10 @@
 use crate::config::DefaultProjectManager;
-use crate::persistence::{ChatMetadata, DraftAttachment, LlmSessionConfig};
+use crate::persistence::{ChatMetadata, DraftAttachment, SessionModelConfig};
+use crate::session::SessionManager;
 use crate::ui::UserInterface;
 use crate::utils::{content::content_blocks_from, DefaultCommandExecutor};
-use llm::factory::{create_llm_client, LLMClientConfig};
+use llm::factory::create_llm_client_from_model;
+
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace};
@@ -36,6 +38,12 @@ pub enum BackendEvent {
     RequestPendingMessageEdit {
         session_id: String,
     },
+
+    // Model management
+    SwitchModel {
+        session_id: String,
+        model_name: String,
+    },
 }
 
 // Response from backend to UI
@@ -63,13 +71,16 @@ pub enum BackendResponse {
         session_id: String,
         message: Option<String>,
     },
+    ModelSwitched {
+        session_id: String,
+        model_name: String,
+    },
 }
 
 pub async fn handle_backend_events(
     backend_event_rx: async_channel::Receiver<BackendEvent>,
     backend_response_tx: async_channel::Sender<BackendResponse>,
-    multi_session_manager: Arc<Mutex<crate::session::SessionManager>>,
-    cfg: Arc<LLMClientConfig>,
+    multi_session_manager: Arc<Mutex<SessionManager>>,
     ui: Arc<dyn UserInterface>,
 ) {
     debug!("Backend event handler started");
@@ -102,7 +113,6 @@ pub async fn handle_backend_events(
                     &session_id,
                     &message,
                     &attachments,
-                    &cfg,
                     &ui,
                 )
                 .await
@@ -125,6 +135,11 @@ pub async fn handle_backend_events(
             BackendEvent::RequestPendingMessageEdit { session_id } => {
                 Some(handle_request_pending_message_edit(&multi_session_manager, &session_id).await)
             }
+
+            BackendEvent::SwitchModel {
+                session_id,
+                model_name,
+            } => Some(handle_switch_model(&multi_session_manager, &session_id, &model_name).await),
         };
 
         // Send response back to UI only if there is one
@@ -140,7 +155,7 @@ pub async fn handle_backend_events(
 }
 
 async fn handle_list_sessions(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
 ) -> BackendResponse {
     let sessions = {
         let manager = multi_session_manager.lock().await;
@@ -161,7 +176,7 @@ async fn handle_list_sessions(
 }
 
 async fn handle_create_session(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     name: Option<String>,
 ) -> BackendResponse {
     let create_result = {
@@ -184,7 +199,7 @@ async fn handle_create_session(
 }
 
 async fn handle_load_session(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     session_id: &str,
     ui: &Arc<dyn UserInterface>,
 ) -> Option<BackendResponse> {
@@ -218,7 +233,7 @@ async fn handle_load_session(
 }
 
 async fn handle_delete_session(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     session_id: &str,
 ) -> BackendResponse {
     debug!("DeleteSession requested: {}", session_id);
@@ -245,11 +260,10 @@ async fn handle_delete_session(
 }
 
 async fn handle_send_user_message(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     session_id: &str,
     message: &str,
     attachments: &[DraftAttachment],
-    cfg: &Arc<LLMClientConfig>,
     ui: &Arc<dyn UserInterface>,
 ) -> Option<BackendResponse> {
     debug!(
@@ -279,31 +293,35 @@ async fn handle_send_user_message(
         let command_executor = Box::new(DefaultCommandExecutor);
         let user_interface = ui.clone();
 
-        // Check if session has stored LLM config, otherwise use global config
+        // Check if session has stored model config, otherwise use global config
         let session_config = {
             let manager = multi_session_manager.lock().await;
-            manager.get_session_llm_config(session_id).unwrap_or(None)
+            manager.get_session_model_config(session_id).unwrap_or(None)
         };
 
-        let effective_config = session_config
-            .as_ref()
-            .map(llm_client_config_from_session_config)
-            .unwrap_or_else(|| cfg.as_ref().clone());
-
-        let session_llm_config = session_config
-            .clone()
-            .or_else(|| Some(session_config_from_client(&effective_config)));
-
-        let llm_client = create_llm_client(effective_config).await;
+        // Use model-based configuration system
+        let llm_client = if let Some(ref session_config) = session_config {
+            // Use session's stored model
+            create_llm_client_from_model(
+                &session_config.model_name,
+                session_config.record_path.clone(),
+                false,
+            )
+            .await
+        } else {
+            // No session config - this should not happen in the new system
+            return Some(BackendResponse::Error {
+                message: "Session has no model configuration. Please ensure all sessions are created with a model.".to_string(),
+            });
+        };
 
         match llm_client {
             Ok(client) => {
                 let mut manager = multi_session_manager.lock().await;
-                if let Err(e) =
-                    manager.set_session_llm_config(session_id, session_llm_config.clone())
+                if let Err(e) = manager.set_session_model_config(session_id, session_config.clone())
                 {
                     error!(
-                        "Failed to persist LLM config for session {}: {}",
+                        "Failed to persist model config for session {}: {}",
                         session_id, e
                     );
                     Err(e)
@@ -343,7 +361,7 @@ async fn handle_send_user_message(
 }
 
 async fn handle_queue_user_message(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     session_id: &str,
     message: &str,
     attachments: &[DraftAttachment],
@@ -388,7 +406,7 @@ async fn handle_queue_user_message(
 }
 
 async fn handle_request_pending_message_edit(
-    multi_session_manager: &Arc<Mutex<crate::session::SessionManager>>,
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
     session_id: &str,
 ) -> BackendResponse {
     debug!("Request pending message edit for session {}", session_id);
@@ -425,26 +443,43 @@ async fn handle_request_pending_message_edit(
     }
 }
 
-fn llm_client_config_from_session_config(config: &LlmSessionConfig) -> LLMClientConfig {
-    LLMClientConfig {
-        provider: config.provider.clone(),
-        model: config.model.clone(),
-        base_url: config.base_url.clone(),
-        aicore_config: config.aicore_config.clone(),
-        num_ctx: config.num_ctx,
-        record_path: config.record_path.clone(),
-        playback_path: None,
-        fast_playback: false,
-    }
-}
+async fn handle_switch_model(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+    model_name: &str,
+) -> BackendResponse {
+    debug!(
+        "Switching model for session {} to {}",
+        session_id, model_name
+    );
 
-fn session_config_from_client(config: &LLMClientConfig) -> LlmSessionConfig {
-    LlmSessionConfig {
-        provider: config.provider.clone(),
-        model: config.model.clone(),
-        base_url: config.base_url.clone(),
-        aicore_config: config.aicore_config.clone(),
-        num_ctx: config.num_ctx,
-        record_path: config.record_path.clone(),
+    // Create new session model config
+    let new_model_config = SessionModelConfig {
+        model_name: model_name.to_string(),
+        record_path: None, // Keep existing recording path if any
+    };
+
+    let result = {
+        let mut manager = multi_session_manager.lock().await;
+        manager.set_session_model_config(session_id, Some(new_model_config))
+    };
+
+    match result {
+        Ok(()) => {
+            info!(
+                "Successfully switched model for session {} to {}",
+                session_id, model_name
+            );
+            BackendResponse::ModelSwitched {
+                session_id: session_id.to_string(),
+                model_name: model_name.to_string(),
+            }
+        }
+        Err(e) => {
+            error!("Failed to switch model for session {}: {}", session_id, e);
+            BackendResponse::Error {
+                message: format!("Failed to switch model: {e}"),
+            }
+        }
     }
 }

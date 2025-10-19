@@ -11,9 +11,12 @@ use crate::ui::terminal::{
 };
 use crate::ui::UserInterface;
 use anyhow::Result;
-use llm::factory::LLMClientConfig;
+
 use ratatui::crossterm::event::{self, Event};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -22,12 +25,23 @@ async fn event_loop(
     mut input_manager: InputManager,
     renderer: Arc<Mutex<ProductionTerminalRenderer>>,
     app_state: Arc<Mutex<AppState>>,
+    cancel_flag: Arc<AtomicBool>,
     backend_event_tx: async_channel::Sender<BackendEvent>,
 ) -> Result<()> {
     loop {
-        // Render the UI
+        // Sync state and render the UI
         {
             let mut renderer_guard = renderer.lock().await;
+            let state = app_state.lock().await;
+
+            // Sync info message from state to renderer
+            if let Some(ref info_msg) = state.info_message {
+                renderer_guard.set_info(info_msg.clone());
+            } else {
+                renderer_guard.clear_info();
+            }
+
+            drop(state); // Release the lock before rendering
             renderer_guard.render(&input_manager.textarea)?;
         }
 
@@ -48,26 +62,49 @@ async fn event_loop(
                                 renderer_guard.has_error()
                             };
 
+                            let has_info = {
+                                let state = app_state.lock().await;
+                                state.info_message.is_some()
+                            };
+
                             if has_error {
                                 // Clear the error
                                 let mut renderer_guard = renderer.lock().await;
                                 renderer_guard.clear_error();
+                            } else if has_info {
+                                // Clear the info message
+                                let mut state = app_state.lock().await;
+                                state.set_info_message(None);
                             } else {
-                                // Check if agent is running and cancel it
-                                let activity_state = {
+                                // Capture current activity/session in one lock to reduce lag
+                                let (activity_state, current_session_id) = {
                                     let state = app_state.lock().await;
-                                    state.activity_state.clone()
+                                    (
+                                        state.activity_state.clone(),
+                                        state.current_session_id.clone(),
+                                    )
                                 };
 
-                                if let Some(state) = activity_state {
-                                    if !matches!(
-                                        state,
-                                        crate::session::instance::SessionActivityState::Idle
+                                if let Some(session_id) = current_session_id {
+                                    cancel_flag.store(true, Ordering::SeqCst);
+                                    debug!(
+                                        "Escape pressed - cancellation flag set for session {} (state: {:?})",
+                                        session_id, activity_state
+                                    );
+
+                                    let mut state = app_state.lock().await;
+                                    if matches!(
+                                        activity_state,
+                                        Some(crate::session::instance::SessionActivityState::Idle)
                                     ) {
-                                        // Agent is running, send cancel request
-                                        // This would need to be implemented similar to GPUI's cancel mechanism
-                                        debug!("Escape pressed - would cancel running agent");
-                                        // TODO: Implement agent cancellation for terminal UI
+                                        state.set_info_message(Some(
+                                            "No agent is currently running.".to_string(),
+                                        ));
+                                    } else {
+                                        state.set_info_message(Some(
+                                            "Cancellation requested...".to_string(),
+                                        ));
+                                        debug!("Cancellation requested for session {}", session_id);
                                     }
                                 }
                             }
@@ -86,11 +123,14 @@ async fn event_loop(
 
                                 let event = match activity_state {
                                     Some(crate::session::instance::SessionActivityState::Idle)
-                                    | None => BackendEvent::SendUserMessage {
-                                        session_id,
-                                        message,
-                                        attachments: Vec::new(),
-                                    },
+                                    | None => {
+                                        cancel_flag.store(false, Ordering::SeqCst);
+                                        BackendEvent::SendUserMessage {
+                                            session_id,
+                                            message,
+                                            attachments: Vec::new(),
+                                        }
+                                    }
                                     _ => BackendEvent::QueueUserMessage {
                                         session_id,
                                         message,
@@ -103,6 +143,53 @@ async fn event_loop(
                         }
                         KeyEventResult::Continue => {
                             // Do nothing, just continue the loop
+                        }
+                        KeyEventResult::ShowInfo(info_text) => {
+                            // Display info message in the UI
+                            let mut state = app_state.lock().await;
+                            state.set_info_message(Some(info_text));
+                        }
+                        KeyEventResult::SwitchModel(model_name) => {
+                            // Handle model switching
+                            let current_session_id = {
+                                let state = app_state.lock().await;
+                                state.current_session_id.clone()
+                            };
+
+                            if let Some(session_id) = current_session_id {
+                                let event = BackendEvent::SwitchModel {
+                                    session_id,
+                                    model_name: model_name.clone(),
+                                };
+
+                                let _ = backend_event_tx.send(event).await;
+
+                                // Update state
+                                let mut state = app_state.lock().await;
+                                state.update_current_model(Some(model_name.clone()));
+                                state.set_info_message(Some(format!(
+                                    "Switched to model: {model_name}",
+                                )));
+                            } else {
+                                let mut state = app_state.lock().await;
+                                state.set_info_message(Some(
+                                    "No active session to switch model".to_string(),
+                                ));
+                            }
+                        }
+                        KeyEventResult::ShowCurrentModel => {
+                            let current_model = {
+                                let state = app_state.lock().await;
+                                state.current_model.clone()
+                            };
+
+                            let message = match current_model {
+                                Some(model) => format!("Current model: {model}"),
+                                None => "No model selected".to_string(),
+                            };
+
+                            let mut state = app_state.lock().await;
+                            state.set_info_message(Some(message));
                         }
                     }
                 }
@@ -153,7 +240,11 @@ impl TerminalTuiApp {
         };
 
         // Create session manager
-        let session_manager = SessionManager::new(session_persistence, session_config_template);
+        let session_manager = SessionManager::new(
+            session_persistence,
+            session_config_template,
+            config.model.clone(),
+        );
         let multi_session_manager = Arc::new(Mutex::new(session_manager));
 
         // Create terminal UI and wrap as UserInterface
@@ -169,22 +260,9 @@ impl TerminalTuiApp {
         let (backend_response_tx, backend_response_rx) =
             async_channel::unbounded::<BackendResponse>();
 
-        // Create LLM client config
-        let llm_config = Arc::new(LLMClientConfig {
-            provider: config.provider.clone(),
-            model: config.model.clone(),
-            base_url: config.base_url.clone(),
-            aicore_config: config.aicore_config.clone(),
-            num_ctx: config.num_ctx,
-            record_path: config.record.clone(),
-            playback_path: config.playback.clone(),
-            fast_playback: config.fast_playback,
-        });
-
         // Spawn backend handler
         let backend_task = {
             let multi_session_manager = multi_session_manager.clone();
-            let llm_config = llm_config.clone();
             let ui = ui.clone();
 
             tokio::spawn(async move {
@@ -192,7 +270,6 @@ impl TerminalTuiApp {
                     backend_event_rx,
                     backend_response_tx,
                     multi_session_manager,
-                    llm_config,
                     ui,
                 )
                 .await;
@@ -276,6 +353,7 @@ impl TerminalTuiApp {
         // Spawn a background task to translate backend responses into UiEvents
         {
             let ui_clone = ui.clone();
+            let app_state_clone = self.app_state.clone();
             tokio::spawn(async move {
                 while let Ok(resp) = backend_response_rx.recv().await {
                     match resp {
@@ -311,6 +389,17 @@ impl TerminalTuiApp {
                         }
                         BackendResponse::SessionCreated { .. } => {}
                         BackendResponse::SessionDeleted { .. } => {}
+                        BackendResponse::ModelSwitched {
+                            session_id: _,
+                            model_name,
+                        } => {
+                            // Update current model in app state
+                            let mut state = app_state_clone.lock().await;
+                            state.update_current_model(Some(model_name.clone()));
+                            state.set_info_message(Some(format!(
+                                "Switched to model: {model_name}",
+                            )));
+                        }
                     }
                 }
             });
@@ -355,6 +444,7 @@ impl TerminalTuiApp {
                 "Welcome to Code Assistant Terminal UI!\n\
                 Type your message and press Enter to send.\n\
                 Use Shift+Enter for multi-line input.\n\
+                Press Esc to stop the current response.\n\
                 Press Ctrl+C to quit.\n\
                 \n\
                 Debug logs are written to: {}\n\n",
@@ -377,6 +467,7 @@ impl TerminalTuiApp {
             input_manager,
             renderer.clone(),
             self.app_state.clone(),
+            terminal_ui.cancel_flag.clone(),
             backend_event_tx,
         ));
 

@@ -24,16 +24,17 @@ use anyhow::Result;
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    // Handle list commands first
+    if args.handle_list_commands()? {
+        return Ok(());
+    }
+
     match args.mode {
         Some(Mode::Server { verbose }) => app::server::run(verbose).await,
         Some(Mode::Acp {
             verbose,
             path,
-            provider,
             model,
-            base_url,
-            aicore_config,
-            num_ctx,
             tool_syntax,
             use_diff_format,
         }) => {
@@ -42,15 +43,13 @@ async fn main() -> Result<()> {
                 anyhow::bail!("Path '{}' is not a directory", path.display());
             }
 
+            let model_name = Args::resolve_model_name(model)?;
+
             let config = app::AgentRunConfig {
                 path,
                 task: None,
                 continue_task: false,
-                provider,
-                model,
-                base_url,
-                aicore_config,
-                num_ctx,
+                model: model_name.clone(),
                 tool_syntax,
                 use_diff_format,
                 record: None,
@@ -74,15 +73,13 @@ async fn main() -> Result<()> {
                 anyhow::bail!("Path '{}' is not a directory", args.path.display());
             }
 
+            let model_name = args.get_model_name()?;
+
             let config = app::AgentRunConfig {
                 path: args.path,
                 task: args.task,
                 continue_task: args.continue_task,
-                provider: args.provider,
-                model: args.model,
-                base_url: args.base_url,
-                aicore_config: args.aicore_config,
-                num_ctx: args.num_ctx,
+                model: model_name,
                 tool_syntax: args.tool_syntax,
                 use_diff_format: args.use_diff_format,
                 record: args.record,

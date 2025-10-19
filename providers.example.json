@@ -1,0 +1,125 @@
+{
+  "anthropic-main": {
+    "label": "Anthropic Claude (Main)",
+    "provider": "anthropic",
+    "config": {
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "base_url": "https://api.anthropic.com/v1"
+    }
+  },
+  "anthropic-custom": {
+    "label": "Anthropic Claude (Custom Endpoint)",
+    "provider": "anthropic",
+    "config": {
+      "api_key": "${ANTHROPIC_CUSTOM_KEY}",
+      "base_url": "https://custom.anthropic.endpoint/v1"
+    }
+  },
+  "openai-main": {
+    "label": "OpenAI GPT",
+    "provider": "openai",
+    "config": {
+      "api_key": "${OPENAI_API_KEY}",
+      "base_url": "https://api.openai.com/v1"
+    }
+  },
+  "openai-responses": {
+    "label": "OpenAI with Reasoning",
+    "provider": "openai-responses",
+    "config": {
+      "api_key": "${OPENAI_API_KEY}",
+      "base_url": "https://api.openai.com/v1"
+    }
+  },
+  "openai-custom": {
+    "label": "OpenAI (Custom Endpoint)",
+    "provider": "openai",
+    "config": {
+      "api_key": "${OPENAI_CUSTOM_KEY}",
+      "base_url": "https://custom.openai.endpoint/v1"
+    }
+  },
+  "cerebras-main": {
+    "label": "Cerebras Inference",
+    "provider": "cerebras",
+    "config": {
+      "api_key": "${CEREBRAS_API_KEY}",
+      "base_url": "https://api.cerebras.ai/v1"
+    }
+  },
+  "groq-main": {
+    "label": "Groq Fast Inference",
+    "provider": "groq",
+    "config": {
+      "api_key": "${GROQ_API_KEY}",
+      "base_url": "https://api.groq.com/openai/v1"
+    }
+  },
+  "mistral-main": {
+    "label": "Mistral AI",
+    "provider": "mistral-ai",
+    "config": {
+      "api_key": "${MISTRALAI_API_KEY}",
+      "base_url": "https://api.mistral.ai/v1"
+    }
+  },
+  "vertex-main": {
+    "label": "Google Vertex AI",
+    "provider": "vertex",
+    "config": {
+      "api_key": "${GOOGLE_API_KEY}",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta"
+    }
+  },
+  "openrouter-main": {
+    "label": "OpenRouter",
+    "provider": "openrouter",
+    "config": {
+      "api_key": "${OPENROUTER_API_KEY}",
+      "base_url": "https://openrouter.ai/api/v1"
+    }
+  },
+  "ollama-local": {
+    "label": "Ollama (Local)",
+    "provider": "ollama",
+    "config": {
+      "base_url": "http://localhost:11434"
+    }
+  },
+  "ollama-remote": {
+    "label": "Ollama (Remote Server)",
+    "provider": "ollama",
+    "config": {
+      "base_url": "http://your-ollama-server:11434"
+    }
+  },
+  "ai-core-dev": {
+    "label": "SAP AI Core (Development)",
+    "provider": "ai-core",
+    "config": {
+      "client_id": "${AI_CORE_CLIENT_ID}",
+      "client_secret": "${AI_CORE_CLIENT_SECRET}",
+      "token_url": "https://your-dev-instance.authentication.sap.hana.ondemand.com/oauth/token",
+      "api_base_url": "https://api.ai.dev.your-region.aws.ml.hana.ondemand.com/v2/inference",
+      "models": {
+        "claude-sonnet-4": "your-claude-deployment-uuid",
+        "gpt-4": "your-gpt4-deployment-uuid",
+        "gemini-pro": "your-gemini-deployment-uuid"
+      }
+    }
+  },
+  "ai-core-prod": {
+    "label": "SAP AI Core (Production)",
+    "provider": "ai-core",
+    "config": {
+      "client_id": "${AI_CORE_PROD_CLIENT_ID}",
+      "client_secret": "${AI_CORE_PROD_CLIENT_SECRET}",
+      "token_url": "https://your-prod-instance.authentication.sap.hana.ondemand.com/oauth/token",
+      "api_base_url": "https://api.ai.your-region.aws.ml.hana.ondemand.com/v2/inference",
+      "models": {
+        "claude-sonnet-4": "your-prod-claude-deployment-uuid",
+        "gpt-4": "your-prod-gpt4-deployment-uuid"
+      }
+    }
+  }
+}

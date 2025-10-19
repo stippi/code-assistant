@@ -142,7 +142,7 @@ impl AgentStatePersistence for FileStatePersistence {
             working_memory,
             config,
             next_request_id,
-            llm_config,
+            model_config,
         } = state;
 
         let serialized_executions: Result<Vec<SerializedToolExecution>> =
@@ -151,7 +151,7 @@ impl AgentStatePersistence for FileStatePersistence {
         let serialized_executions = serialized_executions?;
 
         // Create a ChatSession with the current state
-        let mut session = ChatSession::new_empty(session_id, name, config, llm_config);
+        let mut session = ChatSession::new_empty(session_id, name, config, model_config);
         session.messages = messages;
         session.tool_executions = serialized_executions;
         session.working_memory = working_memory;

@@ -186,6 +186,23 @@ impl RootView {
                     }
                 }
             }
+            InputAreaEvent::ModelChanged { model_name } => {
+                debug!("Model selection changed to: {}", model_name);
+
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::SwitchModel {
+                            session_id: session_id.clone(),
+                            model_name: model_name.clone(),
+                        });
+                    } else {
+                        error!("Failed to lock backend event sender");
+                    }
+                }
+            }
         }
     }
 
@@ -553,15 +570,16 @@ impl Focusable for RootView {
 impl Render for RootView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Get current chat state from global Gpui
-        let (chat_sessions, current_session_id, current_activity_state) =
+        let (chat_sessions, current_session_id, current_activity_state, current_model) =
             if let Some(gpui) = cx.try_global::<Gpui>() {
                 (
                     gpui.get_chat_sessions(),
                     gpui.get_current_session_id(),
                     gpui.current_session_activity_state.lock().unwrap().clone(),
+                    gpui.get_current_model(),
                 )
             } else {
-                (Vec::new(), None, None)
+                (Vec::new(), None, None, None)
             };
 
         // Update chat sidebar if needed
@@ -584,6 +602,19 @@ impl Render for RootView {
                     cx,
                 );
             }
+        }
+
+        // Ensure InputArea stays in sync with the current model
+        let selected_model = self.input_area.read(cx).current_model();
+        if selected_model != current_model {
+            debug!(
+                "Current model changed from {:?} to {:?}",
+                selected_model, current_model
+            );
+            let model_to_set = current_model.clone();
+            self.input_area.update(cx, |input_area, cx| {
+                input_area.set_current_model(model_to_set, window, cx);
+            });
         }
 
         // Update InputArea with current agent state
@@ -754,8 +785,15 @@ impl Render for RootView {
                             )
                             // Status popover - positioned at bottom center
                             .children(self.render_status_popover(cx))
-                            // Input area at the bottom - now using the InputArea component
-                            .child(self.input_area.clone()),
+                            // Input area sits at the bottom
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .bg(cx.theme().background)
+                                    .border_t_1()
+                                    .border_color(cx.theme().border)
+                                    .child(self.input_area.clone()),
+                            ),
                     )
                     // Right sidebar with memory view - only show if not collapsed
                     .when(!self.memory_collapsed, |s| {

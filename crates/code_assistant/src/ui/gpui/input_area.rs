@@ -1,5 +1,6 @@
 use super::attachment::{AttachmentEvent, AttachmentView};
 use super::file_icons;
+use super::model_selector::{ModelSelector, ModelSelectorEvent};
 use crate::persistence::DraftAttachment;
 use base64::Engine;
 use gpui::{
@@ -28,11 +29,15 @@ pub enum InputAreaEvent {
     CancelRequested,
     /// Clear draft requested (before clearing input)
     ClearDraftRequested,
+    /// Model selection changed
+    ModelChanged { model_name: String },
 }
 
 /// Self-contained input area component that handles text input and attachments
 pub struct InputArea {
     text_input: Entity<InputState>,
+    model_selector: Entity<ModelSelector>,
+    current_model: Option<String>,
     attachments: Vec<DraftAttachment>,
     attachment_views: Vec<Entity<AttachmentView>>,
     focus_handle: FocusHandle,
@@ -42,6 +47,7 @@ pub struct InputArea {
     cancel_enabled: bool,
     // Subscriptions
     _input_subscription: Subscription,
+    _model_selector_subscription: Subscription,
 }
 
 impl InputArea {
@@ -57,8 +63,17 @@ impl InputArea {
         // Subscribe to text input events
         let input_subscription = cx.subscribe_in(&text_input, window, Self::on_input_event);
 
+        // Create the model selector
+        let model_selector = cx.new(|cx| ModelSelector::new(window, cx));
+
+        // Subscribe to model selector events
+        let model_selector_subscription =
+            cx.subscribe_in(&model_selector, window, Self::on_model_selector_event);
+
         Self {
             text_input,
+            model_selector,
+            current_model: None,
             attachments: Vec::new(),
             attachment_views: Vec::new(),
             focus_handle: cx.focus_handle(),
@@ -66,6 +81,7 @@ impl InputArea {
             agent_is_running: false,
             cancel_enabled: false,
             _input_subscription: input_subscription,
+            _model_selector_subscription: model_selector_subscription,
         }
     }
 
@@ -85,6 +101,31 @@ impl InputArea {
         // Update attachments
         self.attachments = attachments;
         self.rebuild_attachment_views(cx);
+    }
+
+    /// Sync the dropdown with the current model selection
+    pub fn set_current_model(
+        &mut self,
+        model_name: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.current_model = model_name.clone();
+        self.model_selector.update(cx, |selector, cx| {
+            selector.set_current_model(model_name, window, cx)
+        });
+    }
+
+    /// Read the currently selected model name
+    pub fn current_model(&self) -> Option<String> {
+        self.current_model.clone()
+    }
+
+    /// Ensure the model list stays up to date
+    #[allow(dead_code)]
+    pub fn refresh_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.model_selector
+            .update(cx, |selector, cx| selector.refresh_models(window, cx));
     }
 
     /// Clear the input content
@@ -225,6 +266,24 @@ impl InputArea {
         }
     }
 
+    /// Handle model selector events
+    fn on_model_selector_event(
+        &mut self,
+        _model_selector: &Entity<ModelSelector>,
+        event: &ModelSelectorEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ModelSelectorEvent::ModelChanged { model_name } => {
+                self.current_model = Some(model_name.clone());
+                cx.emit(InputAreaEvent::ModelChanged {
+                    model_name: model_name.clone(),
+                });
+            }
+        }
+    }
+
     /// Handle submit button click
     fn on_submit_click(&mut self, _: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
         let content = self.text_input.read(cx).value().to_string();
@@ -262,12 +321,9 @@ impl InputArea {
         div()
             .id("input-area")
             .flex_none() // Important: don't grow or shrink
-            .bg(cx.theme().popover)
-            .border_t_1()
-            .border_color(cx.theme().border)
             .flex()
             .flex_col() // Column to accommodate attachments area
-            .gap_2()
+            .gap_0()
             // Attachments area - show image previews when available
             .when(!self.attachments.is_empty(), |parent| {
                 parent.child(
@@ -294,6 +350,7 @@ impl InputArea {
                     .child({
                         div()
                             .flex_1()
+                            .bg(cx.theme().popover)
                             .border(if is_focused { px(2.) } else { px(1.) })
                             .p(if is_focused { px(0.) } else { px(1.) })
                             .border_color(if is_focused {
@@ -373,6 +430,14 @@ impl InputArea {
 
                         buttons
                     }),
+            )
+            // Model selector row
+            .child(
+                div()
+                    .flex()
+                    .px_2()
+                    .pb_2()
+                    .child(self.model_selector.clone()),
             )
     }
 }

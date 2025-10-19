@@ -1,6 +1,9 @@
 use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
 use std::any::Any;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::sync::{watch, Mutex};
 use tracing::{debug, trace, warn};
 
@@ -11,7 +14,7 @@ use super::state::AppState;
 pub struct TerminalTuiUI {
     app_state: Arc<Mutex<AppState>>,
     redraw_tx: Arc<Mutex<Option<watch::Sender<()>>>>,
-    pub cancel_flag: Arc<Mutex<bool>>,
+    pub cancel_flag: Arc<AtomicBool>,
     pub renderer: Arc<Mutex<Option<Arc<Mutex<ProductionTerminalRenderer>>>>>,
     event_sender: Arc<Mutex<Option<async_channel::Sender<UiEvent>>>>,
 }
@@ -21,7 +24,7 @@ impl TerminalTuiUI {
         Self {
             app_state: Arc::new(Mutex::new(AppState::new())),
             redraw_tx: Arc::new(Mutex::new(None)),
-            cancel_flag: Arc::new(Mutex::new(false)),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
             renderer: Arc::new(Mutex::new(None)),
             event_sender: Arc::new(Mutex::new(None)),
         }
@@ -111,9 +114,16 @@ impl UserInterface for TerminalTuiUI {
                     session_id, activity_state
                 );
                 state.update_session_activity_state(session_id.clone(), activity_state.clone());
+                let is_idle = matches!(
+                    &activity_state,
+                    crate::session::instance::SessionActivityState::Idle
+                );
                 if let Some(current_session_id) = &state.current_session_id {
                     if current_session_id == &session_id {
                         state.update_activity_state(Some(activity_state));
+                        if is_idle {
+                            self.cancel_flag.store(false, Ordering::SeqCst);
+                        }
                     }
                 }
             }
@@ -186,6 +196,7 @@ impl UserInterface for TerminalTuiUI {
             }
             UiEvent::StreamingStarted(request_id) => {
                 debug!("Streaming started for request {}", request_id);
+                self.cancel_flag.store(false, Ordering::SeqCst);
                 // Start a new message - this will finalize any existing live message
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
@@ -255,6 +266,8 @@ impl UserInterface for TerminalTuiUI {
                     "Streaming stopped (id: {}, cancelled: {}, error: {:?})",
                     id, cancelled, error
                 );
+
+                self.cancel_flag.store(false, Ordering::SeqCst);
 
                 // Don't finalize the message yet - keep it live for tool status updates
                 // It will be finalized when the next StreamingStarted event arrives
@@ -404,12 +417,7 @@ impl UserInterface for TerminalTuiUI {
     }
 
     fn should_streaming_continue(&self) -> bool {
-        // Check cancel flag
-        if let Ok(cancel_flag) = self.cancel_flag.try_lock() {
-            !*cancel_flag
-        } else {
-            true // If we can't get the lock, assume we should continue
-        }
+        !self.cancel_flag.load(Ordering::SeqCst)
     }
 
     fn notify_rate_limit(&self, seconds_remaining: u64) {

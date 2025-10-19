@@ -8,10 +8,11 @@ use tokio::sync::Mutex;
 use crate::agent::{Agent, AgentComponents};
 use crate::config::ProjectManager;
 use crate::persistence::{
-    generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, LlmSessionConfig,
+    generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig,
 };
 use crate::session::instance::SessionInstance;
 use crate::session::{SessionConfig, SessionState};
+use crate::ui::ui_events::UiEvent;
 use crate::ui::UserInterface;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
@@ -31,6 +32,9 @@ pub struct SessionManager {
 
     /// Template configuration applied to each new session
     session_config_template: SessionConfig,
+
+    /// Default model name to use when creating sessions
+    default_model_name: String,
 }
 
 impl SessionManager {
@@ -38,26 +42,38 @@ impl SessionManager {
     pub fn new(
         persistence: FileSessionPersistence,
         session_config_template: SessionConfig,
+        default_model_name: String,
     ) -> Self {
         Self {
             persistence,
             active_sessions: HashMap::new(),
             active_session_id: None,
             session_config_template,
+            default_model_name,
         }
     }
 
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
-        self.create_session_with_config(name, None, None)
+        // Always create sessions with a default model config
+        let default_model_config = self.default_model_config();
+        self.create_session_with_config(name, None, Some(default_model_config))
     }
 
-    /// Create a new session with optional LLM config and return its ID
+    /// Get the default model configuration
+    fn default_model_config(&self) -> SessionModelConfig {
+        SessionModelConfig {
+            model_name: self.default_model_name.clone(),
+            record_path: None,
+        }
+    }
+
+    /// Create a new session with optional model config and return its ID
     pub fn create_session_with_config(
         &mut self,
         name: Option<String>,
         session_config_override: Option<SessionConfig>,
-        llm_config: Option<LlmSessionConfig>,
+        model_config: Option<SessionModelConfig>,
     ) -> Result<String> {
         let session_id = generate_session_id();
         let session_name = name.unwrap_or_default(); // Empty string if no name provided
@@ -66,7 +82,7 @@ impl SessionManager {
             session_id.clone(),
             session_name,
             session_config_override.unwrap_or_else(|| self.session_config_template.clone()),
-            llm_config,
+            model_config,
         );
 
         // Save to persistence
@@ -123,19 +139,62 @@ impl SessionManager {
             self.load_session(&session_id)?;
         }
 
-        // Activate new session and generate UI events
-        let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-        session_instance.set_ui_connected(true);
+        // Ensure the session has a model configuration and capture it for UI update
+        let mut needs_persist = false;
+        {
+            let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
+            session_instance.set_ui_connected(true);
 
-        // Reload session from persistence to get latest state
-        // This ensures we see any changes made by agents since session was loaded
-        session_instance.reload_from_persistence(&self.persistence)?;
+            // Reload session from persistence to get latest state
+            // This ensures we see any changes made by agents since session was loaded
+            session_instance.reload_from_persistence(&self.persistence)?;
+        }
+
+        let model_name_for_event = {
+            let existing_model_name = {
+                let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
+                session_instance
+                    .session
+                    .model_config
+                    .as_ref()
+                    .map(|config| config.model_name.clone())
+            };
+
+            if let Some(model_name) = existing_model_name {
+                model_name
+            } else {
+                let default_model_config = self.default_model_config();
+                let model_name = default_model_config.model_name.clone();
+                {
+                    let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
+                    session_instance.session.model_config = Some(default_model_config);
+                }
+                needs_persist = true;
+                model_name
+            }
+        };
 
         // Generate UI events for connecting to this session
-        let ui_events = session_instance.generate_session_connect_events()?;
+        let mut ui_events = {
+            let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
+            session_instance.generate_session_connect_events()?
+        };
+
+        ui_events.push(UiEvent::UpdateCurrentModel {
+            model_name: model_name_for_event.clone(),
+        });
 
         // Set as active
-        self.active_session_id = Some(session_id);
+        self.active_session_id = Some(session_id.clone());
+
+        // Persist session if we had to backfill a default model configuration
+        if needs_persist {
+            let session_snapshot = {
+                let session_instance = self.active_sessions.get(&session_id).unwrap();
+                session_instance.session.clone()
+            };
+            self.persistence.save_chat_session(&session_snapshot)?;
+        }
 
         Ok(ui_events)
     }
@@ -190,7 +249,7 @@ impl SessionManager {
                 working_memory: session_instance.session.working_memory.clone(),
                 config: session_config.clone(),
                 next_request_id: Some(session_instance.session.next_request_id),
-                llm_config: session_instance.session.llm_config.clone(),
+                model_config: session_instance.session.model_config.clone(),
             };
 
             // Set activity state
@@ -221,6 +280,7 @@ impl SessionManager {
         let session_manager_ref = Arc::new(Mutex::new(SessionManager::new(
             self.persistence.clone(),
             self.session_config_template.clone(),
+            self.default_model_name.clone(),
         )));
 
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
@@ -355,35 +415,35 @@ impl SessionManager {
         self.active_sessions.get_mut(session_id)
     }
 
-    /// Get the LLM config for a session, if any
-    pub fn get_session_llm_config(&self, session_id: &str) -> Result<Option<LlmSessionConfig>> {
+    /// Get the model config for a session, if any
+    pub fn get_session_model_config(&self, session_id: &str) -> Result<Option<SessionModelConfig>> {
         if let Some(instance) = self.active_sessions.get(session_id) {
-            Ok(instance.session.llm_config.clone())
+            Ok(instance.session.model_config.clone())
         } else {
             // Load from persistence
             match self.persistence.load_chat_session(session_id)? {
-                Some(session) => Ok(session.llm_config),
+                Some(session) => Ok(session.model_config),
                 None => Ok(None),
             }
         }
     }
 
-    /// Update the persisted LLM config for a session
-    pub fn set_session_llm_config(
+    /// Update the persisted model config for a session
+    pub fn set_session_model_config(
         &mut self,
         session_id: &str,
-        llm_config: Option<LlmSessionConfig>,
+        model_config: Option<SessionModelConfig>,
     ) -> Result<()> {
         let mut session = self
             .persistence
             .load_chat_session(session_id)?
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
 
-        session.llm_config = llm_config.clone();
+        session.model_config = model_config.clone();
         self.persistence.save_chat_session(&session)?;
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
-            instance.session.llm_config = llm_config;
+            instance.session.model_config = model_config;
         }
 
         Ok(())
@@ -417,7 +477,7 @@ impl SessionManager {
             .collect::<Result<Vec<_>>>()?;
         session.working_memory = state.working_memory;
         session.config = state.config;
-        session.llm_config = state.llm_config;
+        session.model_config = state.model_config;
         session.next_request_id = state.next_request_id.unwrap_or(0);
         session.updated_at = SystemTime::now();
 
