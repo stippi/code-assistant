@@ -38,6 +38,26 @@ cargo build --release
 
 The binary will be available at `target/release/code-assistant`.
 
+### Initial Setup
+
+After building, create your configuration files:
+
+```bash
+# Create config directory
+mkdir -p ~/.config/code-assistant
+
+# Copy example configurations
+cp providers.example.json ~/.config/code-assistant/providers.json
+cp models.example.json ~/.config/code-assistant/models.json
+
+# Edit the files to add your API keys
+# Set environment variables or update the JSON files directly
+export ANTHROPIC_API_KEY="sk-ant-..."
+export OPENAI_API_KEY="sk-..."
+```
+
+See the [Configuration](#configuration) section for detailed setup instructions.
+
 ## Project Configuration
 
 Create `~/.config/code-assistant/projects.json` to define available projects:
@@ -73,7 +93,6 @@ See [docs/format-on-save-feature.md](docs/format-on-save-feature.md) for detaile
 - The assistant has access to the current project (including temporary ones) plus all configured projects
 - Each chat session is permanently associated with its initial project and folder - this cannot be changed later
 - Tool syntax (native/xml/caret) is also fixed per session at creation time
-- The LLM provider selected at startup is used for the entire application session (UI switching planned for future releases)
 
 ## Usage
 
@@ -93,8 +112,8 @@ code-assistant --ui --task "Analyze the authentication system"
 # Basic usage
 code-assistant --task "Explain the purpose of this codebase"
 
-# With specific provider and model
-code-assistant --task "Add error handling" --provider openai --model gpt-5
+# With specific model
+code-assistant --task "Add error handling" --model "GPT-5"
 ```
 
 ### MCP Server Mode
@@ -109,16 +128,75 @@ code-assistant server
 # Run as ACP-compatible agent
 code-assistant acp
 
-# With specific provider and model
-code-assistant acp --provider openai --model gpt-5-codex
+# With specific model
+code-assistant acp --model "Claude Sonnet 4.5"
 ```
 
 The ACP mode enables integration with editors that support the [Agent Client Protocol](https://agentclientprotocol.com/), such as [Zed](https://zed.dev). When running in ACP mode, the code-assistant communicates via JSON-RPC over stdin/stdout, supporting features like pending messages, real-time streaming, and tool execution with proper permission handling.
 
 ## Configuration
 
+### Model Configuration
+
+The code-assistant uses two JSON configuration files to manage LLM providers and models:
+
+**`~/.config/code-assistant/providers.json`** - Configure provider credentials and endpoints:
+```json
+{
+  "anthropic-main": {
+    "label": "Anthropic Claude",
+    "provider": "anthropic",
+    "config": {
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "base_url": "https://api.anthropic.com/v1"
+    }
+  },
+  "openai-main": {
+    "label": "OpenAI",
+    "provider": "openai",
+    "config": {
+      "api_key": "${OPENAI_API_KEY}"
+    }
+  }
+}
+```
+
+**`~/.config/code-assistant/models.json`** - Define available models:
+```json
+{
+  "Claude Sonnet 4.5": {
+    "provider": "anthropic-main",
+    "id": "claude-sonnet-4-5",
+    "config": {
+      "thinking_enabled": true,
+      "max_tokens": 8192
+    }
+  },
+  "GPT-5": {
+    "provider": "openai-main",
+    "id": "gpt-5-codex",
+    "config": {
+      "temperature": 0.7
+    }
+  }
+}
+```
+
+**Environment Variable Substitution**: Use `${VAR_NAME}` in provider configs to reference environment variables for API keys.
+
+**Full Examples**: See [`providers.example.json`](providers.example.json) and [`models.example.json`](models.example.json) for complete configuration examples with all supported providers (Anthropic, OpenAI, Ollama, SAP AI Core, Vertex AI, Groq, Cerebras, MistralAI, OpenRouter).
+
+**List Available Models**:
+```bash
+# See all configured models
+code-assistant --list-models
+
+# See all configured providers
+code-assistant --list-providers
+```
+
 <details>
-<summary>Claude Desktop Integration</summary>
+<summary>Claude Desktop Integration (MCP)</summary>
 
 Configure in Claude Desktop settings (**Developer** tab → **Edit Config**):
 
@@ -129,52 +207,14 @@ Configure in Claude Desktop settings (**Developer** tab → **Edit Config**):
       "command": "/path/to/code-assistant/target/release/code-assistant",
       "args": ["server"],
       "env": {
-        "PERPLEXITY_API_KEY": "pplx-...", // optional, enables perplexity_ask tool
-        "SHELL": "/bin/zsh" // your login shell, required when configuring "env" here
+        "PERPLEXITY_API_KEY": "pplx-...",   // Optional, enables perplexity_ask tool
+        "SHELL": "/bin/zsh"                 // Your login shell
       }
     }
   }
 }
 ```
-</details>
 
-<details>
-<summary>LLM Providers</summary>
-
-**Anthropic** (default):
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-code-assistant --provider anthropic --model claude-sonnet-4-20250514
-```
-
-**OpenAI**:
-```bash
-export OPENAI_API_KEY="sk-..."
-code-assistant --provider openai --model gpt-4o
-```
-
-**SAP AI Core**:
-Create `~/.config/code-assistant/ai-core.json`:
-```json
-{
-  "auth": {
-    "client_id": "<service-key-client-id>",
-    "client_secret": "<service-key-client-secret>",
-    "token_url": "https://<your-url>/oauth/token",
-    "api_base_url": "https://<your-url>/v2/inference"
-  },
-  "models": {
-    "claude-sonnet-4": "<deployment-id>"
-  }
-}
-```
-
-**Ollama**:
-```bash
-code-assistant --provider ollama --model llama2 --num-ctx 4096
-```
-
-**Other providers**: Vertex AI (Google), OpenRouter, Groq, MistralAI
 </details>
 
 <details>
@@ -187,13 +227,7 @@ Configure in Zed settings:
   "agent_servers": {
     "Code-Assistant": {
       "command": "/path/to/code-assistant/target/release/code-assistant",
-      "args": [
-        "acp",
-        "--provider",
-        "anthropic",
-        "--model",
-        "claude-sonnet-4-5"
-      ],
+      "args": ["acp", "--model", "Claude Sonnet 4.5"],
       "env": {
         "ANTHROPIC_API_KEY": "sk-ant-..."
       }
@@ -202,7 +236,7 @@ Configure in Zed settings:
 }
 ```
 
-Replace the path with your actual installation location and configure your preferred provider. The agent will appear in Zed's assistant panel and support all ACP features including pending messages, real-time streaming, and interactive tool execution.
+Make sure your `providers.json` and `models.json` are configured with the model you specify. The agent will appear in Zed's assistant panel with full ACP support.
 
 For detailed setup instructions, see [Zed's documentation on adding custom agents](https://zed.dev/docs/ai/external-agents#add-custom-agents).
 </details>
@@ -213,22 +247,22 @@ For detailed setup instructions, see [Zed's documentation on adding custom agent
 **Tool Syntax Modes**:
 - `--tool-syntax native`: Use the provider's built-in tool calling (most reliable, but streaming of parameters depends on provider)
 - `--tool-syntax xml`: XML-style tags for streaming of parameters
-- `--tool-syntax caret`: Triple-caret blocks for token-efficency and streaming of parameters
+- `--tool-syntax caret`: Triple-caret blocks for token-efficiency and streaming of parameters
 
 **Session Recording**:
 ```bash
 # Record session (Anthropic only)
-code-assistant --record session.json --task "Optimize database queries"
+code-assistant --record session.json --model "Claude Sonnet 4.5" --task "Optimize database queries"
 
 # Playback session
 code-assistant --playback session.json --fast-playback
 ```
 
 **Other Options**:
+- `--model <name>`: Specify model from models.json (use `--list-models` to see available options)
 - `--continue-task`: Resume from previous session state
 - `--use-diff-format`: Enable alternative diff format for file editing
-- `--verbose`: Enable detailed logging
-- `--base-url`: Custom API endpoint
+- `--verbose` / `-v`: Enable detailed logging (use multiple times for more verbosity)
 </details>
 
 ## Architecture Highlights

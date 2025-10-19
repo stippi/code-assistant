@@ -235,39 +235,44 @@ The system currently supports these providers (from `LLMProviderType` enum):
 - ✅ Updated ACP mode to use new factory functions
 - 🔄 Terminal and GPUI modes use temporary bridge functions (to be cleaned up in Phase 7)
 
-### 🔄 Phase 5: UI Components - PARTIALLY COMPLETED
+### ✅ Phase 5: UI Components - COMPLETED
 
-**❌ 5.1 GPUI Model Selection (TODO)**
-- ❌ Create `crates/code_assistant/src/ui/gpui/model_selector.rs`:
-  - ❌ Model selection dropdown component
-  - ❌ Integration with session manager
-  - ❌ Update session config for model switching
+**✅ 5.1 GPUI Model Selection**
+- ✅ Created `crates/code_assistant/src/ui/gpui/model_selector.rs`:
+  - ✅ Model selection dropdown component using gpui-component's Dropdown
+  - ✅ Integration with session manager
+  - ✅ Update session config for model switching via ModelSelectorEvent
+  - ✅ Real-time model list loading from configuration system
 
-**❌ 5.2 GPUI Input Area Updates (TODO)**
-- ❌ Modify `crates/code_assistant/src/ui/gpui/input_area.rs`:
-  - ❌ Add model selector underneath input area
-  - ❌ Handle model selection events
-  - ❌ Handle model change notifications
+**✅ 5.2 GPUI Input Area Updates**
+- ✅ Modified `crates/code_assistant/src/ui/gpui/input_area.rs`:
+  - ✅ Added model selector underneath input area
+  - ✅ Handle model selection events via on_model_selector_event
+  - ✅ Handle model change notifications with set_current_model
+  - ✅ Refresh models capability
 
-**❌ 5.3 Terminal UI Integration (TODO)**
-- ❌ Create `crates/code_assistant/src/ui/terminal/commands.rs`:
-  - ❌ `/model` command for listing available models
-  - ❌ `/model <name>` command for switching models
-  - ❌ `/provider` command for listing providers
+**✅ 5.3 Terminal UI Integration**
+- ✅ Created `crates/code_assistant/src/ui/terminal/commands.rs`:
+  - ✅ `/model` or `/m` command for listing available models
+  - ✅ `/model <name>` command for switching models
+  - ✅ `/provider` or `/p` command for listing providers
+  - ✅ `/current` or `/c` command to show current model
+  - ✅ `/help` or `/h` command for command help
 
-**❌ 5.4 Terminal Input Handler Updates (TODO)**
-- ❌ Modify `crates/code_assistant/src/ui/terminal/input.rs`:
-  - ❌ Detect slash commands
-  - ❌ Route to command handler
-  - ❌ Show command help and completion
+**✅ 5.4 Terminal Input Handler Updates**
+- ✅ Modified `crates/code_assistant/src/ui/terminal/input.rs`:
+  - ✅ Detect slash commands in handle_key_event
+  - ✅ Route to CommandProcessor
+  - ✅ Return appropriate KeyEventResult for each command type
 
-**❌ 5.5 Terminal State Updates (TODO)**
-- ❌ Modify `crates/code_assistant/src/ui/terminal/state.rs`:
-  - ❌ Track current model selection
-  - ❌ Handle model change events
-  - ❌ Update display to show current model
+**✅ 5.5 Terminal State Updates**
+- ✅ Modified `crates/code_assistant/src/ui/terminal/app.rs`:
+  - ✅ Handle KeyEventResult::SwitchModel by sending BackendEvent::SwitchModel
+  - ✅ Handle KeyEventResult::ShowCurrentModel to display current model
+  - ✅ State tracking for current model
+  - ✅ Backend integration for model changes
 
-### ❌ Phase 6: Testing and Documentation - TODO
+### 🔄 Phase 6: Testing and Documentation - PARTIALLY COMPLETED
 
 **❌ 6.1 Update Tests (TODO)**
 - ❌ Update `crates/code_assistant/src/tests/mocks.rs`:
@@ -276,11 +281,16 @@ The system currently supports these providers (from `LLMProviderType` enum):
 - ❌ Update integration tests for new configuration system
 - ❌ Add tests for model switching functionality
 
-**❌ 6.2 Update Documentation (TODO)**
-- ❌ Update README.md with new configuration system only
-- ❌ Remove all references to old CLI arguments and env var patterns
-- ❌ Document slash commands and UI controls
-- ❌ Add troubleshooting section for new config system
+**✅ 6.2 Update Documentation**
+- ✅ Updated README.md with new configuration system
+- ✅ Removed all references to old CLI arguments (`--provider`, `--base-url`, `--num-ctx`)
+- ✅ Added Model Configuration section with inline examples
+- ✅ Documented `--list-models` and `--list-providers` commands
+- ✅ Added Initial Setup section guiding users to copy example configs
+- ✅ Linked to complete example files (`providers.example.json`, `models.example.json`)
+- ✅ Updated all usage examples to use `--model <name>` syntax
+- ✅ Updated Claude Desktop and Zed integration examples
+- ❌ Troubleshooting section not yet added
 
 ### ❌ Phase 7: Clean Up Legacy Code - TODO
 
@@ -316,10 +326,12 @@ The system currently supports these providers (from `LLMProviderType` enum):
 - `crates/code_assistant/src/session/manager.rs` - Model selection support
 - `crates/code_assistant/src/agent/runner.rs` - Updated LLM integration
 - `crates/code_assistant/src/cli.rs` - Completely new CLI arguments (breaking change)
-- `crates/code_assistant/src/ui/gpui/root.rs` - Model selector integration
-- `crates/code_assistant/src/ui/gpui/input_area.rs` - Model display
-- `crates/code_assistant/src/ui/terminal/input.rs` - Slash command support
+- `crates/code_assistant/src/ui/gpui/root.rs` - Model selector integration and model switching backend events
+- `crates/code_assistant/src/ui/gpui/input_area.rs` - Model selector component integration
+- `crates/code_assistant/src/ui/terminal/input.rs` - Slash command detection and processing
+- `crates/code_assistant/src/ui/terminal/app.rs` - Model switching event handling
 - `crates/code_assistant/src/ui/terminal/state.rs` - Model state tracking
+- `crates/code_assistant/src/ui/backend.rs` - BackendEvent::SwitchModel handling
 - `crates/code_assistant/src/tests/mocks.rs` - Updated test mocks
 - `README.md` - Completely rewritten configuration documentation
 
@@ -404,17 +416,13 @@ cargo run -- acp --model "Claude Sonnet 4.5"
 - ✅ Support for all existing providers (Anthropic, OpenAI, Ollama, AI Core, etc.)
 - ✅ Flexible model configurations with provider-specific settings
 
-### 🔄 REMAINING WORK (Phases 5-7)
-
-**Phase 5: UI Components**
-- ❌ GPUI model selection dropdown
-- ❌ Terminal slash commands (`/model`, `/provider`)
-- ❌ Model switching in active sessions
+### 🔄 REMAINING WORK (Phases 6-7)
 
 **Phase 6: Testing and Documentation**
 - ❌ Comprehensive test coverage for new system
-- ❌ Updated README.md and documentation
 - ❌ Integration tests for model switching
+- ❌ Update test mocks for new configuration system
+- ❌ Add troubleshooting section to documentation
 
 **Phase 7: Code Cleanup**
 - ❌ Remove temporary bridge functions
@@ -423,11 +431,13 @@ cargo run -- acp --model "Claude Sonnet 4.5"
 
 ### 🚀 READY FOR USE
 
-The core model selection system is functional and ready for use in ACP mode. Users can:
+The model selection system is fully functional across all interfaces. Users can:
 
-1. **Configure providers and models** via JSON files
-2. **List available options** with CLI commands
-3. **Select models** for ACP sessions
-4. **Use all existing providers** with the new system
+1. **Configure providers and models** via JSON files (`providers.json` and `models.json`)
+2. **List available options** with CLI commands (`--list-models`, `--list-providers`)
+3. **Select models at startup** with `--model <name>` argument
+4. **Switch models in GPUI** using the dropdown selector in the input area
+5. **Switch models in Terminal UI** using slash commands (`/model`, `/model <name>`, `/current`)
+6. **Use all existing providers** with the new system (Anthropic, OpenAI, Ollama, SAP AI Core, etc.)
 
-The remaining phases focus on UI enhancements and code cleanup rather than core functionality.
+The remaining phases focus on testing and code cleanup rather than core functionality.
