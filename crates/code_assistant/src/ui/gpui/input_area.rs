@@ -323,7 +323,7 @@ impl InputArea {
             .flex_none() // Important: don't grow or shrink
             .flex()
             .flex_col() // Column to accommodate attachments area
-            .gap_0p5()
+            .gap_0()
             // Attachments area - show image previews when available
             .when(!self.attachments.is_empty(), |parent| {
                 parent.child(
