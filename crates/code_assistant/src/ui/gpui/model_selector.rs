@@ -188,9 +188,9 @@ fn provider_icon_path(provider_type: &str) -> Option<&'static str> {
         "mistral-ai" => Some("icons/ai_mistral.svg"),
         "openrouter" => Some("icons/ai_open_router.svg"),
         "ollama" => Some("icons/ai_ollama.svg"),
-        "ai-core" => Some("icons/brain.svg"),
+        "ai-core" => Some("icons/ai_sap.svg"),
         "cerebras" => Some("icons/brain.svg"),
-        "groq" => Some("icons/brain.svg"),
+        "groq" => Some("icons/ai_groq.svg"),
         _ => None,
     }
 }
