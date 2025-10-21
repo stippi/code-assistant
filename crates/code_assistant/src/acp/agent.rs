@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+use crate::acp::error_handling::to_acp_error;
 use crate::acp::types::convert_prompt_to_content_blocks;
 use crate::acp::ACPUserUI;
 use crate::config::DefaultProjectManager;
@@ -219,6 +220,15 @@ impl acp::Agent for ACPAgentImpl {
         Box::pin(async move {
             tracing::info!("ACP: Received initialize request");
 
+            // Early configuration validation
+            if let Err(e) = ConfigurationSystem::load() {
+                tracing::error!(
+                    "Configuration validation failed during initialization: {}",
+                    e
+                );
+                return Err(to_acp_error(&e));
+            }
+
             {
                 let mut caps = client_capabilities.lock().await;
                 *caps = Some(arguments.client_capabilities.clone());
@@ -309,7 +319,7 @@ impl acp::Agent for ACPAgentImpl {
                     )
                     .map_err(|e| {
                         tracing::error!("Failed to create session: {}", e);
-                        acp::Error::internal_error()
+                        to_acp_error(&e)
                     })?
             };
 
@@ -508,29 +518,6 @@ impl acp::Agent for ACPAgentImpl {
 
             let ui: Arc<dyn crate::ui::UserInterface> = acp_ui.clone();
 
-            // Clone for error closure
-            let error_session_id = arguments.session_id.clone();
-            let error_tx = session_update_tx.clone();
-
-            // Helper to send error messages to client
-            let send_error = |error_msg: String| async move {
-                let (tx, _rx) = oneshot::channel();
-                let _ = error_tx.send((
-                    acp::SessionNotification {
-                        session_id: error_session_id.clone(),
-                        update: acp::SessionUpdate::AgentMessageChunk {
-                            content: acp::ContentBlock::Text(acp::TextContent {
-                                annotations: None,
-                                text: format!("ERROR: {error_msg}"),
-                                meta: None,
-                            }),
-                        },
-                        meta: None,
-                    },
-                    tx,
-                ));
-            };
-
             // Convert prompt content blocks
             let content_blocks = convert_prompt_to_content_blocks(arguments.prompt);
 
@@ -551,13 +538,10 @@ impl acp::Agent for ACPAgentImpl {
                         arguments.session_id.0
                     );
                     tracing::error!("{}", error_msg);
-                    send_error(error_msg).await;
                     let mut uis = active_uis.lock().await;
                     uis.remove(arguments.session_id.0.as_ref());
-                    return Ok(acp::PromptResponse {
-                        stop_reason: acp::StopReason::EndTurn,
-                        meta: None,
-                    });
+                    let err = e.context(error_msg);
+                    return Err(to_acp_error(&err));
                 }
             };
 
@@ -577,13 +561,10 @@ impl acp::Agent for ACPAgentImpl {
                         "Failed to create LLM client for model '{model_name_for_prompt}': {e}"
                     );
                     tracing::error!("{}", error_msg);
-                    send_error(error_msg).await;
                     let mut uis = active_uis.lock().await;
                     uis.remove(arguments.session_id.0.as_ref());
-                    return Ok(acp::PromptResponse {
-                        stop_reason: acp::StopReason::EndTurn,
-                        meta: None,
-                    });
+                    let err = e.context(error_msg);
+                    return Err(to_acp_error(&err));
                 }
             };
 
@@ -619,13 +600,9 @@ impl acp::Agent for ACPAgentImpl {
                 } else {
                     let error_msg = "Session not found when trying to mark as connected";
                     tracing::error!("{}", error_msg);
-                    send_error(error_msg.to_string()).await;
                     let mut uis = active_uis.lock().await;
                     uis.remove(arguments.session_id.0.as_ref());
-                    return Ok(acp::PromptResponse {
-                        stop_reason: acp::StopReason::EndTurn,
-                        meta: None,
-                    });
+                    return Err(to_acp_error(&anyhow::anyhow!(error_msg)));
                 }
             }
 
@@ -651,35 +628,71 @@ impl acp::Agent for ACPAgentImpl {
             {
                 let error_msg = format!("Failed to start agent: {e}");
                 tracing::error!("{}", error_msg);
-                send_error(error_msg).await;
+                {
+                    let mut manager = session_manager.lock().await;
+                    if let Some(session) = manager.get_session_mut(&arguments.session_id.0) {
+                        session.set_ui_connected(false);
+                    }
+                }
                 let mut uis = active_uis.lock().await;
                 uis.remove(arguments.session_id.0.as_ref());
-                return Ok(acp::PromptResponse {
-                    stop_reason: acp::StopReason::EndTurn,
-                    meta: None,
-                });
+                let err = e.context(error_msg);
+                return Err(to_acp_error(&err));
             }
 
-            // Wait for agent to complete
-            // The agent will send session/update events via ACPUserUI as it processes
+            // Wait for agent to complete and check for errors
             tracing::info!("ACP: Waiting for agent to complete");
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-                let is_idle = {
-                    let manager = session_manager.lock().await;
-                    if let Some(session) = manager.get_session(&arguments.session_id.0) {
+                let (is_idle, task_result) = {
+                    let mut manager = session_manager.lock().await;
+                    if let Some(session) = manager.get_session_mut(&arguments.session_id.0) {
                         let state = session.get_activity_state();
                         tracing::trace!("ACP: Session state: {:?}", state);
-                        state == SessionActivityState::Idle
+
+                        let task_result = if state == SessionActivityState::Idle {
+                            // Check if the task completed with an error
+                            if let Some(task_handle) = session.task_handle.take() {
+                                if task_handle.is_finished() {
+                                    Some(task_handle.await.unwrap_or_else(|e| {
+                                        Err(anyhow::anyhow!("Task panicked: {}", e))
+                                    }))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
+                        (state == SessionActivityState::Idle, task_result)
                     } else {
                         tracing::warn!("ACP: Session not found in manager");
-                        true
+                        (true, None)
                     }
                 };
 
                 if is_idle {
                     tracing::info!("ACP: Agent is idle, exiting wait loop");
+
+                    // Check if the agent task failed
+                    if let Some(Err(e)) = task_result {
+                        tracing::error!("ACP: Agent task failed: {}", e);
+                        {
+                            let mut manager = session_manager.lock().await;
+                            if let Some(session) = manager.get_session_mut(&arguments.session_id.0)
+                            {
+                                session.set_ui_connected(false);
+                            }
+                        }
+                        let mut uis = active_uis.lock().await;
+                        uis.remove(arguments.session_id.0.as_ref());
+                        return Err(to_acp_error(&e));
+                    }
+
                     break;
                 }
 
@@ -726,6 +739,15 @@ impl acp::Agent for ACPAgentImpl {
                 uis.remove(arguments.session_id.0.as_ref());
             }
 
+            if let Some(message) = acp_ui.take_last_error() {
+                tracing::error!(
+                    "ACP: Prompt completed with UI error for session {}: {}",
+                    arguments.session_id.0,
+                    message
+                );
+                return Err(to_acp_error(&anyhow::anyhow!(message)));
+            }
+
             Ok(acp::PromptResponse {
                 stop_reason: acp::StopReason::EndTurn,
                 meta: None,
@@ -759,7 +781,7 @@ impl acp::Agent for ACPAgentImpl {
                         error = ?err,
                         "ACP: Failed to load configuration while setting session model"
                     );
-                    return Err(acp::Error::internal_error());
+                    return Err(to_acp_error(&err));
                 }
             };
 
