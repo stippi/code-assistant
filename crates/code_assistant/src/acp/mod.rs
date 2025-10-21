@@ -1,4 +1,5 @@
 mod agent;
+pub mod error_handling;
 mod terminal_executor;
 mod types;
 mod ui;

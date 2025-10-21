@@ -341,6 +341,25 @@ impl ConfigurationSystem {
             target = resolved_path.display(),
         )
     }
+
+    /// Compute the unique identifier for a model using its provider and model IDs.
+    pub fn model_identifier(&self, model_name: &str) -> Option<String> {
+        self.models
+            .get(model_name)
+            .map(|model| format!("{}/{}", model.provider, model.id))
+    }
+
+    /// Resolve a model identifier ("provider/model") back to the configured display name.
+    pub fn model_name_from_identifier(&self, identifier: &str) -> Option<String> {
+        self.models.iter().find_map(|(name, model)| {
+            let candidate = format!("{}/{}", model.provider, model.id);
+            if candidate == identifier {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+    }
 }
 
 #[cfg(test)]

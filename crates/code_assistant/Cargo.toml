@@ -23,8 +23,8 @@ tui-textarea = "0.7"
 tui-markdown = "0.3.5"
 
 # GPUI related
-gpui = { git = "https://github.com/zed-industries/zed.git" }
-gpui-component = { git = "https://github.com/longbridge/gpui-component.git" }
+gpui = "=0.2.0"
+gpui-component = "=0.2.0"
 smallvec = "1.15"
 rust-embed = { version = "8.7", features = ["include-exclude"] }
 
@@ -70,7 +70,7 @@ base64 = "0.22"
 image = "0.25"
 
 # Agent Client Protocol
-agent-client-protocol = "0.4"
+agent-client-protocol = { version = "0.4", features = ["unstable"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 
 [dev-dependencies]
