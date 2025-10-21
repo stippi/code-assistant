@@ -86,8 +86,7 @@ impl ACPAgentImpl {
         };
 
         let mut entries = Vec::new();
-        let mut available_ids: HashSet<String> = HashSet::new();
-        let mut id_to_display: HashMap<String, String> = HashMap::new();
+        let mut available_names: HashSet<String> = HashSet::new();
 
         for (display_name, model_config) in &config.models {
             let Some(provider_config) = config.providers.get(&model_config.provider) else {
@@ -99,9 +98,7 @@ impl ACPAgentImpl {
                 continue;
             };
 
-            let identifier = format!("{}/{}", model_config.provider, model_config.id);
-            available_ids.insert(identifier.clone());
-            id_to_display.insert(identifier.clone(), display_name.clone());
+            available_names.insert(display_name.clone());
 
             let description = if provider_config.label.is_empty() {
                 None
@@ -124,7 +121,7 @@ impl ACPAgentImpl {
             entries.push((
                 provider_config.label.clone(),
                 acp::ModelInfo {
-                    model_id: acp::ModelId(identifier.into()),
+                    model_id: acp::ModelId(display_name.clone().into()),
                     name: display_name.clone(),
                     description,
                     meta: Some(model_meta),
@@ -139,27 +136,37 @@ impl ACPAgentImpl {
 
         entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
 
-        let preferred_id = preferred_model
-            .and_then(|name| config.model_identifier(name))
-            .filter(|id| available_ids.contains(id));
-        let default_id = config
-            .model_identifier(default_model)
-            .filter(|id| available_ids.contains(id));
+        let preferred_display = preferred_model
+            .and_then(|name| available_names.contains(name).then(|| name.to_string()));
 
-        let selected_model_id = preferred_id
-            .or_else(|| default_id.clone())
-            .or_else(|| entries.first().map(|entry| entry.1.model_id.0.to_string()))
-            .unwrap_or_else(|| entries[0].1.model_id.0.to_string());
+        let default_display = available_names
+            .contains(default_model)
+            .then(|| default_model.to_string());
 
-        let selected_model_name = id_to_display
-            .get(&selected_model_id)
-            .cloned()
-            .unwrap_or_else(|| selected_model_id.clone());
+        let selected_model_name = preferred_display
+            .clone()
+            .or_else(|| default_display.clone())
+            .or_else(|| entries.first().map(|entry| entry.1.name.clone()))
+            .unwrap_or_else(|| entries[0].1.name.clone());
 
-        let selection_changed = preferred_model
-            .and_then(|name| config.model_identifier(name))
-            .map(|id| id != selected_model_id)
-            .unwrap_or(false);
+        let selected_model_id = selected_model_name.clone();
+
+        let mut selection_changed = false;
+        if let Some(original) = preferred_model {
+            match preferred_display.as_ref() {
+                Some(display) => {
+                    if display != original {
+                        selection_changed = true;
+                    }
+                    if display != &selected_model_name {
+                        selection_changed = true;
+                    }
+                }
+                None => {
+                    selection_changed = true;
+                }
+            }
+        }
 
         let available_models: Vec<acp::ModelInfo> =
             entries.into_iter().map(|(_, info)| info).collect();
@@ -175,13 +182,19 @@ impl ACPAgentImpl {
             );
         }
 
-        let default_identifier = default_id
+        let default_display_value = default_display
             .clone()
-            .unwrap_or_else(|| selected_model_id.clone());
+            .unwrap_or_else(|| selected_model_name.clone());
 
         let mut state_meta = JsonMap::new();
-        state_meta.insert("default_model_id".into(), json!(default_identifier));
-        state_meta.insert("default_model_display_name".into(), json!(default_model));
+        state_meta.insert(
+            "default_model_id".into(),
+            json!(default_display_value.clone()),
+        );
+        state_meta.insert(
+            "default_model_display_name".into(),
+            json!(default_display_value.clone()),
+        );
         state_meta.insert(
             "current_model_display_name".into(),
             json!(selected_model_name.clone()),
@@ -250,9 +263,9 @@ impl acp::Agent for ACPAgentImpl {
                         meta: None,
                     },
                     meta: Some(json!({
-                        "models": {
+                    "models": {
                             "supportsModelSelector": true,
-                            "idFormat": "provider/model",
+                            "idFormat": "display_name",
                         },
                     })),
                 },
@@ -785,13 +798,15 @@ impl acp::Agent for ACPAgentImpl {
                 }
             };
 
-            let Some(display_name) = config.model_name_from_identifier(&requested_model_id) else {
+            if config.get_model(&requested_model_id).is_none() {
                 tracing::warn!(
                     model_id = %requested_model_id,
                     "ACP: Received invalid model selection request"
                 );
                 return Err(acp::Error::invalid_params());
-            };
+            }
+
+            let display_name = requested_model_id.clone();
 
             let existing_config = {
                 let manager = session_manager.lock().await;
@@ -830,13 +845,13 @@ impl acp::Agent for ACPAgentImpl {
             tracing::info!(
                 "ACP: Session {} switched to model {}",
                 session_id.0,
-                requested_model_id
+                display_name,
             );
 
             Ok(acp::SetSessionModelResponse {
                 meta: Some(json!({
                     "model": {
-                        "id": requested_model_id,
+                        "id": display_name,
                         "display_name": display_name,
                     }
                 })),
