@@ -63,8 +63,11 @@ pub fn to_acp_error(error: &anyhow::Error) -> acp::Error {
         || error_lower.contains("invalid request")
     {
         // Client provided invalid parameters
-        acp::Error::new((acp::ErrorCode::INVALID_PARAMS.code, error_str.clone()))
-            .with_data(json!({ "hint": "The model configuration may include custom fields under `config` that this provider does not accept."}))
+        acp::Error::new((acp::ErrorCode::INVALID_PARAMS.code, error_str.clone())).with_data(
+            json!({
+                "hint": "The model configuration may include custom fields under `config` that this provider does not accept. Remove unexpected keys or move them into `meta`."
+            }),
+        )
     } else {
         // All other errors are internal
         acp::Error::new((acp::ErrorCode::INTERNAL_ERROR.code, error_str.clone()))
@@ -155,7 +158,12 @@ mod tests {
         assert!(acp_error
             .message
             .contains("HTTP 400: Bad request due to invalid payload"));
-        assert!(acp_error.data.is_none());
+        let data = acp_error.data.expect("expected hint data");
+        let hint = data
+            .get("hint")
+            .and_then(|value| value.as_str())
+            .expect("hint should be a string");
+        assert!(hint.contains("custom fields"));
     }
 
     #[test]
