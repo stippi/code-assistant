@@ -614,11 +614,13 @@ impl UserInterface for ACPUserUI {
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
         match fragment {
-            DisplayFragment::PlainText(_)
-            | DisplayFragment::ThinkingText(_)
-            | DisplayFragment::Image { .. } => {
+            DisplayFragment::PlainText(_) | DisplayFragment::Image { .. } => {
                 let content = fragment_to_content_block(fragment);
                 self.queue_session_update(acp::SessionUpdate::AgentMessageChunk { content });
+            }
+            DisplayFragment::ThinkingText(_) => {
+                let content = fragment_to_content_block(fragment);
+                self.queue_session_update(acp::SessionUpdate::AgentThoughtChunk { content });
             }
             DisplayFragment::ToolName { name, id } => {
                 if id.is_empty() {
