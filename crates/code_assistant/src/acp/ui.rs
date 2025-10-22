@@ -21,6 +21,7 @@ pub struct ACPUserUI {
     base_path: Option<PathBuf>,
     // Track if we should continue streaming (atomic for lock-free access from sync callbacks)
     should_continue: Arc<AtomicBool>,
+    last_error: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Default, Clone)]
@@ -418,6 +419,7 @@ impl ACPUserUI {
             tool_calls: Arc::new(Mutex::new(HashMap::new())),
             base_path,
             should_continue: Arc::new(AtomicBool::new(true)),
+            last_error: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -502,6 +504,13 @@ impl ACPUserUI {
         } else {
             tracing::trace!("ACPUserUI: Queued session update");
         }
+    }
+
+    pub fn take_last_error(&self) -> Option<String> {
+        self.last_error
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take())
     }
 }
 
@@ -589,10 +598,15 @@ impl UserInterface for ACPUserUI {
             | UiEvent::QueueUserMessage { .. }
             | UiEvent::RequestPendingMessageEdit { .. }
             | UiEvent::UpdatePendingMessage { .. }
-            | UiEvent::DisplayError { .. }
             | UiEvent::ClearError
             | UiEvent::UpdateCurrentModel { .. } => {
                 // These are UI management events, not relevant for ACP
+            }
+            UiEvent::DisplayError { message } => {
+                tracing::error!("ACPUserUI: Received DisplayError event: {}", message);
+                if let Ok(mut last_error) = self.last_error.lock() {
+                    *last_error = Some(message);
+                }
             }
         }
         Ok(())
@@ -600,11 +614,13 @@ impl UserInterface for ACPUserUI {
 
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
         match fragment {
-            DisplayFragment::PlainText(_)
-            | DisplayFragment::ThinkingText(_)
-            | DisplayFragment::Image { .. } => {
+            DisplayFragment::PlainText(_) | DisplayFragment::Image { .. } => {
                 let content = fragment_to_content_block(fragment);
                 self.queue_session_update(acp::SessionUpdate::AgentMessageChunk { content });
+            }
+            DisplayFragment::ThinkingText(_) => {
+                let content = fragment_to_content_block(fragment);
+                self.queue_session_update(acp::SessionUpdate::AgentThoughtChunk { content });
             }
             DisplayFragment::ToolName { name, id } => {
                 if id.is_empty() {

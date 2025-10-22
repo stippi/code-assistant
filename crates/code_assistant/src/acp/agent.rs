@@ -1,9 +1,11 @@
 use agent_client_protocol as acp;
 use anyhow::Result;
-use std::collections::HashMap;
+use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+use crate::acp::error_handling::to_acp_error;
 use crate::acp::types::convert_prompt_to_content_blocks;
 use crate::acp::ACPUserUI;
 use crate::config::DefaultProjectManager;
@@ -13,6 +15,7 @@ use crate::session::{SessionConfig, SessionManager};
 use crate::ui::UserInterface;
 use crate::utils::DefaultCommandExecutor;
 use llm::factory::create_llm_client_from_model;
+use llm::provider_config::ConfigurationSystem;
 
 /// Global connection to the ACP client
 /// Since there's only one connection per agent process, this is acceptable
@@ -43,6 +46,12 @@ pub struct ACPAgentImpl {
     client_capabilities: Arc<Mutex<Option<acp::ClientCapabilities>>>,
 }
 
+struct ModelStateInfo {
+    state: acp::SessionModelState,
+    selected_model_name: String,
+    selection_changed: bool,
+}
+
 impl ACPAgentImpl {
     pub fn new(
         session_manager: Arc<Mutex<SessionManager>>,
@@ -62,6 +71,145 @@ impl ACPAgentImpl {
             active_uis: Arc::new(Mutex::new(HashMap::new())),
             client_capabilities: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn compute_model_state(
+        default_model: &str,
+        preferred_model: Option<&str>,
+    ) -> Option<ModelStateInfo> {
+        let config = match ConfigurationSystem::load() {
+            Ok(config) => config,
+            Err(err) => {
+                tracing::error!(error = ?err, "ACP: Failed to load configuration system for model selector");
+                return None;
+            }
+        };
+
+        let mut entries = Vec::new();
+        let mut available_names: HashSet<String> = HashSet::new();
+
+        for (display_name, model_config) in &config.models {
+            let Some(provider_config) = config.providers.get(&model_config.provider) else {
+                tracing::warn!(
+                    provider = %model_config.provider,
+                    model = %display_name,
+                    "ACP: Skipping model because provider configuration is missing"
+                );
+                continue;
+            };
+
+            available_names.insert(display_name.clone());
+
+            let description = if provider_config.label.is_empty() {
+                None
+            } else {
+                Some(provider_config.label.clone())
+            };
+
+            let model_meta = json!({
+                "provider": {
+                    "id": model_config.provider,
+                    "label": provider_config.label,
+                    "type": provider_config.provider,
+                },
+                "model": {
+                    "id": model_config.id,
+                },
+                "display_name": display_name,
+            });
+
+            entries.push((
+                provider_config.label.clone(),
+                acp::ModelInfo {
+                    model_id: acp::ModelId(display_name.clone().into()),
+                    name: display_name.clone(),
+                    description,
+                    meta: Some(model_meta),
+                },
+            ));
+        }
+
+        if entries.is_empty() {
+            tracing::warn!("ACP: No available models found for model selector");
+            return None;
+        }
+
+        entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
+
+        let preferred_display = preferred_model
+            .and_then(|name| available_names.contains(name).then(|| name.to_string()));
+
+        let default_display = available_names
+            .contains(default_model)
+            .then(|| default_model.to_string());
+
+        let selected_model_name = preferred_display
+            .clone()
+            .or_else(|| default_display.clone())
+            .or_else(|| entries.first().map(|entry| entry.1.name.clone()))
+            .unwrap_or_else(|| entries[0].1.name.clone());
+
+        let selected_model_id = selected_model_name.clone();
+
+        let mut selection_changed = false;
+        if let Some(original) = preferred_model {
+            match preferred_display.as_ref() {
+                Some(display) => {
+                    if display != original {
+                        selection_changed = true;
+                    }
+                    if display != &selected_model_name {
+                        selection_changed = true;
+                    }
+                }
+                None => {
+                    selection_changed = true;
+                }
+            }
+        }
+
+        let available_models: Vec<acp::ModelInfo> =
+            entries.into_iter().map(|(_, info)| info).collect();
+
+        let mut providers_meta = JsonMap::new();
+        for (provider_id, provider_config) in &config.providers {
+            providers_meta.insert(
+                provider_id.clone(),
+                json!({
+                    "label": provider_config.label,
+                    "type": provider_config.provider,
+                }),
+            );
+        }
+
+        let default_display_value = default_display
+            .clone()
+            .unwrap_or_else(|| selected_model_name.clone());
+
+        let mut state_meta = JsonMap::new();
+        state_meta.insert(
+            "default_model_id".into(),
+            json!(default_display_value.clone()),
+        );
+        state_meta.insert(
+            "default_model_display_name".into(),
+            json!(default_display_value.clone()),
+        );
+        state_meta.insert(
+            "current_model_display_name".into(),
+            json!(selected_model_name.clone()),
+        );
+        state_meta.insert("providers".into(), JsonValue::Object(providers_meta));
+
+        Some(ModelStateInfo {
+            state: acp::SessionModelState {
+                current_model_id: acp::ModelId(selected_model_id.clone().into()),
+                available_models,
+                meta: Some(JsonValue::Object(state_meta)),
+            },
+            selected_model_name,
+            selection_changed,
+        })
     }
 }
 
@@ -85,6 +233,15 @@ impl acp::Agent for ACPAgentImpl {
         Box::pin(async move {
             tracing::info!("ACP: Received initialize request");
 
+            // Early configuration validation
+            if let Err(e) = ConfigurationSystem::load() {
+                tracing::error!(
+                    "Configuration validation failed during initialization: {}",
+                    e
+                );
+                return Err(to_acp_error(&e));
+            }
+
             {
                 let mut caps = client_capabilities.lock().await;
                 *caps = Some(arguments.client_capabilities.clone());
@@ -105,7 +262,12 @@ impl acp::Agent for ACPAgentImpl {
                         embedded_context: true,
                         meta: None,
                     },
-                    meta: None,
+                    meta: Some(json!({
+                    "models": {
+                            "supportsModelSelector": true,
+                            "idFormat": "display_name",
+                        },
+                    })),
                 },
                 auth_methods: Vec::new(),
                 meta: None,
@@ -157,26 +319,52 @@ impl acp::Agent for ACPAgentImpl {
             let mut session_config = session_config_template.clone();
             session_config.init_path = Some(arguments.cwd.clone());
 
-            let session_model_config = Some(SessionModelConfig {
-                model_name: model_name.clone(),
-                record_path: None, // Recording is handled at the client level now
-            });
-
             let session_id = {
                 let mut manager = session_manager.lock().await;
                 manager
-                    .create_session_with_config(None, Some(session_config), session_model_config)
+                    .create_session_with_config(
+                        None,
+                        Some(session_config),
+                        Some(SessionModelConfig {
+                            model_name: model_name.clone(),
+                            record_path: None,
+                        }),
+                    )
                     .map_err(|e| {
                         tracing::error!("Failed to create session: {}", e);
-                        acp::Error::internal_error()
+                        to_acp_error(&e)
                     })?
             };
 
             tracing::info!("ACP: Created session: {}", session_id);
 
+            let mut models_state = None;
+            if let Some(model_info) =
+                ACPAgentImpl::compute_model_state(&model_name, Some(model_name.as_str()))
+            {
+                if model_info.selection_changed {
+                    let mut manager = session_manager.lock().await;
+                    if let Err(err) = manager.set_session_model_config(
+                        &session_id,
+                        Some(SessionModelConfig {
+                            model_name: model_info.selected_model_name.clone(),
+                            record_path: None,
+                        }),
+                    ) {
+                        tracing::error!(
+                            error = ?err,
+                            "ACP: Failed to persist fallback model selection for session {}",
+                            session_id
+                        );
+                    }
+                }
+                models_state = Some(model_info.state);
+            }
+
             Ok(acp::NewSessionResponse {
                 session_id: acp::SessionId(session_id.into()),
                 modes: None, // TODO: Support modes like "Plan", "Architect" and "Code".
+                models: models_state,
                 meta: None,
             })
         })
@@ -197,6 +385,7 @@ impl acp::Agent for ACPAgentImpl {
     {
         let session_manager = self.session_manager.clone();
         let session_update_tx = self.session_update_tx.clone();
+        let default_model_name = self.model_name.clone();
 
         Box::pin(async move {
             tracing::info!("ACP: Loading session: {}", arguments.session_id.0);
@@ -212,7 +401,7 @@ impl acp::Agent for ACPAgentImpl {
 
             // Replay message history as session/update events
             // We need to reconstruct the replay logic here since we moved self fields
-            let (tool_syntax, messages, base_path) = {
+            let (tool_syntax, messages, base_path, stored_model_config) = {
                 let manager = session_manager.lock().await;
                 let session_instance = manager
                     .get_session(&arguments.session_id.0)
@@ -222,6 +411,7 @@ impl acp::Agent for ACPAgentImpl {
                     session_instance.session.config.tool_syntax,
                     session_instance.session.messages.clone(),
                     session_instance.session.config.init_path.clone(),
+                    session_instance.session.model_config.clone(),
                 )
             };
 
@@ -248,10 +438,40 @@ impl acp::Agent for ACPAgentImpl {
                 }
             }
 
+            let mut models_state = None;
+            if let Some(model_info) = ACPAgentImpl::compute_model_state(
+                &default_model_name,
+                stored_model_config
+                    .as_ref()
+                    .map(|config| config.model_name.as_str()),
+            ) {
+                if model_info.selection_changed {
+                    let record_path = stored_model_config
+                        .as_ref()
+                        .and_then(|config| config.record_path.clone());
+                    let mut manager = session_manager.lock().await;
+                    if let Err(err) = manager.set_session_model_config(
+                        &arguments.session_id.0,
+                        Some(SessionModelConfig {
+                            model_name: model_info.selected_model_name.clone(),
+                            record_path,
+                        }),
+                    ) {
+                        tracing::error!(
+                            error = ?err,
+                            "ACP: Failed to persist fallback model selection while loading session {}",
+                            arguments.session_id.0
+                        );
+                    }
+                }
+                models_state = Some(model_info.state);
+            }
+
             tracing::info!("ACP: Loaded session: {}", arguments.session_id.0);
 
             Ok(acp::LoadSessionResponse {
                 modes: None,
+                models: models_state,
                 meta: None,
             })
         })
@@ -311,54 +531,55 @@ impl acp::Agent for ACPAgentImpl {
 
             let ui: Arc<dyn crate::ui::UserInterface> = acp_ui.clone();
 
-            // Clone for error closure
-            let error_session_id = arguments.session_id.clone();
-            let error_tx = session_update_tx.clone();
-
-            // Helper to send error messages to client
-            let send_error = |error_msg: String| async move {
-                let (tx, _rx) = oneshot::channel();
-                let _ = error_tx.send((
-                    acp::SessionNotification {
-                        session_id: error_session_id.clone(),
-                        update: acp::SessionUpdate::AgentMessageChunk {
-                            content: acp::ContentBlock::Text(acp::TextContent {
-                                annotations: None,
-                                text: format!("ERROR: {error_msg}"),
-                                meta: None,
-                            }),
-                        },
-                        meta: None,
-                    },
-                    tx,
-                ));
-            };
-
             // Convert prompt content blocks
             let content_blocks = convert_prompt_to_content_blocks(arguments.prompt);
 
-            let session_model_config = Some(SessionModelConfig {
-                model_name: model_name.clone(),
-                record_path: None, // Recording is handled at the client level now
-            });
+            let config_result = {
+                let manager = session_manager.lock().await;
+                manager.get_session_model_config(&arguments.session_id.0)
+            };
+
+            let session_model_config = match config_result {
+                Ok(Some(config)) => config,
+                Ok(None) => SessionModelConfig {
+                    model_name: model_name.clone(),
+                    record_path: None,
+                },
+                Err(e) => {
+                    let error_msg = format!(
+                        "Failed to load session model configuration for session {}: {e}",
+                        arguments.session_id.0
+                    );
+                    tracing::error!("{}", error_msg);
+                    let mut uis = active_uis.lock().await;
+                    uis.remove(arguments.session_id.0.as_ref());
+                    let err = e.context(error_msg);
+                    return Err(to_acp_error(&err));
+                }
+            };
+
+            let model_name_for_prompt = session_model_config.model_name.clone();
 
             // Create LLM client
-            let llm_client =
-                match create_llm_client_from_model(&model_name, playback_path, fast_playback).await
-                {
-                    Ok(client) => client,
-                    Err(e) => {
-                        let error_msg = format!("Failed to create LLM client: {e}");
-                        tracing::error!("{}", error_msg);
-                        send_error(error_msg).await;
-                        let mut uis = active_uis.lock().await;
-                        uis.remove(arguments.session_id.0.as_ref());
-                        return Ok(acp::PromptResponse {
-                            stop_reason: acp::StopReason::EndTurn,
-                            meta: None,
-                        });
-                    }
-                };
+            let llm_client = match create_llm_client_from_model(
+                &model_name_for_prompt,
+                playback_path,
+                fast_playback,
+            )
+            .await
+            {
+                Ok(client) => client,
+                Err(e) => {
+                    let error_msg = format!(
+                        "Failed to create LLM client for model '{model_name_for_prompt}': {e}"
+                    );
+                    tracing::error!("{}", error_msg);
+                    let mut uis = active_uis.lock().await;
+                    uis.remove(arguments.session_id.0.as_ref());
+                    let err = e.context(error_msg);
+                    return Err(to_acp_error(&err));
+                }
+            };
 
             // Create project manager and command executor
             let project_manager = Box::new(DefaultProjectManager::new());
@@ -392,13 +613,9 @@ impl acp::Agent for ACPAgentImpl {
                 } else {
                     let error_msg = "Session not found when trying to mark as connected";
                     tracing::error!("{}", error_msg);
-                    send_error(error_msg.to_string()).await;
                     let mut uis = active_uis.lock().await;
                     uis.remove(arguments.session_id.0.as_ref());
-                    return Ok(acp::PromptResponse {
-                        stop_reason: acp::StopReason::EndTurn,
-                        meta: None,
-                    });
+                    return Err(to_acp_error(&anyhow::anyhow!(error_msg)));
                 }
             }
 
@@ -407,7 +624,7 @@ impl acp::Agent for ACPAgentImpl {
                 let mut manager = session_manager.lock().await;
                 manager.set_session_model_config(
                     &arguments.session_id.0,
-                    session_model_config.clone(),
+                    Some(session_model_config.clone()),
                 )?;
                 manager
                     .start_agent_for_message(
@@ -424,35 +641,71 @@ impl acp::Agent for ACPAgentImpl {
             {
                 let error_msg = format!("Failed to start agent: {e}");
                 tracing::error!("{}", error_msg);
-                send_error(error_msg).await;
+                {
+                    let mut manager = session_manager.lock().await;
+                    if let Some(session) = manager.get_session_mut(&arguments.session_id.0) {
+                        session.set_ui_connected(false);
+                    }
+                }
                 let mut uis = active_uis.lock().await;
                 uis.remove(arguments.session_id.0.as_ref());
-                return Ok(acp::PromptResponse {
-                    stop_reason: acp::StopReason::EndTurn,
-                    meta: None,
-                });
+                let err = e.context(error_msg);
+                return Err(to_acp_error(&err));
             }
 
-            // Wait for agent to complete
-            // The agent will send session/update events via ACPUserUI as it processes
+            // Wait for agent to complete and check for errors
             tracing::info!("ACP: Waiting for agent to complete");
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-                let is_idle = {
-                    let manager = session_manager.lock().await;
-                    if let Some(session) = manager.get_session(&arguments.session_id.0) {
+                let (is_idle, task_result) = {
+                    let mut manager = session_manager.lock().await;
+                    if let Some(session) = manager.get_session_mut(&arguments.session_id.0) {
                         let state = session.get_activity_state();
                         tracing::trace!("ACP: Session state: {:?}", state);
-                        state == SessionActivityState::Idle
+
+                        let task_result = if state == SessionActivityState::Idle {
+                            // Check if the task completed with an error
+                            if let Some(task_handle) = session.task_handle.take() {
+                                if task_handle.is_finished() {
+                                    Some(task_handle.await.unwrap_or_else(|e| {
+                                        Err(anyhow::anyhow!("Task panicked: {}", e))
+                                    }))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
+                        (state == SessionActivityState::Idle, task_result)
                     } else {
                         tracing::warn!("ACP: Session not found in manager");
-                        true
+                        (true, None)
                     }
                 };
 
                 if is_idle {
                     tracing::info!("ACP: Agent is idle, exiting wait loop");
+
+                    // Check if the agent task failed
+                    if let Some(Err(e)) = task_result {
+                        tracing::error!("ACP: Agent task failed: {}", e);
+                        {
+                            let mut manager = session_manager.lock().await;
+                            if let Some(session) = manager.get_session_mut(&arguments.session_id.0)
+                            {
+                                session.set_ui_connected(false);
+                            }
+                        }
+                        let mut uis = active_uis.lock().await;
+                        uis.remove(arguments.session_id.0.as_ref());
+                        return Err(to_acp_error(&e));
+                    }
+
                     break;
                 }
 
@@ -499,9 +752,109 @@ impl acp::Agent for ACPAgentImpl {
                 uis.remove(arguments.session_id.0.as_ref());
             }
 
+            if let Some(message) = acp_ui.take_last_error() {
+                tracing::error!(
+                    "ACP: Prompt completed with UI error for session {}: {}",
+                    arguments.session_id.0,
+                    message
+                );
+                return Err(to_acp_error(&anyhow::anyhow!(message)));
+            }
+
             Ok(acp::PromptResponse {
                 stop_reason: acp::StopReason::EndTurn,
                 meta: None,
+            })
+        })
+    }
+
+    #[allow(clippy::manual_async_fn)]
+    fn set_session_model<'life0, 'async_trait>(
+        &'life0 self,
+        arguments: acp::SetSessionModelRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<acp::SetSessionModelResponse, acp::Error>>
+                + 'async_trait,
+        >,
+    >
+    where
+        Self: 'async_trait,
+        'life0: 'async_trait,
+    {
+        let session_manager = self.session_manager.clone();
+        let session_id = arguments.session_id.clone();
+        let requested_model_id = arguments.model_id.to_string();
+
+        Box::pin(async move {
+            let config = match ConfigurationSystem::load() {
+                Ok(config) => config,
+                Err(err) => {
+                    tracing::error!(
+                        error = ?err,
+                        "ACP: Failed to load configuration while setting session model"
+                    );
+                    return Err(to_acp_error(&err));
+                }
+            };
+
+            if config.get_model(&requested_model_id).is_none() {
+                tracing::warn!(
+                    model_id = %requested_model_id,
+                    "ACP: Received invalid model selection request"
+                );
+                return Err(acp::Error::invalid_params());
+            }
+
+            let display_name = requested_model_id.clone();
+
+            let existing_config = {
+                let manager = session_manager.lock().await;
+                manager.get_session_model_config(&session_id.0)
+            };
+
+            let record_path = match existing_config {
+                Ok(Some(config)) => config.record_path,
+                Ok(None) => None,
+                Err(err) => {
+                    tracing::error!(
+                        error = ?err,
+                        "ACP: Failed to read existing session model configuration"
+                    );
+                    return Err(acp::Error::internal_error());
+                }
+            };
+
+            {
+                let mut manager = session_manager.lock().await;
+                if let Err(err) = manager.set_session_model_config(
+                    &session_id.0,
+                    Some(SessionModelConfig {
+                        model_name: display_name.clone(),
+                        record_path,
+                    }),
+                ) {
+                    tracing::error!(
+                        error = ?err,
+                        "ACP: Failed to persist session model selection"
+                    );
+                    return Err(acp::Error::internal_error());
+                }
+            }
+
+            tracing::info!(
+                "ACP: Session {} switched to model {}",
+                session_id.0,
+                display_name,
+            );
+
+            Ok(acp::SetSessionModelResponse {
+                meta: Some(json!({
+                    "model": {
+                        "id": display_name,
+                        "display_name": display_name,
+                    }
+                })),
             })
         })
     }

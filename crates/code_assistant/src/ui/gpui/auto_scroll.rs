@@ -146,7 +146,7 @@ impl<T: Render> AutoScrollContainer<T> {
 
     /// Check if manual scrolling has occurred by comparing expected vs actual position
     fn check_for_manual_scroll(&self) -> bool {
-        let current_position = self.scroll_handle.offset().y.0;
+        let current_position: f32 = self.scroll_handle.offset().y.into();
         let last_set_position = self.last_set_scroll_position.get();
 
         // Allow for small floating point differences
@@ -182,7 +182,7 @@ impl<T: Render> AutoScrollContainer<T> {
         }
 
         // Initialize expected position to current position to avoid false positives
-        let current_position = self.scroll_handle.offset().y.0;
+        let current_position: f32 = self.scroll_handle.offset().y.into();
         self.last_set_scroll_position.set(current_position);
 
         let scroll_handle_orig = self.scroll_handle.clone();
@@ -235,19 +235,20 @@ impl<T: Render> AutoScrollContainer<T> {
                     };
 
                     let current_offset_y_px = scroll_handle_for_update.offset().y;
-                    let displacement_x_f32 = current_offset_y_px.0 - target_y_px.0;
+                    let displacement_x_f32 =
+                        f32::from(current_offset_y_px) - f32::from(target_y_px);
                     let distance_to_target_abs_f32 = displacement_x_f32.abs();
 
                     if distance_to_target_abs_f32 < config.min_distance_to_stop
                         && current_scroll_speed.abs() < config.min_speed_to_stop
                     {
                         // Round the target position to integer offset
-                        let rounded_target_y_px = px(target_y_px.0.round());
+                        let rounded_target_y_px = target_y_px.round();
                         scroll_handle_for_update.set_offset(Point {
                             x: px(0.0),
                             y: rounded_target_y_px,
                         });
-                        last_set_position_for_update.set(rounded_target_y_px.0);
+                        last_set_position_for_update.set(f32::from(rounded_target_y_px));
                         autoscroll_active_for_update.set(false);
                         return false; // Stop task
                     }
@@ -261,8 +262,10 @@ impl<T: Render> AutoScrollContainer<T> {
 
                     if displacement_x_f32.abs() > f32::EPSILON {
                         let current_displacement_sign = displacement_x_f32.signum();
-                        let planned_offset_y_f32 = current_offset_y_px.0 + final_scroll_delta_f32;
-                        let planned_displacement_f32 = planned_offset_y_f32 - target_y_px.0;
+                        let planned_offset_y_f32 =
+                            f32::from(current_offset_y_px) + final_scroll_delta_f32;
+                        let planned_displacement_f32 =
+                            planned_offset_y_f32 - f32::from(target_y_px);
 
                         if planned_displacement_f32.signum() != current_displacement_sign
                             && distance_to_target_abs_f32 > config.min_distance_to_stop
@@ -277,7 +280,7 @@ impl<T: Render> AutoScrollContainer<T> {
 
                     let new_y_calculated_px = current_offset_y_px + px(final_scroll_delta_f32);
                     // Round the scroll position to integer offset
-                    let rounded_new_y_px = px(new_y_calculated_px.0.round());
+                    let rounded_new_y_px = new_y_calculated_px.round();
 
                     scroll_handle_for_update.set_offset(Point {
                         x: px(0.0),
@@ -285,7 +288,7 @@ impl<T: Render> AutoScrollContainer<T> {
                     });
 
                     // Remember the position we just set
-                    last_set_position_for_update.set(rounded_new_y_px.0);
+                    last_set_position_for_update.set(f32::from(rounded_new_y_px));
 
                     model_cx.notify();
                     true // Continue task
@@ -321,7 +324,7 @@ impl<T: Render> AutoScrollContainer<T> {
             if self.was_at_bottom_before_update.get() || self.autoscroll_active.get() {
                 // CRITICAL: Reset the expected position to current position before starting
                 // This prevents immediate interruption due to stale position data
-                let current_position = self.scroll_handle.offset().y.0;
+                let current_position: f32 = self.scroll_handle.offset().y.into();
                 self.last_set_scroll_position.set(current_position);
 
                 self.autoscroll_active.set(true);
@@ -335,7 +338,7 @@ impl<T: Render> AutoScrollContainer<T> {
         // Content shrank (e.g., collapsed tool blocks) - update our expected position
         else if new_height < old_height - 1.0 {
             // Update our expected scroll position to account for content shrinking
-            let current_position = self.scroll_handle.offset().y.0;
+            let current_position: f32 = self.scroll_handle.offset().y.into();
             self.last_set_scroll_position.set(current_position);
             trace!(
                 "ContentChange: content shrank, updated expected position to: {}",
@@ -397,7 +400,7 @@ impl<T: Render> Render for AutoScrollContainer<T> {
                                             trace!("New content_size: {:?}", new_content_size);
 
                                             // Handle content change for auto-scroll
-                                            let new_height = new_content_size.height.0;
+                                            let new_height: f32 = new_content_size.height.into();
                                             view_entity.update(app, |view, cx_update| {
                                                 view.handle_content_change(new_height, cx_update);
                                             });
