@@ -1,6 +1,6 @@
 use crate::agent::ToolExecution;
 use crate::persistence::SessionModelConfig;
-use crate::types::ToolSyntax;
+use crate::types::{PlanState, ToolSyntax};
 use llm::Message;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -48,6 +48,7 @@ pub struct SessionState {
     pub messages: Vec<Message>,
     pub tool_executions: Vec<ToolExecution>,
     pub working_memory: crate::types::WorkingMemory,
+    pub plan: PlanState,
     pub config: SessionConfig,
     pub next_request_id: Option<u64>,
     pub model_config: Option<SessionModelConfig>,

@@ -13,6 +13,7 @@ pub mod search_files;
 pub mod web_fetch;
 pub mod web_search;
 pub mod write_file;
+pub mod update_plan;
 
 // Re-export all tools for registration
 pub use delete_files::DeleteFilesTool;
@@ -29,3 +30,4 @@ pub use search_files::SearchFilesTool;
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
 pub use write_file::WriteFileTool;
+pub use update_plan::UpdatePlanTool;

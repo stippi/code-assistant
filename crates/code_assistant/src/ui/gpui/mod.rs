@@ -19,7 +19,7 @@ pub mod simple_renderers;
 pub mod theme;
 
 use crate::persistence::{ChatMetadata, DraftStorage};
-use crate::types::WorkingMemory;
+use crate::types::{PlanState, WorkingMemory};
 use crate::ui::gpui::{
     content_renderer::ContentRenderer,
     diff_renderer::DiffParameterRenderer,
@@ -63,6 +63,7 @@ pub use crate::ui::backend::{BackendEvent, BackendResponse};
 pub struct Gpui {
     message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
     working_memory: Arc<Mutex<Option<WorkingMemory>>>,
+    plan_state: Arc<Mutex<Option<PlanState>>>,
     event_sender: Arc<Mutex<async_channel::Sender<UiEvent>>>,
     event_receiver: Arc<Mutex<async_channel::Receiver<UiEvent>>>,
     event_task: Arc<Mutex<Option<gpui::Task<()>>>>,
@@ -207,6 +208,7 @@ impl Gpui {
     pub fn new() -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
         let working_memory = Arc::new(Mutex::new(None));
+        let plan_state = Arc::new(Mutex::new(None));
         let event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let session_event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let current_request_id = Arc::new(Mutex::new(0));
@@ -261,6 +263,7 @@ impl Gpui {
         Self {
             message_queue,
             working_memory,
+            plan_state,
             event_sender,
             event_receiver,
             event_task,
@@ -558,6 +561,12 @@ impl Gpui {
             UiEvent::UpdateMemory { memory } => {
                 if let Ok(mut memory_guard) = self.working_memory.lock() {
                     *memory_guard = Some(memory);
+                }
+                cx.refresh().expect("Failed to refresh windows");
+            }
+            UiEvent::UpdatePlan { plan } => {
+                if let Ok(mut plan_guard) = self.plan_state.lock() {
+                    *plan_guard = Some(plan);
                 }
                 cx.refresh().expect("Failed to refresh windows");
             }

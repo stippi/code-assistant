@@ -569,6 +569,39 @@ impl UserInterface for ACPUserUI {
                     .await?;
             }
 
+            UiEvent::UpdatePlan { plan } => {
+                let entries = plan
+                    .entries
+                    .into_iter()
+                    .map(|entry| acp::PlanEntry {
+                        content: entry.content,
+                        priority: match entry.priority {
+                            crate::types::PlanItemPriority::High => acp::PlanEntryPriority::High,
+                            crate::types::PlanItemPriority::Medium => acp::PlanEntryPriority::Medium,
+                            crate::types::PlanItemPriority::Low => acp::PlanEntryPriority::Low,
+                        },
+                        status: match entry.status {
+                            crate::types::PlanItemStatus::Pending => acp::PlanEntryStatus::Pending,
+                            crate::types::PlanItemStatus::InProgress => {
+                                acp::PlanEntryStatus::InProgress
+                            }
+                            crate::types::PlanItemStatus::Completed => {
+                                acp::PlanEntryStatus::Completed
+                            }
+                        },
+                        meta: entry.meta,
+                    })
+                    .collect();
+
+                let acp_plan = acp::Plan {
+                    entries,
+                    meta: plan.meta,
+                };
+
+                self.send_session_update(acp::SessionUpdate::Plan(acp_plan))
+                    .await?;
+            }
+
             UiEvent::AppendToTextBlock { .. }
             | UiEvent::AppendToThinkingBlock { .. }
             | UiEvent::StartTool { .. }

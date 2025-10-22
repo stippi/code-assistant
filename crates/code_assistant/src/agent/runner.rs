@@ -43,6 +43,7 @@ enum LoopFlow {
 
 pub struct Agent {
     working_memory: WorkingMemory,
+    plan: PlanState,
     llm_provider: Box<dyn LLMProvider>,
     session_config: SessionConfig,
     tool_scope: ToolScope,
@@ -101,6 +102,7 @@ impl Agent {
 
         let mut this = Self {
             working_memory: WorkingMemory::default(),
+            plan: PlanState::default(),
             llm_provider,
             session_config,
             tool_scope: ToolScope::Agent, // Default to Agent scope
@@ -248,6 +250,7 @@ impl Agent {
                 messages: self.message_history.clone(),
                 tool_executions: self.tool_executions.clone(),
                 working_memory: self.working_memory.clone(),
+                plan: self.plan.clone(),
                 config: self.session_config.clone(),
                 next_request_id: Some(self.next_request_id),
                 model_config: self.session_model_config.clone(),
@@ -401,6 +404,7 @@ impl Agent {
         );
         self.tool_executions = session_state.tool_executions;
         self.working_memory = session_state.working_memory;
+        self.plan = session_state.plan.clone();
         self.session_config = session_state.config;
         if self.session_config.use_diff_blocks {
             self.enable_diff_blocks();
@@ -435,6 +439,13 @@ impl Agent {
             .ui
             .send_event(UiEvent::UpdateMemory {
                 memory: self.working_memory.clone(),
+            })
+            .await;
+
+        let _ = self
+            .ui
+            .send_event(UiEvent::UpdatePlan {
+                plan: self.plan.clone(),
             })
             .await;
 
@@ -1167,6 +1178,7 @@ impl Agent {
             project_manager: self.project_manager.as_ref(),
             command_executor: self.command_executor.as_ref(),
             working_memory: Some(&mut self.working_memory),
+            plan: Some(&mut self.plan),
             ui: Some(self.ui.as_ref()),
             tool_id: Some(tool_request.id.clone()),
         };

@@ -101,6 +101,10 @@ impl UserInterface for TerminalTuiUI {
                 debug!("Updating memory");
                 state.working_memory = Some(memory);
             }
+            UiEvent::UpdatePlan { plan } => {
+                debug!("Updating plan");
+                state.plan = Some(plan);
+            }
             UiEvent::UpdateChatList { sessions } => {
                 debug!("Updating chat list with {} sessions", sessions.len());
                 state.update_sessions(sessions);

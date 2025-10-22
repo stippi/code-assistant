@@ -1,10 +1,11 @@
 use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
-use crate::types::WorkingMemory;
+use crate::types::{PlanState, WorkingMemory};
 use std::collections::HashMap;
 
 pub struct AppState {
     pub working_memory: Option<WorkingMemory>,
+    pub plan: Option<PlanState>,
     pub sessions: Vec<ChatMetadata>,
     pub current_session_id: Option<String>,
     pub activity_state: Option<SessionActivityState>,
@@ -19,6 +20,7 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             working_memory: None,
+            plan: None,
             sessions: Vec::new(),
             current_session_id: None,
             activity_state: None,

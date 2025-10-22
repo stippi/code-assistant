@@ -1,6 +1,6 @@
 use crate::persistence::{ChatMetadata, DraftAttachment};
 use crate::session::instance::SessionActivityState;
-use crate::types::WorkingMemory;
+use crate::types::{PlanState, WorkingMemory};
 use crate::ui::gpui::elements::MessageRole;
 use crate::ui::{DisplayFragment, ToolStatus};
 
@@ -55,6 +55,8 @@ pub enum UiEvent {
     AppendToolOutput { tool_id: String, chunk: String },
     /// Update the working memory view
     UpdateMemory { memory: WorkingMemory },
+    /// Update the session plan display
+    UpdatePlan { plan: PlanState },
     /// Set all messages at once (for session loading, clears existing)
     SetMessages {
         messages: Vec<MessageData>,

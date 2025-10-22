@@ -265,6 +265,7 @@ impl MessageHandler {
                 project_manager: self.project_manager.as_ref(),
                 command_executor: self.command_executor.as_ref(),
                 working_memory: None,
+                 plan: None,
                 ui: None,
                 tool_id: None,
             };

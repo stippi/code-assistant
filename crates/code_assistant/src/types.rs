@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use web::{WebPage, WebSearchResult};
@@ -122,6 +123,63 @@ pub struct WorkingMemory {
     pub expanded_directories: HashMap<String, Vec<PathBuf>>,
     /// Available project names
     pub available_projects: Vec<String>,
+}
+
+/// Priority levels for plan items
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanItemPriority {
+    High,
+    Medium,
+    Low,
+}
+
+impl Default for PlanItemPriority {
+    fn default() -> Self {
+        Self::Medium
+    }
+}
+
+/// Execution status for plan items
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanItemStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl Default for PlanItemStatus {
+    fn default() -> Self {
+        Self::Pending
+    }
+}
+
+/// A single plan item maintained by the agent
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct PlanItem {
+    pub content: String,
+    #[serde(default)]
+    pub priority: PlanItemPriority,
+    #[serde(default)]
+    pub status: PlanItemStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "_meta")]
+    pub meta: Option<JsonValue>,
+}
+
+/// Complete plan state for a session
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct PlanState {
+    #[serde(default)]
+    pub entries: Vec<PlanItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "_meta")]
+    pub meta: Option<JsonValue>,
+}
+
+impl PlanState {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// Custom serialization for HashMap with tuple keys
