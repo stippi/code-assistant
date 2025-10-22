@@ -247,7 +247,7 @@ impl OllamaClient {
             .json(&request_json)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Network error: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Network error: {e}"))?;
 
         // Store status code before consuming response
         let status = response.status();
@@ -258,16 +258,14 @@ impl OllamaClient {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(anyhow::anyhow!(
-                "Ollama request failed: Status {}, Error: {}",
-                status,
-                error_text
+                "Ollama request failed: Status {status}, Error: {error_text}",
             ));
         }
 
         let ollama_response: OllamaResponse = response
             .json()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to parse Ollama response: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to parse Ollama response: {e}"))?;
 
         let mut content = Vec::new();
 
@@ -325,7 +323,7 @@ impl OllamaClient {
             .json(&request_json)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Network error: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Network error: {e}"))?;
 
         // Store status code before consuming response
         let status = response.status();
@@ -335,9 +333,7 @@ impl OllamaClient {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(anyhow::anyhow!(
-                "Ollama request failed: Status {}, Error: {}",
-                status,
-                error_text
+                "Ollama request failed: Status {status}, Error: {error_text}",
             ));
         }
 

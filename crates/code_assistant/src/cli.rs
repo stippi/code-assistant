@@ -118,8 +118,7 @@ impl Args {
             }
 
             anyhow::bail!(
-                "Model '{}' not found in configuration. Use --list-models to see available models.",
-                trimmed
+                "Model '{trimmed}' not found in configuration. Use --list-models to see available models.",
             );
         }
 

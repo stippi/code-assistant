@@ -41,6 +41,6 @@ pub trait Tool: Send + Sync + 'static {
 
     /// Deserialize a JSON value into this tool's output type
     fn deserialize_output(&self, json: serde_json::Value) -> Result<Self::Output> {
-        serde_json::from_value(json).map_err(|e| anyhow!("Failed to deserialize output: {}", e))
+        serde_json::from_value(json).map_err(|e| anyhow!("Failed to deserialize output: {e}"))
     }
 }

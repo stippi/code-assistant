@@ -943,7 +943,7 @@ impl AnthropicClient {
                                 rate_limits: Some(AnthropicRateLimitInfo::default()),
                             }
                             .into()),
-                            _ => Err(anyhow::anyhow!("Stream error: {}", error_msg)),
+                            _ => Err(anyhow::anyhow!("Stream error: {error_msg}")),
                         };
                     }
 
@@ -1143,7 +1143,7 @@ impl AnthropicClient {
                         _ => {}
                     }
                 } else {
-                    return Err(anyhow::anyhow!("Failed to parse stream event:\n{}", line));
+                    return Err(anyhow::anyhow!("Failed to parse stream event:\n{line}"));
                 }
             }
             Ok(())

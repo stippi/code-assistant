@@ -162,7 +162,7 @@ fn find_files_matching_pattern(root_dir: &std::path::Path, pattern: &str) -> Res
     ];
 
     let glob_pattern =
-        Pattern::new(pattern).map_err(|e| anyhow!("Invalid glob pattern '{}': {}", pattern, e))?;
+        Pattern::new(pattern).map_err(|e| anyhow!("Invalid glob pattern '{pattern}': {e}"))?;
 
     let mut matching_files = Vec::new();
 

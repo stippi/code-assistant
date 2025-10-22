@@ -669,7 +669,7 @@ impl acp::Agent for ACPAgentImpl {
                             if let Some(task_handle) = session.task_handle.take() {
                                 if task_handle.is_finished() {
                                     Some(task_handle.await.unwrap_or_else(|e| {
-                                        Err(anyhow::anyhow!("Task panicked: {}", e))
+                                        Err(anyhow::anyhow!("Task panicked: {e}"))
                                     }))
                                 } else {
                                     None

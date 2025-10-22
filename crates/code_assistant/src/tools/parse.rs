@@ -589,7 +589,7 @@ pub fn convert_xml_params_to_json(
     // Get tool schema from registry
     let tool = registry
         .get(tool_name)
-        .ok_or_else(|| anyhow!("Tool {} not found in registry", tool_name))?;
+        .ok_or_else(|| anyhow!("Tool {tool_name} not found in registry"))?;
 
     let tool_spec = tool.spec();
     let schema = &tool_spec.parameters_schema;

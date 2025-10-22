@@ -946,7 +946,7 @@ impl Agent {
             let mut processor_guard = processor.lock().unwrap();
             processor_guard
                 .process(chunk)
-                .map_err(|e| anyhow::anyhow!("Failed to process streaming chunk: {}", e))
+                .map_err(|e| anyhow::anyhow!("Failed to process streaming chunk: {e}"))
         });
 
         // Send message to LLM provider

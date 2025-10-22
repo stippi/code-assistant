@@ -39,7 +39,7 @@ fn get_api_key(config: &Value, provider_name: &str) -> Result<String> {
         .get("api_key")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| anyhow::anyhow!("api_key not found in {} provider config", provider_name))
+        .ok_or_else(|| anyhow::anyhow!("api_key not found in {provider_name} provider config"))
 }
 
 /// Extract base URL from provider config with default fallback

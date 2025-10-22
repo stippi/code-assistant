@@ -103,7 +103,7 @@ impl SessionManager {
         let session = self
             .persistence
             .load_chat_session(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         let messages = session.messages.clone();
 
@@ -215,7 +215,7 @@ impl SessionManager {
             let session_instance = self
                 .active_sessions
                 .get_mut(session_id)
-                .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+                .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
             // Make sure the session instance is not stale
             session_instance.reload_from_persistence(&self.persistence)?;
@@ -437,7 +437,7 @@ impl SessionManager {
         let mut session = self
             .persistence
             .load_chat_session(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         session.model_config = model_config.clone();
         self.persistence.save_chat_session(&session)?;
@@ -532,7 +532,7 @@ impl SessionManager {
         let session_instance = self
             .active_sessions
             .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         // Update the shared pending message
         let mut pending = session_instance.pending_message.lock().unwrap();
@@ -638,7 +638,7 @@ impl SessionManager {
         let session_instance = self
             .active_sessions
             .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         let mut pending = session_instance.pending_message.lock().unwrap();
         Ok(pending.take())
@@ -649,7 +649,7 @@ impl SessionManager {
         let session_instance = self
             .active_sessions
             .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         let pending = session_instance.pending_message.lock().unwrap();
         Ok(pending.clone())

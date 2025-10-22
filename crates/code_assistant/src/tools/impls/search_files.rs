@@ -305,7 +305,7 @@ impl Tool for SearchFilesTool {
                 if absolute_path.exists() {
                     absolute_paths.push(absolute_path);
                 } else {
-                    return Err(anyhow!("Path not found: {}", path));
+                    return Err(anyhow!("Path not found: {path}"));
                 }
             }
             absolute_paths

@@ -26,7 +26,7 @@ impl WebClient {
                 //.with_head()
                 .user_data_dir(user_data_dir.path())
                 .build()
-                .map_err(|e| anyhow::anyhow!("{}", e))?,
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
         )
         .await?;
 

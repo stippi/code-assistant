@@ -320,7 +320,7 @@ async fn stream_terminal_output(
                 .await
                 .map_err(|e| anyhow!("Failed to kill terminal after timeout: {e}"))?;
 
-            return Err(anyhow!("Command timed out after {:?}", timeout));
+            return Err(anyhow!("Command timed out after {timeout:?}"));
         }
 
         tokio::time::sleep(POLL_INTERVAL).await;
@@ -341,7 +341,7 @@ async fn wait_for_terminal_completion(
 
     let wait_response = tokio::time::timeout(timeout, wait_future)
         .await
-        .map_err(|_| anyhow!("Command timed out after {:?}", timeout))?
+        .map_err(|_| anyhow!("Command timed out after {timeout:?}"))?
         .map_err(|e| anyhow!("Failed to wait for terminal exit: {e}"))?;
 
     let output_response = connection

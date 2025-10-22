@@ -32,7 +32,7 @@ impl<T: Render + ToolResult + Serialize + Send + Sync + 'static> AnyOutput for T
     }
 
     fn to_json(&self) -> Result<serde_json::Value> {
-        serde_json::to_value(self).map_err(|e| anyhow::anyhow!("Failed to serialize output: {}", e))
+        serde_json::to_value(self).map_err(|e| anyhow::anyhow!("Failed to serialize output: {e}"))
     }
 }
 
@@ -81,7 +81,7 @@ where
 
         // Serialize the potentially updated input back to JSON
         *params = serde_json::to_value(input)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize updated input: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to serialize updated input: {e}"))?;
 
         // Box the output as AnyOutput
         Ok(Box::new(output) as Box<dyn AnyOutput>)

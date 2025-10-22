@@ -73,7 +73,7 @@ impl TokenManager {
         let status = res.status();
         if !status.is_success() {
             let error_text = res.text().await?;
-            anyhow::bail!("Token request failed: {} - {}", status, error_text);
+            anyhow::bail!("Token request failed: {status} - {error_text}");
         }
 
         let token_response = res.json::<TokenResponse>().await?;

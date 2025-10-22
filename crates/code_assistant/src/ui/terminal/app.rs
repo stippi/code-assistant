@@ -319,7 +319,7 @@ impl TerminalTuiApp {
                     session_id = Some(new_session_id);
                 }
                 BackendResponse::Error { message } => {
-                    return Err(anyhow::anyhow!("Failed to create session: {}", message));
+                    return Err(anyhow::anyhow!("Failed to create session: {message}"));
                 }
                 _ => {
                     return Err(anyhow::anyhow!("Unexpected response when creating session"));

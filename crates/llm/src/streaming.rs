@@ -36,7 +36,7 @@ impl ChunkStream for HttpChunkStream {
         match self.response.chunk().await {
             Ok(Some(chunk)) => Ok(Some(chunk.to_vec())),
             Ok(None) => Ok(None),
-            Err(e) => Err(anyhow::anyhow!("HTTP chunk error: {}", e)),
+            Err(e) => Err(anyhow::anyhow!("HTTP chunk error: {e}")),
         }
     }
 }

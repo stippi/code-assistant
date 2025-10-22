@@ -713,10 +713,7 @@ async fn run_provider_tests<T: MockResponseGenerator + Clone + 'static>(
                 let actual =
                     serde_json::from_str::<serde_json::Value>(&actual_json).map_err(|e| {
                         anyhow::anyhow!(
-                            "Failed to parse JSON from provider {}: {} - JSON was: {}",
-                            provider_name,
-                            e,
-                            actual_json
+                            "Failed to parse JSON from provider {provider_name}: {e} - JSON was: {actual_json}",
                         )
                     })?;
 

@@ -90,7 +90,7 @@ impl ProjectManager for DefaultProjectManager {
     fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn CodeExplorer>> {
         let project = self
             .get_project(name)?
-            .ok_or_else(|| anyhow::anyhow!("Project not found: {}", name))?;
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {name}"))?;
 
         Ok(Box::new(Explorer::new(project.path)))
     }

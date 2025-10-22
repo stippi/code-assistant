@@ -151,7 +151,7 @@ impl ConfigurationSystem {
     ) -> Result<(&ModelConfig, &ProviderConfig)> {
         let model = self
             .get_model(model_name)
-            .ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_name))?;
+            .ok_or_else(|| anyhow::anyhow!("Model not found: {model_name}"))?;
 
         let provider = self.get_provider(&model.provider).ok_or_else(|| {
             anyhow::anyhow!(
