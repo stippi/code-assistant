@@ -103,13 +103,16 @@ This document describes how to introduce a persistent "plan" tool to the code-as
 
 ## Implementation Checklist
 
-1. [ ] Types & persistence (`types.rs`, `persistence.rs`, `session/mod.rs`, `session/manager.rs`, `agent/runner.rs`).
-2. [ ] ToolContext + fixtures (`tools/core/tool.rs`, `tests/mocks.rs`, `agent/runner.rs`, `mcp/handler.rs`).
-3. [ ] `update_plan` tool module (`tools/impls/update_plan.rs`, registry entries, tool filter update).
-4. [ ] UI event plumbing (`ui/ui_events.rs`, `ui/gpui/mod.rs`, `ui/terminal/state.rs`, `ui/terminal/ui.rs`).
-5. [ ] ACP bridge update (`acp/ui.rs`).
-6. [ ] Session connect events, agent save/load hooks (`session/instance.rs`, `agent/runner.rs`).
-7. [ ] Tests for persistence, tool execution, ACP updates.
-8. [ ] Prompt/docs updates.
+1. [x] Types & persistence (`types.rs`, `persistence.rs`, `session/mod.rs`, `session/manager.rs`, `agent/runner.rs`).
+2. [x] ToolContext + fixtures (`tools/core/tool.rs`, `tests/mocks.rs`, `agent/runner.rs`, `mcp/handler.rs`).
+3. [x] `update_plan` tool module (`tools/impls/update_plan.rs`, registry entries, tool filter update).
+4. [x] UI event plumbing (`ui/ui_events.rs`, `ui/gpui/mod.rs`, `ui/terminal/state.rs`, `ui/terminal/ui.rs`).
+5. [x] ACP bridge update (`acp/ui.rs`).
+6. [x] Session connect events, agent save/load hooks (`session/instance.rs`, `agent/runner.rs`).
+7. [ ] Tests for persistence, tool execution, ACP updates (ACP session/update propagation test still outstanding).
+   - [x] Persistence round-trip coverage in `crates/code_assistant/src/persistence.rs::tests::chat_session_plan_roundtrip`.
+   - [x] Tool fixture and `update_plan` tool execution tests in `crates/code_assistant/src/tools/impls/update_plan.rs`.
+   - [ ] ACP bridge unit test ensuring `UiEvent::UpdatePlan` emits `acp::SessionUpdate::Plan`.
+8. [x] Prompt/docs updates.
 
 Implementers should work through the checklist sequentially, running `cargo test` (workspace) after major milestones.
