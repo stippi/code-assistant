@@ -87,6 +87,9 @@ impl UserInterface for TerminalTuiUI {
                 debug!("Setting messages for session {:?}", session_id);
 
                 if let Some(session_id) = session_id {
+                    if state.current_session_id.as_ref() != Some(&session_id) {
+                        state.set_plan(None);
+                    }
                     state.current_session_id = Some(session_id);
                 }
 
@@ -103,7 +106,14 @@ impl UserInterface for TerminalTuiUI {
             }
             UiEvent::UpdatePlan { plan } => {
                 debug!("Updating plan");
-                state.plan = Some(plan);
+                let plan_clone = plan.clone();
+                state.set_plan(Some(plan));
+
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.set_plan_state(Some(plan_clone));
+                    renderer_guard.set_plan_expanded(state.plan_expanded);
+                }
             }
             UiEvent::UpdateChatList { sessions } => {
                 debug!("Updating chat list with {} sessions", sessions.len());

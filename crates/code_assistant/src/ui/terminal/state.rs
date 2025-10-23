@@ -6,6 +6,8 @@ use std::collections::HashMap;
 pub struct AppState {
     pub working_memory: Option<WorkingMemory>,
     pub plan: Option<PlanState>,
+    pub plan_expanded: bool,
+    pub plan_dirty: bool,
     pub sessions: Vec<ChatMetadata>,
     pub current_session_id: Option<String>,
     pub activity_state: Option<SessionActivityState>,
@@ -21,6 +23,8 @@ impl AppState {
         Self {
             working_memory: None,
             plan: None,
+            plan_expanded: false,
+            plan_dirty: true,
             sessions: Vec::new(),
             current_session_id: None,
             activity_state: None,
@@ -59,5 +63,24 @@ impl AppState {
 
     pub fn set_info_message(&mut self, message: Option<String>) {
         self.info_message = message;
+    }
+
+    pub fn set_plan(&mut self, plan: Option<PlanState>) {
+        if let Some(ref plan_state) = plan {
+            tracing::debug!(
+                "AppState::set_plan with {} entries (expanded: {})",
+                plan_state.entries.len(),
+                self.plan_expanded
+            );
+        } else {
+            tracing::debug!("AppState::set_plan clearing plan state");
+        }
+        self.plan = plan;
+        self.plan_dirty = true;
+    }
+
+    pub fn toggle_plan_expanded(&mut self) -> bool {
+        self.plan_expanded = !self.plan_expanded;
+        self.plan_expanded
     }
 }
