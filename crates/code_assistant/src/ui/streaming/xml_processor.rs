@@ -266,11 +266,19 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                                 });
                             }
 
-                            ContentBlock::ContextCompaction { summary, .. } => {
-                                fragments.push(DisplayFragment::PlainText(format!(
-                                    "[Context Compacted]\n\n{}",
-                                    summary
-                                )));
+                            ContentBlock::ContextCompaction {
+                                compaction_number,
+                                messages_archived,
+                                context_size_before,
+                                summary,
+                                ..
+                            } => {
+                                fragments.push(DisplayFragment::ContextCompaction {
+                                    compaction_number: *compaction_number,
+                                    messages_archived: *messages_archived,
+                                    context_size_before: *context_size_before,
+                                    summary: summary.clone(),
+                                });
                             }
                         }
                     }

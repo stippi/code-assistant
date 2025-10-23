@@ -42,10 +42,10 @@ enum LoopFlow {
 }
 
 #[derive(Debug, Clone)]
-struct ContextWindowConfig {
-    limit: Option<u32>,
-    threshold: f32,
-    enabled: bool,
+pub(crate) struct ContextWindowConfig {
+    pub(crate) limit: Option<u32>,
+    pub(crate) threshold: f32,
+    pub(crate) enabled: bool,
 }
 
 pub struct Agent {
@@ -1429,7 +1429,7 @@ impl Agent {
         Ok(updated_text)
     }
 
-    fn should_compact_context(&self) -> bool {
+    pub(crate) fn should_compact_context(&self) -> bool {
         if !self.context_config.enabled {
             return false;
         }
@@ -1445,7 +1445,7 @@ impl Agent {
         current_size >= threshold
     }
 
-    fn get_current_context_size(&self) -> u32 {
+    pub(crate) fn get_current_context_size(&self) -> u32 {
         for message in self.message_history.iter().rev() {
             if matches!(message.role, MessageRole::Assistant) {
                 if let Some(usage) = &message.usage {
@@ -1456,7 +1456,7 @@ impl Agent {
         0
     }
 
-    fn get_active_messages(&self) -> Vec<Message> {
+    pub(crate) fn get_active_messages(&self) -> Vec<Message> {
         let last_compaction_idx = self
             .message_history
             .iter()
@@ -1474,7 +1474,7 @@ impl Agent {
         }
     }
 
-    fn count_compactions(&self) -> u32 {
+    pub(crate) fn count_compactions(&self) -> u32 {
         self.message_history
             .iter()
             .filter(|msg| {
@@ -1484,7 +1484,7 @@ impl Agent {
             .count() as u32
     }
 
-    async fn request_context_summary(&mut self) -> Result<String> {
+    pub(crate) async fn request_context_summary(&mut self) -> Result<String> {
         info!("Context window approaching limit, requesting summary");
 
         let summary_request = Message {
@@ -1523,7 +1523,7 @@ impl Agent {
         Ok(summary)
     }
 
-    fn generate_summary_request(&self) -> String {
+    pub(crate) fn generate_summary_request(&self) -> String {
         "<system-context-management>\n\
         The context window is approaching its limit. Please provide a COMPLETE and DETAILED summary:\n\
         \n\
@@ -1538,7 +1538,7 @@ impl Agent {
         </system-context-management>".to_string()
     }
 
-    async fn compact_context(&mut self, summary: String) -> Result<()> {
+    pub(crate) async fn compact_context(&mut self, summary: String) -> Result<()> {
         let compaction_number = self.count_compactions() + 1;
         let messages_archived = self.message_history.len();
         let context_size_before = self.get_current_context_size();
@@ -1571,5 +1571,23 @@ impl Agent {
         self.invalidate_system_message_cache();
 
         Ok(())
+    }
+
+    // Test helper methods
+    #[cfg(test)]
+    pub(crate) fn get_context_config(&self) -> &ContextWindowConfig {
+        &self.context_config
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_next_request_id(&mut self) -> u64 {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_message_history(&self) -> &Vec<Message> {
+        &self.message_history
     }
 }

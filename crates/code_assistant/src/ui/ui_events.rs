@@ -112,6 +112,14 @@ pub enum UiEvent {
     AppendReasoningSummaryDelta { delta: String },
     /// Complete reasoning block
     CompleteReasoning,
+
     /// Update the current model selection in the UI
     UpdateCurrentModel { model_name: String },
+    /// Add a context compaction marker
+    AddContextCompaction {
+        compaction_number: u32,
+        messages_archived: usize,
+        context_size_before: u32,
+        summary: String,
+    },
 }

@@ -173,6 +173,32 @@ impl<B: Backend> TerminalRenderer<B> {
         live_message.add_block(MessageBlock::ToolUse(ToolUseBlock::new(name, id)));
     }
 
+    /// Add a context compaction marker block
+    pub fn add_context_compaction_block(
+        &mut self,
+        compaction_number: u32,
+        messages_archived: usize,
+        context_size_before: u32,
+        summary: String,
+    ) {
+        // Hide spinner when first content arrives
+        self.hide_loading_spinner_if_active();
+
+        let live_message = self
+            .live_message
+            .as_mut()
+            .expect("add_context_compaction_block called without an active live message");
+
+        live_message.add_block(MessageBlock::ContextCompaction(
+            super::message::ContextCompactionBlock::new(
+                compaction_number,
+                messages_archived,
+                context_size_before,
+                summary,
+            ),
+        ));
+    }
+
     /// Ensure the last block in the live message is of the specified type
     /// If not, append a new block of that type
     /// Returns true if a new block was created, false if the last block was already the right type

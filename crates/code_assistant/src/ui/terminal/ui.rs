@@ -294,12 +294,31 @@ impl UserInterface for TerminalTuiUI {
                     renderer_guard.set_error(message);
                 }
             }
+
             UiEvent::ClearError => {
                 debug!("Clearing error");
                 // Clear error in renderer
                 if let Some(renderer) = self.renderer.lock().await.as_ref() {
                     let mut renderer_guard = renderer.lock().await;
                     renderer_guard.clear_error();
+                }
+            }
+            UiEvent::AddContextCompaction {
+                compaction_number,
+                messages_archived,
+                context_size_before,
+                summary,
+            } => {
+                debug!("Adding context compaction marker #{}", compaction_number);
+
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.add_context_compaction_block(
+                        compaction_number,
+                        messages_archived,
+                        context_size_before,
+                        summary.clone(),
+                    );
                 }
             }
             _ => {
@@ -422,8 +441,23 @@ impl UserInterface for TerminalTuiUI {
                     "Tool {tool_id} attached client terminal {terminal_id}; terminal UI has no live view"
                 );
             }
+
             DisplayFragment::ReasoningComplete => {
                 // For terminal UI, no specific action needed for reasoning completion
+            }
+
+            DisplayFragment::ContextCompaction {
+                compaction_number,
+                messages_archived,
+                context_size_before,
+                summary,
+            } => {
+                self.push_event(UiEvent::AddContextCompaction {
+                    compaction_number: *compaction_number,
+                    messages_archived: *messages_archived,
+                    context_size_before: *context_size_before,
+                    summary: summary.clone(),
+                });
             }
         }
 

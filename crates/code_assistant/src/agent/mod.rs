@@ -1,6 +1,9 @@
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod context_window_tests;
+
 pub mod persistence;
 pub mod runner;
 pub mod types;

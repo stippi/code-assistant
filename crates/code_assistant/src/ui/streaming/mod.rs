@@ -49,8 +49,16 @@ pub enum DisplayFragment {
     ReasoningSummaryStart,
     /// OpenAI reasoning summary delta for the current item
     ReasoningSummaryDelta(String),
+
     /// Mark reasoning as completed
     ReasoningComplete,
+    /// Context compaction marker
+    ContextCompaction {
+        compaction_number: u32,
+        messages_archived: usize,
+        context_size_before: u32,
+        summary: String,
+    },
 }
 
 /// Common trait for stream processors

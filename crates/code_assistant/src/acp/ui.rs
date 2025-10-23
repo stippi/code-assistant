@@ -634,7 +634,8 @@ impl UserInterface for ACPUserUI {
             | UiEvent::RequestPendingMessageEdit { .. }
             | UiEvent::UpdatePendingMessage { .. }
             | UiEvent::ClearError
-            | UiEvent::UpdateCurrentModel { .. } => {
+            | UiEvent::UpdateCurrentModel { .. }
+            | UiEvent::AddContextCompaction { .. } => {
                 // These are UI management events, not relevant for ACP
             }
             UiEvent::DisplayError { message } => {
@@ -755,7 +756,10 @@ impl UserInterface for ACPUserUI {
 
                 self.queue_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update));
             }
-            DisplayFragment::ReasoningSummaryStart | DisplayFragment::ReasoningComplete => {
+
+            DisplayFragment::ReasoningSummaryStart
+            | DisplayFragment::ReasoningComplete
+            | DisplayFragment::ContextCompaction { .. } => {
                 // No ACP representation needed yet
             }
             DisplayFragment::ReasoningSummaryDelta(delta) => {
