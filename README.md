@@ -143,7 +143,7 @@ The code-assistant uses two JSON configuration files to manage LLM providers and
 **`~/.config/code-assistant/providers.json`** - Configure provider credentials and endpoints:
 ```json
 {
-  "anthropic-main": {
+  "anthropic": {
     "label": "Anthropic Claude",
     "provider": "anthropic",
     "config": {
@@ -151,9 +151,9 @@ The code-assistant uses two JSON configuration files to manage LLM providers and
       "base_url": "https://api.anthropic.com/v1"
     }
   },
-  "openai-main": {
+  "openai": {
     "label": "OpenAI",
-    "provider": "openai",
+    "provider": "openai-responses",
     "config": {
       "api_key": "${OPENAI_API_KEY}"
     }
@@ -164,16 +164,26 @@ The code-assistant uses two JSON configuration files to manage LLM providers and
 **`~/.config/code-assistant/models.json`** - Define available models:
 ```json
 {
-  "Claude Sonnet 4.5": {
-    "provider": "anthropic-main",
+  "Claude Sonnet 4.5 (Thinking)": {
+    "provider": "anthropic",
     "id": "claude-sonnet-4-5",
     "config": {
-      "thinking_enabled": true,
-      "max_tokens": 8192
+      "max_tokens": 32768,
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 8192
+      }
+    }
+  },
+  "Claude Sonnet 4.5": {
+    "provider": "anthropic",
+    "id": "claude-sonnet-4-5",
+    "config": {
+      "max_tokens": 32768
     }
   },
   "GPT-5": {
-    "provider": "openai-main",
+    "provider": "openai",
     "id": "gpt-5-codex",
     "config": {
       "temperature": 0.7
