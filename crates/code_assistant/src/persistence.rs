@@ -9,9 +9,7 @@ use tracing::{debug, info, warn};
 
 use crate::session::SessionConfig;
 use crate::tools::ToolRequest;
-use crate::types::{
-    PlanItem, PlanItemPriority, PlanItemStatus, PlanState, ToolSyntax, WorkingMemory,
-};
+use crate::types::{PlanState, ToolSyntax, WorkingMemory};
 
 /// Model configuration for a session
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -656,6 +654,7 @@ impl DraftStorage {
 mod tests {
     use super::*;
     use crate::session::SessionConfig;
+    use crate::types::{PlanItem, PlanItemPriority, PlanItemStatus};
 
     #[test]
     fn chat_session_plan_roundtrip() {

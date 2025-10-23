@@ -176,12 +176,6 @@ pub struct PlanState {
     pub meta: Option<JsonValue>,
 }
 
-impl PlanState {
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-}
-
 /// Custom serialization for HashMap with tuple keys
 mod tuple_key_map {
     use super::*;

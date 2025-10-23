@@ -309,12 +309,6 @@ impl MockUI {
         self.events.lock().unwrap().clone()
     }
 
-    pub fn streaming_fragments(&self) -> Vec<String> {
-        self.streaming.lock().unwrap().clone()
-    }
-}
-
-impl MockUI {
     pub fn get_streaming_output(&self) -> Vec<String> {
         self.streaming.lock().unwrap().clone()
     }
@@ -1117,11 +1111,6 @@ impl ToolTestFixture {
     /// Get a reference to the plan state for assertions
     pub fn plan(&self) -> Option<&PlanState> {
         self.plan.as_ref()
-    }
-
-    /// Get a mutable reference to the plan state for modifications
-    pub fn plan_mut(&mut self) -> Option<&mut PlanState> {
-        self.plan.as_mut()
     }
 
     /// Get a reference to the UI mock for assertions

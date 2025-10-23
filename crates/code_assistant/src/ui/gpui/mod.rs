@@ -14,6 +14,7 @@ mod messages;
 pub mod model_selector;
 pub mod parameter_renderers;
 mod path_util;
+mod plan_banner;
 mod root;
 pub mod simple_renderers;
 pub mod theme;
