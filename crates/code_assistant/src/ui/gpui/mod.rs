@@ -1089,6 +1089,10 @@ impl Gpui {
         self.current_model.lock().unwrap().clone()
     }
 
+    pub fn get_plan_state(&self) -> Option<PlanState> {
+        self.plan_state.lock().unwrap().clone()
+    }
+
     // Extended draft management methods with attachments
     pub fn save_draft_for_session(
         &self,

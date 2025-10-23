@@ -178,10 +178,7 @@ impl Tool for UpdatePlanTool {
         let summary = if plan_snapshot.entries.is_empty() {
             "Plan cleared".to_string()
         } else {
-            format!(
-                "Plan updated with {} item(s)",
-                plan_snapshot.entries.len()
-            )
+            format!("Plan updated with {} item(s)", plan_snapshot.entries.len())
         };
 
         if let Some(ui) = context.ui {

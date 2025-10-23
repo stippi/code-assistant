@@ -8,6 +8,7 @@ use super::theme;
 use super::BackendEvent;
 use super::{CloseWindow, Gpui, UiEventSender};
 use crate::persistence::ChatMetadata;
+use crate::types::{PlanItemPriority, PlanItemStatus, PlanState};
 use crate::ui::ui_events::UiEvent;
 use gpui::{
     bounce, div, ease_in_out, percentage, prelude::*, px, rgba, svg, Animation, AnimationExt, App,
@@ -15,6 +16,7 @@ use gpui::{
     Transformation,
 };
 use gpui_component::ActiveTheme;
+use std::collections::HashMap;
 use tracing::{debug, error, trace, warn};
 
 // Root View - handles overall layout and coordination
@@ -31,6 +33,8 @@ pub struct RootView {
     chat_collapsed: bool,
     current_session_id: Option<String>,
     chat_sessions: Vec<ChatMetadata>,
+    plan_collapsed_sessions: HashMap<String, bool>,
+    plan_collapsed: bool,
     // Subscription to input area events
     _input_area_subscription: Subscription,
     _chat_sidebar_subscription: Subscription,
@@ -70,6 +74,8 @@ impl RootView {
             chat_collapsed: false, // Chat sidebar is visible by default
             current_session_id: None,
             chat_sessions: Vec::new(),
+            plan_collapsed_sessions: HashMap::new(),
+            plan_collapsed: false,
             _input_area_subscription: input_area_subscription,
             _chat_sidebar_subscription: chat_sidebar_subscription,
         };
@@ -100,6 +106,20 @@ impl RootView {
         self.chat_sidebar.update(cx, |sidebar, cx| {
             sidebar.toggle_collapsed(cx);
         });
+        cx.notify();
+    }
+
+    pub fn on_toggle_plan_visibility(
+        &mut self,
+        _: &MouseUpEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.plan_collapsed = !self.plan_collapsed;
+        if let Some(session_id) = &self.current_session_id {
+            self.plan_collapsed_sessions
+                .insert(session_id.clone(), self.plan_collapsed);
+        }
         cx.notify();
     }
 
@@ -303,6 +323,204 @@ impl RootView {
     ) {
         if let Some(gpui) = cx.try_global::<Gpui>() {
             gpui.save_draft_for_session(session_id, content, attachments);
+        }
+    }
+
+    fn render_plan_banner(
+        &self,
+        plan_state: &PlanState,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if plan_state.entries.is_empty() {
+            return None;
+        }
+
+        let (summary_text, highlight_summary) = self.collapsed_plan_summary(plan_state);
+        let item_count = plan_state.entries.len();
+        let item_label = if item_count == 1 { "item" } else { "items" };
+
+        let (chevron_icon, chevron_fallback) = if self.plan_collapsed {
+            (file_icons::get().get_type_icon(file_icons::CHEVRON_UP), "▲")
+        } else {
+            (
+                file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN),
+                "▼",
+            )
+        };
+
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(11.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Plan")
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground.opacity(0.75))
+                            .child(format!("• {} {}", item_count, item_label)),
+                    ),
+            )
+            .child(
+                div()
+                    .size(px(20.))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(cx.theme().muted))
+                    .child(file_icons::render_icon(
+                        &chevron_icon,
+                        14.0,
+                        cx.theme().muted_foreground,
+                        chevron_fallback,
+                    ))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(Self::on_toggle_plan_visibility),
+                    ),
+            );
+
+        let mut container = div()
+            .id("session-plan")
+            .flex()
+            .flex_col()
+            .flex_none()
+            .bg(cx.theme().background)
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .px_4()
+            .py_3()
+            .gap_2()
+            .text_size(px(11.))
+            .line_height(px(15.))
+            .child(header);
+
+        if self.plan_collapsed {
+            let summary_color = if highlight_summary {
+                cx.theme().info
+            } else {
+                cx.theme().muted_foreground
+            };
+            container = container.child(div().text_color(summary_color).child(summary_text));
+        } else {
+            let markdown = self.build_plan_markdown(plan_state);
+            if !markdown.is_empty() {
+                container = container.child(
+                    div().text_color(cx.theme().foreground).child(
+                        gpui_component::text::TextView::markdown(
+                            "session-plan-markdown",
+                            markdown,
+                            window,
+                            cx,
+                        )
+                        .selectable(),
+                    ),
+                );
+            }
+        }
+
+        Some(container.into_any_element())
+    }
+
+    fn build_plan_markdown(&self, plan_state: &PlanState) -> String {
+        plan_state
+            .entries
+            .iter()
+            .map(|entry| {
+                let checkbox = match entry.status {
+                    PlanItemStatus::Pending => "[ ]",
+                    PlanItemStatus::InProgress => "[ ]",
+                    PlanItemStatus::Completed => "[x]",
+                };
+
+                let mut line = format!("- {} {}", checkbox, Self::escape_markdown(&entry.content));
+
+                if entry.status == PlanItemStatus::InProgress {
+                    line.push_str(" _(in progress)_");
+                }
+
+                match entry.priority {
+                    PlanItemPriority::High => line.push_str(" **(high priority)**"),
+                    PlanItemPriority::Low => line.push_str(" _(low priority)_"),
+                    PlanItemPriority::Medium => {}
+                }
+
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn collapsed_plan_summary(&self, plan_state: &PlanState) -> (String, bool) {
+        if let Some(in_progress) = plan_state
+            .entries
+            .iter()
+            .find(|entry| entry.status == PlanItemStatus::InProgress)
+        {
+            let normalized = Self::normalize_single_line(&in_progress.content);
+            let truncated = Self::truncate_text(&normalized, 80);
+            (format!("In progress • {}", truncated), true)
+        } else {
+            let count = plan_state.entries.len();
+            let label = if count == 1 {
+                "plan item"
+            } else {
+                "plan items"
+            };
+            (format!("{count} {label}"), false)
+        }
+    }
+
+    fn escape_markdown(content: &str) -> String {
+        let collapsed = Self::normalize_single_line(content);
+        collapsed
+            .replace('&', "&amp;")
+            .replace('\\', "\\\\")
+            .replace('`', "\\`")
+            .replace('*', "\\*")
+            .replace('_', "\\_")
+            .replace('{', "\\{")
+            .replace('}', "\\}")
+            .replace('[', "\\[")
+            .replace(']', "\\]")
+            .replace('(', "\\(")
+            .replace(')', "\\)")
+            .replace('<', "\\<")
+            .replace('#', "\\#")
+            .replace('+', "\\+")
+            .replace('!', "\\!")
+            .replace('|', "\\|")
+            .replace('>', "\\>")
+    }
+
+    fn normalize_single_line(content: &str) -> String {
+        content
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn truncate_text(text: &str, max_len: usize) -> String {
+        if text.chars().count() <= max_len {
+            text.to_string()
+        } else {
+            let mut truncated = text
+                .chars()
+                .take(max_len.saturating_sub(1))
+                .collect::<String>();
+            truncated.push('…');
+            truncated
         }
     }
 
@@ -533,6 +751,15 @@ impl RootView {
     ) {
         let gpui = cx.try_global::<Gpui>();
 
+        if let Some(session_id) = new_session_id.as_ref() {
+            self.plan_collapsed = *self
+                .plan_collapsed_sessions
+                .get(session_id)
+                .unwrap_or(&false);
+        } else {
+            self.plan_collapsed = false;
+        }
+
         // Determine what value to set in the input field and load attachments
         let (input_value, attachments) = if let (Some(new_id), Some(gpui)) = (new_session_id, &gpui)
         {
@@ -570,16 +797,17 @@ impl Focusable for RootView {
 impl Render for RootView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Get current chat state from global Gpui
-        let (chat_sessions, current_session_id, current_activity_state, current_model) =
+        let (chat_sessions, current_session_id, current_activity_state, current_model, plan_state) =
             if let Some(gpui) = cx.try_global::<Gpui>() {
                 (
                     gpui.get_chat_sessions(),
                     gpui.get_current_session_id(),
                     gpui.current_session_activity_state.lock().unwrap().clone(),
                     gpui.get_current_model(),
+                    gpui.get_plan_state(),
                 )
             } else {
-                (Vec::new(), None, None, None)
+                (Vec::new(), None, None, None, None)
             };
 
         // Update chat sidebar if needed
@@ -641,6 +869,10 @@ impl Render for RootView {
         self.input_area.update(cx, |input_area, _cx| {
             input_area.set_agent_state(agent_is_running, cancel_enabled);
         });
+
+        let plan_banner = plan_state
+            .as_ref()
+            .and_then(|plan| self.render_plan_banner(plan, window, cx));
 
         // Main container with titlebar and content
         div()
@@ -785,6 +1017,8 @@ impl Render for RootView {
                             )
                             // Status popover - positioned at bottom center
                             .children(self.render_status_popover(cx))
+                            // Session plan banner (if available)
+                            .when_some(plan_banner, |s, banner| s.child(banner))
                             // Input area sits at the bottom
                             .child(
                                 div()

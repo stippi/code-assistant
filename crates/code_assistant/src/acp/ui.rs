@@ -577,7 +577,9 @@ impl UserInterface for ACPUserUI {
                         content: entry.content,
                         priority: match entry.priority {
                             crate::types::PlanItemPriority::High => acp::PlanEntryPriority::High,
-                            crate::types::PlanItemPriority::Medium => acp::PlanEntryPriority::Medium,
+                            crate::types::PlanItemPriority::Medium => {
+                                acp::PlanEntryPriority::Medium
+                            }
                             crate::types::PlanItemPriority::Low => acp::PlanEntryPriority::Low,
                         },
                         status: match entry.status {

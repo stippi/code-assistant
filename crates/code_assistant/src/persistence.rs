@@ -9,7 +9,9 @@ use tracing::{debug, info, warn};
 
 use crate::session::SessionConfig;
 use crate::tools::ToolRequest;
-use crate::types::{PlanItem, PlanItemPriority, PlanItemStatus, PlanState, ToolSyntax, WorkingMemory};
+use crate::types::{
+    PlanItem, PlanItemPriority, PlanItemStatus, PlanState, ToolSyntax, WorkingMemory,
+};
 
 /// Model configuration for a session
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -621,7 +623,7 @@ impl DraftStorage {
 
     /// Clean up old drafts for sessions that no longer exist
     #[allow(dead_code)]
-pub fn cleanup_orphaned_drafts(&self, existing_session_ids: &[String]) -> Result<()> {
+    pub fn cleanup_orphaned_drafts(&self, existing_session_ids: &[String]) -> Result<()> {
         if !self.drafts_dir.exists() {
             return Ok(());
         }

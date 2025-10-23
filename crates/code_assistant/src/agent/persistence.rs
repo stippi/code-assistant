@@ -8,9 +8,9 @@ use tracing::{debug, info};
 #[cfg(test)]
 use crate::agent::ToolExecution;
 #[cfg(test)]
-use crate::types::WorkingMemory;
-#[cfg(test)]
 use crate::types::PlanState;
+#[cfg(test)]
+use crate::types::WorkingMemory;
 #[cfg(test)]
 use llm::Message;
 
