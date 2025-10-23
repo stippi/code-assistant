@@ -1,7 +1,7 @@
 use super::render::Render;
 use super::result::ToolResult;
 use super::spec::ToolSpec;
-use crate::types::WorkingMemory;
+use crate::types::{PlanState, WorkingMemory};
 use anyhow::{anyhow, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -13,6 +13,8 @@ pub struct ToolContext<'a> {
     pub command_executor: &'a dyn crate::utils::CommandExecutor,
     /// Optional working memory (available in WorkingMemoryAgent mode)
     pub working_memory: Option<&'a mut WorkingMemory>,
+    /// Optional plan state reference for plan-related tools
+    pub plan: Option<&'a mut PlanState>,
     /// Optional UI instance for streaming output
     pub ui: Option<&'a dyn crate::ui::UserInterface>,
     /// Optional current tool ID for streaming output

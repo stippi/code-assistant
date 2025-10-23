@@ -3,10 +3,10 @@
     "provider": "anthropic-main",
     "id": "claude-sonnet-4-5",
     "config": {
-      "max_tokens": 8192,
+      "max_tokens": 32768,
       "thinking": {
         "type": "enabled",
-        "budget_tokens": 16384
+        "budget_tokens": 8192
       }
     }
   },

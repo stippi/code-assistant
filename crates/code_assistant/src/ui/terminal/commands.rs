@@ -18,6 +18,8 @@ pub enum CommandResult {
     ShowCurrentModel,
     /// Invalid command
     InvalidCommand(String),
+    /// Toggle plan rendering mode
+    TogglePlan,
 }
 
 /// Process slash commands in terminal UI
@@ -49,6 +51,7 @@ impl CommandProcessor {
             "model" | "m" => self.process_model_command(&parts[1..]),
             "provider" | "p" => self.process_provider_command(&parts[1..]),
             "current" | "c" => CommandResult::ShowCurrentModel,
+            "plan" => CommandResult::TogglePlan,
             _ => CommandResult::InvalidCommand(format!("Unknown command: /{}", parts[0])),
         }
     }
@@ -88,6 +91,7 @@ impl CommandProcessor {
             "/model <name>      - Switch to model\n",
             "/provider, /p      - List available providers\n",
             "/current, /c       - Show current model\n",
+            "/plan              - Toggle plan view\n",
             "\n",
             "Examples:\n",
             "/model Claude Sonnet 4.5\n",

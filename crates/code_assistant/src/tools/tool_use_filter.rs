@@ -58,6 +58,7 @@ impl SmartToolFilter {
             tool_name,
             "read_files"
                 | "name_session"
+                | "update_plan"
                 | "list_files"
                 | "list_projects"
                 | "search_files"

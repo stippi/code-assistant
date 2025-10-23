@@ -4,6 +4,7 @@ use super::file_icons;
 use super::input_area::{InputArea, InputAreaEvent};
 use super::memory::MemoryView;
 use super::messages::MessagesView;
+use super::plan_banner;
 use super::theme;
 use super::BackendEvent;
 use super::{CloseWindow, Gpui, UiEventSender};
@@ -15,6 +16,7 @@ use gpui::{
     Transformation,
 };
 use gpui_component::ActiveTheme;
+use std::collections::HashMap;
 use tracing::{debug, error, trace, warn};
 
 // Root View - handles overall layout and coordination
@@ -23,6 +25,7 @@ pub struct RootView {
     memory_view: Entity<MemoryView>,
     chat_sidebar: Entity<ChatSidebar>,
     auto_scroll_container: Entity<AutoScrollContainer<MessagesView>>,
+    plan_banner: Entity<plan_banner::PlanBanner>,
     recent_keystrokes: Vec<gpui::Keystroke>,
     focus_handle: FocusHandle,
     // Memory view state
@@ -31,8 +34,11 @@ pub struct RootView {
     chat_collapsed: bool,
     current_session_id: Option<String>,
     chat_sessions: Vec<ChatMetadata>,
+    plan_collapsed_sessions: HashMap<String, bool>,
+    plan_collapsed: bool,
     // Subscription to input area events
     _input_area_subscription: Subscription,
+    _plan_banner_subscription: Subscription,
     _chat_sidebar_subscription: Subscription,
 }
 
@@ -48,6 +54,9 @@ impl RootView {
         let auto_scroll_container =
             cx.new(|_cx| AutoScrollContainer::new("messages", messages_view));
 
+        // Create the plan banner
+        let plan_banner = cx.new(plan_banner::PlanBanner::new);
+
         // Create the input area
         let input_area = cx.new(|cx| InputArea::new(window, cx));
 
@@ -59,18 +68,26 @@ impl RootView {
         let chat_sidebar_subscription =
             cx.subscribe_in(&chat_sidebar, window, Self::on_chat_sidebar_event);
 
+        // Subscribe to plan banner events
+        let plan_banner_subscription =
+            cx.subscribe_in(&plan_banner, window, Self::on_plan_banner_event);
+
         let mut root_view = Self {
             input_area,
             memory_view,
             chat_sidebar,
             auto_scroll_container,
+            plan_banner,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
             memory_collapsed: false,
             chat_collapsed: false, // Chat sidebar is visible by default
             current_session_id: None,
             chat_sessions: Vec::new(),
+            plan_collapsed_sessions: HashMap::new(),
+            plan_collapsed: false,
             _input_area_subscription: input_area_subscription,
+            _plan_banner_subscription: plan_banner_subscription,
             _chat_sidebar_subscription: chat_sidebar_subscription,
         };
 
@@ -101,6 +118,25 @@ impl RootView {
             sidebar.toggle_collapsed(cx);
         });
         cx.notify();
+    }
+
+    fn on_plan_banner_event(
+        &mut self,
+        _: &Entity<plan_banner::PlanBanner>,
+        event: &plan_banner::PlanBannerEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            plan_banner::PlanBannerEvent::Toggle { collapsed } => {
+                self.plan_collapsed = *collapsed;
+                if let Some(session_id) = &self.current_session_id {
+                    self.plan_collapsed_sessions
+                        .insert(session_id.clone(), self.plan_collapsed);
+                }
+                cx.notify();
+            }
+        }
     }
 
     // Trigger refresh of chat list on startup
@@ -533,6 +569,15 @@ impl RootView {
     ) {
         let gpui = cx.try_global::<Gpui>();
 
+        if let Some(session_id) = new_session_id.as_ref() {
+            self.plan_collapsed = *self
+                .plan_collapsed_sessions
+                .get(session_id)
+                .unwrap_or(&false);
+        } else {
+            self.plan_collapsed = false;
+        }
+
         // Determine what value to set in the input field and load attachments
         let (input_value, attachments) = if let (Some(new_id), Some(gpui)) = (new_session_id, &gpui)
         {
@@ -570,16 +615,17 @@ impl Focusable for RootView {
 impl Render for RootView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Get current chat state from global Gpui
-        let (chat_sessions, current_session_id, current_activity_state, current_model) =
+        let (chat_sessions, current_session_id, current_activity_state, current_model, plan_state) =
             if let Some(gpui) = cx.try_global::<Gpui>() {
                 (
                     gpui.get_chat_sessions(),
                     gpui.get_current_session_id(),
                     gpui.current_session_activity_state.lock().unwrap().clone(),
                     gpui.get_current_model(),
+                    gpui.get_plan_state(),
                 )
             } else {
-                (Vec::new(), None, None, None)
+                (Vec::new(), None, None, None, None)
             };
 
         // Update chat sidebar if needed
@@ -640,6 +686,13 @@ impl Render for RootView {
 
         self.input_area.update(cx, |input_area, _cx| {
             input_area.set_agent_state(agent_is_running, cancel_enabled);
+        });
+
+        let plan_for_banner = plan_state.clone().filter(|plan| !plan.entries.is_empty());
+        let plan_visible = plan_for_banner.is_some();
+        let plan_for_update = plan_for_banner.clone();
+        self.plan_banner.update(cx, |banner, cx| {
+            banner.set_plan(plan_for_update, self.plan_collapsed, cx);
         });
 
         // Main container with titlebar and content
@@ -785,6 +838,8 @@ impl Render for RootView {
                             )
                             // Status popover - positioned at bottom center
                             .children(self.render_status_popover(cx))
+                            // Session plan banner (if available)
+                            .when(plan_visible, |s| s.child(self.plan_banner.clone()))
                             // Input area sits at the bottom
                             .child(
                                 div()

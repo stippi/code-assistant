@@ -11,8 +11,10 @@ use tui_markdown as md;
 use tui_textarea::TextArea;
 
 use super::message::{LiveMessage, MessageBlock, PlainTextBlock, ToolUseBlock};
+use crate::types::{PlanItemStatus, PlanState};
 use crate::ui::ToolStatus;
 use std::time::Instant;
+use tracing::debug;
 
 /// Spinner state for loading indication
 #[derive(Debug, Clone)]
@@ -57,6 +59,18 @@ impl SpinnerState {
     }
 }
 
+enum StatusKind {
+    Info,
+    Plan,
+    Pending,
+}
+
+struct StatusEntry {
+    kind: StatusKind,
+    content: String,
+    height: u16,
+}
+
 /// Handles the terminal display and rendering using ratatui
 pub struct TerminalRenderer<B: Backend> {
     pub terminal: Terminal<B>,
@@ -72,6 +86,10 @@ pub struct TerminalRenderer<B: Backend> {
     current_error: Option<String>,
     /// Current info message to display
     info_message: Option<String>,
+    /// Latest plan state received from the agent
+    plan_state: Option<PlanState>,
+    /// Whether to render the expanded plan view
+    plan_expanded: bool,
     /// Last computed overflow (how many rows have been promoted so far); used to promote only deltas
     pub last_overflow: u16,
     /// Maximum rows for input area (including 1 for content min + border)
@@ -97,6 +115,8 @@ impl<B: Backend> TerminalRenderer<B> {
             pending_user_message: None,
             current_error: None,
             info_message: None,
+            plan_state: None,
+            plan_expanded: false,
             last_overflow: 0,
             max_input_rows: 5, // max input height (content lines + border line)
             spinner_state: SpinnerState::Hidden,
@@ -178,6 +198,25 @@ impl<B: Backend> TerminalRenderer<B> {
     /// Set or unset a pending user message (displayed while streaming)
     pub fn set_pending_user_message(&mut self, message: Option<String>) {
         self.pending_user_message = message;
+    }
+
+    /// Update the stored plan state for rendering
+    pub fn set_plan_state(&mut self, plan: Option<PlanState>) {
+        if let Some(ref plan_state) = plan {
+            debug!(
+                "renderer::set_plan_state received {} entries (expanded currently {})",
+                plan_state.entries.len(),
+                self.plan_expanded
+            );
+        } else {
+            debug!("renderer::set_plan_state clearing plan state");
+        }
+        self.plan_state = plan;
+    }
+
+    /// Toggle whether the expanded plan view should be rendered
+    pub fn set_plan_expanded(&mut self, expanded: bool) {
+        self.plan_expanded = expanded;
     }
 
     /// Append text to the last block in the current message
@@ -301,36 +340,79 @@ impl<B: Backend> TerminalRenderer<B> {
         // Reserve one blank line as gap above input (at the very bottom)
         cursor_y = cursor_y.saturating_sub(1);
 
-        // Reserve space for status area (error takes priority over info/pending message)
-        let status_height = if let Some(ref error_msg) = self.current_error {
-            let rendered_height = self.render_message_content_to_buffer(
-                error_msg,
-                &mut scratch,
-                &mut cursor_y,
-                width,
-            );
-            // Add a small gap above error message
-            cursor_y = cursor_y.saturating_sub(1);
-            rendered_height + 1
-        } else if let Some(ref info_msg) = self.info_message {
-            let rendered_height =
-                self.render_message_content_to_buffer(info_msg, &mut scratch, &mut cursor_y, width);
-            // Add a small gap above info message
-            cursor_y = cursor_y.saturating_sub(1);
-            rendered_height + 1
+        let mut status_entries: Vec<StatusEntry> = Vec::new();
+        if let Some(plan_text) = self.build_plan_text() {
+            status_entries.push(StatusEntry {
+                kind: StatusKind::Plan,
+                content: plan_text,
+                height: 0,
+            });
+        }
+
+        if let Some(ref info_msg) = self.info_message {
+            status_entries.push(StatusEntry {
+                kind: StatusKind::Info,
+                content: info_msg.clone(),
+                height: 0,
+            });
         } else if let Some(ref pending_msg) = self.pending_user_message {
-            let rendered_height = self.render_message_content_to_buffer(
-                pending_msg,
-                &mut scratch,
-                &mut cursor_y,
-                width,
-            );
-            // Add a small gap above pending message
-            cursor_y = cursor_y.saturating_sub(1);
-            rendered_height + 1
-        } else {
-            0
-        };
+            status_entries.push(StatusEntry {
+                kind: StatusKind::Pending,
+                content: pending_msg.clone(),
+                height: 0,
+            });
+        }
+
+        let mut status_height: u16 = 0;
+        let mut error_display: Option<String> = None;
+
+        if let Some(ref error_msg) = self.current_error {
+            let formatted = Self::format_error_message(error_msg);
+            let max_height = cursor_y.min(scratch_height).max(1);
+            let rendered_height = Self::measure_markdown_height(&formatted, width, max_height);
+            let actual_height = rendered_height.min(cursor_y);
+            if actual_height > 0 {
+                cursor_y = cursor_y.saturating_sub(actual_height);
+                status_height = status_height.saturating_add(actual_height);
+                if cursor_y > 0 {
+                    cursor_y = cursor_y.saturating_sub(1);
+                    status_height = status_height.saturating_add(1);
+                }
+            }
+            error_display = Some(formatted);
+        } else if !status_entries.is_empty() {
+            let mut any_rendered = false;
+            for idx in 0..status_entries.len() {
+                if cursor_y == 0 {
+                    break;
+                }
+
+                let entry = &mut status_entries[idx];
+                let max_height = cursor_y.min(scratch_height).max(1);
+                let rendered_height =
+                    Self::measure_markdown_height(&entry.content, width, max_height);
+                let actual_height = rendered_height.min(cursor_y);
+                entry.height = actual_height;
+
+                if actual_height > 0 {
+                    any_rendered = true;
+                    cursor_y = cursor_y.saturating_sub(actual_height);
+                    status_height = status_height.saturating_add(actual_height);
+
+                    if idx + 1 < status_entries.len() && cursor_y > 0 {
+                        cursor_y = cursor_y.saturating_sub(1);
+                        status_height = status_height.saturating_add(1);
+                    }
+                }
+            }
+
+            if any_rendered && cursor_y > 0 {
+                cursor_y = cursor_y.saturating_sub(1);
+                status_height = status_height.saturating_add(1);
+            }
+        }
+
+        let status_height = status_height;
 
         // 1) Render spinner if active (closest to input)
         if let Some((spinner_char, spinner_color)) = self.spinner_state.get_spinner_char() {
@@ -454,11 +536,11 @@ impl<B: Backend> TerminalRenderer<B> {
                 }
             }
 
-            // Render status area (error takes priority over pending message)
-            if let Some(ref error_msg) = self.current_error {
+            // Render status area (error takes priority over other messages)
+            if let Some(ref error_msg) = error_display {
                 Self::render_error_message(f, status_area, error_msg);
-            } else if let Some(ref pending_msg) = self.pending_user_message {
-                Self::render_pending_message(f, status_area, pending_msg);
+            } else if status_entries.iter().any(|entry| entry.height > 0) {
+                Self::render_status_entries(f, status_area, &status_entries);
             }
 
             // Render input area (block + textarea)
@@ -500,28 +582,26 @@ impl<B: Backend> TerminalRenderer<B> {
         }
     }
 
-    /// Render markdown content to buffer (for pending messages)
-    fn render_message_content_to_buffer(
-        &self,
-        content: &str,
-        scratch: &mut Buffer,
-        cursor_y: &mut u16,
-        width: u16,
-    ) -> u16 {
-        if content.trim().is_empty() || *cursor_y == 0 {
+    fn measure_markdown_height(content: &str, width: u16, max_height: u16) -> u16 {
+        if content.trim().is_empty() || width == 0 || max_height == 0 {
             return 0;
         }
 
         let text = md::from_str(content);
-        let para_for_measure = Paragraph::new(text.clone()).wrap(Wrap { trim: false });
+        let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+        Self::measure_paragraph_height(&paragraph, width, max_height)
+    }
 
-        // Only allocate tmp up to remaining space to keep it cheap
-        let max_h = (*cursor_y).clamp(1, 500); // cap to 500 to avoid huge temps
-        let mut tmp = Buffer::empty(Rect::new(0, 0, width, max_h));
-        para_for_measure.render(Rect::new(0, 0, width, max_h), &mut tmp);
+    fn measure_paragraph_height(paragraph: &Paragraph, width: u16, max_height: u16) -> u16 {
+        if width == 0 || max_height == 0 {
+            return 0;
+        }
+
+        let mut tmp = Buffer::empty(Rect::new(0, 0, width, max_height));
+        paragraph.render(Rect::new(0, 0, width, max_height), &mut tmp);
 
         let mut used = 0u16;
-        'scan: for y in (0..max_h).rev() {
+        for y in (0..max_height).rev() {
             let mut row_empty = true;
             for x in 0..width {
                 let c = tmp.cell((x, y)).expect("cell in tmp buffer");
@@ -532,25 +612,148 @@ impl<B: Backend> TerminalRenderer<B> {
             }
             if !row_empty {
                 used = y + 1;
-                break 'scan;
+                break;
             }
         }
+        used
+    }
 
-        if used == 0 {
-            return 0;
+    fn build_plan_text(&self) -> Option<String> {
+        let plan_state = match &self.plan_state {
+            Some(plan) if !plan.entries.is_empty() => plan,
+            _ => return None,
+        };
+
+        if self.plan_expanded {
+            let total = plan_state.entries.len();
+            let mut start = 0usize;
+
+            if total > 4 {
+                while start < total
+                    && matches!(plan_state.entries[start].status, PlanItemStatus::Completed)
+                    && total - start > 4
+                {
+                    start += 1;
+                }
+            }
+
+            let end = (start + 4).min(total);
+            let visible = &plan_state.entries[start..end];
+            let hidden = total.saturating_sub(visible.len());
+
+            let mut text = String::from("Plan");
+            if hidden > 0 {
+                text.push_str(&format!(" (+{hidden} hidden)"));
+            }
+
+            for entry in visible {
+                text.push('\n');
+                let marker = match entry.status {
+                    PlanItemStatus::Pending => "[ ]",
+                    PlanItemStatus::InProgress => "[~]",
+                    PlanItemStatus::Completed => "[x]",
+                };
+                text.push_str(marker);
+                text.push(' ');
+                text.push_str(&entry.content);
+            }
+
+            Some(text)
+        } else {
+            let total = plan_state.entries.len();
+            if let Some((index, item)) = plan_state
+                .entries
+                .iter()
+                .enumerate()
+                .find(|(_, entry)| !matches!(entry.status, PlanItemStatus::Completed))
+            {
+                Some(format!(
+                    "Plan: {} ({} of {})",
+                    item.content,
+                    index + 1,
+                    total
+                ))
+            } else {
+                Some(format!("Plan: All tasks completed ({total} items)"))
+            }
+        }
+    }
+
+    fn render_status_entries(f: &mut Frame, area: Rect, entries: &[StatusEntry]) {
+        if area.height == 0 {
+            return;
         }
 
-        let h = used.min(*cursor_y);
-        if h == 0 {
-            return 0;
+        let mut y = area.y;
+        for (idx, entry) in entries.iter().enumerate() {
+            if y >= area.y + area.height {
+                break;
+            }
+
+            let remaining = area.y + area.height - y;
+            if remaining == 0 {
+                break;
+            }
+
+            let height = entry.height.min(remaining);
+            if height == 0 {
+                continue;
+            }
+
+            let entry_area = Rect::new(area.x, y, area.width, height);
+            match entry.kind {
+                StatusKind::Info => Self::render_info_message(f, entry_area, &entry.content),
+                StatusKind::Plan => Self::render_plan_message(f, entry_area, &entry.content),
+                StatusKind::Pending => Self::render_pending_message(f, entry_area, &entry.content),
+            }
+
+            y = y.saturating_add(height);
+            if idx + 1 < entries.len() && y < area.y + area.height {
+                Self::clear_status_gap(f, Rect::new(area.x, y, area.width, 1));
+                y = y.saturating_add(1);
+            }
+        }
+    }
+
+    fn render_info_message(f: &mut Frame, area: Rect, message: &str) {
+        if area.height == 0 {
+            return;
         }
 
-        // render into destination aligned at bottom
-        let area = Rect::new(0, cursor_y.saturating_sub(h), width, h);
-        let para_for_draw = Paragraph::new(text).wrap(Wrap { trim: false });
-        para_for_draw.render(area, scratch);
-        *cursor_y = cursor_y.saturating_sub(h);
-        h
+        let text = md::from_str(message);
+        let paragraph = Paragraph::new(text)
+            .style(Style::default().fg(Color::Gray))
+            .wrap(Wrap { trim: false });
+
+        f.render_widget(paragraph, area);
+    }
+
+    fn render_plan_message(f: &mut Frame, area: Rect, plan_text: &str) {
+        if area.height == 0 {
+            return;
+        }
+
+        let text = md::from_str(plan_text);
+        let paragraph = Paragraph::new(text)
+            .style(Style::default().fg(Color::Gray).add_modifier(Modifier::DIM))
+            .wrap(Wrap { trim: false });
+
+        f.render_widget(paragraph, area);
+    }
+
+    fn clear_status_gap(f: &mut Frame, area: Rect) {
+        if area.height == 0 {
+            return;
+        }
+
+        let buffer = f.buffer_mut();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                if let Some(cell) = buffer.cell_mut((x, y)) {
+                    *cell = ratatui::buffer::Cell::default();
+                }
+            }
+        }
     }
 
     /// Calculate the height needed for the input area based on textarea content
@@ -604,13 +807,17 @@ impl<B: Backend> TerminalRenderer<B> {
             return;
         }
 
-        let error_text = format!("Error: {message} (Press Esc to dismiss)");
+        let error_text = Self::format_error_message(message);
         let text = md::from_str(&error_text);
         let paragraph = Paragraph::new(text)
             .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
             .wrap(Wrap { trim: false });
 
         f.render_widget(paragraph, area);
+    }
+
+    fn format_error_message(message: &str) -> String {
+        format!("Error: {message} (Press Esc to dismiss)")
     }
 
     /// Set an error message to display
@@ -655,6 +862,7 @@ impl ProductionTerminalRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{PlanItem, PlanItemStatus, PlanState};
     use crate::ui::terminal::message::{LiveMessage, MessageBlock, PlainTextBlock};
     use ratatui::backend::TestBackend;
 
@@ -856,6 +1064,171 @@ mod tests {
             assert!(
                 !found_pending_after_clear,
                 "Pending message should be cleared from rendering"
+            );
+        }
+
+        #[test]
+        fn test_plan_collapsed_summary_rendering() {
+            let mut renderer = create_default_test_renderer();
+            let textarea = tui_textarea::TextArea::default();
+
+            let plan_state = PlanState {
+                entries: vec![
+                    PlanItem {
+                        content: "Gather requirements".to_string(),
+                        status: PlanItemStatus::Completed,
+                        ..Default::default()
+                    },
+                    PlanItem {
+                        content: "Update documentation".to_string(),
+                        ..Default::default()
+                    },
+                    PlanItem {
+                        content: "Review changes".to_string(),
+                        ..Default::default()
+                    },
+                    PlanItem {
+                        content: "Publish release".to_string(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            };
+
+            renderer.set_plan_state(Some(plan_state));
+            renderer.set_plan_expanded(false);
+
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut found_summary = false;
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+                if line_text.contains("Plan: Update documentation (2 of 4)") {
+                    found_summary = true;
+                    break;
+                }
+            }
+
+            assert!(found_summary, "Collapsed plan summary should be rendered");
+        }
+
+        #[test]
+        fn test_plan_expanded_rendering_limits_entries() {
+            let mut renderer = create_default_test_renderer();
+            renderer.set_plan_expanded(true);
+            let textarea = tui_textarea::TextArea::default();
+
+            let plan_state = PlanState {
+                entries: vec![
+                    PlanItem {
+                        content: "Draft summary".to_string(),
+                        status: PlanItemStatus::Completed,
+                        ..Default::default()
+                    },
+                    PlanItem {
+                        content: "Backfill tests".to_string(),
+                        status: PlanItemStatus::Completed,
+                        ..Default::default()
+                    },
+                    PlanItem {
+                        content: "Update docs".to_string(),
+                        ..Default::default()
+                    },
+                    PlanItem {
+                        content: "Refactor module".to_string(),
+                        status: PlanItemStatus::InProgress,
+                        ..Default::default()
+                    },
+                    PlanItem {
+                        content: "Polish UI".to_string(),
+                        ..Default::default()
+                    },
+                    PlanItem {
+                        content: "Celebrate".to_string(),
+                        status: PlanItemStatus::Completed,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            };
+
+            renderer.set_plan_state(Some(plan_state));
+
+            renderer.render(&textarea).unwrap();
+            let buffer = renderer.terminal.backend().buffer();
+
+            let mut header_found = false;
+            let mut plan_item_lines = 0;
+            let mut found_update_docs = false;
+            let mut found_refactor = false;
+            let mut found_polish = false;
+            let mut found_celebrate = false;
+            let mut hidden_completed_present = false;
+
+            for y in 0..18 {
+                let mut line_text = String::new();
+                for x in 0..80 {
+                    let cell = buffer.cell((x, y)).unwrap();
+                    line_text.push_str(cell.symbol());
+                }
+
+                if line_text.contains("Plan (+2 hidden)") {
+                    header_found = true;
+                }
+
+                let trimmed = line_text.trim_start();
+                if trimmed.starts_with('[') {
+                    plan_item_lines += 1;
+                    if trimmed.contains("Update docs") {
+                        found_update_docs = true;
+                    }
+                    if trimmed.contains("Refactor module") {
+                        found_refactor = true;
+                    }
+                    if trimmed.contains("Polish UI") {
+                        found_polish = true;
+                    }
+                    if trimmed.contains("Celebrate") {
+                        found_celebrate = true;
+                    }
+                    if trimmed.contains("Draft summary") {
+                        hidden_completed_present = true;
+                    }
+                }
+            }
+
+            assert!(
+                header_found,
+                "Expanded plan header should include hidden count"
+            );
+            assert_eq!(
+                plan_item_lines, 4,
+                "Expanded view should render at most four plan items"
+            );
+            assert!(
+                found_update_docs,
+                "Expanded view must include first non-completed item"
+            );
+            assert!(
+                found_refactor,
+                "Expanded view must include in-progress item"
+            );
+            assert!(
+                found_polish,
+                "Expanded view must include subsequent pending item"
+            );
+            assert!(
+                found_celebrate,
+                "Expanded view should include trailing item within limit"
+            );
+            assert!(
+                !hidden_completed_present,
+                "Completed items above the window should be skipped"
             );
         }
 

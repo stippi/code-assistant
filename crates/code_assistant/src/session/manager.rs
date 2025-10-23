@@ -247,6 +247,7 @@ impl SessionManager {
                     .map(|se| se.deserialize())
                     .collect::<Result<Vec<_>>>()?,
                 working_memory: session_instance.session.working_memory.clone(),
+                plan: session_instance.session.plan.clone(),
                 config: session_config.clone(),
                 next_request_id: Some(session_instance.session.next_request_id),
                 model_config: session_instance.session.model_config.clone(),
@@ -476,6 +477,7 @@ impl SessionManager {
             .map(|te| te.serialize())
             .collect::<Result<Vec<_>>>()?;
         session.working_memory = state.working_memory;
+        session.plan = state.plan;
         session.config = state.config;
         session.model_config = state.model_config;
         session.next_request_id = state.next_request_id.unwrap_or(0);

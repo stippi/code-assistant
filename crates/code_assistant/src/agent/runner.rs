@@ -43,6 +43,7 @@ enum LoopFlow {
 
 pub struct Agent {
     working_memory: WorkingMemory,
+    plan: PlanState,
     llm_provider: Box<dyn LLMProvider>,
     session_config: SessionConfig,
     tool_scope: ToolScope,
@@ -101,6 +102,7 @@ impl Agent {
 
         let mut this = Self {
             working_memory: WorkingMemory::default(),
+            plan: PlanState::default(),
             llm_provider,
             session_config,
             tool_scope: ToolScope::Agent, // Default to Agent scope
@@ -248,6 +250,7 @@ impl Agent {
                 messages: self.message_history.clone(),
                 tool_executions: self.tool_executions.clone(),
                 working_memory: self.working_memory.clone(),
+                plan: self.plan.clone(),
                 config: self.session_config.clone(),
                 next_request_id: Some(self.next_request_id),
                 model_config: self.session_model_config.clone(),
@@ -401,6 +404,7 @@ impl Agent {
         );
         self.tool_executions = session_state.tool_executions;
         self.working_memory = session_state.working_memory;
+        self.plan = session_state.plan.clone();
         self.session_config = session_state.config;
         if self.session_config.use_diff_blocks {
             self.enable_diff_blocks();
@@ -435,6 +439,13 @@ impl Agent {
             .ui
             .send_event(UiEvent::UpdateMemory {
                 memory: self.working_memory.clone(),
+            })
+            .await;
+
+        let _ = self
+            .ui
+            .send_event(UiEvent::UpdatePlan {
+                plan: self.plan.clone(),
             })
             .await;
 
@@ -1117,6 +1128,9 @@ impl Agent {
             tool_request.name, tool_request.id
         );
 
+        // Check if this is a hidden tool
+        let is_hidden = ToolRegistry::global().is_tool_hidden(&tool_request.name, self.tool_scope);
+
         // Handle name_session tool specially at agent level
         if tool_request.name == "name_session" {
             // Extract title from input
@@ -1146,15 +1160,17 @@ impl Agent {
             return Err(anyhow::anyhow!("Invalid session title provided"));
         }
 
-        // Update status to Running before execution
-        self.ui
-            .send_event(UiEvent::UpdateToolStatus {
-                tool_id: tool_request.id.clone(),
-                status: crate::ui::ToolStatus::Running,
-                message: None,
-                output: None,
-            })
-            .await?;
+        // Update status to Running before execution (skip for hidden tools)
+        if !is_hidden {
+            self.ui
+                .send_event(UiEvent::UpdateToolStatus {
+                    tool_id: tool_request.id.clone(),
+                    status: crate::ui::ToolStatus::Running,
+                    message: None,
+                    output: None,
+                })
+                .await?;
+        }
 
         // Get the tool - could fail with UnknownTool
         let tool = match ToolRegistry::global().get(&tool_request.name) {
@@ -1167,6 +1183,7 @@ impl Agent {
             project_manager: self.project_manager.as_ref(),
             command_executor: self.command_executor.as_ref(),
             working_memory: Some(&mut self.working_memory),
+            plan: Some(&mut self.plan),
             ui: Some(self.ui.as_ref()),
             tool_id: Some(tool_request.id.clone()),
         };
@@ -1195,15 +1212,17 @@ impl Agent {
                 let mut resources_tracker = ResourcesTracker::new();
                 let output = result.as_render().render(&mut resources_tracker);
 
-                // Update tool status with result
-                self.ui
-                    .send_event(UiEvent::UpdateToolStatus {
-                        tool_id: tool_request.id.clone(),
-                        status,
-                        message: Some(short_output),
-                        output: Some(output),
-                    })
-                    .await?;
+                // Update tool status with result (skip for hidden tools)
+                if !is_hidden {
+                    self.ui
+                        .send_event(UiEvent::UpdateToolStatus {
+                            tool_id: tool_request.id.clone(),
+                            status,
+                            message: Some(short_output),
+                            output: Some(output),
+                        })
+                        .await?;
+                }
 
                 // Create the tool request with potentially updated input
                 let final_tool_request = if input_modified {
@@ -1246,15 +1265,17 @@ impl Agent {
                 // Tool execution failed (parameter error, etc.)
                 let error_text = Self::format_error_for_user(&e);
 
-                // Update UI status to error
-                self.ui
-                    .send_event(UiEvent::UpdateToolStatus {
-                        tool_id: tool_request.id.clone(),
-                        status: crate::ui::ToolStatus::Error,
-                        message: Some(error_text.clone()),
-                        output: Some(error_text.clone()),
-                    })
-                    .await?;
+                // Update UI status to error (skip for hidden tools)
+                if !is_hidden {
+                    self.ui
+                        .send_event(UiEvent::UpdateToolStatus {
+                            tool_id: tool_request.id.clone(),
+                            status: crate::ui::ToolStatus::Error,
+                            message: Some(error_text.clone()),
+                            output: Some(error_text.clone()),
+                        })
+                        .await?;
+                }
 
                 // Create a ToolExecution record for the error
                 let tool_execution = if let Some(tool_error) = e.downcast_ref::<ToolError>() {

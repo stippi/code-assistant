@@ -205,6 +205,7 @@ pub fn create_test_tool_context<'a>(
     project_manager: &'a dyn crate::config::ProjectManager,
     command_executor: &'a dyn crate::utils::CommandExecutor,
     working_memory: Option<&'a mut crate::types::WorkingMemory>,
+    plan: Option<&'a mut crate::types::PlanState>,
     ui: Option<&'a dyn crate::ui::UserInterface>,
     tool_id: Option<String>,
 ) -> crate::tools::core::ToolContext<'a> {
@@ -212,6 +213,7 @@ pub fn create_test_tool_context<'a>(
         project_manager,
         command_executor,
         working_memory,
+        plan,
         ui,
         tool_id,
     }
@@ -303,6 +305,10 @@ impl UserInterface for MockUI {
 }
 
 impl MockUI {
+    pub fn events(&self) -> Vec<UiEvent> {
+        self.events.lock().unwrap().clone()
+    }
+
     pub fn get_streaming_output(&self) -> Vec<String> {
         self.streaming.lock().unwrap().clone()
     }
@@ -939,6 +945,7 @@ pub struct ToolTestFixture {
     project_manager: MockProjectManager,
     command_executor: MockCommandExecutor,
     working_memory: Option<WorkingMemory>,
+    plan: Option<PlanState>,
     ui: Option<MockUI>,
     tool_id: Option<String>,
 }
@@ -950,6 +957,7 @@ impl ToolTestFixture {
             project_manager: MockProjectManager::new(),
             command_executor: MockCommandExecutor::new(vec![]),
             working_memory: None,
+            plan: None,
             ui: None,
             tool_id: None,
         }
@@ -1014,6 +1022,7 @@ impl ToolTestFixture {
             project_manager,
             command_executor: MockCommandExecutor::new(vec![]),
             working_memory: None,
+            plan: None,
             ui: None,
             tool_id: None,
         }
@@ -1025,6 +1034,7 @@ impl ToolTestFixture {
             project_manager: MockProjectManager::new(),
             command_executor: MockCommandExecutor::new(responses),
             working_memory: None,
+            plan: None,
             ui: None,
             tool_id: None,
         }
@@ -1047,6 +1057,12 @@ impl ToolTestFixture {
         self
     }
 
+    /// Enable plan state for this fixture
+    pub fn with_plan(mut self) -> Self {
+        self.plan = Some(PlanState::default());
+        self
+    }
+
     /// Add a UI mock to this fixture
     pub fn with_ui(mut self) -> Self {
         self.ui = Some(MockUI::default());
@@ -1065,6 +1081,7 @@ impl ToolTestFixture {
             project_manager: &self.project_manager,
             command_executor: &self.command_executor,
             working_memory: self.working_memory.as_mut(),
+            plan: self.plan.as_mut(),
             ui: self.ui.as_ref().map(|ui| ui as &dyn UserInterface),
             tool_id: self.tool_id.clone(),
         }
@@ -1089,6 +1106,11 @@ impl ToolTestFixture {
     /// Get a mutable reference to the working memory for modifications
     pub fn working_memory_mut(&mut self) -> Option<&mut WorkingMemory> {
         self.working_memory.as_mut()
+    }
+
+    /// Get a reference to the plan state for assertions
+    pub fn plan(&self) -> Option<&PlanState> {
+        self.plan.as_ref()
     }
 
     /// Get a reference to the UI mock for assertions

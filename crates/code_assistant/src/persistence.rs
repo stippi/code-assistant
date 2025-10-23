@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 
 use crate::session::SessionConfig;
 use crate::tools::ToolRequest;
-use crate::types::{ToolSyntax, WorkingMemory};
+use crate::types::{PlanState, ToolSyntax, WorkingMemory};
 
 /// Model configuration for a session
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -38,6 +38,9 @@ pub struct ChatSession {
     pub tool_executions: Vec<SerializedToolExecution>,
     /// Working memory state
     pub working_memory: WorkingMemory,
+    /// Current session plan
+    #[serde(default)]
+    pub plan: PlanState,
     /// Persistent session configuration
     #[serde(default)]
     pub config: SessionConfig,
@@ -105,6 +108,7 @@ impl ChatSession {
             messages: Vec::new(),
             tool_executions: Vec::new(),
             working_memory: WorkingMemory::default(),
+            plan: PlanState::default(),
             config,
             next_request_id: 1,
             model_config,
@@ -643,5 +647,42 @@ impl DraftStorage {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::SessionConfig;
+    use crate::types::{PlanItem, PlanItemPriority, PlanItemStatus};
+
+    #[test]
+    fn chat_session_plan_roundtrip() {
+        let mut session = ChatSession::new_empty(
+            "session123".to_string(),
+            "Test Session".to_string(),
+            SessionConfig::default(),
+            None,
+        );
+
+        session.plan.entries.push(PlanItem {
+            content: "Review requirements".to_string(),
+            priority: PlanItemPriority::High,
+            status: PlanItemStatus::InProgress,
+            meta: None,
+        });
+        session.plan.meta = Some(serde_json::json!({ "source": "unit-test" }));
+
+        let serialized = serde_json::to_string(&session).expect("serialize");
+        let restored: ChatSession = serde_json::from_str(&serialized).expect("deserialize");
+
+        assert_eq!(restored.plan.entries.len(), 1);
+        let entry = &restored.plan.entries[0];
+        assert_eq!(entry.content, "Review requirements");
+        assert_eq!(entry.priority, PlanItemPriority::High);
+        assert_eq!(entry.status, PlanItemStatus::InProgress);
+
+        let meta = restored.plan.meta.expect("plan meta should exist");
+        assert_eq!(meta["source"], "unit-test");
     }
 }

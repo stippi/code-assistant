@@ -219,6 +219,10 @@ impl SessionInstance {
             memory: self.session.working_memory.clone(),
         });
 
+        events.push(UiEvent::UpdatePlan {
+            plan: self.session.plan.clone(),
+        });
+
         events.push(UiEvent::UpdateSessionActivityState {
             session_id: self.session.id.clone(),
             activity_state: self.get_activity_state(),

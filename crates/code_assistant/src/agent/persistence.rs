@@ -8,6 +8,8 @@ use tracing::{debug, info};
 #[cfg(test)]
 use crate::agent::ToolExecution;
 #[cfg(test)]
+use crate::types::PlanState;
+#[cfg(test)]
 use crate::types::WorkingMemory;
 #[cfg(test)]
 use llm::Message;
@@ -29,6 +31,7 @@ pub struct MockStatePersistence {
     pub last_saved_messages: Option<Vec<Message>>,
     pub last_saved_tool_executions: Option<Vec<ToolExecution>>,
     pub last_saved_working_memory: Option<WorkingMemory>,
+    pub last_saved_plan: Option<PlanState>,
 }
 
 #[cfg(test)]
@@ -39,6 +42,7 @@ impl MockStatePersistence {
             last_saved_messages: None,
             last_saved_tool_executions: None,
             last_saved_working_memory: None,
+            last_saved_plan: None,
         }
     }
 }
@@ -50,6 +54,7 @@ impl AgentStatePersistence for MockStatePersistence {
         self.last_saved_messages = Some(state.messages);
         self.last_saved_tool_executions = Some(state.tool_executions);
         self.last_saved_working_memory = Some(state.working_memory);
+        self.last_saved_plan = Some(state.plan);
         Ok(())
     }
 }
@@ -140,6 +145,7 @@ impl AgentStatePersistence for FileStatePersistence {
             messages,
             tool_executions,
             working_memory,
+            plan,
             config,
             next_request_id,
             model_config,
@@ -155,6 +161,7 @@ impl AgentStatePersistence for FileStatePersistence {
         session.messages = messages;
         session.tool_executions = serialized_executions;
         session.working_memory = working_memory;
+        session.plan = plan;
         session.next_request_id = next_request_id.unwrap_or(0);
         session.updated_at = SystemTime::now();
 

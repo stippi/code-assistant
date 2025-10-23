@@ -195,6 +195,7 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
         working_memory: Some(&mut working_memory),
+        plan: None,
         ui: None,
         tool_id: None,
     };
@@ -276,6 +277,7 @@ async fn test_write_file_with_format_on_save() -> Result<()> {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
         working_memory: Some(&mut working_memory),
+        plan: None,
         ui: None,
         tool_id: None,
     };
@@ -348,6 +350,7 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
         working_memory: Some(&mut working_memory),
+        plan: None,
         ui: None,
         tool_id: None,
     };
@@ -431,6 +434,7 @@ async fn test_no_format_when_pattern_doesnt_match() -> Result<()> {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
         working_memory: Some(&mut working_memory),
+        plan: None,
         ui: None,
         tool_id: None,
     };
@@ -507,6 +511,7 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
         working_memory: Some(&mut working_memory),
+        plan: None,
         ui: None,
         tool_id: None,
     };
@@ -603,6 +608,7 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
         working_memory: Some(&mut working_memory),
+        plan: None,
         ui: None,
         tool_id: None,
     };
@@ -692,6 +698,7 @@ async fn test_format_on_save_with_conflicting_matches() -> Result<()> {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
         working_memory: Some(&mut working_memory),
+        plan: None,
         ui: None,
         tool_id: None,
     };

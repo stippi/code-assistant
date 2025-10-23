@@ -23,6 +23,8 @@ pub enum KeyEventResult {
     SwitchModel(String),
     /// Show current model information
     ShowCurrentModel,
+    /// Toggle plan rendering mode
+    TogglePlan,
 }
 
 /// Manages the input area using tui-textarea
@@ -86,6 +88,7 @@ impl InputManager {
                                 KeyEventResult::SwitchModel(model_name)
                             }
                             CommandResult::ShowCurrentModel => KeyEventResult::ShowCurrentModel,
+                            CommandResult::TogglePlan => KeyEventResult::TogglePlan,
                             CommandResult::InvalidCommand(error) => {
                                 KeyEventResult::ShowInfo(format!("Error: {error}"))
                             }

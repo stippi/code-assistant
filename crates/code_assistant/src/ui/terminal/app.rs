@@ -32,7 +32,7 @@ async fn event_loop(
         // Sync state and render the UI
         {
             let mut renderer_guard = renderer.lock().await;
-            let state = app_state.lock().await;
+            let mut state = app_state.lock().await;
 
             // Sync info message from state to renderer
             if let Some(ref info_msg) = state.info_message {
@@ -40,6 +40,12 @@ async fn event_loop(
             } else {
                 renderer_guard.clear_info();
             }
+
+            if state.plan_dirty {
+                renderer_guard.set_plan_state(state.plan.clone());
+                state.plan_dirty = false;
+            }
+            renderer_guard.set_plan_expanded(state.plan_expanded);
 
             drop(state); // Release the lock before rendering
             renderer_guard.render(&input_manager.textarea)?;
@@ -190,6 +196,21 @@ async fn event_loop(
 
                             let mut state = app_state.lock().await;
                             state.set_info_message(Some(message));
+                        }
+                        KeyEventResult::TogglePlan => {
+                            let (plan_state, expanded) = {
+                                let mut state = app_state.lock().await;
+                                let expanded = state.toggle_plan_expanded();
+                                (state.plan.clone(), expanded)
+                            };
+
+                            let mut renderer_guard = renderer.lock().await;
+                            if let Some(plan_state) = plan_state {
+                                renderer_guard.set_plan_state(Some(plan_state));
+                            } else {
+                                debug!("TogglePlan invoked with no plan available; renderer state unchanged");
+                            }
+                            renderer_guard.set_plan_expanded(expanded);
                         }
                     }
                 }
