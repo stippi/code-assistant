@@ -791,6 +791,8 @@ impl UserInterface for ACPUserUI {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{PlanItem, PlanItemPriority, PlanItemStatus, PlanState};
+    use serde_json::json;
     use tokio::sync::{mpsc, oneshot};
 
     fn create_ui() -> (
@@ -1038,5 +1040,58 @@ mod tests {
             assert!(title.contains("file1.txt and 2 more") || title.contains("file1.txt"));
             assert!(title.starts_with("Reading"));
         }
+    }
+
+    #[tokio::test]
+    async fn send_event_emits_plan_update() {
+        let (ui, mut rx) = create_ui();
+
+        let plan = PlanState {
+            entries: vec![
+                PlanItem {
+                    content: "Investigate plan bridge".into(),
+                    priority: PlanItemPriority::High,
+                    status: PlanItemStatus::InProgress,
+                    meta: Some(json!({"ticket": 42})),
+                },
+                PlanItem {
+                    content: "Write ACP plan test".into(),
+                    priority: PlanItemPriority::Low,
+                    status: PlanItemStatus::Completed,
+                    meta: None,
+                },
+            ],
+            meta: Some(json!({"source": "unit-test"})),
+        };
+        let expected_plan = plan.clone();
+
+        let send_future = ui.send_event(UiEvent::UpdatePlan { plan });
+        let receive_future = async {
+            let (notification, ack) = rx.recv().await.expect("plan update");
+            ack.send(()).unwrap();
+            notification
+        };
+
+        let (send_result, notification) = tokio::join!(send_future, receive_future);
+        send_result.unwrap();
+
+        let acp::SessionUpdate::Plan(acp_plan) = notification.update else {
+            panic!("expected plan update, got {:?}", notification.update);
+        };
+
+        assert_eq!(acp_plan.meta, expected_plan.meta);
+        assert_eq!(acp_plan.entries.len(), expected_plan.entries.len());
+
+        let first = &acp_plan.entries[0];
+        assert_eq!(first.content, expected_plan.entries[0].content);
+        assert_eq!(first.priority, acp::PlanEntryPriority::High);
+        assert_eq!(first.status, acp::PlanEntryStatus::InProgress);
+        assert_eq!(first.meta, expected_plan.entries[0].meta);
+
+        let second = &acp_plan.entries[1];
+        assert_eq!(second.content, expected_plan.entries[1].content);
+        assert_eq!(second.priority, acp::PlanEntryPriority::Low);
+        assert_eq!(second.status, acp::PlanEntryStatus::Completed);
+        assert_eq!(second.meta, expected_plan.entries[1].meta);
     }
 }

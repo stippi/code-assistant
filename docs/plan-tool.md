@@ -109,10 +109,10 @@ This document describes how to introduce a persistent "plan" tool to the code-as
 4. [x] UI event plumbing (`ui/ui_events.rs`, `ui/gpui/mod.rs`, `ui/terminal/state.rs`, `ui/terminal/ui.rs`).
 5. [x] ACP bridge update (`acp/ui.rs`).
 6. [x] Session connect events, agent save/load hooks (`session/instance.rs`, `agent/runner.rs`).
-7. [ ] Tests for persistence, tool execution, ACP updates (ACP session/update propagation test still outstanding).
+7. [x] Tests for persistence, tool execution, ACP updates (ACP session/update propagation test still outstanding).
    - [x] Persistence round-trip coverage in `crates/code_assistant/src/persistence.rs::tests::chat_session_plan_roundtrip`.
    - [x] Tool fixture and `update_plan` tool execution tests in `crates/code_assistant/src/tools/impls/update_plan.rs`.
-   - [ ] ACP bridge unit test ensuring `UiEvent::UpdatePlan` emits `acp::SessionUpdate::Plan`.
+   - [x] ACP bridge unit test ensuring `UiEvent::UpdatePlan` emits `acp::SessionUpdate::Plan`.
 8. [x] Prompt/docs updates.
 
 Implementers should work through the checklist sequentially, running `cargo test` (workspace) after major milestones.
