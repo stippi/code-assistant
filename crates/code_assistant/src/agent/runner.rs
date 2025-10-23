@@ -18,7 +18,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 /// Runtime components required to construct an `Agent`.
 pub struct AgentComponents {
@@ -41,6 +41,13 @@ enum LoopFlow {
     GetUserInput,
 }
 
+#[derive(Debug, Clone)]
+struct ContextWindowConfig {
+    limit: Option<u32>,
+    threshold: f32,
+    enabled: bool,
+}
+
 pub struct Agent {
     working_memory: WorkingMemory,
     plan: PlanState,
@@ -51,26 +58,17 @@ pub struct Agent {
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<dyn UserInterface>,
     state_persistence: Box<dyn AgentStatePersistence>,
-    // Store all messages exchanged
     message_history: Vec<Message>,
-    // Store the history of tool executions
     tool_executions: Vec<crate::agent::types::ToolExecution>,
-    // Cached system prompts keyed by model hint
     cached_system_prompts: HashMap<String, String>,
-    // Optional model identifier used for prompt selection
     model_hint: Option<String>,
-    // Model configuration associated with this session
     session_model_config: Option<SessionModelConfig>,
-    // Counter for generating unique request IDs
     next_request_id: u64,
-    // Session ID for this agent instance
     session_id: Option<String>,
-    // The actual session name (empty if not named yet)
     session_name: String,
-    // Whether to inject naming reminders (disabled for tests)
     enable_naming_reminders: bool,
-    // Shared pending message with SessionInstance
     pending_message_ref: Option<Arc<Mutex<Option<String>>>>,
+    context_config: ContextWindowConfig,
 }
 
 impl Agent {
@@ -100,12 +98,18 @@ impl Agent {
             state_persistence,
         } = components;
 
+        let context_config = ContextWindowConfig {
+            limit: None,
+            threshold: session_config.context_threshold,
+            enabled: session_config.context_management_enabled,
+        };
+
         let mut this = Self {
             working_memory: WorkingMemory::default(),
             plan: PlanState::default(),
             llm_provider,
             session_config,
-            tool_scope: ToolScope::Agent, // Default to Agent scope
+            tool_scope: ToolScope::Agent,
             project_manager,
             ui,
             command_executor,
@@ -114,12 +118,13 @@ impl Agent {
             tool_executions: Vec::new(),
             cached_system_prompts: HashMap::new(),
             session_model_config: None,
-            next_request_id: 1, // Start from 1
+            next_request_id: 1,
             session_id: None,
             session_name: String::new(),
-            enable_naming_reminders: true, // Enabled by default
+            enable_naming_reminders: true,
             pending_message_ref: None,
             model_hint: None,
+            context_config,
         };
         if this.session_config.use_diff_blocks {
             this.tool_scope = ToolScope::AgentWithDiffBlocks;
@@ -159,6 +164,17 @@ impl Agent {
             self.model_hint = normalized;
             self.invalidate_system_message_cache();
         }
+    }
+
+    /// Update context configuration when model changes
+    pub fn set_context_limit(&mut self, limit: Option<u32>) {
+        self.context_config.limit = limit;
+        debug!(
+            "Context limit set to: {:?} (threshold: {:.0}%, enabled: {})",
+            limit,
+            self.context_config.threshold * 100.0,
+            self.context_config.enabled
+        );
     }
 
     /// Disable naming reminders (used for tests)
@@ -303,6 +319,13 @@ impl Agent {
                         attachments: Vec::new(),
                     })
                     .await?;
+            }
+
+            // Check if context window is approaching limit
+            if self.should_compact_context() {
+                let summary = self.request_context_summary().await?;
+                self.compact_context(summary).await?;
+                continue;
             }
 
             let messages = self.render_tool_results_in_messages();
@@ -1042,25 +1065,18 @@ impl Agent {
 
     /// Prepare messages for LLM request, dynamically rendering tool outputs
     fn render_tool_results_in_messages(&self) -> Vec<Message> {
-        // Start with a clean slate
+        let active_messages = self.get_active_messages();
         let mut messages = Vec::new();
-
-        // Create a fresh ResourcesTracker for this rendering pass
         let mut resources_tracker = crate::tools::core::render::ResourcesTracker::new();
-
-        // First, collect all tool executions and build a map from tool_use_id to rendered output
         let mut tool_outputs = std::collections::HashMap::new();
 
-        // Process tool executions in reverse chronological order (newest first)
-        // so newer tool calls take precedence in resource conflicts
         for execution in self.tool_executions.iter().rev() {
             let tool_use_id = &execution.tool_request.id;
             let rendered_output = execution.result.as_render().render(&mut resources_tracker);
             tool_outputs.insert(tool_use_id.clone(), rendered_output);
         }
 
-        // Now rebuild the message history, replacing tool outputs with our dynamically rendered versions
-        for msg in &self.message_history {
+        for msg in &active_messages {
             match &msg.content {
                 MessageContent::Structured(blocks) => {
                     // Look for ToolResult blocks
@@ -1411,5 +1427,149 @@ impl Agent {
             updated_request.id
         );
         Ok(updated_text)
+    }
+
+    fn should_compact_context(&self) -> bool {
+        if !self.context_config.enabled {
+            return false;
+        }
+
+        let limit = match self.context_config.limit {
+            Some(limit) => limit,
+            None => return false,
+        };
+
+        let current_size = self.get_current_context_size();
+        let threshold = (limit as f32 * self.context_config.threshold) as u32;
+
+        current_size >= threshold
+    }
+
+    fn get_current_context_size(&self) -> u32 {
+        for message in self.message_history.iter().rev() {
+            if matches!(message.role, MessageRole::Assistant) {
+                if let Some(usage) = &message.usage {
+                    return usage.input_tokens + usage.cache_read_input_tokens;
+                }
+            }
+        }
+        0
+    }
+
+    fn get_active_messages(&self) -> Vec<Message> {
+        let last_compaction_idx = self
+            .message_history
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, msg)| {
+                matches!(&msg.content, MessageContent::Structured(blocks)
+                    if blocks.iter().any(|b| matches!(b, ContentBlock::ContextCompaction { .. })))
+            })
+            .map(|(idx, _)| idx);
+
+        match last_compaction_idx {
+            Some(idx) => self.message_history[idx..].to_vec(),
+            None => self.message_history.clone(),
+        }
+    }
+
+    fn count_compactions(&self) -> u32 {
+        self.message_history
+            .iter()
+            .filter(|msg| {
+                matches!(&msg.content, MessageContent::Structured(blocks)
+                    if blocks.iter().any(|b| matches!(b, ContentBlock::ContextCompaction { .. })))
+            })
+            .count() as u32
+    }
+
+    async fn request_context_summary(&mut self) -> Result<String> {
+        info!("Context window approaching limit, requesting summary");
+
+        let summary_request = Message {
+            role: MessageRole::User,
+            content: MessageContent::Text(self.generate_summary_request()),
+            request_id: None,
+            usage: None,
+        };
+
+        self.append_message(summary_request)?;
+
+        let messages = self.render_tool_results_in_messages();
+        let (llm_response, request_id) = self.get_next_assistant_message(messages).await?;
+
+        let mut summary = String::new();
+        for block in &llm_response.content {
+            if let ContentBlock::Text { text, .. } = block {
+                if !summary.is_empty() {
+                    summary.push_str("\n\n");
+                }
+                summary.push_str(text);
+            }
+        }
+
+        if summary.trim().is_empty() {
+            anyhow::bail!("LLM did not provide a text summary");
+        }
+
+        self.append_message(Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Text(summary.clone()),
+            request_id: Some(request_id),
+            usage: Some(llm_response.usage),
+        })?;
+
+        Ok(summary)
+    }
+
+    fn generate_summary_request(&self) -> String {
+        "<system-context-management>\n\
+        The context window is approaching its limit. Please provide a COMPLETE and DETAILED summary:\n\
+        \n\
+        1. **Original Task**: What was the user's original request?\n\
+        2. **Progress Made**: What have you accomplished? Include files, tools used, solutions.\n\
+        3. **Working Memory**: Key information, project structure, patterns discovered.\n\
+        4. **Next Steps**: What remains to be done?\n\
+        \n\
+        This summary will be used to continue in a fresh context. Be thorough and specific.\n\
+        After this summary, message history will be archived and only your summary preserved.\n\
+        Do NOT use tools in this response - just provide the summary as plain text.\n\
+        </system-context-management>".to_string()
+    }
+
+    async fn compact_context(&mut self, summary: String) -> Result<()> {
+        let compaction_number = self.count_compactions() + 1;
+        let messages_archived = self.message_history.len();
+        let context_size_before = self.get_current_context_size();
+
+        info!(
+            "Compacting context: {} messages archived, compaction #{}",
+            messages_archived, compaction_number
+        );
+
+        let compaction_block = ContentBlock::new_context_compaction(
+            compaction_number,
+            summary.clone(),
+            messages_archived,
+            context_size_before,
+        );
+
+        let compaction_message = Message {
+            role: MessageRole::User,
+            content: MessageContent::Structured(vec![
+                compaction_block,
+                ContentBlock::new_text(
+                    "Context has been compacted. Continue the task based on the summary above.",
+                ),
+            ]),
+            request_id: None,
+            usage: None,
+        };
+
+        self.append_message(compaction_message)?;
+        self.invalidate_system_message_cache();
+
+        Ok(())
     }
 }

@@ -324,14 +324,21 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                                 fragments.push(DisplayFragment::ReasoningComplete);
                             }
                         }
+
                         ContentBlock::Image {
                             media_type, data, ..
                         } => {
-                            // Images in assistant messages - preserve for display
                             fragments.push(DisplayFragment::Image {
                                 media_type: media_type.clone(),
                                 data: data.clone(),
                             });
+                        }
+
+                        ContentBlock::ContextCompaction { summary, .. } => {
+                            fragments.push(DisplayFragment::PlainText(format!(
+                                "[Context Compacted]\n\n{}",
+                                summary
+                            )));
                         }
                     }
                 }

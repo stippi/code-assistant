@@ -258,6 +258,7 @@ impl TerminalTuiApp {
                 .to_string(),
             tool_syntax: config.tool_syntax,
             use_diff_blocks: config.use_diff_format,
+            ..SessionConfig::default()
         };
 
         // Create session manager

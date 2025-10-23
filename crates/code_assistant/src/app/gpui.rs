@@ -25,6 +25,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         initial_project: String::new(),
         tool_syntax: config.tool_syntax,
         use_diff_blocks: config.use_diff_format,
+        ..SessionConfig::default()
     };
 
     let default_model = config.model.clone();

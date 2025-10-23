@@ -395,6 +395,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         initial_project: String::new(),
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -514,6 +515,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         initial_project: String::new(),
         tool_syntax: ToolSyntax::Xml,
         use_diff_blocks: false,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -642,6 +644,7 @@ async fn test_parse_error_handling() -> Result<()> {
         initial_project: String::new(),
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -750,6 +753,7 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
             initial_project: String::new(),
             tool_syntax: ToolSyntax::Xml,
             use_diff_blocks: false,
+            ..SessionConfig::default()
         },
         None,
     );
@@ -1146,6 +1150,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         initial_project: String::new(),
         tool_syntax: ToolSyntax::Xml,
         use_diff_blocks: false,
+        ..SessionConfig::default()
     };
 
     let mut agent = Agent::new(components, session_config);

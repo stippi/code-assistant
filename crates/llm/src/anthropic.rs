@@ -182,10 +182,16 @@ impl DefaultMessageConverter {
                                         },
                                         false,
                                     ),
+
                                     ContentBlock::RedactedThinking { data, .. } => (
                                         "redacted_thinking".to_string(),
                                         AnthropicBlockContent::RedactedThinking { data },
                                         false,
+                                    ),
+                                    ContentBlock::ContextCompaction { summary, .. } => (
+                                        "text".to_string(),
+                                        AnthropicBlockContent::Text { text: summary },
+                                        true,
                                     ),
                                 };
 
@@ -1135,9 +1141,11 @@ impl AnthropicClient {
                                 ContentBlock::Image { end_time, .. } => {
                                     *end_time = Some(now);
                                 }
+
                                 ContentBlock::ToolResult { end_time, .. } => {
                                     *end_time = Some(now);
                                 }
+                                ContentBlock::ContextCompaction { .. } => {}
                             }
                         }
                         _ => {}
@@ -1225,6 +1233,7 @@ impl AnthropicClient {
                         *end_time = Some(now);
                     }
                 }
+                ContentBlock::ContextCompaction { .. } => {}
             }
         }
 

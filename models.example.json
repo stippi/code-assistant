@@ -2,6 +2,7 @@
   "Claude Sonnet 4.5": {
     "provider": "anthropic-main",
     "id": "claude-sonnet-4-5",
+    "context_limit": 200000,
     "config": {
       "max_tokens": 32768,
       "thinking": {
@@ -35,6 +36,7 @@
   "GPT-4.1": {
     "provider": "openai-main",
     "id": "gpt-4.1",
+    "context_limit": 128000,
     "config": {
       "temperature": 0.8,
       "max_tokens": 4096

@@ -298,6 +298,14 @@ impl SessionManager {
 
         let mut agent = Agent::new(components, session_config.clone());
 
+        // Set context limit from model config
+        if let Some(ref model_config) = session_state.model_config {
+            let config_system = llm::provider_config::ConfigurationSystem::load()?;
+            if let Some(provider_model) = config_system.get_model(&model_config.model_name) {
+                agent.set_context_limit(provider_model.context_limit);
+            }
+        }
+
         // Set the shared pending message reference
         agent.set_pending_message_ref(pending_message_ref);
 
