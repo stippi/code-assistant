@@ -2,6 +2,7 @@
   "Claude Sonnet 4.5": {
     "provider": "anthropic-main",
     "id": "claude-sonnet-4-5",
+    "context_token_limit": 200000,
     "config": {
       "max_tokens": 32768,
       "thinking": {
@@ -13,6 +14,7 @@
   "GPT-5-Codex (low)": {
     "provider": "openai-responses",
     "id": "gpt-5-codex",
+    "context_token_limit": 128000,
     "config": {
       "temperature": 0.7,
       "reasoning": {
@@ -24,6 +26,7 @@
   "GPT-5-Codex (medium)": {
     "provider": "openai-responses",
     "id": "gpt-5-codex",
+    "context_token_limit": 128000,
     "config": {
       "temperature": 0.7,
       "reasoning": {
@@ -35,6 +38,7 @@
   "GPT-4.1": {
     "provider": "openai-main",
     "id": "gpt-4.1",
+    "context_token_limit": 128000,
     "config": {
       "temperature": 0.8,
       "max_tokens": 4096
@@ -43,6 +47,7 @@
   "Llama 3.2 8B": {
     "provider": "ollama-local",
     "id": "llama3.3:8b",
+    "context_token_limit": 16384,
     "config": {
       "options": {
         "num_ctx": 16384,
@@ -53,6 +58,7 @@
   "Qwen 3 Coder 480B": {
     "provider": "groq-main",
     "id": "qwen-3-coder-480b",
+    "context_token_limit": 32768,
     "config": {
       "temperature": 0.7,
       "top_p": 0.8
@@ -61,6 +67,7 @@
   "Moonshot Kimi K2": {
     "provider": "groq-main",
     "id": "moonshotai/kimi-k2-instruct",
+    "context_token_limit": 32768,
     "config": {
       "temperature": 0.6
     }
@@ -68,6 +75,7 @@
   "Cerebras GPT OSS 120B": {
     "provider": "cerebras-main",
     "id": "gpt-oss-120b",
+    "context_token_limit": 16384,
     "config": {
       "temperature": 0.7
     }
@@ -75,6 +83,7 @@
   "Mistral Devstral Medium": {
     "provider": "mistral-main",
     "id": "devstral-medium-2507",
+    "context_token_limit": 200000,
     "config": {
       "temperature": 0.7
     }
@@ -82,6 +91,7 @@
   "Gemini 2.5 Pro": {
     "provider": "vertex-main",
     "id": "gemini-2.5-pro-preview-06-05",
+    "context_token_limit": 200000,
     "config": {
       "temperature": 0.8
     }
@@ -89,6 +99,7 @@
   "AI Core Claude Sonnet 4": {
     "provider": "ai-core-dev",
     "id": "claude-sonnet-4",
+    "context_token_limit": 200000,
     "config": {}
   }
 }

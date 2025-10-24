@@ -6,7 +6,10 @@ use crate::session::SessionConfig;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{generate_system_message, ParserRegistry, ToolRequest};
 use crate::types::*;
-use crate::ui::{UiEvent, UserInterface};
+use crate::ui::gpui::elements::MessageRole as UiMessageRole;
+use crate::ui::streaming::create_stream_processor;
+use crate::ui::ui_events::{MessageData, ToolResultData};
+use crate::ui::{ToolStatus, UiEvent, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
 use llm::{
@@ -72,6 +75,16 @@ pub struct Agent {
     // Shared pending message with SessionInstance
     pending_message_ref: Option<Arc<Mutex<Option<String>>>>,
 }
+
+const CONTEXT_USAGE_THRESHOLD: f32 = 0.8;
+const CONTEXT_COMPACTION_PROMPT: &str = r#"<system-compaction>
+The conversation history is nearing the model's context window limit. Provide a thorough summary that allows resuming the task without the earlier messages. Include:
+- The current objectives or tasks.
+- Key actions taken so far and their outcomes.
+- Important files, commands, or decisions that matter for continuing.
+- Outstanding questions or follow-up work that still needs attention.
+Respond with plain text only.
+</system-compaction>"#;
 
 impl Agent {
     /// Formats an error, particularly ToolErrors, into a user-friendly string.
@@ -305,6 +318,11 @@ impl Agent {
                     .await?;
             }
 
+            if self.should_trigger_compaction()? {
+                self.perform_compaction().await?;
+                continue;
+            }
+
             let messages = self.render_tool_results_in_messages();
 
             // 1. Get LLM response (without adding to history yet)
@@ -415,12 +433,10 @@ impl Agent {
         }
         self.session_name = session_state.name;
         self.session_model_config = session_state.model_config;
-        if let Some(model_hint) = self
-            .session_model_config
-            .as_ref()
-            .map(|cfg| cfg.model_name.clone())
-        {
-            self.set_model_hint(Some(model_hint));
+        if let Some(model_config) = self.session_model_config.as_mut() {
+            model_config.ensure_context_limit()?;
+            let model_name = model_config.model_name.clone();
+            self.set_model_hint(Some(model_name));
         }
 
         // Restore next_request_id from session, or calculate from existing messages for backward compatibility
@@ -784,12 +800,15 @@ impl Agent {
             .map(|msg| {
                 match &msg.content {
                     MessageContent::Structured(blocks) => {
-                        // Check if there are any ToolResult blocks that need conversion
+                        // Check if there are any ToolResult or CompactionSummary blocks that need conversion
                         let has_tool_results = blocks
                             .iter()
                             .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
+                        let has_compaction_summary = blocks
+                            .iter()
+                            .any(|block| matches!(block, ContentBlock::CompactionSummary { .. }));
 
-                        if !has_tool_results {
+                        if !has_tool_results && !has_compaction_summary {
                             // No conversion needed
                             return msg;
                         }
@@ -810,6 +829,12 @@ impl Agent {
                                 ContentBlock::Text { text, .. } => {
                                     // For existing Text blocks, keep as is
                                     text_content.push_str(text);
+                                    text_content.push_str("\n\n");
+                                }
+                                ContentBlock::CompactionSummary { text, .. } => {
+                                    let formatted =
+                                        Self::format_compaction_summary_for_prompt(text);
+                                    text_content.push_str(&formatted);
                                     text_content.push_str("\n\n");
                                 }
                                 _ => {} // Ignore other block types
@@ -1040,6 +1065,252 @@ impl Agent {
         Ok((response, request_id))
     }
 
+    fn message_contains_compaction_summary(message: &Message) -> bool {
+        match &message.content {
+            MessageContent::Structured(blocks) => blocks
+                .iter()
+                .any(|block| matches!(block, ContentBlock::CompactionSummary { .. })),
+            _ => false,
+        }
+    }
+
+    fn format_compaction_summary_for_prompt(summary: &str) -> String {
+        let trimmed = summary.trim();
+        if trimmed.is_empty() {
+            "Conversation summary: (empty)".to_string()
+        } else {
+            format!("Conversation summary:\n{trimmed}")
+        }
+    }
+
+    fn extract_compaction_summary_text(blocks: &[ContentBlock]) -> String {
+        let mut collected = Vec::new();
+        for block in blocks {
+            match block {
+                ContentBlock::CompactionSummary { text, .. } => collected.push(text.as_str()),
+                ContentBlock::Text { text, .. } => collected.push(text.as_str()),
+                ContentBlock::Thinking { thinking, .. } => {
+                    collected.push(thinking.as_str());
+                }
+                _ => {}
+            }
+        }
+
+        let merged = collected.join("\n").trim().to_string();
+        if merged.is_empty() {
+            "No summary was generated.".to_string()
+        } else {
+            merged
+        }
+    }
+
+    fn build_ui_messages(&self) -> Result<Vec<MessageData>> {
+        struct DummyUI;
+
+        #[async_trait::async_trait]
+        impl crate::ui::UserInterface for DummyUI {
+            async fn send_event(
+                &self,
+                _event: crate::ui::UiEvent,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+
+            fn display_fragment(
+                &self,
+                _fragment: &crate::ui::DisplayFragment,
+            ) -> Result<(), crate::ui::UIError> {
+                Ok(())
+            }
+
+            fn should_streaming_continue(&self) -> bool {
+                true
+            }
+
+            fn notify_rate_limit(&self, _seconds_remaining: u64) {}
+
+            fn clear_rate_limit(&self) {}
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let dummy_ui: Arc<dyn crate::ui::UserInterface> = Arc::new(DummyUI);
+        let mut processor = create_stream_processor(self.session_config.tool_syntax, dummy_ui, 0);
+
+        let mut messages_data = Vec::new();
+
+        for message in &self.message_history {
+            if message.role == MessageRole::User {
+                match &message.content {
+                    MessageContent::Text(text) if text.trim().is_empty() => {
+                        continue;
+                    }
+                    MessageContent::Structured(blocks) => {
+                        let has_tool_results = blocks
+                            .iter()
+                            .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
+                        if has_tool_results {
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let fragments = processor.extract_fragments_from_message(message)?;
+            let role = match message.role {
+                MessageRole::User => UiMessageRole::User,
+                MessageRole::Assistant => UiMessageRole::Assistant,
+            };
+
+            messages_data.push(MessageData { role, fragments });
+        }
+
+        Ok(messages_data)
+    }
+
+    fn build_ui_tool_results(&self) -> Result<Vec<ToolResultData>> {
+        let mut tool_results = Vec::new();
+        let mut resources_tracker = ResourcesTracker::new();
+
+        for execution in &self.tool_executions {
+            let success = execution.result.is_success();
+            let status = if success {
+                ToolStatus::Success
+            } else {
+                ToolStatus::Error
+            };
+
+            let short_output = execution.result.as_render().status();
+            let output = execution.result.as_render().render(&mut resources_tracker);
+
+            tool_results.push(ToolResultData {
+                tool_id: execution.tool_request.id.clone(),
+                status,
+                message: Some(short_output),
+                output: Some(output),
+            });
+        }
+
+        Ok(tool_results)
+    }
+
+    async fn refresh_ui_after_compaction(&self) -> Result<()> {
+        if self.session_id.is_none() {
+            return Ok(());
+        }
+
+        let messages = self.build_ui_messages()?;
+        let tool_results = self.build_ui_tool_results()?;
+
+        self.ui
+            .send_event(UiEvent::SetMessages {
+                messages,
+                session_id: self.session_id.clone(),
+                tool_results,
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn set_test_session_metadata(
+        &mut self,
+        session_id: String,
+        model_config: SessionModelConfig,
+    ) {
+        self.session_id = Some(session_id);
+        self.session_model_config = Some(model_config);
+    }
+
+    #[cfg(test)]
+    pub fn message_history_for_tests(&self) -> &Vec<Message> {
+        &self.message_history
+    }
+
+    fn context_usage_ratio(&mut self) -> Result<Option<f32>> {
+        let config = match self.session_model_config.as_mut() {
+            Some(config) => {
+                config.ensure_context_limit()?;
+                config
+            }
+            None => return Ok(None),
+        };
+
+        let limit = config.context_token_limit;
+        if limit == 0 {
+            return Ok(None);
+        }
+
+        let last_assistant = self
+            .message_history
+            .iter()
+            .rev()
+            .find(|msg| matches!(msg.role, MessageRole::Assistant));
+
+        if let Some(message) = last_assistant {
+            if Self::message_contains_compaction_summary(message) {
+                return Ok(None);
+            }
+
+            if let Some(usage) = &message.usage {
+                let used_tokens = usage.input_tokens + usage.cache_read_input_tokens;
+                if used_tokens == 0 {
+                    return Ok(None);
+                }
+                return Ok(Some(used_tokens as f32 / limit as f32));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn should_trigger_compaction(&mut self) -> Result<bool> {
+        if let Some(ratio) = self.context_usage_ratio()? {
+            if ratio >= CONTEXT_USAGE_THRESHOLD {
+                debug!(
+                    "Context usage {:.1}% >= threshold {:.0}% — triggering compaction",
+                    ratio * 100.0,
+                    CONTEXT_USAGE_THRESHOLD * 100.0
+                );
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn perform_compaction(&mut self) -> Result<()> {
+        debug!("Starting context compaction");
+
+        let compaction_message = Message {
+            role: MessageRole::User,
+            content: MessageContent::Text(CONTEXT_COMPACTION_PROMPT.to_string()),
+            request_id: None,
+            usage: None,
+        };
+        self.append_message(compaction_message)?;
+
+        let messages = self.render_tool_results_in_messages();
+        let (response, request_id) = self.get_next_assistant_message(messages).await?;
+
+        let summary_text = Self::extract_compaction_summary_text(&response.content);
+        let summary_block = ContentBlock::new_compaction_summary(summary_text.clone());
+        let summary_message = Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Structured(vec![summary_block]),
+            request_id: Some(request_id),
+            usage: Some(response.usage.clone()),
+        };
+        self.append_message(summary_message)?;
+
+        self.refresh_ui_after_compaction().await?;
+
+        Ok(())
+    }
+
     /// Prepare messages for LLM request, dynamically rendering tool outputs
     fn render_tool_results_in_messages(&self) -> Vec<Message> {
         // Start with a clean slate
@@ -1059,8 +1330,14 @@ impl Agent {
             tool_outputs.insert(tool_use_id.clone(), rendered_output);
         }
 
+        let start_index = self
+            .message_history
+            .iter()
+            .rposition(|msg| Self::message_contains_compaction_summary(msg))
+            .unwrap_or(0);
+
         // Now rebuild the message history, replacing tool outputs with our dynamically rendered versions
-        for msg in &self.message_history {
+        for msg in self.message_history.iter().skip(start_index) {
             match &msg.content {
                 MessageContent::Structured(blocks) => {
                     // Look for ToolResult blocks
@@ -1068,32 +1345,46 @@ impl Agent {
                     let mut need_update = false;
 
                     for block in blocks {
-                        if let ContentBlock::ToolResult {
-                            tool_use_id,
-                            is_error,
-                            start_time,
-                            end_time,
-                            ..
-                        } = block
-                        {
-                            // If we have an execution result for this tool use, use it
-                            if let Some(output) = tool_outputs.get(tool_use_id) {
-                                // Create a new ToolResult with updated content
-                                new_blocks.push(ContentBlock::ToolResult {
-                                    tool_use_id: tool_use_id.clone(),
-                                    content: output.clone(),
-                                    is_error: *is_error,
+                        match block {
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                is_error,
+                                start_time,
+                                end_time,
+                                ..
+                            } => {
+                                // If we have an execution result for this tool use, use it
+                                if let Some(output) = tool_outputs.get(tool_use_id) {
+                                    // Create a new ToolResult with updated content
+                                    new_blocks.push(ContentBlock::ToolResult {
+                                        tool_use_id: tool_use_id.clone(),
+                                        content: output.clone(),
+                                        is_error: *is_error,
+                                        start_time: *start_time,
+                                        end_time: *end_time,
+                                    });
+                                    need_update = true;
+                                } else {
+                                    // Keep the original block
+                                    new_blocks.push(block.clone());
+                                }
+                            }
+                            ContentBlock::CompactionSummary {
+                                text,
+                                start_time,
+                                end_time,
+                            } => {
+                                new_blocks.push(ContentBlock::Text {
+                                    text: Self::format_compaction_summary_for_prompt(text),
                                     start_time: *start_time,
                                     end_time: *end_time,
                                 });
                                 need_update = true;
-                            } else {
-                                // Keep the original block
+                            }
+                            _ => {
+                                // Keep other blocks as is
                                 new_blocks.push(block.clone());
                             }
-                        } else {
-                            // Keep non-ToolResult blocks as is
-                            new_blocks.push(block.clone());
                         }
                     }
 

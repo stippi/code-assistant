@@ -1013,6 +1013,11 @@ impl Gpui {
                         container.add_image_block(media_type, data, cx);
                     });
                 }
+                DisplayFragment::CompactionDivider { summary } => {
+                    self.update_container(container, cx, |container, cx| {
+                        container.add_compaction_divider(summary.clone(), cx);
+                    });
+                }
                 DisplayFragment::ReasoningSummaryStart => {
                     self.update_container(container, cx, |container, cx| {
                         container.start_reasoning_summary_item(cx);
@@ -1408,6 +1413,9 @@ impl UserInterface for Gpui {
                 tracing::debug!(
                     "GPUI: Tool {tool_id} attached terminal {terminal_id}; no dedicated UI hook"
                 );
+            }
+            DisplayFragment::CompactionDivider { .. } => {
+                // Compaction summaries are handled via refresh events rather than streaming.
             }
             DisplayFragment::ReasoningComplete => {
                 self.push_event(UiEvent::CompleteReasoning);

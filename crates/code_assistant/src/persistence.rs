@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use llm::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -18,6 +18,9 @@ pub struct SessionModelConfig {
     pub model_name: String,
     /// Optional recording path for this session
     pub record_path: Option<PathBuf>,
+    /// Maximum context window supported by the model (token count)
+    #[serde(default)]
+    pub context_token_limit: u32,
     // Note: playback and fast_playback are runtime toggles, not persisted
 }
 
@@ -76,7 +79,7 @@ pub struct ChatSession {
 
 impl ChatSession {
     /// Merge any legacy top-level fields into the nested SessionConfig.
-    pub fn ensure_config(&mut self) {
+    pub fn ensure_config(&mut self) -> Result<()> {
         if let Some(init_path) = self.legacy_init_path.take() {
             self.config.init_path = Some(init_path);
         }
@@ -91,6 +94,10 @@ impl ChatSession {
         if let Some(use_diff_blocks) = self.legacy_use_diff_blocks.take() {
             self.config.use_diff_blocks = use_diff_blocks;
         }
+        if let Some(model_config) = self.model_config.as_mut() {
+            model_config.ensure_context_limit()?;
+        }
+        Ok(())
     }
 
     /// Create a new empty chat session using the provided configuration.
@@ -117,6 +124,36 @@ impl ChatSession {
             legacy_tool_syntax: None,
             legacy_use_diff_blocks: None,
         }
+    }
+}
+
+impl SessionModelConfig {
+    /// Construct a session model configuration by looking up the model metadata.
+    pub fn for_model(model_name: String, record_path: Option<PathBuf>) -> Result<Self> {
+        let config_system = llm::provider_config::ConfigurationSystem::load()?;
+        let limit = config_system
+            .get_model(&model_name)
+            .map(|model| model.context_token_limit)
+            .ok_or_else(|| anyhow!("Model not found in models.json: {}", model_name))?;
+
+        Ok(Self {
+            model_name,
+            record_path,
+            context_token_limit: limit,
+        })
+    }
+
+    /// Ensure the context token limit is populated (for legacy session files).
+    pub fn ensure_context_limit(&mut self) -> Result<()> {
+        if self.context_token_limit == 0 {
+            let config_system = llm::provider_config::ConfigurationSystem::load()?;
+            let limit = config_system
+                .get_model(&self.model_name)
+                .map(|model| model.context_token_limit)
+                .ok_or_else(|| anyhow!("Model not found in models.json: {}", self.model_name))?;
+            self.context_token_limit = limit;
+        }
+        Ok(())
     }
 }
 
@@ -199,7 +236,7 @@ impl FileSessionPersistence {
 
     pub fn save_chat_session(&mut self, session: &ChatSession) -> Result<()> {
         let mut session = session.clone();
-        session.ensure_config();
+        session.ensure_config()?;
 
         let session_path = self.chat_file_path(&session.id)?;
         debug!("Saving chat session to {}", session_path.display());
@@ -253,7 +290,7 @@ impl FileSessionPersistence {
         debug!("Loading chat session from {}", session_path.display());
         let json = std::fs::read_to_string(session_path)?;
         let mut session: ChatSession = serde_json::from_str(&json)?;
-        session.ensure_config();
+        session.ensure_config()?;
         Ok(Some(session))
     }
 

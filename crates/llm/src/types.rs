@@ -162,6 +162,14 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         end_time: Option<SystemTime>,
     },
+    #[serde(rename = "compaction_summary")]
+    CompactionSummary {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start_time: Option<SystemTime>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end_time: Option<SystemTime>,
+    },
 }
 
 /// Rate limit information extracted from LLM provider headers
@@ -307,6 +315,15 @@ impl ContentBlock {
         }
     }
 
+    /// Create a compaction summary block from a String
+    pub fn new_compaction_summary(text: impl Into<String>) -> Self {
+        ContentBlock::CompactionSummary {
+            text: text.into(),
+            start_time: None,
+            end_time: None,
+        }
+    }
+
     /// Create an image content block from raw image data
     pub fn new_image(media_type: impl Into<String>, data: impl AsRef<[u8]>) -> Self {
         use base64::Engine as _;
@@ -374,6 +391,7 @@ impl ContentBlock {
             ContentBlock::Image { start_time, .. } => *start_time,
             ContentBlock::ToolUse { start_time, .. } => *start_time,
             ContentBlock::ToolResult { start_time, .. } => *start_time,
+            ContentBlock::CompactionSummary { start_time, .. } => *start_time,
         }
     }
 
@@ -386,6 +404,7 @@ impl ContentBlock {
             ContentBlock::Image { end_time, .. } => *end_time,
             ContentBlock::ToolUse { end_time, .. } => *end_time,
             ContentBlock::ToolResult { end_time, .. } => *end_time,
+            ContentBlock::CompactionSummary { end_time, .. } => *end_time,
         }
     }
 
@@ -398,6 +417,7 @@ impl ContentBlock {
             ContentBlock::Image { start_time, .. } => *start_time = Some(time),
             ContentBlock::ToolUse { start_time, .. } => *start_time = Some(time),
             ContentBlock::ToolResult { start_time, .. } => *start_time = Some(time),
+            ContentBlock::CompactionSummary { start_time, .. } => *start_time = Some(time),
         }
         self
     }
@@ -411,6 +431,7 @@ impl ContentBlock {
             ContentBlock::Image { end_time, .. } => *end_time = Some(time),
             ContentBlock::ToolUse { end_time, .. } => *end_time = Some(time),
             ContentBlock::ToolResult { end_time, .. } => *end_time = Some(time),
+            ContentBlock::CompactionSummary { end_time, .. } => *end_time = Some(time),
         }
         self
     }
@@ -519,6 +540,10 @@ impl ContentBlock {
                     ..
                 },
             ) => a_id == b_id && a_content == b_content && a_error == b_error,
+            (
+                ContentBlock::CompactionSummary { text: a_text, .. },
+                ContentBlock::CompactionSummary { text: b_text, .. },
+            ) => a_text == b_text,
             _ => false, // Different variants
         }
     }

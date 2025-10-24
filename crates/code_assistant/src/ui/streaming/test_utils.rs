@@ -168,6 +168,9 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
                 terminal_id,
             } => println!("  [{i}] ToolTerminal(tool_id: {tool_id}, terminal_id: {terminal_id})"),
             DisplayFragment::ReasoningComplete => println!("  [{i}] ReasoningComplete"),
+            DisplayFragment::CompactionDivider { summary } => {
+                println!("  [{i}] CompactionDivider: {summary}");
+            }
         }
     }
 }
@@ -219,6 +222,10 @@ pub fn fragments_match(expected: &DisplayFragment, actual: &DisplayFragment) -> 
                 ..
             },
         ) => expected_terminal == actual_terminal,
+        (
+            DisplayFragment::CompactionDivider { summary: expected },
+            DisplayFragment::CompactionDivider { summary: actual },
+        ) => expected == actual,
         _ => false,
     }
 }

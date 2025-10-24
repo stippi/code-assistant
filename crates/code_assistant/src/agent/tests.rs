@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::persistence::MockStatePersistence;
+use crate::persistence::SessionModelConfig;
 use crate::session::SessionConfig;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
@@ -8,6 +9,7 @@ use crate::tests::mocks::{
 };
 use crate::tests::utils::parse_and_truncate_llm_response;
 use crate::types::*;
+use crate::ui::UiEvent;
 use anyhow::Result;
 use llm::types::*;
 use std::path::PathBuf;
@@ -732,6 +734,149 @@ async fn test_parse_error_handling() -> Result<()> {
     } else {
         panic!("Expected Structured content in third message");
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_context_compaction_inserts_summary() -> Result<()> {
+    let summary_text = "Summary of recent work";
+    let summary_response = LLMResponse {
+        content: vec![ContentBlock::new_text(summary_text)],
+        usage: Usage {
+            input_tokens: 20,
+            output_tokens: 8,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        },
+        rate_limit_info: None,
+    };
+
+    let idle_response = LLMResponse {
+        content: Vec::new(),
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(idle_response), Ok(summary_response)]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.set_test_session_metadata(
+        "session-1".to_string(),
+        SessionModelConfig {
+            model_name: "test-model".to_string(),
+            record_path: None,
+            context_token_limit: 100,
+        },
+    );
+
+    agent.append_message(Message {
+        role: MessageRole::User,
+        content: MessageContent::Text("User request".to_string()),
+        request_id: None,
+        usage: None,
+    })?;
+
+    agent.append_message(Message {
+        role: MessageRole::Assistant,
+        content: MessageContent::Structured(vec![ContentBlock::new_text(
+            "Assistant reply".to_string(),
+        )]),
+        request_id: Some(1),
+        usage: Some(Usage {
+            input_tokens: 85,
+            output_tokens: 12,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }),
+    })?;
+
+    agent.run_single_iteration().await?;
+
+    // Ensure a compaction summary message was added
+    let summary_message =
+        agent
+            .message_history_for_tests()
+            .iter()
+            .find(|message| match &message.content {
+                MessageContent::Structured(blocks) => blocks
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::CompactionSummary { .. })),
+                _ => false,
+            });
+    assert!(
+        summary_message.is_some(),
+        "Expected compaction summary in history"
+    );
+
+    // The compaction prompt should have been sent to the provider
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(requests.len(), 2);
+    let compaction_request = &requests[0];
+    let compaction_prompt_found = compaction_request.messages.iter().any(|message| {
+        matches!(&message.content, MessageContent::Text(text) if text.contains("system-compaction"))
+    });
+    assert!(
+        compaction_prompt_found,
+        "Expected compaction prompt in LLM request"
+    );
+
+    // Ensure the UI received a SetMessages event with the compaction divider
+    let events = ui.events();
+    let set_messages_event = events.iter().find_map(|event| {
+        if let UiEvent::SetMessages { messages, .. } = event {
+            Some(messages.clone())
+        } else {
+            None
+        }
+    });
+    let messages = set_messages_event.expect("Expected SetMessages event after compaction");
+    let has_compaction_fragment = messages.iter().any(|message| {
+        message.fragments.iter().any(|fragment| {
+            matches!(
+                fragment,
+                crate::ui::DisplayFragment::CompactionDivider { .. }
+            )
+        })
+    });
+    assert!(
+        has_compaction_fragment,
+        "Expected compaction divider fragment in UI messages"
+    );
+
+    // Subsequent prompt should include the summary content
+    let summary_in_followup =
+        requests[1].messages.iter().any(|message| {
+            match &message.content {
+        MessageContent::Structured(blocks) => blocks.iter().any(|block| {
+            matches!(block, ContentBlock::Text { text, .. } if text.contains(summary_text))
+        }),
+        MessageContent::Text(text) => text.contains(summary_text),
+    }
+        });
+    assert!(
+        summary_in_followup,
+        "Expected summary text in follow-up request"
+    );
 
     Ok(())
 }

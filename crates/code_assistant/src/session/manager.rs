@@ -56,16 +56,13 @@ impl SessionManager {
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
         // Always create sessions with a default model config
-        let default_model_config = self.default_model_config();
+        let default_model_config = self.default_model_config()?;
         self.create_session_with_config(name, None, Some(default_model_config))
     }
 
     /// Get the default model configuration
-    fn default_model_config(&self) -> SessionModelConfig {
-        SessionModelConfig {
-            model_name: self.default_model_name.clone(),
-            record_path: None,
-        }
+    fn default_model_config(&self) -> Result<SessionModelConfig> {
+        SessionModelConfig::for_model(self.default_model_name.clone(), None)
     }
 
     /// Create a new session with optional model config and return its ID
@@ -163,11 +160,11 @@ impl SessionManager {
             if let Some(model_name) = existing_model_name {
                 model_name
             } else {
-                let default_model_config = self.default_model_config();
+                let default_model_config = self.default_model_config()?;
                 let model_name = default_model_config.model_name.clone();
                 {
                     let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-                    session_instance.session.model_config = Some(default_model_config);
+                    session_instance.session.model_config = Some(default_model_config.clone());
                 }
                 needs_persist = true;
                 model_name
@@ -419,11 +416,23 @@ impl SessionManager {
     /// Get the model config for a session, if any
     pub fn get_session_model_config(&self, session_id: &str) -> Result<Option<SessionModelConfig>> {
         if let Some(instance) = self.active_sessions.get(session_id) {
-            Ok(instance.session.model_config.clone())
+            if let Some(mut config) = instance.session.model_config.clone() {
+                config.ensure_context_limit()?;
+                Ok(Some(config))
+            } else {
+                Ok(None)
+            }
         } else {
             // Load from persistence
             match self.persistence.load_chat_session(session_id)? {
-                Some(session) => Ok(session.model_config),
+                Some(mut session) => {
+                    if let Some(mut config) = session.model_config.take() {
+                        config.ensure_context_limit()?;
+                        Ok(Some(config))
+                    } else {
+                        Ok(None)
+                    }
+                }
                 None => Ok(None),
             }
         }
@@ -440,11 +449,18 @@ impl SessionManager {
             .load_chat_session(session_id)?
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
-        session.model_config = model_config.clone();
+        let sanitized_model_config = if let Some(mut config) = model_config.clone() {
+            config.ensure_context_limit()?;
+            Some(config)
+        } else {
+            None
+        };
+
+        session.model_config = sanitized_model_config.clone();
         self.persistence.save_chat_session(&session)?;
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
-            instance.session.model_config = model_config;
+            instance.session.model_config = sanitized_model_config;
         }
 
         Ok(())

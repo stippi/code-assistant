@@ -51,6 +51,8 @@ pub enum DisplayFragment {
     ReasoningSummaryDelta(String),
     /// Mark reasoning as completed
     ReasoningComplete,
+    /// Divider indicating the conversation was compacted, with expandable summary text
+    CompactionDivider { summary: String },
 }
 
 /// Common trait for stream processors
