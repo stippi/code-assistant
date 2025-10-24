@@ -34,3 +34,13 @@ This document outlines the phased approach for adding automatic context compacti
 - Add or update documentation references pointing to this file if needed.
 - **Tests:** confirm the new automated tests pass and consider adding integration coverage that simulates a full compaction cycle end-to-end.
 
+## Outcome
+
+─ Worked for 1h 18m 34s ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+• - Added automatic compaction support: when prior assistant usage crosses the configured context window threshold, we now inject a summary request, persist the result as ContentBlock::CompactionSummary, and refresh the UI so a collapsible “conversation compacted” banner appears (crates/code_assistant/src/agent/runner.rs#L1239, crates/code_assistant/src/ui/gpui/elements.rs#L1488, crates/code_assistant/src/ui/gpui/mod.rs#L1016).
+  - Introduced context_token_limit to the model pipeline, wiring it through config loading (crates/llm/src/provider_config.rs#L26), session persistence (crates/code_assistant/src/persistence.rs#L16), manager creation (crates/code_assistant/src/session/manager.rs#L60), and ensuring legacy sessions hydrate the limit via SessionModelConfig::ensure_context_limit.
+  - Updated streaming/terminal/ACP surfaces to understand the new compaction summary block so replay, terminal, and ACP conversions all remain consistent (see crates/llm/src/anthropic.rs#L170, crates/code_assistant/src/ui/streaming/json_processor.rs#L311, crates/code_assistant/src/ui/terminal/ui.rs#L420, crates/code_assistant/src/acp/ui.rs#L130).
+  - Documented the rollout as a phased plan in docs/context-compaction.md and added focused unit coverage (crates/code_assistant/src/agent/tests.rs#L780) validating summary insertion and UI refresh.
+
+  Tests: cargo test test_context_compaction_inserts_summary --tests (passes). Full cargo test is blocked in this sandbox by OS permission checks (integration test test_tool_limit_with_realistic_anthropic_chunks).
