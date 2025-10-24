@@ -134,7 +134,7 @@ impl SessionModelConfig {
         let limit = config_system
             .get_model(&model_name)
             .map(|model| model.context_token_limit)
-            .ok_or_else(|| anyhow!("Model not found in models.json: {}", model_name))?;
+            .ok_or_else(|| anyhow!("Model not found in models.json: {model_name}"))?;
 
         Ok(Self {
             model_name,

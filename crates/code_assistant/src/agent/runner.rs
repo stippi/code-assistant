@@ -1333,7 +1333,7 @@ impl Agent {
         let start_index = self
             .message_history
             .iter()
-            .rposition(|msg| Self::message_contains_compaction_summary(msg))
+            .rposition(Self::message_contains_compaction_summary)
             .unwrap_or(0);
 
         // Now rebuild the message history, replacing tool outputs with our dynamically rendered versions
