@@ -15,6 +15,13 @@ pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBloc
             text: text.clone(),
             meta: None,
         }),
+        DisplayFragment::CompactionDivider { summary } => {
+            acp::ContentBlock::Text(acp::TextContent {
+                annotations: None,
+                text: format!("Conversation compacted:\n{summary}"),
+                meta: None,
+            })
+        }
         DisplayFragment::Image { media_type, data } => {
             acp::ContentBlock::Image(acp::ImageContent {
                 annotations: None,

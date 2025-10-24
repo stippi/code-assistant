@@ -454,9 +454,17 @@ async fn handle_switch_model(
     );
 
     // Create new session model config
-    let new_model_config = SessionModelConfig {
-        model_name: model_name.to_string(),
-        record_path: None, // Keep existing recording path if any
+    let new_model_config = match SessionModelConfig::for_model(model_name.to_string(), None) {
+        Ok(config) => config,
+        Err(e) => {
+            error!(
+                "Failed to load model configuration for {}: {}",
+                model_name, e
+            );
+            return BackendResponse::Error {
+                message: format!("Failed to load model configuration: {e}"),
+            };
+        }
     };
 
     let result = {

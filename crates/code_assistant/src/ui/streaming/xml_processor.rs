@@ -265,6 +265,11 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                                     data: data.clone(),
                                 });
                             }
+                            ContentBlock::CompactionSummary { text, .. } => {
+                                fragments.push(DisplayFragment::CompactionDivider {
+                                    summary: text.clone(),
+                                });
+                            }
                         }
                     }
                 }
@@ -716,7 +721,9 @@ impl XmlStreamProcessor {
                         // Tool parameter - emit immediately (we've already decided to allow the tool)
                         self.ui.display_fragment(&fragment)?;
                     }
-                    DisplayFragment::PlainText(_) | DisplayFragment::ThinkingText(_) => {
+                    DisplayFragment::PlainText(_)
+                    | DisplayFragment::ThinkingText(_)
+                    | DisplayFragment::CompactionDivider { .. } => {
                         // Text or thinking - buffer it
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..
