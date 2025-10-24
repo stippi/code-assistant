@@ -46,6 +46,7 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
         initial_project: String::new(),
         tool_syntax: config.tool_syntax,
         use_diff_blocks: config.use_diff_format,
+        ..SessionConfig::default()
     };
 
     // Model name has already been validated during CLI parsing

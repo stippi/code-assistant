@@ -504,6 +504,7 @@ impl OpenAIResponsesClient {
                         encrypted_content: data,
                     });
                 }
+
                 ContentBlock::ToolUse {
                     id, name, input, ..
                 } => {
@@ -521,6 +522,16 @@ impl OpenAIResponsesClient {
                             .unwrap_or_else(|_| input.to_string()),
                     });
                 }
+                ContentBlock::ContextCompaction { summary, .. } => match role {
+                    MessageRole::User => {
+                        current_message_content
+                            .push(ResponseContentItem::InputText { text: summary });
+                    }
+                    MessageRole::Assistant => {
+                        current_message_content
+                            .push(ResponseContentItem::OutputText { text: summary });
+                    }
+                },
             }
         }
 

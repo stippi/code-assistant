@@ -61,9 +61,24 @@ impl fmt::Display for ContentBlock {
                 writeln!(f, "Thinking: signature={signature}")?;
                 writeln!(f, "  Content: {}", thinking.replace('\n', "\n  "))
             }
+
             ContentBlock::RedactedThinking { data, .. } => {
                 writeln!(f, "RedactedThinking")?;
                 writeln!(f, "  Data: {}", data.replace('\n', "\n  "))
+            }
+            ContentBlock::ContextCompaction {
+                compaction_number,
+                messages_archived,
+                context_size_before,
+                summary,
+                ..
+            } => {
+                writeln!(
+                    f,
+                    "ContextCompaction #{}: archived={}, size={}",
+                    compaction_number, messages_archived, context_size_before
+                )?;
+                writeln!(f, "  Summary: {}", summary.replace('\n', "\n  "))
             }
         }
     }

@@ -26,6 +26,9 @@ pub struct ModelConfig {
     pub id: String,
     /// Model-specific configuration
     pub config: serde_json::Value,
+    /// Optional context window limit in tokens
+    #[serde(default)]
+    pub context_limit: Option<u32>,
 }
 
 /// Configuration for all models (model_display_name -> ModelConfig)

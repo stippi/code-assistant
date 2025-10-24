@@ -23,10 +23,22 @@ pub struct SessionConfig {
     pub tool_syntax: ToolSyntax,
     #[serde(default)]
     pub use_diff_blocks: bool,
+    #[serde(default = "default_context_threshold")]
+    pub context_threshold: f32,
+    #[serde(default = "default_context_management_enabled")]
+    pub context_management_enabled: bool,
 }
 
 fn default_tool_syntax() -> ToolSyntax {
     ToolSyntax::Native
+}
+
+fn default_context_threshold() -> f32 {
+    0.85
+}
+
+fn default_context_management_enabled() -> bool {
+    true
 }
 
 impl Default for SessionConfig {
@@ -36,6 +48,8 @@ impl Default for SessionConfig {
             initial_project: String::new(),
             tool_syntax: default_tool_syntax(),
             use_diff_blocks: false,
+            context_threshold: default_context_threshold(),
+            context_management_enabled: default_context_management_enabled(),
         }
     }
 }

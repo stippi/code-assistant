@@ -256,13 +256,28 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                                     fragments.push(DisplayFragment::ReasoningComplete);
                                 }
                             }
+
                             ContentBlock::Image {
                                 media_type, data, ..
                             } => {
-                                // Images in assistant messages - preserve for display
                                 fragments.push(DisplayFragment::Image {
                                     media_type: media_type.clone(),
                                     data: data.clone(),
+                                });
+                            }
+
+                            ContentBlock::ContextCompaction {
+                                compaction_number,
+                                messages_archived,
+                                context_size_before,
+                                summary,
+                                ..
+                            } => {
+                                fragments.push(DisplayFragment::ContextCompaction {
+                                    compaction_number: *compaction_number,
+                                    messages_archived: *messages_archived,
+                                    context_size_before: *context_size_before,
+                                    summary: summary.clone(),
                                 });
                             }
                         }

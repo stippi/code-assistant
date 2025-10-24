@@ -54,6 +54,7 @@ pub enum MessageBlock {
     PlainText(PlainTextBlock),
     Thinking(ThinkingBlock),
     ToolUse(ToolUseBlock),
+    ContextCompaction(ContextCompactionBlock),
 }
 
 impl MessageBlock {
@@ -63,6 +64,7 @@ impl MessageBlock {
             MessageBlock::PlainText(block) => !block.content.trim().is_empty(),
             MessageBlock::Thinking(block) => !block.content.trim().is_empty(),
             MessageBlock::ToolUse(block) => !block.name.is_empty(),
+            MessageBlock::ContextCompaction(_) => true, // Always has content
         }
     }
 
@@ -74,6 +76,9 @@ impl MessageBlock {
             MessageBlock::ToolUse(_) => {
                 // Tool use blocks don't support general content appending
                 // Parameter updates are handled separately
+            }
+            MessageBlock::ContextCompaction(_) => {
+                // Compaction blocks are immutable
             }
         }
     }
@@ -168,6 +173,16 @@ impl MessageBlock {
 
                 height
             }
+            MessageBlock::ContextCompaction(block) => {
+                // Header line + metadata line + optional summary preview
+                let mut height = 2u16;
+
+                // Add lines for summary (limit to first few lines for collapsed view)
+                let summary_lines = block.summary.lines().take(3).count() as u16;
+                height += summary_lines;
+
+                height
+            }
         }
     }
 }
@@ -197,9 +212,34 @@ impl Widget for MessageBlock {
                     paragraph.render(area, buf);
                 }
             }
+
             MessageBlock::ToolUse(block) => {
                 let tool_widget = ToolWidget::new(&block);
                 tool_widget.render(area, buf);
+            }
+            MessageBlock::ContextCompaction(block) => {
+                // Create a styled display for the compaction marker
+                let header = format!("Context Compacted #{}", block.compaction_number);
+                let metadata = format!(
+                    "{} messages archived, ~{} tokens",
+                    block.messages_archived, block.context_size_before
+                );
+
+                // Show first few lines of summary as preview
+                let summary_preview: String =
+                    block.summary.lines().take(3).collect::<Vec<_>>().join("\n");
+
+                let full_text = format!("{}\n{}\n{}", header, metadata, summary_preview);
+
+                let text = ratatui::text::Text::from(full_text);
+                let paragraph = ratatui::widgets::Paragraph::new(text)
+                    .style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .wrap(ratatui::widgets::Wrap { trim: false });
+                paragraph.render(area, buf);
             }
         }
     }
@@ -302,6 +342,31 @@ impl ParameterValue {
             format!("{}...", &self.value[..97])
         } else {
             self.value.clone()
+        }
+    }
+}
+
+/// Context compaction block
+#[derive(Debug, Clone)]
+pub struct ContextCompactionBlock {
+    pub compaction_number: u32,
+    pub messages_archived: usize,
+    pub context_size_before: u32,
+    pub summary: String,
+}
+
+impl ContextCompactionBlock {
+    pub fn new(
+        compaction_number: u32,
+        messages_archived: usize,
+        context_size_before: u32,
+        summary: String,
+    ) -> Self {
+        Self {
+            compaction_number,
+            messages_archived,
+            context_size_before,
+            summary,
         }
     }
 }

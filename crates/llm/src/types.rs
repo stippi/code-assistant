@@ -162,6 +162,15 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         end_time: Option<SystemTime>,
     },
+
+    #[serde(rename = "context_compaction")]
+    ContextCompaction {
+        compaction_number: u32,
+        timestamp: SystemTime,
+        summary: String,
+        messages_archived: usize,
+        context_size_before: u32,
+    },
 }
 
 /// Rate limit information extracted from LLM provider headers
@@ -365,6 +374,21 @@ impl ContentBlock {
         }
     }
 
+    pub fn new_context_compaction(
+        compaction_number: u32,
+        summary: String,
+        messages_archived: usize,
+        context_size_before: u32,
+    ) -> Self {
+        ContentBlock::ContextCompaction {
+            compaction_number,
+            timestamp: SystemTime::now(),
+            summary,
+            messages_archived,
+            context_size_before,
+        }
+    }
+
     /// Get the start time of this content block
     pub fn start_time(&self) -> Option<SystemTime> {
         match self {
@@ -374,6 +398,7 @@ impl ContentBlock {
             ContentBlock::Image { start_time, .. } => *start_time,
             ContentBlock::ToolUse { start_time, .. } => *start_time,
             ContentBlock::ToolResult { start_time, .. } => *start_time,
+            ContentBlock::ContextCompaction { timestamp, .. } => Some(*timestamp),
         }
     }
 
@@ -386,6 +411,7 @@ impl ContentBlock {
             ContentBlock::Image { end_time, .. } => *end_time,
             ContentBlock::ToolUse { end_time, .. } => *end_time,
             ContentBlock::ToolResult { end_time, .. } => *end_time,
+            ContentBlock::ContextCompaction { timestamp, .. } => Some(*timestamp),
         }
     }
 
@@ -398,6 +424,7 @@ impl ContentBlock {
             ContentBlock::Image { start_time, .. } => *start_time = Some(time),
             ContentBlock::ToolUse { start_time, .. } => *start_time = Some(time),
             ContentBlock::ToolResult { start_time, .. } => *start_time = Some(time),
+            ContentBlock::ContextCompaction { timestamp, .. } => *timestamp = time,
         }
         self
     }
@@ -411,6 +438,7 @@ impl ContentBlock {
             ContentBlock::Image { end_time, .. } => *end_time = Some(time),
             ContentBlock::ToolUse { end_time, .. } => *end_time = Some(time),
             ContentBlock::ToolResult { end_time, .. } => *end_time = Some(time),
+            ContentBlock::ContextCompaction { .. } => {}
         }
         self
     }
@@ -519,7 +547,28 @@ impl ContentBlock {
                     ..
                 },
             ) => a_id == b_id && a_content == b_content && a_error == b_error,
-            _ => false, // Different variants
+            (
+                ContentBlock::ContextCompaction {
+                    compaction_number: a_num,
+                    summary: a_summary,
+                    messages_archived: a_archived,
+                    context_size_before: a_size,
+                    ..
+                },
+                ContentBlock::ContextCompaction {
+                    compaction_number: b_num,
+                    summary: b_summary,
+                    messages_archived: b_archived,
+                    context_size_before: b_size,
+                    ..
+                },
+            ) => {
+                a_num == b_num
+                    && a_summary == b_summary
+                    && a_archived == b_archived
+                    && a_size == b_size
+            }
+            _ => false,
         }
     }
 }
