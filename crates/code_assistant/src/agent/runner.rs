@@ -6,10 +6,7 @@ use crate::session::SessionConfig;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{generate_system_message, ParserRegistry, ToolRequest};
 use crate::types::*;
-use crate::ui::gpui::elements::MessageRole as UiMessageRole;
-use crate::ui::streaming::create_stream_processor;
-use crate::ui::ui_events::{MessageData, ToolResultData};
-use crate::ui::{ToolStatus, UiEvent, UserInterface};
+use crate::ui::{UiEvent, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
 use llm::{
@@ -1107,118 +1104,6 @@ impl Agent {
         }
     }
 
-    fn build_ui_messages(&self) -> Result<Vec<MessageData>> {
-        struct DummyUI;
-
-        #[async_trait::async_trait]
-        impl crate::ui::UserInterface for DummyUI {
-            async fn send_event(
-                &self,
-                _event: crate::ui::UiEvent,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-
-            fn display_fragment(
-                &self,
-                _fragment: &crate::ui::DisplayFragment,
-            ) -> Result<(), crate::ui::UIError> {
-                Ok(())
-            }
-
-            fn should_streaming_continue(&self) -> bool {
-                true
-            }
-
-            fn notify_rate_limit(&self, _seconds_remaining: u64) {}
-
-            fn clear_rate_limit(&self) {}
-
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-        }
-
-        let dummy_ui: Arc<dyn crate::ui::UserInterface> = Arc::new(DummyUI);
-        let mut processor = create_stream_processor(self.session_config.tool_syntax, dummy_ui, 0);
-
-        let mut messages_data = Vec::new();
-
-        for message in &self.message_history {
-            if message.role == MessageRole::User {
-                match &message.content {
-                    MessageContent::Text(text) if text.trim().is_empty() => {
-                        continue;
-                    }
-                    MessageContent::Structured(blocks) => {
-                        let has_tool_results = blocks
-                            .iter()
-                            .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
-                        if has_tool_results {
-                            continue;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            let fragments = processor.extract_fragments_from_message(message)?;
-            let role = match message.role {
-                MessageRole::User => UiMessageRole::User,
-                MessageRole::Assistant => UiMessageRole::Assistant,
-            };
-
-            messages_data.push(MessageData { role, fragments });
-        }
-
-        Ok(messages_data)
-    }
-
-    fn build_ui_tool_results(&self) -> Result<Vec<ToolResultData>> {
-        let mut tool_results = Vec::new();
-        let mut resources_tracker = ResourcesTracker::new();
-
-        for execution in &self.tool_executions {
-            let success = execution.result.is_success();
-            let status = if success {
-                ToolStatus::Success
-            } else {
-                ToolStatus::Error
-            };
-
-            let short_output = execution.result.as_render().status();
-            let output = execution.result.as_render().render(&mut resources_tracker);
-
-            tool_results.push(ToolResultData {
-                tool_id: execution.tool_request.id.clone(),
-                status,
-                message: Some(short_output),
-                output: Some(output),
-            });
-        }
-
-        Ok(tool_results)
-    }
-
-    async fn refresh_ui_after_compaction(&self) -> Result<()> {
-        if self.session_id.is_none() {
-            return Ok(());
-        }
-
-        let messages = self.build_ui_messages()?;
-        let tool_results = self.build_ui_tool_results()?;
-
-        self.ui
-            .send_event(UiEvent::SetMessages {
-                messages,
-                session_id: self.session_id.clone(),
-                tool_results,
-            })
-            .await?;
-
-        Ok(())
-    }
-
     #[cfg(test)]
     pub fn set_test_session_metadata(
         &mut self,
@@ -1319,8 +1204,6 @@ impl Agent {
             usage: Some(response.usage.clone()),
         };
         self.append_message(summary_message)?;
-
-        self.refresh_ui_after_compaction().await?;
 
         Ok(())
     }

@@ -9,7 +9,6 @@ use crate::tests::mocks::{
 };
 use crate::tests::utils::parse_and_truncate_llm_response;
 use crate::types::*;
-use crate::ui::UiEvent;
 use anyhow::Result;
 use llm::types::*;
 use std::path::PathBuf;
@@ -837,28 +836,12 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
         "Expected compaction prompt in LLM request"
     );
 
-    // Ensure the UI received a SetMessages event with the compaction divider
-    let events = ui.events();
-    let set_messages_event = events.iter().find_map(|event| {
-        if let UiEvent::SetMessages { messages, .. } = event {
-            Some(messages.clone())
-        } else {
-            None
-        }
-    });
-    let messages = set_messages_event.expect("Expected SetMessages event after compaction");
-    let has_compaction_fragment = messages.iter().any(|message| {
-        message.fragments.iter().any(|fragment| {
-            matches!(
-                fragment,
-                crate::ui::DisplayFragment::CompactionDivider { .. }
-            )
-        })
-    });
-    assert!(
-        has_compaction_fragment,
-        "Expected compaction divider fragment in UI messages"
-    );
+    // Ensure the UI streaming output received the compaction divider fragment
+    let streaming_output = ui.get_streaming_output();
+    let has_compaction_fragment = streaming_output
+        .iter()
+        .any(|chunk| chunk.starts_with("[compaction] "));
+    assert!(has_compaction_fragment, "Expected streamed compaction divider fragment");
 
     // Subsequent prompt should include the summary content
     let summary_in_followup =
