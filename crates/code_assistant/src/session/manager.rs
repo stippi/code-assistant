@@ -221,8 +221,7 @@ impl SessionManager {
             let user_msg = Message {
                 role: llm::MessageRole::User,
                 content: llm::MessageContent::Structured(content_blocks),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             };
             session_instance.add_message(user_msg);
 

@@ -79,6 +79,21 @@ pub struct Message {
     /// Token usage for assistant messages (tracks context size and costs)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Indicates this message is a compaction summary divider
+    #[serde(default)]
+    pub is_compaction_summary: bool,
+}
+
+impl Default for Message {
+    fn default() -> Self {
+        Self {
+            role: MessageRole::User,
+            content: MessageContent::Text(String::new()),
+            usage: None,
+            request_id: None,
+            is_compaction_summary: false,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

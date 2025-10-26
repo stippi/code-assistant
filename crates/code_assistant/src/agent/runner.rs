@@ -304,8 +304,7 @@ impl Agent {
                 let user_msg = Message {
                     role: MessageRole::User,
                     content: MessageContent::Text(pending_message.clone()),
-                    request_id: None,
-                    usage: None,
+                    ..Default::default()
                 };
                 self.append_message(user_msg)?;
 
@@ -335,6 +334,7 @@ impl Agent {
                     content: MessageContent::Structured(llm_response.content.clone()),
                     request_id: Some(request_id),
                     usage: Some(llm_response.usage.clone()),
+                    ..Default::default()
                 })?;
             }
 
@@ -547,8 +547,7 @@ impl Agent {
                         Message {
                             role: MessageRole::User,
                             content: MessageContent::Text(error_text),
-                            request_id: None,
-                            usage: None,
+                            ..Default::default()
                         }
                     }
                     _ => {
@@ -570,8 +569,7 @@ impl Agent {
                                 start_time: Some(SystemTime::now()),
                                 end_time: None,
                             }]),
-                            request_id: None,
-                            usage: None,
+                            ..Default::default()
                         }
                     }
                 };
@@ -622,8 +620,7 @@ impl Agent {
             let result_message = Message {
                 role: MessageRole::User,
                 content: MessageContent::Structured(content_blocks),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             };
             self.append_message(result_message)?;
         }
@@ -649,8 +646,7 @@ impl Agent {
         let user_msg = Message {
             role: MessageRole::User,
             content: MessageContent::Text(task.clone()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         };
         self.append_message(user_msg)?;
 
@@ -847,6 +843,7 @@ impl Agent {
                             content: MessageContent::Text(text_content.trim().to_string()),
                             request_id: msg.request_id,
                             usage: msg.usage.clone(),
+                            ..Default::default()
                         }
                     }
                     // For non-structured content, keep as is
@@ -952,6 +949,7 @@ impl Agent {
         // Log messages for debugging
         /*
         for (i, message) in request.messages.iter().enumerate() {
+            debug!("Message {}:", i);
             debug!("Message {}:", i);
             // Using the Display trait implementation for Message
             let formatted_message = format!("{message}");
@@ -1187,8 +1185,7 @@ impl Agent {
         let compaction_message = Message {
             role: MessageRole::User,
             content: MessageContent::Text(CONTEXT_COMPACTION_PROMPT.to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         };
         self.append_message(compaction_message)?;
 
@@ -1202,6 +1199,7 @@ impl Agent {
             content: MessageContent::Structured(vec![summary_block]),
             request_id: Some(request_id),
             usage: Some(response.usage.clone()),
+            ..Default::default()
         };
         self.append_message(summary_message)?;
 
@@ -1292,6 +1290,7 @@ impl Agent {
                             content: MessageContent::Structured(new_blocks),
                             request_id: msg.request_id,
                             usage: msg.usage.clone(),
+                            ..Default::default()
                         };
                         messages.push(new_msg);
                     } else {

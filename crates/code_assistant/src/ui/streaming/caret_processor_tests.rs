@@ -212,8 +212,7 @@ async fn test_extract_fragments_from_complete_message() {
         content: MessageContent::Text(
             "I'll create the file for you.\n\n^^^list_projects\n^^^".to_string(),
         ),
-        request_id: None,
-        usage: None,
+        ..Default::default()
     };
 
     let fragments = processor.extract_fragments_from_message(&message).unwrap();

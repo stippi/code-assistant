@@ -271,7 +271,7 @@ mod tests {
                 "I'll help you. <thinking>Let me plan this.</thinking> Here's what I'll do: <tool:read_files><param:path>main.rs</param:path></tool:read_files>".to_string()
             ),
             request_id: Some(1u64),
-            usage: None,
+            ..Default::default()
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -317,7 +317,7 @@ mod tests {
                 llm::ContentBlock::new_tool_use("search_456", "search_files", tool_input),
             ]),
             request_id: Some(1u64),
-            usage: None,
+            ..Default::default()
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -368,7 +368,7 @@ mod tests {
                 ),
             ]),
             request_id: Some(1u64),
-            usage: None,
+            ..Default::default()
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -457,8 +457,7 @@ mod tests {
             content: MessageContent::Text(
                 "Please use <tool:read_files> to read <param:path>test.txt</param:path> and show me <thinking>what should I do</thinking>".to_string()
             ),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         };
 
         let fragments = processor

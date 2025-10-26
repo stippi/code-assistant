@@ -1163,7 +1163,7 @@ mod tests {
             role: MessageRole::Assistant,
             content: MessageContent::Structured(vec![redacted_thinking]),
             request_id: Some(1),
-            usage: None,
+            ..Default::default()
         };
 
         // Extract fragments from the complete message (as would happen when loading a session)

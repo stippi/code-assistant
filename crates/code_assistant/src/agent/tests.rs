@@ -524,8 +524,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
     let user_msg = Message {
         role: MessageRole::User,
         content: MessageContent::Text("Test task".to_string()),
-        request_id: None,
-        usage: None,
+        ..Default::default()
     };
     agent.append_message(user_msg)?;
 
@@ -788,8 +787,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
     agent.append_message(Message {
         role: MessageRole::User,
         content: MessageContent::Text("User request".to_string()),
-        request_id: None,
-        usage: None,
+        ..Default::default()
     })?;
 
     agent.append_message(Message {
@@ -804,6 +802,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 0,
         }),
+        ..Default::default()
     })?;
 
     agent.run_single_iteration().await?;
@@ -841,7 +840,10 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
     let has_compaction_fragment = streaming_output
         .iter()
         .any(|chunk| chunk.starts_with("[compaction] "));
-    assert!(has_compaction_fragment, "Expected streamed compaction divider fragment");
+    assert!(
+        has_compaction_fragment,
+        "Expected streamed compaction divider fragment"
+    );
 
     // Subsequent prompt should include the summary content
     let summary_in_followup =
@@ -883,15 +885,14 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
         Message {
             role: MessageRole::User,
             content: MessageContent::Text("Hello, please help me".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
         // Assistant response
         Message {
             role: MessageRole::Assistant,
             content: MessageContent::Text("I'll help you".to_string()),
             request_id: Some(1),
-            usage: None,
+            ..Default::default()
         },
         // Parse error message in XML mode - should be filtered out
         Message {
@@ -900,8 +901,7 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
                 "tool-1-0",
                 "Tool error: Unknown tool 'invalid_tool'. Please use only available tools.",
             )]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
         // Regular tool result - should be filtered out
         Message {
@@ -910,22 +910,19 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
                 "regular-tool-123",
                 "File contents here",
             )]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
         // Empty user message (legacy) - should be filtered out
         Message {
             role: MessageRole::User,
             content: MessageContent::Text("".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
         // Another regular user message - should be included
         Message {
             role: MessageRole::User,
             content: MessageContent::Text("Thank you for the help!".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
     ];
     session.tool_executions = Vec::new();
@@ -1279,8 +1276,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     let messages = vec![Message {
         role: MessageRole::User,
         content: MessageContent::Text("Hello, help me with a task".to_string()),
-        request_id: None,
-        usage: None,
+        ..Default::default()
     }];
 
     let result_messages = agent.inject_naming_reminder_if_needed(messages.clone());
@@ -1313,8 +1309,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         Message {
             role: MessageRole::User,
             content: MessageContent::Text("Hello, help me with a task".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
         Message {
             role: MessageRole::Assistant,
@@ -1323,6 +1318,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
             )]),
             request_id: Some(1),
             usage: Some(Usage::zero()),
+            ..Default::default()
         },
         Message {
             role: MessageRole::User,
@@ -1330,8 +1326,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
                 "tool-1-1",
                 "Tool execution result",
             )]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
     ];
 
@@ -1383,8 +1378,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
             ContentBlock::new_text("Please analyze this file"),
             ContentBlock::new_tool_result("tool-1-1", "Previous tool result"),
         ]),
-        request_id: None,
-        usage: None,
+        ..Default::default()
     }];
 
     let result_messages = agent.inject_naming_reminder_if_needed(mixed_message.clone());

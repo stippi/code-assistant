@@ -1063,8 +1063,7 @@ mod tests {
                 "Let me analyze this. <thinking>This is complex.</thinking> Here's my answer."
                     .to_string(),
             ),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -1097,8 +1096,7 @@ mod tests {
                 llm::ContentBlock::new_text("I'll read the file for you."),
                 llm::ContentBlock::new_tool_use("tool_123", "read_files", tool_input),
             ]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
@@ -1152,8 +1150,7 @@ mod tests {
                 ),
                 llm::ContentBlock::new_text("File has been written."),
             ]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         };
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
