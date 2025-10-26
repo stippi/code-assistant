@@ -468,14 +468,6 @@ impl OpenAIResponsesClient {
                             .push(ResponseContentItem::OutputText { text: thinking });
                     }
                 },
-                ContentBlock::CompactionSummary { text, .. } => match role {
-                    MessageRole::User => {
-                        current_message_content.push(ResponseContentItem::InputText { text });
-                    }
-                    MessageRole::Assistant => {
-                        current_message_content.push(ResponseContentItem::OutputText { text });
-                    }
-                },
                 // Non-message content blocks: flush current message and add as separate items
                 ContentBlock::ToolResult {
                     tool_use_id,

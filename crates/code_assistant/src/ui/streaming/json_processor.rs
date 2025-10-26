@@ -333,11 +333,6 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                                 data: data.clone(),
                             });
                         }
-                        ContentBlock::CompactionSummary { text, .. } => {
-                            fragments.push(DisplayFragment::CompactionDivider {
-                                summary: text.clone(),
-                            });
-                        }
                     }
                 }
             }

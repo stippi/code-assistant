@@ -6,7 +6,7 @@ use crate::session::SessionConfig;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{generate_system_message, ParserRegistry, ToolRequest};
 use crate::types::*;
-use crate::ui::{UiEvent, UserInterface};
+use crate::ui::{DisplayFragment, UiEvent, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
 use llm::{
@@ -796,15 +796,12 @@ impl Agent {
             .map(|msg| {
                 match &msg.content {
                     MessageContent::Structured(blocks) => {
-                        // Check if there are any ToolResult or CompactionSummary blocks that need conversion
+                        // Check if there are any ToolResult blocks that need conversion
                         let has_tool_results = blocks
                             .iter()
                             .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
-                        let has_compaction_summary = blocks
-                            .iter()
-                            .any(|block| matches!(block, ContentBlock::CompactionSummary { .. }));
 
-                        if !has_tool_results && !has_compaction_summary {
+                        if !has_tool_results {
                             // No conversion needed
                             return msg;
                         }
@@ -825,12 +822,6 @@ impl Agent {
                                 ContentBlock::Text { text, .. } => {
                                     // For existing Text blocks, keep as is
                                     text_content.push_str(text);
-                                    text_content.push_str("\n\n");
-                                }
-                                ContentBlock::CompactionSummary { text, .. } => {
-                                    let formatted =
-                                        Self::format_compaction_summary_for_prompt(text);
-                                    text_content.push_str(&formatted);
                                     text_content.push_str("\n\n");
                                 }
                                 _ => {} // Ignore other block types
@@ -1063,13 +1054,47 @@ impl Agent {
         Ok((response, request_id))
     }
 
-    fn message_contains_compaction_summary(message: &Message) -> bool {
-        match &message.content {
-            MessageContent::Structured(blocks) => blocks
-                .iter()
-                .any(|block| matches!(block, ContentBlock::CompactionSummary { .. })),
-            _ => false,
-        }
+    async fn get_non_streaming_response(
+        &mut self,
+        messages: Vec<Message>,
+    ) -> Result<(llm::LLMResponse, u64)> {
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+
+        let messages_with_reminder = self.inject_naming_reminder_if_needed(messages);
+
+        let converted_messages = match self.tool_syntax() {
+            ToolSyntax::Native => messages_with_reminder,
+            _ => self.convert_tool_results_to_text(messages_with_reminder),
+        };
+
+        let request = LLMRequest {
+            messages: converted_messages,
+            system_prompt: self.get_system_prompt(),
+            tools: match self.tool_syntax() {
+                ToolSyntax::Native => {
+                    Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
+                        ToolRegistry::global().get_tool_definitions_for_scope(self.tool_scope),
+                    ))
+                }
+                ToolSyntax::Xml => None,
+                ToolSyntax::Caret => None,
+            },
+            stop_sequences: None,
+            request_id,
+            session_id: self.session_id.clone().unwrap_or_default(),
+        };
+
+        let response = self.llm_provider.send_message(request, None).await?;
+
+        debug!(
+            "Compaction response usage — Input: {}, Output: {}, Cache Read: {}",
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            response.usage.cache_read_input_tokens
+        );
+
+        Ok((response, request_id))
     }
 
     fn format_compaction_summary_for_prompt(summary: &str) -> String {
@@ -1085,7 +1110,6 @@ impl Agent {
         let mut collected = Vec::new();
         for block in blocks {
             match block {
-                ContentBlock::CompactionSummary { text, .. } => collected.push(text.as_str()),
                 ContentBlock::Text { text, .. } => collected.push(text.as_str()),
                 ContentBlock::Thinking { thinking, .. } => {
                     collected.push(thinking.as_str());
@@ -1100,6 +1124,18 @@ impl Agent {
         } else {
             merged
         }
+    }
+
+    fn active_messages(&self) -> &[Message] {
+        if self.message_history.is_empty() {
+            return &[];
+        }
+        let start = self
+            .message_history
+            .iter()
+            .rposition(|message| message.is_compaction_summary)
+            .unwrap_or(0);
+        &self.message_history[start..]
     }
 
     #[cfg(test)]
@@ -1142,23 +1178,15 @@ impl Agent {
             return Ok(None);
         }
 
-        let last_assistant = self
-            .message_history
-            .iter()
-            .rev()
-            .find(|msg| matches!(msg.role, MessageRole::Assistant));
-
-        if let Some(message) = last_assistant {
-            if Self::message_contains_compaction_summary(message) {
-                return Ok(None);
+        for message in self.active_messages().iter().rev() {
+            if !matches!(message.role, MessageRole::Assistant) {
+                continue;
             }
-
             if let Some(usage) = &message.usage {
                 let used_tokens = usage.input_tokens + usage.cache_read_input_tokens;
-                if used_tokens == 0 {
-                    return Ok(None);
+                if used_tokens > 0 {
+                    return Ok(Some(used_tokens as f32 / limit as f32));
                 }
-                return Ok(Some(used_tokens as f32 / limit as f32));
             }
         }
 
@@ -1190,18 +1218,21 @@ impl Agent {
         self.append_message(compaction_message)?;
 
         let messages = self.render_tool_results_in_messages();
-        let (response, request_id) = self.get_next_assistant_message(messages).await?;
+        let (response, _) = self.get_non_streaming_response(messages).await?;
 
         let summary_text = Self::extract_compaction_summary_text(&response.content);
-        let summary_block = ContentBlock::new_compaction_summary(summary_text.clone());
         let summary_message = Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Structured(vec![summary_block]),
-            request_id: Some(request_id),
-            usage: Some(response.usage.clone()),
+            role: MessageRole::User,
+            content: MessageContent::Text(summary_text.clone()),
+            is_compaction_summary: true,
             ..Default::default()
         };
         self.append_message(summary_message)?;
+
+        let divider = DisplayFragment::CompactionDivider {
+            summary: summary_text.trim().to_string(),
+        };
+        self.ui.display_fragment(&divider)?;
 
         Ok(())
     }
@@ -1225,14 +1256,8 @@ impl Agent {
             tool_outputs.insert(tool_use_id.clone(), rendered_output);
         }
 
-        let start_index = self
-            .message_history
-            .iter()
-            .rposition(Self::message_contains_compaction_summary)
-            .unwrap_or(0);
-
         // Now rebuild the message history, replacing tool outputs with our dynamically rendered versions
-        for msg in self.message_history.iter().skip(start_index) {
+        for msg in self.active_messages() {
             match &msg.content {
                 MessageContent::Structured(blocks) => {
                     // Look for ToolResult blocks
@@ -1264,18 +1289,6 @@ impl Agent {
                                     new_blocks.push(block.clone());
                                 }
                             }
-                            ContentBlock::CompactionSummary {
-                                text,
-                                start_time,
-                                end_time,
-                            } => {
-                                new_blocks.push(ContentBlock::Text {
-                                    text: Self::format_compaction_summary_for_prompt(text),
-                                    start_time: *start_time,
-                                    end_time: *end_time,
-                                });
-                                need_update = true;
-                            }
                             _ => {
                                 // Keep other blocks as is
                                 new_blocks.push(block.clone());
@@ -1284,23 +1297,23 @@ impl Agent {
                     }
 
                     if need_update {
-                        // Create a new message with updated blocks
-                        let new_msg = Message {
-                            role: msg.role.clone(),
-                            content: MessageContent::Structured(new_blocks),
-                            request_id: msg.request_id,
-                            usage: msg.usage.clone(),
-                            ..Default::default()
-                        };
-                        messages.push(new_msg);
+                        let mut updated = msg.clone();
+                        updated.content = MessageContent::Structured(new_blocks);
+                        messages.push(updated);
                     } else {
                         // No changes needed, use original message
                         messages.push(msg.clone());
                     }
                 }
-                _ => {
-                    // For non-tool messages, just copy them as is
-                    messages.push(msg.clone());
+                MessageContent::Text(text) => {
+                    if msg.is_compaction_summary {
+                        let mut updated = msg.clone();
+                        updated.content =
+                            MessageContent::Text(Self::format_compaction_summary_for_prompt(text));
+                        messages.push(updated);
+                    } else {
+                        messages.push(msg.clone());
+                    }
                 }
             }
         }

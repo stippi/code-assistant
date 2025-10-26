@@ -808,20 +808,18 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
     agent.run_single_iteration().await?;
 
     // Ensure a compaction summary message was added
-    let summary_message =
-        agent
-            .message_history_for_tests()
-            .iter()
-            .find(|message| match &message.content {
-                MessageContent::Structured(blocks) => blocks
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::CompactionSummary { .. })),
-                _ => false,
-            });
-    assert!(
-        summary_message.is_some(),
-        "Expected compaction summary in history"
-    );
+    let summary_message = agent
+        .message_history_for_tests()
+        .iter()
+        .find(|message| message.is_compaction_summary)
+        .cloned()
+        .expect("Expected compaction summary in history");
+    assert_eq!(summary_message.role, MessageRole::User);
+    let stored_summary = match summary_message.content {
+        MessageContent::Text(ref text) => text,
+        MessageContent::Structured(_) => panic!("Summary should be stored as text"),
+    };
+    assert_eq!(stored_summary, summary_text);
 
     // The compaction prompt should have been sent to the provider
     let requests = mock_llm_ref.get_requests();
@@ -835,14 +833,14 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
         "Expected compaction prompt in LLM request"
     );
 
-    // Ensure the UI streaming output received the compaction divider fragment
+    // Ensure the UI received a SetMessages event with the compaction divider
     let streaming_output = ui.get_streaming_output();
     let has_compaction_fragment = streaming_output
         .iter()
-        .any(|chunk| chunk.starts_with("[compaction] "));
+        .any(|chunk| chunk.starts_with("[compaction] ") && chunk.contains(summary_text));
     assert!(
         has_compaction_fragment,
-        "Expected streamed compaction divider fragment"
+        "Expected compaction divider fragment with summary text"
     );
 
     // Subsequent prompt should include the summary content

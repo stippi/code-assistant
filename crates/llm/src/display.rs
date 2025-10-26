@@ -65,9 +65,6 @@ impl fmt::Display for ContentBlock {
                 writeln!(f, "RedactedThinking")?;
                 writeln!(f, "  Data: {}", data.replace('\n', "\n  "))
             }
-            ContentBlock::CompactionSummary { text, .. } => {
-                writeln!(f, "CompactionSummary: {}", text.replace('\n', "\n  "))
-            }
         }
     }
 }

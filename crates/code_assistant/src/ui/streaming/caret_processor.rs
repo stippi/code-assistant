@@ -236,11 +236,6 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                                     data: data.clone(),
                                 });
                             }
-                            llm::ContentBlock::CompactionSummary { text, .. } => {
-                                fragments.push(DisplayFragment::CompactionDivider {
-                                    summary: text.clone(),
-                                });
-                            }
                         }
                     }
                 }

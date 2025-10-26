@@ -187,11 +187,6 @@ impl DefaultMessageConverter {
                                         AnthropicBlockContent::RedactedThinking { data },
                                         false,
                                     ),
-                                    ContentBlock::CompactionSummary { text, .. } => (
-                                        "text".to_string(),
-                                        AnthropicBlockContent::Text { text },
-                                        true,
-                                    ),
                                 };
 
                                 let cache_control =
@@ -1143,10 +1138,6 @@ impl AnthropicClient {
                                 ContentBlock::ToolResult { end_time, .. } => {
                                     *end_time = Some(now);
                                 }
-                                ContentBlock::CompactionSummary { text, end_time, .. } => {
-                                    *text = current_content.clone();
-                                    *end_time = Some(now);
-                                }
                             }
                         }
                         _ => {}
@@ -1197,10 +1188,6 @@ impl AnthropicClient {
                                 }
                                 *end_time = Some(now);
                             }
-                            ContentBlock::CompactionSummary { text, end_time, .. } => {
-                                *text = current_content.clone();
-                                *end_time = Some(now);
-                            }
                             _ => {}
                         }
                     }
@@ -1233,8 +1220,7 @@ impl AnthropicClient {
                 | ContentBlock::Text { end_time, .. }
                 | ContentBlock::Image { end_time, .. }
                 | ContentBlock::ToolUse { end_time, .. }
-                | ContentBlock::ToolResult { end_time, .. }
-                | ContentBlock::CompactionSummary { end_time, .. } => {
+                | ContentBlock::ToolResult { end_time, .. } => {
                     if end_time.is_none() {
                         *end_time = Some(now);
                     }

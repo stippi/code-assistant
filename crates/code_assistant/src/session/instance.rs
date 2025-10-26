@@ -301,6 +301,27 @@ impl SessionInstance {
         );
 
         for message in &self.session.messages {
+            if message.is_compaction_summary {
+                let summary = match &message.content {
+                    llm::MessageContent::Text(text) => text.trim().to_string(),
+                    llm::MessageContent::Structured(blocks) => blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                            llm::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .trim()
+                        .to_string(),
+                };
+                messages_data.push(MessageData {
+                    role: MessageRole::User,
+                    fragments: vec![crate::ui::DisplayFragment::CompactionDivider { summary }],
+                });
+                continue;
+            }
             // Filter out tool-result user messages (they have tool IDs in structured content)
             if message.role == llm::MessageRole::User {
                 match &message.content {
