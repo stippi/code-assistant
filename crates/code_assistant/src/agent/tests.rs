@@ -782,12 +782,9 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
     agent.disable_naming_reminders();
     agent.set_test_session_metadata(
         "session-1".to_string(),
-        SessionModelConfig {
-            model_name: "test-model".to_string(),
-            record_path: None,
-            context_token_limit: 100,
-        },
+        SessionModelConfig::new_for_tests("test-model".to_string()),
     );
+    agent.set_test_context_limit(100);
 
     agent.append_message(Message {
         role: MessageRole::User,

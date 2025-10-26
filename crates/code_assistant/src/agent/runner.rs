@@ -64,6 +64,8 @@ pub struct Agent {
     model_hint: Option<String>,
     // Model configuration associated with this session
     session_model_config: Option<SessionModelConfig>,
+    // Optional override for the model's context window (primarily used in tests)
+    context_limit_override: Option<u32>,
     // Counter for generating unique request IDs
     next_request_id: u64,
     // Session ID for this agent instance
@@ -127,6 +129,7 @@ impl Agent {
             tool_executions: Vec::new(),
             cached_system_prompts: HashMap::new(),
             session_model_config: None,
+            context_limit_override: None,
             next_request_id: 1, // Start from 1
             session_id: None,
             session_name: String::new(),
@@ -433,8 +436,8 @@ impl Agent {
         }
         self.session_name = session_state.name;
         self.session_model_config = session_state.model_config;
+        self.context_limit_override = None;
         if let Some(model_config) = self.session_model_config.as_mut() {
-            model_config.ensure_context_limit()?;
             let model_name = model_config.model_name.clone();
             self.set_model_hint(Some(model_name));
         }
@@ -1227,20 +1230,31 @@ impl Agent {
     }
 
     #[cfg(test)]
+    pub fn set_test_context_limit(&mut self, limit: u32) {
+        self.context_limit_override = Some(limit);
+    }
+
+    #[cfg(test)]
     pub fn message_history_for_tests(&self) -> &Vec<Message> {
         &self.message_history
     }
 
     fn context_usage_ratio(&mut self) -> Result<Option<f32>> {
-        let config = match self.session_model_config.as_mut() {
-            Some(config) => {
-                config.ensure_context_limit()?;
-                config
-            }
+        let model_name = match self.session_model_config.as_ref() {
+            Some(config) => config.model_name.clone(),
             None => return Ok(None),
         };
 
-        let limit = config.context_token_limit;
+        let limit = if let Some(limit) = self.context_limit_override {
+            limit
+        } else {
+            let config_system = llm::provider_config::ConfigurationSystem::load()?;
+            config_system
+                .get_model(&model_name)
+                .map(|model| model.context_token_limit)
+                .ok_or_else(|| anyhow::anyhow!("Model not found in models.json: {model_name}"))?
+        };
+
         if limit == 0 {
             return Ok(None);
         }

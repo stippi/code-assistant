@@ -16,12 +16,12 @@ use crate::types::{PlanState, ToolSyntax, WorkingMemory};
 pub struct SessionModelConfig {
     /// Display name of the model from models.json
     pub model_name: String,
-    /// Optional recording path for this session
-    pub record_path: Option<PathBuf>,
-    /// Maximum context window supported by the model (token count)
-    #[serde(default)]
-    pub context_token_limit: u32,
-    // Note: playback and fast_playback are runtime toggles, not persisted
+    /// Legacy recording path persisted in older session files (ignored at runtime)
+    #[serde(default, rename = "record_path", skip_serializing)]
+    _legacy_record_path: Option<PathBuf>,
+    /// Legacy context token limit persisted in older session files (ignored at runtime)
+    #[serde(default, rename = "context_token_limit", skip_serializing)]
+    _legacy_context_token_limit: Option<u32>,
 }
 
 /// A complete chat session with all its data
@@ -94,9 +94,6 @@ impl ChatSession {
         if let Some(use_diff_blocks) = self.legacy_use_diff_blocks.take() {
             self.config.use_diff_blocks = use_diff_blocks;
         }
-        if let Some(model_config) = self.model_config.as_mut() {
-            model_config.ensure_context_limit()?;
-        }
         Ok(())
     }
 
@@ -129,31 +126,26 @@ impl ChatSession {
 
 impl SessionModelConfig {
     /// Construct a session model configuration by looking up the model metadata.
-    pub fn for_model(model_name: String, record_path: Option<PathBuf>) -> Result<Self> {
+    pub fn for_model(model_name: String) -> Result<Self> {
         let config_system = llm::provider_config::ConfigurationSystem::load()?;
-        let limit = config_system
-            .get_model(&model_name)
-            .map(|model| model.context_token_limit)
-            .ok_or_else(|| anyhow!("Model not found in models.json: {model_name}"))?;
+        if config_system.get_model(&model_name).is_none() {
+            return Err(anyhow!("Model not found in models.json: {model_name}"));
+        }
 
         Ok(Self {
             model_name,
-            record_path,
-            context_token_limit: limit,
+            _legacy_record_path: None,
+            _legacy_context_token_limit: None,
         })
     }
 
-    /// Ensure the context token limit is populated (for legacy session files).
-    pub fn ensure_context_limit(&mut self) -> Result<()> {
-        if self.context_token_limit == 0 {
-            let config_system = llm::provider_config::ConfigurationSystem::load()?;
-            let limit = config_system
-                .get_model(&self.model_name)
-                .map(|model| model.context_token_limit)
-                .ok_or_else(|| anyhow!("Model not found in models.json: {}", self.model_name))?;
-            self.context_token_limit = limit;
+    #[cfg(test)]
+    pub fn new_for_tests(model_name: String) -> Self {
+        Self {
+            model_name,
+            _legacy_record_path: None,
+            _legacy_context_token_limit: None,
         }
-        Ok(())
     }
 }
 

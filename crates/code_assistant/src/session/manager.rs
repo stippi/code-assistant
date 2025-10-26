@@ -62,7 +62,7 @@ impl SessionManager {
 
     /// Get the default model configuration
     fn default_model_config(&self) -> Result<SessionModelConfig> {
-        SessionModelConfig::for_model(self.default_model_name.clone(), None)
+        SessionModelConfig::for_model(self.default_model_name.clone())
     }
 
     /// Create a new session with optional model config and return its ID
@@ -416,18 +416,12 @@ impl SessionManager {
     /// Get the model config for a session, if any
     pub fn get_session_model_config(&self, session_id: &str) -> Result<Option<SessionModelConfig>> {
         if let Some(instance) = self.active_sessions.get(session_id) {
-            if let Some(mut config) = instance.session.model_config.clone() {
-                config.ensure_context_limit()?;
-                Ok(Some(config))
-            } else {
-                Ok(None)
-            }
+            Ok(instance.session.model_config.clone())
         } else {
             // Load from persistence
             match self.persistence.load_chat_session(session_id)? {
                 Some(mut session) => {
-                    if let Some(mut config) = session.model_config.take() {
-                        config.ensure_context_limit()?;
+                    if let Some(config) = session.model_config.take() {
                         Ok(Some(config))
                     } else {
                         Ok(None)
@@ -449,18 +443,11 @@ impl SessionManager {
             .load_chat_session(session_id)?
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
-        let sanitized_model_config = if let Some(mut config) = model_config.clone() {
-            config.ensure_context_limit()?;
-            Some(config)
-        } else {
-            None
-        };
-
-        session.model_config = sanitized_model_config.clone();
+        session.model_config = model_config.clone();
         self.persistence.save_chat_session(&session)?;
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
-            instance.session.model_config = sanitized_model_config;
+            instance.session.model_config = model_config;
         }
 
         Ok(())

@@ -323,7 +323,7 @@ impl acp::Agent for ACPAgentImpl {
 
             let session_id = {
                 let mut manager = session_manager.lock().await;
-                let session_model_config = SessionModelConfig::for_model(model_name.clone(), None)
+                let session_model_config = SessionModelConfig::for_model(model_name.clone())
                     .map_err(|e| {
                         tracing::error!(
                             error = ?e,
@@ -353,7 +353,7 @@ impl acp::Agent for ACPAgentImpl {
                 if model_info.selection_changed {
                     let mut manager = session_manager.lock().await;
                     let fallback_model_config =
-                        SessionModelConfig::for_model(model_info.selected_model_name.clone(), None)
+                        SessionModelConfig::for_model(model_info.selected_model_name.clone())
                             .map_err(|e| {
                                 tracing::error!(
                                     error = ?e,
@@ -459,13 +459,9 @@ impl acp::Agent for ACPAgentImpl {
                     .map(|config| config.model_name.as_str()),
             ) {
                 if model_info.selection_changed {
-                    let record_path = stored_model_config
-                        .as_ref()
-                        .and_then(|config| config.record_path.clone());
                     let mut manager = session_manager.lock().await;
                     let fallback_model_config = SessionModelConfig::for_model(
                         model_info.selected_model_name.clone(),
-                        record_path,
                     )
                     .map_err(|e| {
                         tracing::error!(
@@ -563,7 +559,7 @@ impl acp::Agent for ACPAgentImpl {
 
             let session_model_config = match config_result {
                 Ok(Some(config)) => config,
-                Ok(None) => match SessionModelConfig::for_model(model_name.clone(), None) {
+                Ok(None) => match SessionModelConfig::for_model(model_name.clone()) {
                     Ok(config) => config,
                     Err(e) => {
                         let error_msg = format!(
@@ -597,6 +593,7 @@ impl acp::Agent for ACPAgentImpl {
                 &model_name_for_prompt,
                 playback_path,
                 fast_playback,
+                None,
             )
             .await
             {
@@ -845,24 +842,17 @@ impl acp::Agent for ACPAgentImpl {
                 manager.get_session_model_config(&session_id.0)
             };
 
-            let record_path = match existing_config {
-                Ok(Some(config)) => config.record_path,
-                Ok(None) => None,
-                Err(err) => {
-                    tracing::error!(
-                        error = ?err,
-                        "ACP: Failed to read existing session model configuration"
-                    );
-                    return Err(acp::Error::internal_error());
-                }
-            };
+            if let Err(err) = existing_config {
+                tracing::error!(
+                    error = ?err,
+                    "ACP: Failed to read existing session model configuration"
+                );
+                return Err(acp::Error::internal_error());
+            }
 
             {
                 let mut manager = session_manager.lock().await;
-                let new_model_config = match SessionModelConfig::for_model(
-                    display_name.clone(),
-                    record_path.clone(),
-                ) {
+                let new_model_config = match SessionModelConfig::for_model(display_name.clone()) {
                     Ok(config) => config,
                     Err(err) => {
                         tracing::error!(
