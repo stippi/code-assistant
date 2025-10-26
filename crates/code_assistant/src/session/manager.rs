@@ -56,13 +56,13 @@ impl SessionManager {
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
         // Always create sessions with a default model config
-        let default_model_config = self.default_model_config()?;
+        let default_model_config = self.default_model_config();
         self.create_session_with_config(name, None, Some(default_model_config))
     }
 
     /// Get the default model configuration
-    fn default_model_config(&self) -> Result<SessionModelConfig> {
-        SessionModelConfig::for_model(self.default_model_name.clone())
+    fn default_model_config(&self) -> SessionModelConfig {
+        SessionModelConfig::new(self.default_model_name.clone())
     }
 
     /// Create a new session with optional model config and return its ID
@@ -160,7 +160,7 @@ impl SessionManager {
             if let Some(model_name) = existing_model_name {
                 model_name
             } else {
-                let default_model_config = self.default_model_config()?;
+                let default_model_config = self.default_model_config();
                 let model_name = default_model_config.model_name.clone();
                 {
                     let session_instance = self.active_sessions.get_mut(&session_id).unwrap();

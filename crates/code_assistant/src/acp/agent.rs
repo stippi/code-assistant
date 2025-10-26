@@ -323,15 +323,7 @@ impl acp::Agent for ACPAgentImpl {
 
             let session_id = {
                 let mut manager = session_manager.lock().await;
-                let session_model_config = SessionModelConfig::for_model(model_name.clone())
-                    .map_err(|e| {
-                        tracing::error!(
-                            error = ?e,
-                            "ACP: Failed to load model configuration for {}",
-                            model_name
-                        );
-                        to_acp_error(&e)
-                    })?;
+                let session_model_config = SessionModelConfig::new(model_name.clone());
                 manager
                     .create_session_with_config(
                         None,
@@ -353,14 +345,7 @@ impl acp::Agent for ACPAgentImpl {
                 if model_info.selection_changed {
                     let mut manager = session_manager.lock().await;
                     let fallback_model_config =
-                        SessionModelConfig::for_model(model_info.selected_model_name.clone())
-                            .map_err(|e| {
-                                tracing::error!(
-                                    error = ?e,
-                                    "ACP: Failed to build fallback model config"
-                                );
-                                to_acp_error(&e)
-                            })?;
+                        SessionModelConfig::new(model_info.selected_model_name.clone());
                     if let Err(err) =
                         manager.set_session_model_config(&session_id, Some(fallback_model_config))
                     {
@@ -460,17 +445,8 @@ impl acp::Agent for ACPAgentImpl {
             ) {
                 if model_info.selection_changed {
                     let mut manager = session_manager.lock().await;
-                    let fallback_model_config = SessionModelConfig::for_model(
-                        model_info.selected_model_name.clone(),
-                    )
-                    .map_err(|e| {
-                        tracing::error!(
-                            error = ?e,
-                            "ACP: Failed to build fallback model config when loading session {}",
-                            arguments.session_id.0
-                        );
-                        to_acp_error(&e)
-                    })?;
+                    let fallback_model_config =
+                        SessionModelConfig::new(model_info.selected_model_name.clone());
                     if let Err(err) = manager.set_session_model_config(
                         &arguments.session_id.0,
                         Some(fallback_model_config),
@@ -559,20 +535,7 @@ impl acp::Agent for ACPAgentImpl {
 
             let session_model_config = match config_result {
                 Ok(Some(config)) => config,
-                Ok(None) => match SessionModelConfig::for_model(model_name.clone()) {
-                    Ok(config) => config,
-                    Err(e) => {
-                        let error_msg = format!(
-                            "Failed to load default model configuration for session {}: {e}",
-                            arguments.session_id.0
-                        );
-                        tracing::error!("{}", error_msg);
-                        let mut uis = active_uis.lock().await;
-                        uis.remove(arguments.session_id.0.as_ref());
-                        let err = e.context(error_msg);
-                        return Err(to_acp_error(&err));
-                    }
-                },
+                Ok(None) => SessionModelConfig::new(model_name.clone()),
                 Err(e) => {
                     let error_msg = format!(
                         "Failed to load session model configuration for session {}: {e}",
@@ -852,16 +815,7 @@ impl acp::Agent for ACPAgentImpl {
 
             {
                 let mut manager = session_manager.lock().await;
-                let new_model_config = match SessionModelConfig::for_model(display_name.clone()) {
-                    Ok(config) => config,
-                    Err(err) => {
-                        tracing::error!(
-                            error = ?err,
-                            "ACP: Failed to build session model configuration"
-                        );
-                        return Err(to_acp_error(&err));
-                    }
-                };
+                let new_model_config = SessionModelConfig::new(display_name.clone());
                 if let Err(err) =
                     manager.set_session_model_config(&session_id.0, Some(new_model_config))
                 {

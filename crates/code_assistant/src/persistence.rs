@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use llm::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -125,18 +125,13 @@ impl ChatSession {
 }
 
 impl SessionModelConfig {
-    /// Construct a session model configuration by looking up the model metadata.
-    pub fn for_model(model_name: String) -> Result<Self> {
-        let config_system = llm::provider_config::ConfigurationSystem::load()?;
-        if config_system.get_model(&model_name).is_none() {
-            return Err(anyhow!("Model not found in models.json: {model_name}"));
-        }
-
-        Ok(Self {
+    /// Construct a session model configuration for the given display name.
+    pub fn new(model_name: String) -> Self {
+        Self {
             model_name,
             _legacy_record_path: None,
             _legacy_context_token_limit: None,
-        })
+        }
     }
 
     #[cfg(test)]

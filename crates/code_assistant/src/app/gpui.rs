@@ -29,7 +29,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
 
     let default_model = config.model.clone();
     let base_session_model_config =
-        crate::persistence::SessionModelConfig::for_model(default_model.clone())?;
+        crate::persistence::SessionModelConfig::new(default_model.clone());
 
     // Create the new SessionManager
     let multi_session_manager = Arc::new(Mutex::new(SessionManager::new(

@@ -4,6 +4,7 @@ use crate::session::SessionManager;
 use crate::ui::UserInterface;
 use crate::utils::{content::content_blocks_from, DefaultCommandExecutor};
 use llm::factory::create_llm_client_from_model;
+use llm::provider_config::ConfigurationSystem;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -465,19 +466,25 @@ async fn handle_switch_model(
         session_id, model_name
     );
 
-    // Create new session model config
-    let new_model_config = match SessionModelConfig::for_model(model_name.to_string()) {
-        Ok(config) => config,
+    // Validate the requested model exists
+    let config_system = match ConfigurationSystem::load() {
+        Ok(system) => system,
         Err(e) => {
-            error!(
-                "Failed to load model configuration for {}: {}",
-                model_name, e
-            );
+            error!("Failed to load model configuration: {}", e);
             return BackendResponse::Error {
                 message: format!("Failed to load model configuration: {e}"),
             };
         }
     };
+
+    if config_system.get_model(model_name).is_none() {
+        error!("Model '{}' not found in configuration", model_name);
+        return BackendResponse::Error {
+            message: format!("Model '{model_name}' not found in configuration."),
+        };
+    }
+
+    let new_model_config = SessionModelConfig::new(model_name.to_string());
 
     let result = {
         let mut manager = multi_session_manager.lock().await;
