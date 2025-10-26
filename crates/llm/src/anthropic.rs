@@ -1391,8 +1391,7 @@ mod tests {
             Message {
                 role,
                 content: MessageContent::Text(text.to_string()),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             }
         }
 
@@ -1509,8 +1508,7 @@ mod tests {
                         end_time: None,
                     },
                 ]),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             }
         }
 
@@ -1525,8 +1523,7 @@ mod tests {
                     start_time: None,
                     end_time: None,
                 }]),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             }
         }
 
@@ -1536,8 +1533,7 @@ mod tests {
             messages.push(Message {
                 role: MessageRole::User,
                 content: MessageContent::Text(format!("Request {i}")),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             });
             messages.push(create_tool_message(&format!("tool_{i}")));
             messages.push(create_tool_result(
@@ -1591,8 +1587,7 @@ mod tests {
             .map(|i| Message {
                 role: MessageRole::User,
                 content: MessageContent::Text(format!("Prelude {i}")),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             })
             .collect();
 
@@ -1611,8 +1606,7 @@ mod tests {
                     end_time: None,
                 },
             ]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         });
 
         let result = converter.convert_messages_with_cache(messages);
@@ -1648,8 +1642,7 @@ mod tests {
                     MessageRole::Assistant
                 },
                 content: MessageContent::Text(format!("Message A{i}")),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             })
             .collect();
 
@@ -1661,8 +1654,7 @@ mod tests {
                     MessageRole::Assistant
                 },
                 content: MessageContent::Text(format!("Completely different B{i}")),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             })
             .collect();
 
@@ -1712,8 +1704,7 @@ mod tests {
             .map(|i| Message {
                 role: MessageRole::User,
                 content: MessageContent::Text(format!("Short {i}")),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             })
             .collect();
 
@@ -1739,8 +1730,7 @@ mod tests {
         messages.push(Message {
             role: MessageRole::User,
             content: MessageContent::Text("Help me analyze this data".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         });
 
         // Assistant response with tool use
@@ -1760,8 +1750,7 @@ mod tests {
                     end_time: None,
                 },
             ]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         });
 
         // Tool result
@@ -1774,8 +1763,7 @@ mod tests {
                 start_time: None,
                 end_time: None,
             }]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         });
 
         // Continue building conversation to 20+ messages
@@ -1783,8 +1771,7 @@ mod tests {
             messages.push(Message {
                 role: MessageRole::User,
                 content: MessageContent::Text(format!("Follow up question {i}")),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             });
 
             messages.push(Message {
@@ -1803,8 +1790,7 @@ mod tests {
                         end_time: None,
                     },
                 ]),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             });
 
             messages.push(Message {
@@ -1816,8 +1802,7 @@ mod tests {
                     start_time: None,
                     end_time: None,
                 }]),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             });
         }
 
@@ -1956,8 +1941,7 @@ mod tests {
         error_messages.push(Message {
             role: MessageRole::User,
             content: MessageContent::Text("Try something that might fail".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         });
 
         error_messages.push(Message {
@@ -1976,8 +1960,7 @@ mod tests {
                     end_time: None,
                 },
             ]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         });
 
         error_messages.push(Message {
@@ -1989,8 +1972,7 @@ mod tests {
                 start_time: None,
                 end_time: None,
             }]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         });
 
         // Convert with error scenario

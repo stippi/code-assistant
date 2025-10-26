@@ -179,8 +179,7 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
         messages: vec![Message {
             role: MessageRole::User,
             content: MessageContent::Text("Please refactor the Anthropic client".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }],
         system_prompt: "You are a helpful assistant.".to_string(),
         ..Default::default()

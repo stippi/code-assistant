@@ -4,7 +4,9 @@ use crate::session::SessionManager;
 use crate::ui::UserInterface;
 use crate::utils::{content::content_blocks_from, DefaultCommandExecutor};
 use llm::factory::create_llm_client_from_model;
+use llm::provider_config::ConfigurationSystem;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace};
@@ -77,10 +79,18 @@ pub enum BackendResponse {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct BackendRuntimeOptions {
+    pub record_path: Option<PathBuf>,
+    pub playback_path: Option<PathBuf>,
+    pub fast_playback: bool,
+}
+
 pub async fn handle_backend_events(
     backend_event_rx: async_channel::Receiver<BackendEvent>,
     backend_response_tx: async_channel::Sender<BackendResponse>,
     multi_session_manager: Arc<Mutex<SessionManager>>,
+    runtime_options: Arc<BackendRuntimeOptions>,
     ui: Arc<dyn UserInterface>,
 ) {
     debug!("Backend event handler started");
@@ -113,6 +123,7 @@ pub async fn handle_backend_events(
                     &session_id,
                     &message,
                     &attachments,
+                    runtime_options.as_ref(),
                     &ui,
                 )
                 .await
@@ -264,6 +275,7 @@ async fn handle_send_user_message(
     session_id: &str,
     message: &str,
     attachments: &[DraftAttachment],
+    runtime_options: &BackendRuntimeOptions,
     ui: &Arc<dyn UserInterface>,
 ) -> Option<BackendResponse> {
     debug!(
@@ -304,8 +316,9 @@ async fn handle_send_user_message(
             // Use session's stored model
             create_llm_client_from_model(
                 &session_config.model_name,
-                session_config.record_path.clone(),
-                false,
+                runtime_options.playback_path.clone(),
+                runtime_options.fast_playback,
+                runtime_options.record_path.clone(),
             )
             .await
         } else {
@@ -453,11 +466,25 @@ async fn handle_switch_model(
         session_id, model_name
     );
 
-    // Create new session model config
-    let new_model_config = SessionModelConfig {
-        model_name: model_name.to_string(),
-        record_path: None, // Keep existing recording path if any
+    // Validate the requested model exists
+    let config_system = match ConfigurationSystem::load() {
+        Ok(system) => system,
+        Err(e) => {
+            error!("Failed to load model configuration: {}", e);
+            return BackendResponse::Error {
+                message: format!("Failed to load model configuration: {e}"),
+            };
+        }
     };
+
+    if config_system.get_model(model_name).is_none() {
+        error!("Model '{}' not found in configuration", model_name);
+        return BackendResponse::Error {
+            message: format!("Model '{model_name}' not found in configuration."),
+        };
+    }
+
+    let new_model_config = SessionModelConfig::new(model_name.to_string());
 
     let result = {
         let mut manager = multi_session_manager.lock().await;

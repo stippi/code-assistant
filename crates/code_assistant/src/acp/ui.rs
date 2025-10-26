@@ -653,6 +653,10 @@ impl UserInterface for ACPUserUI {
                 let content = fragment_to_content_block(fragment);
                 self.queue_session_update(acp::SessionUpdate::AgentMessageChunk { content });
             }
+            DisplayFragment::CompactionDivider { .. } => {
+                let content = fragment_to_content_block(fragment);
+                self.queue_session_update(acp::SessionUpdate::AgentMessageChunk { content });
+            }
             DisplayFragment::ThinkingText(_) => {
                 let content = fragment_to_content_block(fragment);
                 self.queue_session_update(acp::SessionUpdate::AgentThoughtChunk { content });

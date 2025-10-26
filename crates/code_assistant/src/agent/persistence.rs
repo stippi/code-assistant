@@ -118,7 +118,7 @@ impl FileStatePersistence {
         );
         let json = std::fs::read_to_string(&self.state_file_path)?;
         let mut session: ChatSession = serde_json::from_str(&json)?;
-        session.ensure_config();
+        session.ensure_config()?;
 
         info!(
             "Loaded agent state with {} messages",

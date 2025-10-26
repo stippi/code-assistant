@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::persistence::MockStatePersistence;
+use crate::persistence::SessionModelConfig;
 use crate::session::SessionConfig;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
@@ -523,8 +524,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
     let user_msg = Message {
         role: MessageRole::User,
         content: MessageContent::Text("Test task".to_string()),
-        request_id: None,
-        usage: None,
+        ..Default::default()
     };
     agent.append_message(user_msg)?;
 
@@ -736,6 +736,131 @@ async fn test_parse_error_handling() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_context_compaction_inserts_summary() -> Result<()> {
+    let summary_text = "Summary of recent work";
+    let summary_response = LLMResponse {
+        content: vec![ContentBlock::new_text(summary_text)],
+        usage: Usage {
+            input_tokens: 20,
+            output_tokens: 8,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        },
+        rate_limit_info: None,
+    };
+
+    let idle_response = LLMResponse {
+        content: Vec::new(),
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(idle_response), Ok(summary_response)]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.set_test_session_metadata(
+        "session-1".to_string(),
+        SessionModelConfig::new_for_tests("test-model".to_string()),
+    );
+    agent.set_test_context_limit(100);
+
+    agent.append_message(Message {
+        role: MessageRole::User,
+        content: MessageContent::Text("User request".to_string()),
+        ..Default::default()
+    })?;
+
+    agent.append_message(Message {
+        role: MessageRole::Assistant,
+        content: MessageContent::Structured(vec![ContentBlock::new_text(
+            "Assistant reply".to_string(),
+        )]),
+        request_id: Some(1),
+        usage: Some(Usage {
+            input_tokens: 85,
+            output_tokens: 12,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }),
+        ..Default::default()
+    })?;
+
+    agent.run_single_iteration().await?;
+
+    // Ensure a compaction summary message was added
+    let summary_message = agent
+        .message_history_for_tests()
+        .iter()
+        .find(|message| message.is_compaction_summary)
+        .cloned()
+        .expect("Expected compaction summary in history");
+    assert_eq!(summary_message.role, MessageRole::User);
+    let stored_summary = match summary_message.content {
+        MessageContent::Text(ref text) => text,
+        MessageContent::Structured(_) => panic!("Summary should be stored as text"),
+    };
+    assert_eq!(stored_summary, summary_text);
+
+    // The compaction prompt should have been sent to the provider
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(requests.len(), 2);
+    let compaction_request = &requests[0];
+    let compaction_prompt_found = compaction_request.messages.iter().any(|message| {
+        matches!(&message.content, MessageContent::Text(text) if text.contains("system-compaction"))
+    });
+    assert!(
+        compaction_prompt_found,
+        "Expected compaction prompt in LLM request"
+    );
+
+    // Ensure the UI received a SetMessages event with the compaction divider
+    let streaming_output = ui.get_streaming_output();
+    let has_compaction_fragment = streaming_output
+        .iter()
+        .any(|chunk| chunk.starts_with("[compaction] ") && chunk.contains(summary_text));
+    assert!(
+        has_compaction_fragment,
+        "Expected compaction divider fragment with summary text"
+    );
+
+    // Subsequent prompt should include the summary content
+    let summary_in_followup =
+        requests[1].messages.iter().any(|message| {
+            match &message.content {
+        MessageContent::Structured(blocks) => blocks.iter().any(|block| {
+            matches!(block, ContentBlock::Text { text, .. } if text.contains(summary_text))
+        }),
+        MessageContent::Text(text) => text.contains(summary_text),
+    }
+        });
+    assert!(
+        summary_in_followup,
+        "Expected summary text in follow-up request"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
     use crate::persistence::ChatSession;
@@ -758,15 +883,14 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
         Message {
             role: MessageRole::User,
             content: MessageContent::Text("Hello, please help me".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
         // Assistant response
         Message {
             role: MessageRole::Assistant,
             content: MessageContent::Text("I'll help you".to_string()),
             request_id: Some(1),
-            usage: None,
+            ..Default::default()
         },
         // Parse error message in XML mode - should be filtered out
         Message {
@@ -775,8 +899,7 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
                 "tool-1-0",
                 "Tool error: Unknown tool 'invalid_tool'. Please use only available tools.",
             )]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
         // Regular tool result - should be filtered out
         Message {
@@ -785,22 +908,19 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
                 "regular-tool-123",
                 "File contents here",
             )]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
         // Empty user message (legacy) - should be filtered out
         Message {
             role: MessageRole::User,
             content: MessageContent::Text("".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
         // Another regular user message - should be included
         Message {
             role: MessageRole::User,
             content: MessageContent::Text("Thank you for the help!".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
     ];
     session.tool_executions = Vec::new();
@@ -1154,8 +1274,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     let messages = vec![Message {
         role: MessageRole::User,
         content: MessageContent::Text("Hello, help me with a task".to_string()),
-        request_id: None,
-        usage: None,
+        ..Default::default()
     }];
 
     let result_messages = agent.inject_naming_reminder_if_needed(messages.clone());
@@ -1188,8 +1307,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         Message {
             role: MessageRole::User,
             content: MessageContent::Text("Hello, help me with a task".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
         Message {
             role: MessageRole::Assistant,
@@ -1198,6 +1316,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
             )]),
             request_id: Some(1),
             usage: Some(Usage::zero()),
+            ..Default::default()
         },
         Message {
             role: MessageRole::User,
@@ -1205,8 +1324,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
                 "tool-1-1",
                 "Tool execution result",
             )]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         },
     ];
 
@@ -1258,8 +1376,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
             ContentBlock::new_text("Please analyze this file"),
             ContentBlock::new_tool_result("tool-1-1", "Previous tool result"),
         ]),
-        request_id: None,
-        usage: None,
+        ..Default::default()
     }];
 
     let result_messages = agent.inject_naming_reminder_if_needed(mixed_message.clone());

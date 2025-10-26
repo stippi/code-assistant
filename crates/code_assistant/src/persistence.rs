@@ -16,9 +16,12 @@ use crate::types::{PlanState, ToolSyntax, WorkingMemory};
 pub struct SessionModelConfig {
     /// Display name of the model from models.json
     pub model_name: String,
-    /// Optional recording path for this session
-    pub record_path: Option<PathBuf>,
-    // Note: playback and fast_playback are runtime toggles, not persisted
+    /// Legacy recording path persisted in older session files (ignored at runtime)
+    #[serde(default, rename = "record_path", skip_serializing)]
+    _legacy_record_path: Option<PathBuf>,
+    /// Legacy context token limit persisted in older session files (ignored at runtime)
+    #[serde(default, rename = "context_token_limit", skip_serializing)]
+    _legacy_context_token_limit: Option<u32>,
 }
 
 /// A complete chat session with all its data
@@ -76,7 +79,7 @@ pub struct ChatSession {
 
 impl ChatSession {
     /// Merge any legacy top-level fields into the nested SessionConfig.
-    pub fn ensure_config(&mut self) {
+    pub fn ensure_config(&mut self) -> Result<()> {
         if let Some(init_path) = self.legacy_init_path.take() {
             self.config.init_path = Some(init_path);
         }
@@ -91,6 +94,7 @@ impl ChatSession {
         if let Some(use_diff_blocks) = self.legacy_use_diff_blocks.take() {
             self.config.use_diff_blocks = use_diff_blocks;
         }
+        Ok(())
     }
 
     /// Create a new empty chat session using the provided configuration.
@@ -116,6 +120,26 @@ impl ChatSession {
             legacy_initial_project: None,
             legacy_tool_syntax: None,
             legacy_use_diff_blocks: None,
+        }
+    }
+}
+
+impl SessionModelConfig {
+    /// Construct a session model configuration for the given display name.
+    pub fn new(model_name: String) -> Self {
+        Self {
+            model_name,
+            _legacy_record_path: None,
+            _legacy_context_token_limit: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_for_tests(model_name: String) -> Self {
+        Self {
+            model_name,
+            _legacy_record_path: None,
+            _legacy_context_token_limit: None,
         }
     }
 }
@@ -199,7 +223,7 @@ impl FileSessionPersistence {
 
     pub fn save_chat_session(&mut self, session: &ChatSession) -> Result<()> {
         let mut session = session.clone();
-        session.ensure_config();
+        session.ensure_config()?;
 
         let session_path = self.chat_file_path(&session.id)?;
         debug!("Saving chat session to {}", session_path.display());
@@ -253,7 +277,7 @@ impl FileSessionPersistence {
         debug!("Loading chat session from {}", session_path.display());
         let json = std::fs::read_to_string(session_path)?;
         let mut session: ChatSession = serde_json::from_str(&json)?;
-        session.ensure_config();
+        session.ensure_config()?;
         Ok(Some(session))
     }
 

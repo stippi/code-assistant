@@ -422,6 +422,9 @@ impl UserInterface for TerminalTuiUI {
                     "Tool {tool_id} attached client terminal {terminal_id}; terminal UI has no live view"
                 );
             }
+            DisplayFragment::CompactionDivider { .. } => {
+                // Compaction summaries are surfaced via refresh events in terminal UI.
+            }
             DisplayFragment::ReasoningComplete => {
                 // For terminal UI, no specific action needed for reasoning completion
             }

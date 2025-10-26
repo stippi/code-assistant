@@ -177,12 +177,19 @@ pub async fn create_llm_client_from_model(
     model_name: &str,
     playback_path: Option<PathBuf>,
     fast_playback: bool,
+    record_path: Option<PathBuf>,
 ) -> Result<Box<dyn LLMProvider>> {
     let config_system = ConfigurationSystem::load()?;
     let (model_config, provider_config) = config_system.get_model_with_provider(model_name)?;
 
-    create_llm_client_from_configs(model_config, provider_config, playback_path, fast_playback)
-        .await
+    create_llm_client_from_configs(
+        model_config,
+        provider_config,
+        playback_path,
+        fast_playback,
+        record_path,
+    )
+    .await
 }
 
 /// Create an LLM client from model and provider configurations
@@ -191,6 +198,7 @@ pub async fn create_llm_client_from_configs(
     provider_config: &ProviderConfig,
     playback_path: Option<PathBuf>,
     fast_playback: bool,
+    record_path_override: Option<PathBuf>,
 ) -> Result<Box<dyn LLMProvider>> {
     // Build optional playback state once
     let playback_state = if let Some(path) = &playback_path {
@@ -223,16 +231,18 @@ pub async fn create_llm_client_from_configs(
         }
     };
 
-    // Extract recording path from model config if present
-    let record_path = model_config
-        .config
-        .get("record_path")
-        .and_then(|v| v.as_str())
-        .map(PathBuf::from);
+    // Extract recording path from model config (allowing runtime override)
+    let record_path = record_path_override.or_else(|| {
+        model_config
+            .config
+            .get("record_path")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+    });
 
     match provider_type {
         LLMProviderType::AiCore => {
-            create_ai_core_client(model_config, provider_config, record_path).await
+            create_ai_core_client(model_config, provider_config, record_path.clone()).await
         }
         LLMProviderType::Anthropic => {
             create_anthropic_client(model_config, provider_config, record_path, playback_state)

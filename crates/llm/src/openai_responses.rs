@@ -1287,8 +1287,7 @@ mod tests {
         let messages = vec![Message {
             role: MessageRole::User,
             content: MessageContent::Text("Hello".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }];
 
         let converted = client.convert_messages(messages);
@@ -1326,8 +1325,7 @@ mod tests {
                 start_time: None,
                 end_time: None,
             }]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }];
 
         let converted = client.convert_messages(messages);
@@ -1448,8 +1446,7 @@ mod tests {
             Message {
                 role: MessageRole::User,
                 content: MessageContent::Text("What's 2+2?".to_string()),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             },
             Message {
                 role: MessageRole::Assistant,
@@ -1469,14 +1466,12 @@ mod tests {
                         end_time: None,
                     },
                 ]),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             },
             Message {
                 role: MessageRole::User,
                 content: MessageContent::Text("What about 3+3?".to_string()),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             },
         ];
 
@@ -1585,8 +1580,7 @@ mod tests {
                     end_time: None,
                 },
             ]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }];
 
         let converted = client.convert_messages(messages);
@@ -1681,8 +1675,7 @@ mod tests {
                     end_time: None,
                 },
             ]),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }];
 
         let converted = client.convert_messages(messages);

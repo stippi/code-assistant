@@ -31,8 +31,7 @@ impl TestCase {
                 messages: vec![Message {
                     role: MessageRole::User,
                     content: MessageContent::Text("Hello".to_string()),
-                    request_id: None,
-                    usage: None,
+                    ..Default::default()
                 }],
                 system_prompt: "You are a helpful assistant.".to_string(),
                 ..Default::default()
@@ -68,8 +67,7 @@ impl TestCase {
                 messages: vec![Message {
                     role: MessageRole::User,
                     content: MessageContent::Text("What's the weather?".to_string()),
-                    request_id: None,
-                    usage: None,
+                    ..Default::default()
                 }],
                 system_prompt: "Use the weather tool.".to_string(),
                 tools: Some(vec![ToolDefinition {
@@ -823,8 +821,7 @@ async fn test_anthropic_rate_limit_retry() -> Result<()> {
         messages: vec![Message {
             role: MessageRole::User,
             content: MessageContent::Text("Hello".to_string()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }],
         system_prompt: "You are a helpful assistant.".to_string(),
         ..Default::default()
@@ -886,8 +883,7 @@ async fn test_openai_message_conversion() -> Result<()> {
     let text_message = Message {
         role: MessageRole::User,
         content: MessageContent::Text("Hello world".to_string()),
-        request_id: None,
-        usage: None,
+        ..Default::default()
     };
 
     let openai_messages = OpenAIClient::convert_message(&text_message);
@@ -906,8 +902,7 @@ async fn test_openai_message_conversion() -> Result<()> {
             ContentBlock::new_text("What do you see in this image?"),
             ContentBlock::new_image_base64("image/png", image_data),
         ]),
-        request_id: None,
-        usage: None,
+        ..Default::default()
     };
 
     let openai_messages = OpenAIClient::convert_message(&mixed_message);
@@ -947,8 +942,7 @@ async fn test_openai_message_conversion() -> Result<()> {
                 serde_json::json!({"location": "Berlin"}),
             ),
         ]),
-        request_id: None,
-        usage: None,
+        ..Default::default()
     };
 
     let openai_messages = OpenAIClient::convert_message(&assistant_message);
@@ -972,8 +966,7 @@ async fn test_openai_message_conversion() -> Result<()> {
             ContentBlock::new_tool_result("tool_123", "Weather is sunny, 25°C"),
             ContentBlock::new_text("What should I wear?"),
         ]),
-        request_id: None,
-        usage: None,
+        ..Default::default()
     };
 
     let openai_messages = OpenAIClient::convert_message(&user_with_tool_result);

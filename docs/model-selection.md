@@ -178,7 +178,7 @@ The system currently supports these providers (from `LLMProviderType` enum):
 
 **✅ 2.1 Update Session Persistence**
 - ✅ Modified `crates/code_assistant/src/persistence.rs`:
-  - ✅ Replaced `LlmSessionConfig` with new `SessionModelConfig` containing only `model_name` and `record_path`
+  - ✅ Replaced `LlmSessionConfig` with new `SessionModelConfig` that tracks the selected `model_name`
   - ✅ Removed all old provider-specific fields (provider, base_url, aicore_config, num_ctx)
   - ✅ Updated session creation/loading to use model-based config
   - ✅ Maintained backward compatibility for existing session files

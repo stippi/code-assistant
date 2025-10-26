@@ -147,6 +147,20 @@ impl MessageContainer {
         cx.notify();
     }
 
+    pub fn add_compaction_divider(&self, summary: impl Into<String>, cx: &mut Context<Self>) {
+        self.finish_any_thinking_blocks(cx);
+
+        let request_id = *self.current_request_id.lock().unwrap();
+        let mut elements = self.elements.lock().unwrap();
+        let block = BlockData::CompactionSummary(CompactionSummaryBlock {
+            summary: summary.into(),
+            is_expanded: false,
+        });
+        let view = cx.new(|cx| BlockView::new(block, request_id, self.current_project.clone(), cx));
+        elements.push(view);
+        cx.notify();
+    }
+
     // Add a new thinking block
     #[allow(dead_code)]
     pub fn add_thinking_block(&self, content: impl Into<String>, cx: &mut Context<Self>) {
@@ -613,6 +627,7 @@ pub enum BlockData {
     ThinkingBlock(ThinkingBlock),
     ToolUse(ToolUseBlock),
     ImageBlock(ImageBlock),
+    CompactionSummary(CompactionSummaryBlock),
 }
 
 impl BlockData {
@@ -633,6 +648,13 @@ impl BlockData {
     fn as_tool_mut(&mut self) -> Option<&mut ToolUseBlock> {
         match self {
             BlockData::ToolUse(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    fn as_compaction_mut(&mut self) -> Option<&mut CompactionSummaryBlock> {
+        match self {
+            BlockData::CompactionSummary(b) => Some(b),
             _ => None,
         }
     }
@@ -684,7 +706,8 @@ impl BlockView {
         match &self.block {
             BlockData::ToolUse(_) => !self.is_generating, // Tools can't toggle while generating
             BlockData::ThinkingBlock(_) => true,          // Thinking blocks can always toggle
-            _ => false,                                   // Other blocks don't have expansion
+            BlockData::CompactionSummary(_) => true,
+            _ => false, // Other blocks don't have expansion
         }
     }
 
@@ -721,6 +744,13 @@ impl BlockView {
             return;
         };
         self.start_expand_collapse_animation(should_expand, cx);
+    }
+
+    fn toggle_compaction(&mut self, cx: &mut Context<Self>) {
+        if let Some(summary) = self.block.as_compaction_mut() {
+            summary.is_expanded = !summary.is_expanded;
+            cx.notify();
+        }
     }
 
     fn start_expand_collapse_animation(&mut self, should_expand: bool, cx: &mut Context<Self>) {
@@ -1482,6 +1512,100 @@ impl Render for BlockView {
                     ])
                     .into_any_element()
             }
+            BlockData::CompactionSummary(block) => {
+                let icon = file_icons::get().get_type_icon(file_icons::MESSAGE_BUBBLES);
+                let icon_color = cx.theme().info;
+                let toggle_label = if block.is_expanded {
+                    "Hide summary"
+                } else {
+                    "Show summary"
+                };
+
+                let header = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .children(vec![
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .children(vec![
+                                file_icons::render_icon_container(&icon, 18.0, icon_color, "ℹ️")
+                                    .into_any_element(),
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight(600.0))
+                                    .text_color(icon_color)
+                                    .child("Conversation compacted")
+                                    .into_any_element(),
+                            ])
+                            .into_any_element(),
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().link)
+                            .cursor_pointer()
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|view, _event, _window, cx| {
+                                    view.toggle_compaction(cx);
+                                }),
+                            )
+                            .child(toggle_label)
+                            .into_any_element(),
+                    ])
+                    .into_any_element();
+
+                let mut children = vec![header];
+
+                if block.is_expanded {
+                    children.push(
+                        div()
+                            .text_color(cx.theme().foreground)
+                            .child(
+                                TextView::markdown(
+                                    "compaction-summary",
+                                    block.summary.clone(),
+                                    window,
+                                    cx,
+                                )
+                                .selectable(),
+                            )
+                            .into_any_element(),
+                    );
+                } else {
+                    let preview_text = block.summary.trim();
+                    if !preview_text.is_empty() {
+                        let first_line = preview_text.lines().next().unwrap_or("");
+                        let truncated = if first_line.len() > 120 {
+                            format!("{}…", &first_line[..120])
+                        } else {
+                            first_line.to_string()
+                        };
+                        children.push(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(truncated)
+                                .into_any_element(),
+                        );
+                    }
+                }
+
+                div()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .children(children)
+                    .into_any_element()
+            }
             BlockData::ImageBlock(block) => {
                 if let Some(image) = &block.image {
                     // Render the actual image - margins/spacing handled by parent container
@@ -1538,6 +1662,12 @@ impl Render for BlockView {
 #[derive(Debug, Clone)]
 pub struct TextBlock {
     pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompactionSummaryBlock {
+    pub summary: String,
+    pub is_expanded: bool,
 }
 
 /// Thinking text block with collapsible content

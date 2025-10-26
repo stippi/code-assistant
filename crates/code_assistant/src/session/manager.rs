@@ -62,10 +62,7 @@ impl SessionManager {
 
     /// Get the default model configuration
     fn default_model_config(&self) -> SessionModelConfig {
-        SessionModelConfig {
-            model_name: self.default_model_name.clone(),
-            record_path: None,
-        }
+        SessionModelConfig::new(self.default_model_name.clone())
     }
 
     /// Create a new session with optional model config and return its ID
@@ -167,7 +164,7 @@ impl SessionManager {
                 let model_name = default_model_config.model_name.clone();
                 {
                     let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-                    session_instance.session.model_config = Some(default_model_config);
+                    session_instance.session.model_config = Some(default_model_config.clone());
                 }
                 needs_persist = true;
                 model_name
@@ -224,8 +221,7 @@ impl SessionManager {
             let user_msg = Message {
                 role: llm::MessageRole::User,
                 content: llm::MessageContent::Structured(content_blocks),
-                request_id: None,
-                usage: None,
+                ..Default::default()
             };
             session_instance.add_message(user_msg);
 
@@ -423,7 +419,13 @@ impl SessionManager {
         } else {
             // Load from persistence
             match self.persistence.load_chat_session(session_id)? {
-                Some(session) => Ok(session.model_config),
+                Some(mut session) => {
+                    if let Some(config) = session.model_config.take() {
+                        Ok(Some(config))
+                    } else {
+                        Ok(None)
+                    }
+                }
                 None => Ok(None),
             }
         }
