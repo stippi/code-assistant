@@ -288,13 +288,7 @@ impl Agent {
             // Check for pending user message and add it to history at start of each iteration
             if let Some(pending_message) = self.get_and_clear_pending_message() {
                 debug!("Processing pending user message: {}", pending_message);
-                let user_msg = Message {
-                    role: MessageRole::User,
-                    content: MessageContent::Text(pending_message.clone()),
-                    request_id: None,
-                    usage: None,
-                };
-                self.append_message(user_msg)?;
+                self.append_message(Message::new_user(pending_message.clone()))?;
 
                 // Notify UI about the user message
                 self.ui
@@ -528,12 +522,7 @@ impl Agent {
                     ToolSyntax::Native => {
                         // For native mode, keep text message since parsing errors occur before
                         // we have any LLM-provided tool IDs to reference
-                        Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Text(error_text),
-                            request_id: None,
-                            usage: None,
-                        }
+                        Message::new_user(error_text)
                     }
                     _ => {
                         // For custom tool-syntax modes, create structured tool-result message like regular tool results

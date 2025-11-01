@@ -287,6 +287,54 @@ pub trait RateLimitHandler: Sized {
     fn log_status(&self);
 }
 
+impl Message {
+    pub fn new_user(text: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::User,
+            content: MessageContent::Text(text.into()),
+            request_id: None,
+            usage: None,
+        }
+    }
+
+    pub fn new_assistant(text: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: MessageContent::Text(text.into()),
+            request_id: None,
+            usage: None,
+        }
+    }
+
+    pub fn new_user_content(content: Vec<ContentBlock>) -> Self {
+        Self {
+            role: MessageRole::User,
+            content: MessageContent::Structured(content),
+            request_id: None,
+            usage: None,
+        }
+    }
+
+    pub fn new_assistant_content(content: Vec<ContentBlock>) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: MessageContent::Structured(content),
+            request_id: None,
+            usage: None,
+        }
+    }
+
+    pub fn with_request_id(mut self, request_id: u64) -> Self {
+        self.request_id = Some(request_id);
+        self
+    }
+
+    pub fn with_usage(mut self, usage: Usage) -> Self {
+        self.usage = Some(usage);
+        self
+    }
+}
+
 impl ContentBlock {
     /// Create a thinking content block from a String
     pub fn new_thinking(text: impl Into<String>, signature: impl Into<String>) -> Self {
