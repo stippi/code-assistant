@@ -29,9 +29,7 @@ pub enum UiEvent {
         attachments: Vec<DraftAttachment>,
     },
     /// Display a system-generated compaction divider message
-    DisplayCompactionSummary {
-        summary: String,
-    },
+    DisplayCompactionSummary { summary: String },
     /// Append to the last text block
     AppendToTextBlock { content: String },
     /// Append to the last thinking block
