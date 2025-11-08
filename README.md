@@ -17,7 +17,7 @@ An AI coding assistant built in Rust that provides both command-line and graphic
 
 **Agent Client Protocol (ACP) Support**: Full compatibility with the [Agent Client Protocol](https://agentclientprotocol.com/) standard, enabling seamless integration with ACP-compatible editors like [Zed](https://zed.dev). See Zed's documentation on [adding custom agents](https://zed.dev/docs/ai/external-agents#add-custom-agents) for setup instructions.
 
-**Intelligent Project Exploration**: Autonomously builds understanding of codebases through working memory that tracks file structures, dependencies, and project context.
+**Session Compaction**: Before running out of context space, the agent generates a session summary and continues work.
 
 **Auto-Loaded Repository Guidance**: Automatically includes `AGENTS.md` (or `CLAUDE.md` fallback) from the project root in the assistant's system context to align behavior with repo-specific instructions.
 
