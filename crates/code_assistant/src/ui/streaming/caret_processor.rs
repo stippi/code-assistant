@@ -880,7 +880,9 @@ impl CaretStreamProcessor {
                         // Tool parameter - emit immediately (we've already decided to allow the tool)
                         self.ui.display_fragment(&fragment)?;
                     }
-                    DisplayFragment::PlainText(_) | DisplayFragment::ThinkingText(_) => {
+                    DisplayFragment::PlainText(_)
+                    | DisplayFragment::ThinkingText(_)
+                    | DisplayFragment::CompactionDivider { .. } => {
                         // Text or thinking - buffer it until we know if next tool is allowed
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..

@@ -622,6 +622,7 @@ impl UserInterface for ACPUserUI {
             // Events that don't translate to ACP
             UiEvent::UpdateMemory { .. }
             | UiEvent::SetMessages { .. }
+            | UiEvent::DisplayCompactionSummary { .. }
             | UiEvent::StreamingStarted(_)
             | UiEvent::StreamingStopped { .. }
             | UiEvent::RefreshChatList
@@ -650,6 +651,10 @@ impl UserInterface for ACPUserUI {
     fn display_fragment(&self, fragment: &DisplayFragment) -> Result<(), UIError> {
         match fragment {
             DisplayFragment::PlainText(_) | DisplayFragment::Image { .. } => {
+                let content = fragment_to_content_block(fragment);
+                self.queue_session_update(acp::SessionUpdate::AgentMessageChunk { content });
+            }
+            DisplayFragment::CompactionDivider { .. } => {
                 let content = fragment_to_content_block(fragment);
                 self.queue_session_update(acp::SessionUpdate::AgentMessageChunk { content });
             }

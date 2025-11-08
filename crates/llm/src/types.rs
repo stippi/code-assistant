@@ -79,6 +79,21 @@ pub struct Message {
     /// Token usage for assistant messages (tracks context size and costs)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Indicates this message is a compaction summary divider
+    #[serde(default)]
+    pub is_compaction_summary: bool,
+}
+
+impl Default for Message {
+    fn default() -> Self {
+        Self {
+            role: MessageRole::User,
+            content: MessageContent::Text(String::new()),
+            request_id: None,
+            usage: None,
+            is_compaction_summary: false,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -292,8 +307,7 @@ impl Message {
         Self {
             role: MessageRole::User,
             content: MessageContent::Text(text.into()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }
     }
 
@@ -301,8 +315,7 @@ impl Message {
         Self {
             role: MessageRole::Assistant,
             content: MessageContent::Text(text.into()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }
     }
 
@@ -310,8 +323,7 @@ impl Message {
         Self {
             role: MessageRole::User,
             content: MessageContent::Structured(content),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }
     }
 
@@ -319,8 +331,7 @@ impl Message {
         Self {
             role: MessageRole::Assistant,
             content: MessageContent::Structured(content),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }
     }
 

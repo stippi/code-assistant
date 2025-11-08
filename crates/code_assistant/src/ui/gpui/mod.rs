@@ -511,6 +511,20 @@ impl Gpui {
                     cx.notify();
                 });
             }
+            UiEvent::DisplayCompactionSummary { summary } => {
+                let mut queue = self.message_queue.lock().unwrap();
+                let result = cx.new(|cx| {
+                    let message = MessageContainer::with_role(MessageRole::User, cx);
+                    message.add_compaction_divider(summary.clone(), cx);
+                    message
+                });
+                if let Ok(new_message) = result {
+                    queue.push(new_message);
+                } else {
+                    warn!("Failed to create compaction summary message");
+                }
+                cx.refresh().expect("Failed to refresh windows");
+            }
             UiEvent::AppendToTextBlock { content } => {
                 // Since StreamingStarted ensures last container is Assistant, we can safely append
                 self.update_last_message(cx, |message, cx| {
@@ -1013,6 +1027,11 @@ impl Gpui {
                         container.add_image_block(media_type, data, cx);
                     });
                 }
+                DisplayFragment::CompactionDivider { summary } => {
+                    self.update_container(container, cx, |container, cx| {
+                        container.add_compaction_divider(summary.clone(), cx);
+                    });
+                }
                 DisplayFragment::ReasoningSummaryStart => {
                     self.update_container(container, cx, |container, cx| {
                         container.start_reasoning_summary_item(cx);
@@ -1385,6 +1404,9 @@ impl UserInterface for Gpui {
                     delta: delta.clone(),
                 });
             }
+            DisplayFragment::ReasoningComplete => {
+                self.push_event(UiEvent::CompleteReasoning);
+            }
             DisplayFragment::ToolOutput { tool_id, chunk } => {
                 if tool_id.is_empty() {
                     warn!(
@@ -1409,8 +1431,10 @@ impl UserInterface for Gpui {
                     "GPUI: Tool {tool_id} attached terminal {terminal_id}; no dedicated UI hook"
                 );
             }
-            DisplayFragment::ReasoningComplete => {
-                self.push_event(UiEvent::CompleteReasoning);
+            DisplayFragment::CompactionDivider { summary } => {
+                self.push_event(UiEvent::DisplayCompactionSummary {
+                    summary: summary.clone(),
+                });
             }
         }
 

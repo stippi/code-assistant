@@ -2,11 +2,12 @@ use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
 use crate::persistence::{ChatMetadata, SessionModelConfig};
+use crate::session::instance::SessionActivityState;
 use crate::session::SessionConfig;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{generate_system_message, ParserRegistry, ToolRequest};
 use crate::types::*;
-use crate::ui::{UiEvent, UserInterface};
+use crate::ui::{DisplayFragment, UiEvent, UserInterface};
 use crate::utils::CommandExecutor;
 use anyhow::Result;
 use llm::{
@@ -61,6 +62,8 @@ pub struct Agent {
     model_hint: Option<String>,
     // Model configuration associated with this session
     session_model_config: Option<SessionModelConfig>,
+    // Optional override for the model's context window (primarily used in tests)
+    context_limit_override: Option<u32>,
     // Counter for generating unique request IDs
     next_request_id: u64,
     // Session ID for this agent instance
@@ -72,6 +75,9 @@ pub struct Agent {
     // Shared pending message with SessionInstance
     pending_message_ref: Option<Arc<Mutex<Option<String>>>>,
 }
+
+const CONTEXT_USAGE_THRESHOLD: f32 = 0.8;
+const CONTEXT_COMPACTION_PROMPT: &str = include_str!("../../resources/compaction_prompt.md");
 
 impl Agent {
     /// Formats an error, particularly ToolErrors, into a user-friendly string.
@@ -114,6 +120,7 @@ impl Agent {
             tool_executions: Vec::new(),
             cached_system_prompts: HashMap::new(),
             session_model_config: None,
+            context_limit_override: None,
             next_request_id: 1, // Start from 1
             session_id: None,
             session_name: String::new(),
@@ -191,6 +198,18 @@ impl Agent {
         } else {
             false
         }
+    }
+
+    async fn update_activity_state(&self, new_state: SessionActivityState) -> Result<()> {
+        if let Some(session_id) = &self.session_id {
+            self.ui
+                .send_event(UiEvent::UpdateSessionActivityState {
+                    session_id: session_id.clone(),
+                    activity_state: new_state,
+                })
+                .await?;
+        }
+        Ok(())
     }
 
     /// Build current session metadata
@@ -297,6 +316,11 @@ impl Agent {
                         attachments: Vec::new(),
                     })
                     .await?;
+            }
+
+            if self.should_trigger_compaction()? {
+                self.perform_compaction().await?;
+                continue;
             }
 
             let messages = self.render_tool_results_in_messages();
@@ -408,12 +432,10 @@ impl Agent {
         }
         self.session_name = session_state.name;
         self.session_model_config = session_state.model_config;
-        if let Some(model_hint) = self
-            .session_model_config
-            .as_ref()
-            .map(|cfg| cfg.model_name.clone())
-        {
-            self.set_model_hint(Some(model_hint));
+        self.context_limit_override = None;
+        if let Some(model_config) = self.session_model_config.as_mut() {
+            let model_name = model_config.model_name.clone();
+            self.set_model_hint(Some(model_name));
         }
 
         // Restore next_request_id from session, or calculate from existing messages for backward compatibility
@@ -794,6 +816,7 @@ impl Agent {
                             content: MessageContent::Text(text_content.trim().to_string()),
                             request_id: msg.request_id,
                             usage: msg.usage.clone(),
+                            ..Default::default()
                         }
                     }
                     // For non-structured content, keep as is
@@ -899,6 +922,7 @@ impl Agent {
         // Log messages for debugging
         /*
         for (i, message) in request.messages.iter().enumerate() {
+            debug!("Message {}:", i);
             debug!("Message {}:", i);
             // Using the Display trait implementation for Message
             let formatted_message = format!("{message}");
@@ -1012,6 +1036,194 @@ impl Agent {
         Ok((response, request_id))
     }
 
+    async fn get_non_streaming_response(
+        &mut self,
+        messages: Vec<Message>,
+    ) -> Result<(llm::LLMResponse, u64)> {
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+
+        let messages_with_reminder = self.inject_naming_reminder_if_needed(messages);
+
+        let converted_messages = match self.tool_syntax() {
+            ToolSyntax::Native => messages_with_reminder,
+            _ => self.convert_tool_results_to_text(messages_with_reminder),
+        };
+
+        let request = LLMRequest {
+            messages: converted_messages,
+            system_prompt: self.get_system_prompt(),
+            tools: match self.tool_syntax() {
+                ToolSyntax::Native => {
+                    Some(crate::tools::AnnotatedToolDefinition::to_tool_definitions(
+                        ToolRegistry::global().get_tool_definitions_for_scope(self.tool_scope),
+                    ))
+                }
+                ToolSyntax::Xml => None,
+                ToolSyntax::Caret => None,
+            },
+            stop_sequences: None,
+            request_id,
+            session_id: self.session_id.clone().unwrap_or_default(),
+        };
+
+        let response = self.llm_provider.send_message(request, None).await?;
+
+        debug!(
+            "Compaction response usage — Input: {}, Output: {}, Cache Read: {}",
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            response.usage.cache_read_input_tokens
+        );
+
+        Ok((response, request_id))
+    }
+
+    fn format_compaction_summary_for_prompt(summary: &str) -> String {
+        let trimmed = summary.trim();
+        if trimmed.is_empty() {
+            "Conversation summary: (empty)".to_string()
+        } else {
+            format!("Conversation summary:\n{trimmed}")
+        }
+    }
+
+    fn extract_compaction_summary_text(blocks: &[ContentBlock]) -> String {
+        let mut collected = Vec::new();
+        for block in blocks {
+            match block {
+                ContentBlock::Text { text, .. } => collected.push(text.as_str()),
+                ContentBlock::Thinking { thinking, .. } => {
+                    collected.push(thinking.as_str());
+                }
+                _ => {}
+            }
+        }
+
+        let merged = collected.join("\n").trim().to_string();
+        if merged.is_empty() {
+            "No summary was generated.".to_string()
+        } else {
+            merged
+        }
+    }
+
+    fn active_messages(&self) -> &[Message] {
+        if self.message_history.is_empty() {
+            return &[];
+        }
+        let start = self
+            .message_history
+            .iter()
+            .rposition(|message| message.is_compaction_summary)
+            .unwrap_or(0);
+        &self.message_history[start..]
+    }
+
+    #[cfg(test)]
+    pub fn set_test_session_metadata(
+        &mut self,
+        session_id: String,
+        model_config: SessionModelConfig,
+    ) {
+        self.session_id = Some(session_id);
+        self.session_model_config = Some(model_config);
+    }
+
+    #[cfg(test)]
+    pub fn set_test_context_limit(&mut self, limit: u32) {
+        self.context_limit_override = Some(limit);
+    }
+
+    #[cfg(test)]
+    pub fn message_history_for_tests(&self) -> &Vec<Message> {
+        &self.message_history
+    }
+
+    fn context_usage_ratio(&mut self) -> Result<Option<f32>> {
+        let model_name = match self.session_model_config.as_ref() {
+            Some(config) => config.model_name.clone(),
+            None => return Ok(None),
+        };
+
+        let limit = if let Some(limit) = self.context_limit_override {
+            limit
+        } else {
+            let config_system = llm::provider_config::ConfigurationSystem::load()?;
+            config_system
+                .get_model(&model_name)
+                .map(|model| model.context_token_limit)
+                .ok_or_else(|| anyhow::anyhow!("Model not found in models.json: {model_name}"))?
+        };
+
+        if limit == 0 {
+            return Ok(None);
+        }
+
+        for message in self.active_messages().iter().rev() {
+            if !matches!(message.role, MessageRole::Assistant) {
+                continue;
+            }
+            if let Some(usage) = &message.usage {
+                let used_tokens = usage.input_tokens + usage.cache_read_input_tokens;
+                if used_tokens > 0 {
+                    return Ok(Some(used_tokens as f32 / limit as f32));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn should_trigger_compaction(&mut self) -> Result<bool> {
+        if let Some(ratio) = self.context_usage_ratio()? {
+            if ratio >= CONTEXT_USAGE_THRESHOLD {
+                debug!(
+                    "Context usage {:.1}% >= threshold {:.0}% — triggering compaction",
+                    ratio * 100.0,
+                    CONTEXT_USAGE_THRESHOLD * 100.0
+                );
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn perform_compaction(&mut self) -> Result<()> {
+        debug!("Starting context compaction");
+
+        let compaction_message = Message {
+            role: MessageRole::User,
+            content: MessageContent::Text(CONTEXT_COMPACTION_PROMPT.to_string()),
+            ..Default::default()
+        };
+
+        let mut messages = self.render_tool_results_in_messages();
+        messages.push(compaction_message);
+        self.update_activity_state(SessionActivityState::WaitingForResponse)
+            .await?;
+        let response_result = self.get_non_streaming_response(messages).await;
+        self.update_activity_state(SessionActivityState::AgentRunning)
+            .await?;
+        let (response, _) = response_result?;
+
+        let summary_text = Self::extract_compaction_summary_text(&response.content);
+        let summary_message = Message {
+            role: MessageRole::User,
+            content: MessageContent::Text(summary_text.clone()),
+            is_compaction_summary: true,
+            ..Default::default()
+        };
+        self.append_message(summary_message)?;
+
+        let divider = DisplayFragment::CompactionDivider {
+            summary: summary_text.trim().to_string(),
+        };
+        self.ui.display_fragment(&divider)?;
+
+        Ok(())
+    }
+
     /// Prepare messages for LLM request, dynamically rendering tool outputs
     fn render_tool_results_in_messages(&self) -> Vec<Message> {
         // Start with a clean slate
@@ -1032,7 +1244,7 @@ impl Agent {
         }
 
         // Now rebuild the message history, replacing tool outputs with our dynamically rendered versions
-        for msg in &self.message_history {
+        for msg in self.active_messages() {
             match &msg.content {
                 MessageContent::Structured(blocks) => {
                     // Look for ToolResult blocks
@@ -1040,52 +1252,55 @@ impl Agent {
                     let mut need_update = false;
 
                     for block in blocks {
-                        if let ContentBlock::ToolResult {
-                            tool_use_id,
-                            is_error,
-                            start_time,
-                            end_time,
-                            ..
-                        } = block
-                        {
-                            // If we have an execution result for this tool use, use it
-                            if let Some(output) = tool_outputs.get(tool_use_id) {
-                                // Create a new ToolResult with updated content
-                                new_blocks.push(ContentBlock::ToolResult {
-                                    tool_use_id: tool_use_id.clone(),
-                                    content: output.clone(),
-                                    is_error: *is_error,
-                                    start_time: *start_time,
-                                    end_time: *end_time,
-                                });
-                                need_update = true;
-                            } else {
-                                // Keep the original block
+                        match block {
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                is_error,
+                                start_time,
+                                end_time,
+                                ..
+                            } => {
+                                // If we have an execution result for this tool use, use it
+                                if let Some(output) = tool_outputs.get(tool_use_id) {
+                                    // Create a new ToolResult with updated content
+                                    new_blocks.push(ContentBlock::ToolResult {
+                                        tool_use_id: tool_use_id.clone(),
+                                        content: output.clone(),
+                                        is_error: *is_error,
+                                        start_time: *start_time,
+                                        end_time: *end_time,
+                                    });
+                                    need_update = true;
+                                } else {
+                                    // Keep the original block
+                                    new_blocks.push(block.clone());
+                                }
+                            }
+                            _ => {
+                                // Keep other blocks as is
                                 new_blocks.push(block.clone());
                             }
-                        } else {
-                            // Keep non-ToolResult blocks as is
-                            new_blocks.push(block.clone());
                         }
                     }
 
                     if need_update {
-                        // Create a new message with updated blocks
-                        let new_msg = Message {
-                            role: msg.role.clone(),
-                            content: MessageContent::Structured(new_blocks),
-                            request_id: msg.request_id,
-                            usage: msg.usage.clone(),
-                        };
-                        messages.push(new_msg);
+                        let mut updated = msg.clone();
+                        updated.content = MessageContent::Structured(new_blocks);
+                        messages.push(updated);
                     } else {
                         // No changes needed, use original message
                         messages.push(msg.clone());
                     }
                 }
-                _ => {
-                    // For non-tool messages, just copy them as is
-                    messages.push(msg.clone());
+                MessageContent::Text(text) => {
+                    if msg.is_compaction_summary {
+                        let mut updated = msg.clone();
+                        updated.content =
+                            MessageContent::Text(Self::format_compaction_summary_for_prompt(text));
+                        messages.push(updated);
+                    } else {
+                        messages.push(msg.clone());
+                    }
                 }
             }
         }

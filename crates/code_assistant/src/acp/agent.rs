@@ -1,4 +1,6 @@
 use agent_client_protocol as acp;
+#[allow(unused_imports)]
+use anyhow::Context;
 use anyhow::Result;
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::collections::{HashMap, HashSet};
@@ -321,14 +323,12 @@ impl acp::Agent for ACPAgentImpl {
 
             let session_id = {
                 let mut manager = session_manager.lock().await;
+                let session_model_config = SessionModelConfig::new(model_name.clone());
                 manager
                     .create_session_with_config(
                         None,
                         Some(session_config),
-                        Some(SessionModelConfig {
-                            model_name: model_name.clone(),
-                            record_path: None,
-                        }),
+                        Some(session_model_config),
                     )
                     .map_err(|e| {
                         tracing::error!("Failed to create session: {}", e);
@@ -344,13 +344,11 @@ impl acp::Agent for ACPAgentImpl {
             {
                 if model_info.selection_changed {
                     let mut manager = session_manager.lock().await;
-                    if let Err(err) = manager.set_session_model_config(
-                        &session_id,
-                        Some(SessionModelConfig {
-                            model_name: model_info.selected_model_name.clone(),
-                            record_path: None,
-                        }),
-                    ) {
+                    let fallback_model_config =
+                        SessionModelConfig::new(model_info.selected_model_name.clone());
+                    if let Err(err) =
+                        manager.set_session_model_config(&session_id, Some(fallback_model_config))
+                    {
                         tracing::error!(
                             error = ?err,
                             "ACP: Failed to persist fallback model selection for session {}",
@@ -446,16 +444,12 @@ impl acp::Agent for ACPAgentImpl {
                     .map(|config| config.model_name.as_str()),
             ) {
                 if model_info.selection_changed {
-                    let record_path = stored_model_config
-                        .as_ref()
-                        .and_then(|config| config.record_path.clone());
                     let mut manager = session_manager.lock().await;
+                    let fallback_model_config =
+                        SessionModelConfig::new(model_info.selected_model_name.clone());
                     if let Err(err) = manager.set_session_model_config(
                         &arguments.session_id.0,
-                        Some(SessionModelConfig {
-                            model_name: model_info.selected_model_name.clone(),
-                            record_path,
-                        }),
+                        Some(fallback_model_config),
                     ) {
                         tracing::error!(
                             error = ?err,
@@ -541,10 +535,7 @@ impl acp::Agent for ACPAgentImpl {
 
             let session_model_config = match config_result {
                 Ok(Some(config)) => config,
-                Ok(None) => SessionModelConfig {
-                    model_name: model_name.clone(),
-                    record_path: None,
-                },
+                Ok(None) => SessionModelConfig::new(model_name.clone()),
                 Err(e) => {
                     let error_msg = format!(
                         "Failed to load session model configuration for session {}: {e}",
@@ -565,6 +556,7 @@ impl acp::Agent for ACPAgentImpl {
                 &model_name_for_prompt,
                 playback_path,
                 fast_playback,
+                None,
             )
             .await
             {
@@ -813,27 +805,20 @@ impl acp::Agent for ACPAgentImpl {
                 manager.get_session_model_config(&session_id.0)
             };
 
-            let record_path = match existing_config {
-                Ok(Some(config)) => config.record_path,
-                Ok(None) => None,
-                Err(err) => {
-                    tracing::error!(
-                        error = ?err,
-                        "ACP: Failed to read existing session model configuration"
-                    );
-                    return Err(acp::Error::internal_error());
-                }
-            };
+            if let Err(err) = existing_config {
+                tracing::error!(
+                    error = ?err,
+                    "ACP: Failed to read existing session model configuration"
+                );
+                return Err(acp::Error::internal_error());
+            }
 
             {
                 let mut manager = session_manager.lock().await;
-                if let Err(err) = manager.set_session_model_config(
-                    &session_id.0,
-                    Some(SessionModelConfig {
-                        model_name: display_name.clone(),
-                        record_path,
-                    }),
-                ) {
+                let new_model_config = SessionModelConfig::new(display_name.clone());
+                if let Err(err) =
+                    manager.set_session_model_config(&session_id.0, Some(new_model_config))
+                {
                     tracing::error!(
                         error = ?err,
                         "ACP: Failed to persist session model selection"

@@ -2,7 +2,9 @@ use crate::app::AgentRunConfig;
 use crate::persistence::FileSessionPersistence;
 use crate::session::manager::SessionManager;
 use crate::session::SessionConfig;
-use crate::ui::backend::{handle_backend_events, BackendEvent, BackendResponse};
+use crate::ui::backend::{
+    handle_backend_events, BackendEvent, BackendResponse, BackendRuntimeOptions,
+};
 use crate::ui::terminal::{
     input::{InputManager, KeyEventResult},
     renderer::ProductionTerminalRenderer,
@@ -284,6 +286,11 @@ impl TerminalTuiApp {
         // Spawn backend handler
         let backend_task = {
             let multi_session_manager = multi_session_manager.clone();
+            let runtime_options = Arc::new(BackendRuntimeOptions {
+                record_path: config.record.clone(),
+                playback_path: config.playback.clone(),
+                fast_playback: config.fast_playback,
+            });
             let ui = ui.clone();
 
             tokio::spawn(async move {
@@ -291,6 +298,7 @@ impl TerminalTuiApp {
                     backend_event_rx,
                     backend_response_tx,
                     multi_session_manager,
+                    runtime_options,
                     ui,
                 )
                 .await;

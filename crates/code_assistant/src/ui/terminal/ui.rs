@@ -208,6 +208,14 @@ impl UserInterface for TerminalTuiUI {
                     }
                 }
             }
+            UiEvent::DisplayCompactionSummary { summary } => {
+                debug!("Displaying compaction summary");
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    let formatted = format!("\n\n[conversation compacted]\n{summary}\n",);
+                    let _ = renderer_guard.add_instruction_message(&formatted);
+                }
+            }
             UiEvent::StreamingStarted(request_id) => {
                 debug!("Streaming started for request {}", request_id);
                 self.cancel_flag.store(false, Ordering::SeqCst);
@@ -421,6 +429,11 @@ impl UserInterface for TerminalTuiUI {
                 debug!(
                     "Tool {tool_id} attached client terminal {terminal_id}; terminal UI has no live view"
                 );
+            }
+            DisplayFragment::CompactionDivider { summary } => {
+                self.push_event(UiEvent::DisplayCompactionSummary {
+                    summary: summary.clone(),
+                });
             }
             DisplayFragment::ReasoningComplete => {
                 // For terminal UI, no specific action needed for reasoning completion

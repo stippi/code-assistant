@@ -282,6 +282,12 @@ impl UserInterface for MockUI {
                     .unwrap()
                     .push("\n• Reasoning Complete".to_string());
             }
+            crate::ui::DisplayFragment::CompactionDivider { summary } => {
+                self.streaming
+                    .lock()
+                    .unwrap()
+                    .push(format!("[compaction] {summary}"));
+            }
         }
         Ok(())
     }

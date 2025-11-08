@@ -1,5 +1,7 @@
 use super::*;
 use crate::agent::persistence::MockStatePersistence;
+use crate::persistence::SessionModelConfig;
+use crate::session::instance::SessionActivityState;
 use crate::session::SessionConfig;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
@@ -8,6 +10,7 @@ use crate::tests::mocks::{
 };
 use crate::tests::utils::parse_and_truncate_llm_response;
 use crate::types::*;
+use crate::ui::ui_events::UiEvent;
 use anyhow::Result;
 use llm::types::*;
 use std::path::PathBuf;
@@ -726,6 +729,376 @@ async fn test_parse_error_handling() -> Result<()> {
     } else {
         panic!("Expected Structured content in third message");
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_context_compaction_inserts_summary() -> Result<()> {
+    let summary_text = "Summary of recent work";
+    let summary_response = LLMResponse {
+        content: vec![ContentBlock::new_text(summary_text)],
+        usage: Usage {
+            input_tokens: 20,
+            output_tokens: 8,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        },
+        rate_limit_info: None,
+    };
+
+    let idle_response = LLMResponse {
+        content: Vec::new(),
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(idle_response), Ok(summary_response)]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.set_test_session_metadata(
+        "session-1".to_string(),
+        SessionModelConfig::new_for_tests("test-model".to_string()),
+    );
+    agent.set_test_context_limit(100);
+
+    agent.append_message(Message::new_user("User request"))?;
+
+    agent.append_message(
+        Message::new_assistant_content(vec![ContentBlock::new_text("Assistant reply")])
+            .with_request_id(1)
+            .with_usage(Usage {
+                input_tokens: 85,
+                output_tokens: 12,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            }),
+    )?;
+
+    agent.run_single_iteration().await?;
+
+    // Ensure a compaction summary message was added
+    let summary_message = agent
+        .message_history_for_tests()
+        .iter()
+        .find(|message| message.is_compaction_summary)
+        .cloned()
+        .expect("Expected compaction summary in history");
+    assert_eq!(summary_message.role, MessageRole::User);
+    let stored_summary = match summary_message.content {
+        MessageContent::Text(ref text) => text,
+        MessageContent::Structured(_) => panic!("Summary should be stored as text"),
+    };
+    assert_eq!(stored_summary, summary_text);
+
+    // The compaction prompt should have been sent to the provider
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(requests.len(), 2);
+    let compaction_request = &requests[0];
+    let compaction_prompt_found = compaction_request.messages.iter().any(|message| {
+        matches!(&message.content, MessageContent::Text(text) if text.contains("system-compaction"))
+    });
+    assert!(
+        compaction_prompt_found,
+        "Expected compaction prompt in LLM request"
+    );
+
+    // Ensure the UI received a SetMessages event with the compaction divider
+    let streaming_output = ui.get_streaming_output();
+    let has_compaction_fragment = streaming_output
+        .iter()
+        .any(|chunk| chunk.starts_with("[compaction] ") && chunk.contains(summary_text));
+    assert!(
+        has_compaction_fragment,
+        "Expected compaction divider fragment with summary text"
+    );
+
+    // Subsequent prompt should include the summary content
+    let summary_in_followup =
+        requests[1].messages.iter().any(|message| {
+            match &message.content {
+        MessageContent::Structured(blocks) => blocks.iter().any(|block| {
+            matches!(block, ContentBlock::Text { text, .. } if text.contains(summary_text))
+        }),
+        MessageContent::Text(text) => text.contains(summary_text),
+    }
+        });
+    assert!(
+        summary_in_followup,
+        "Expected summary text in follow-up request"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
+    let summary_text = "Summary to store after compaction";
+    let summary_response = LLMResponse {
+        content: vec![ContentBlock::new_text(summary_text)],
+        usage: Usage {
+            input_tokens: 20,
+            output_tokens: 8,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        },
+        rate_limit_info: None,
+    };
+
+    let idle_response = LLMResponse {
+        content: Vec::new(),
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(idle_response), Ok(summary_response)]);
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.set_test_session_metadata(
+        "session-1".to_string(),
+        SessionModelConfig::new_for_tests("test-model".to_string()),
+    );
+    agent.set_test_context_limit(100);
+
+    agent.append_message(Message::new_user("User request"))?;
+    agent.append_message(
+        Message::new_assistant_content(vec![ContentBlock::new_text(
+            "Assistant reply pushing over limit",
+        )])
+        .with_request_id(1)
+        .with_usage(Usage {
+            input_tokens: 85,
+            output_tokens: 12,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }),
+    )?;
+
+    agent.run_single_iteration().await?;
+
+    let compaction_prompt = include_str!("../../resources/compaction_prompt.md");
+    let history_contains_prompt =
+        agent
+            .message_history_for_tests()
+            .iter()
+            .any(|message| match &message.content {
+                MessageContent::Text(text) => text.contains(compaction_prompt),
+                MessageContent::Structured(blocks) => blocks.iter().any(|block| match block {
+                    ContentBlock::Text { text, .. } => text.contains(compaction_prompt),
+                    ContentBlock::Thinking { thinking, .. } => thinking.contains(compaction_prompt),
+                    ContentBlock::ToolResult { content, .. } => content.contains(compaction_prompt),
+                    _ => false,
+                }),
+            });
+
+    assert!(
+        !history_contains_prompt,
+        "Compaction prompt should not be persisted in the session history",
+    );
+
+    // Still ensure the summary made it into history for future iterations
+    let has_summary = agent.message_history_for_tests().iter().any(|message| {
+        message.is_compaction_summary
+            && matches!(&message.content, MessageContent::Text(text) if text == summary_text)
+    });
+    assert!(
+        has_summary,
+        "Compaction summary should be stored in history"
+    );
+
+    let events = ui.events();
+    let observed_states: Vec<_> = events
+        .iter()
+        .filter_map(|event| {
+            if let UiEvent::UpdateSessionActivityState { activity_state, .. } = event {
+                Some(activity_state.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        observed_states.contains(&SessionActivityState::WaitingForResponse),
+        "Compaction should set activity state to WaitingForResponse"
+    );
+    assert!(
+        observed_states.contains(&SessionActivityState::AgentRunning),
+        "Compaction should restore activity state to AgentRunning"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_context_compaction_uses_only_messages_after_previous_summary() -> Result<()> {
+    let new_summary_text = "Second compaction summary";
+    let previous_summary_text = "Earlier summary text";
+    let old_user_text = "Old user request before compaction";
+    let old_assistant_text = "Old assistant response before compaction";
+    let post_summary_user_text = "User request after previous compaction";
+    let post_summary_assistant_text =
+        "Assistant response after compaction that pushed us over the limit";
+
+    let summary_response = LLMResponse {
+        content: vec![ContentBlock::new_text(new_summary_text)],
+        usage: Usage {
+            input_tokens: 15,
+            output_tokens: 6,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        },
+        rate_limit_info: None,
+    };
+
+    let idle_response = LLMResponse {
+        content: Vec::new(),
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(idle_response), Ok(summary_response)]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.set_test_session_metadata(
+        "session-1".to_string(),
+        SessionModelConfig::new_for_tests("test-model".to_string()),
+    );
+    agent.set_test_context_limit(100);
+
+    // Seed history before the first compaction
+    agent.append_message(Message::new_user(old_user_text))?;
+    agent.append_message(
+        Message::new_assistant(old_assistant_text)
+            .with_request_id(1)
+            .with_usage(Usage {
+                input_tokens: 20,
+                output_tokens: 10,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            }),
+    )?;
+
+    // Simulate an earlier compaction summary
+    agent.append_message(Message {
+        role: MessageRole::User,
+        content: MessageContent::Text(previous_summary_text.to_string()),
+        is_compaction_summary: true,
+        ..Default::default()
+    })?;
+
+    // Add conversation after the previous compaction that should stay active
+    agent.append_message(Message::new_user(post_summary_user_text))?;
+    agent.append_message(
+        Message::new_assistant_content(vec![ContentBlock::new_text(post_summary_assistant_text)])
+            .with_request_id(2)
+            .with_usage(Usage {
+                input_tokens: 85,
+                output_tokens: 12,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            }),
+    )?;
+
+    agent.run_single_iteration().await?;
+
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(requests.len(), 2);
+    let compaction_request = &requests[0];
+
+    let message_contains = |message: &Message, needle: &str| -> bool {
+        match &message.content {
+            MessageContent::Text(text) => text.contains(needle),
+            MessageContent::Structured(blocks) => blocks.iter().any(|block| match block {
+                ContentBlock::Text { text, .. } => text.contains(needle),
+                ContentBlock::Thinking { thinking, .. } => thinking.contains(needle),
+                ContentBlock::ToolResult { content, .. } => content.contains(needle),
+                _ => false,
+            }),
+        }
+    };
+
+    let request_contains = |needle: &str| -> bool {
+        compaction_request
+            .messages
+            .iter()
+            .any(|message| message_contains(message, needle))
+    };
+
+    assert!(
+        !request_contains(old_user_text),
+        "Compaction request should skip messages before the previous summary",
+    );
+    assert!(
+        !request_contains(old_assistant_text),
+        "Compaction request should skip assistant replies before the previous summary",
+    );
+    assert!(
+        request_contains(previous_summary_text),
+        "Compaction request should include the most recent summary to preserve context",
+    );
+    assert!(
+        request_contains(post_summary_user_text),
+        "Compaction request should include user messages after the previous summary",
+    );
+    assert!(
+        request_contains(post_summary_assistant_text),
+        "Compaction request should include assistant replies after the previous summary",
+    );
 
     Ok(())
 }
