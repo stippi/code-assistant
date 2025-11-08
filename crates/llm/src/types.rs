@@ -307,8 +307,7 @@ impl Message {
         Self {
             role: MessageRole::User,
             content: MessageContent::Text(text.into()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }
     }
 
@@ -316,8 +315,7 @@ impl Message {
         Self {
             role: MessageRole::Assistant,
             content: MessageContent::Text(text.into()),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }
     }
 
@@ -325,8 +323,7 @@ impl Message {
         Self {
             role: MessageRole::User,
             content: MessageContent::Structured(content),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }
     }
 
@@ -334,8 +331,7 @@ impl Message {
         Self {
             role: MessageRole::Assistant,
             content: MessageContent::Structured(content),
-            request_id: None,
-            usage: None,
+            ..Default::default()
         }
     }
 
