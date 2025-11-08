@@ -848,6 +848,144 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_context_compaction_uses_only_messages_after_previous_summary() -> Result<()> {
+    let new_summary_text = "Second compaction summary";
+    let previous_summary_text = "Earlier summary text";
+    let old_user_text = "Old user request before compaction";
+    let old_assistant_text = "Old assistant response before compaction";
+    let post_summary_user_text = "User request after previous compaction";
+    let post_summary_assistant_text =
+        "Assistant response after compaction that pushed us over the limit";
+
+    let summary_response = LLMResponse {
+        content: vec![ContentBlock::new_text(new_summary_text)],
+        usage: Usage {
+            input_tokens: 15,
+            output_tokens: 6,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        },
+        rate_limit_info: None,
+    };
+
+    let idle_response = LLMResponse {
+        content: Vec::new(),
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(idle_response), Ok(summary_response)]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let ui = Arc::new(MockUI::default());
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: ui.clone(),
+        state_persistence: Box::new(MockStatePersistence::new()),
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.set_test_session_metadata(
+        "session-1".to_string(),
+        SessionModelConfig::new_for_tests("test-model".to_string()),
+    );
+    agent.set_test_context_limit(100);
+
+    // Seed history before the first compaction
+    agent.append_message(Message::new_user(old_user_text))?;
+    agent.append_message(
+        Message::new_assistant(old_assistant_text)
+            .with_request_id(1)
+            .with_usage(Usage {
+                input_tokens: 20,
+                output_tokens: 10,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            }),
+    )?;
+
+    // Simulate an earlier compaction summary
+    agent.append_message(Message {
+        role: MessageRole::User,
+        content: MessageContent::Text(previous_summary_text.to_string()),
+        is_compaction_summary: true,
+        ..Default::default()
+    })?;
+
+    // Add conversation after the previous compaction that should stay active
+    agent.append_message(Message::new_user(post_summary_user_text))?;
+    agent.append_message(
+        Message::new_assistant_content(vec![ContentBlock::new_text(post_summary_assistant_text)])
+            .with_request_id(2)
+            .with_usage(Usage {
+                input_tokens: 85,
+                output_tokens: 12,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            }),
+    )?;
+
+    agent.run_single_iteration().await?;
+
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(requests.len(), 2);
+    let compaction_request = &requests[0];
+
+    let message_contains = |message: &Message, needle: &str| -> bool {
+        match &message.content {
+            MessageContent::Text(text) => text.contains(needle),
+            MessageContent::Structured(blocks) => blocks.iter().any(|block| match block {
+                ContentBlock::Text { text, .. } => text.contains(needle),
+                ContentBlock::Thinking { thinking, .. } => thinking.contains(needle),
+                ContentBlock::ToolResult { content, .. } => content.contains(needle),
+                _ => false,
+            }),
+        }
+    };
+
+    let request_contains = |needle: &str| -> bool {
+        compaction_request
+            .messages
+            .iter()
+            .any(|message| message_contains(message, needle))
+    };
+
+    assert!(
+        !request_contains(old_user_text),
+        "Compaction request should skip messages before the previous summary",
+    );
+    assert!(
+        !request_contains(old_assistant_text),
+        "Compaction request should skip assistant replies before the previous summary",
+    );
+    assert!(
+        request_contains(previous_summary_text),
+        "Compaction request should include the most recent summary to preserve context",
+    );
+    assert!(
+        request_contains(post_summary_user_text),
+        "Compaction request should include user messages after the previous summary",
+    );
+    assert!(
+        request_contains(post_summary_assistant_text),
+        "Compaction request should include assistant replies after the previous summary",
+    );
+
+    Ok(())
+}
+
 #[test]
 fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
     use crate::persistence::ChatSession;
