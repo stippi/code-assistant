@@ -779,26 +779,18 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
     );
     agent.set_test_context_limit(100);
 
-    agent.append_message(Message {
-        role: MessageRole::User,
-        content: MessageContent::Text("User request".to_string()),
-        ..Default::default()
-    })?;
+    agent.append_message(Message::new_user("User request"))?;
 
-    agent.append_message(Message {
-        role: MessageRole::Assistant,
-        content: MessageContent::Structured(vec![ContentBlock::new_text(
-            "Assistant reply".to_string(),
-        )]),
-        request_id: Some(1),
-        usage: Some(Usage {
-            input_tokens: 85,
-            output_tokens: 12,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 0,
-        }),
-        ..Default::default()
-    })?;
+    agent.append_message(
+        Message::new_assistant_content(vec![ContentBlock::new_text("Assistant reply")])
+            .with_request_id(1)
+            .with_usage(Usage {
+                input_tokens: 85,
+                output_tokens: 12,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            }),
+    )?;
 
     agent.run_single_iteration().await?;
 
