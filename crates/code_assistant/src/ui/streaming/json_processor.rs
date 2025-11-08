@@ -1129,7 +1129,7 @@ impl JsonStreamProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use llm::{MessageRole, ReasoningSummaryItem};
+    use llm::ReasoningSummaryItem;
 
     #[test]
     fn test_redacted_thinking_streaming_consistency() {
@@ -1154,12 +1154,7 @@ mod tests {
             end_time: None,
         };
 
-        let message = Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Structured(vec![redacted_thinking]),
-            request_id: Some(1),
-            usage: None,
-        };
+        let message = Message::new_assistant_content(vec![redacted_thinking]).with_request_id(1);
 
         // Extract fragments from the complete message (as would happen when loading a session)
         let fragments = processor.extract_fragments_from_message(&message).unwrap();

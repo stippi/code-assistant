@@ -346,6 +346,24 @@ impl ContentBlock {
         }
     }
 
+    /// Create a redacted thinking content block from an id, String and summary items
+    pub fn new_redacted_thinking(
+        id: impl Into<String>,
+        summary_items: Vec<impl Into<String>>,
+        data: impl Into<String>,
+    ) -> Self {
+        ContentBlock::RedactedThinking {
+            id: id.into(),
+            summary: summary_items
+                .into_iter()
+                .map(|item| ReasoningSummaryItem::SummaryText { text: item.into() })
+                .collect(),
+            data: data.into(),
+            start_time: None,
+            end_time: None,
+        }
+    }
+
     /// Create a text content block from a String
     pub fn new_text(text: impl Into<String>) -> Self {
         ContentBlock::Text {

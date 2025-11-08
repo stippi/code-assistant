@@ -520,13 +520,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
     agent.disable_naming_reminders();
 
     // Add an initial user message like the working test does
-    let user_msg = Message {
-        role: MessageRole::User,
-        content: MessageContent::Text("Test task".to_string()),
-        request_id: None,
-        usage: None,
-    };
-    agent.append_message(user_msg)?;
+    agent.append_message(Message::new_user("Test task"))?;
 
     agent.run_single_iteration().await?;
 
@@ -755,53 +749,23 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
     );
     session.messages = vec![
         // Regular user message - should be included
-        Message {
-            role: MessageRole::User,
-            content: MessageContent::Text("Hello, please help me".to_string()),
-            request_id: None,
-            usage: None,
-        },
+        Message::new_user("Hello, please help me"),
         // Assistant response
-        Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Text("I'll help you".to_string()),
-            request_id: Some(1),
-            usage: None,
-        },
+        Message::new_assistant("I'll help you").with_request_id(1),
         // Parse error message in XML mode - should be filtered out
-        Message {
-            role: MessageRole::User,
-            content: MessageContent::Structured(vec![ContentBlock::new_error_tool_result(
-                "tool-1-0",
-                "Tool error: Unknown tool 'invalid_tool'. Please use only available tools.",
-            )]),
-            request_id: None,
-            usage: None,
-        },
+        Message::new_user_content(vec![ContentBlock::new_error_tool_result(
+            "tool-1-0",
+            "Tool error: Unknown tool 'invalid_tool'. Please use only available tools.",
+        )]),
         // Regular tool result - should be filtered out
-        Message {
-            role: MessageRole::User,
-            content: MessageContent::Structured(vec![ContentBlock::new_tool_result(
-                "regular-tool-123",
-                "File contents here",
-            )]),
-            request_id: None,
-            usage: None,
-        },
+        Message::new_user_content(vec![ContentBlock::new_tool_result(
+            "regular-tool-123",
+            "File contents here",
+        )]),
         // Empty user message (legacy) - should be filtered out
-        Message {
-            role: MessageRole::User,
-            content: MessageContent::Text("".to_string()),
-            request_id: None,
-            usage: None,
-        },
+        Message::new_user(""),
         // Another regular user message - should be included
-        Message {
-            role: MessageRole::User,
-            content: MessageContent::Text("Thank you for the help!".to_string()),
-            request_id: None,
-            usage: None,
-        },
+        Message::new_user("Thank you for the help!"),
     ];
     session.tool_executions = Vec::new();
     session.working_memory = crate::types::WorkingMemory::default();
@@ -1151,12 +1115,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     let mut agent = Agent::new(components, session_config);
 
     // Test case 1: User message with text content should get reminder
-    let messages = vec![Message {
-        role: MessageRole::User,
-        content: MessageContent::Text("Hello, help me with a task".to_string()),
-        request_id: None,
-        usage: None,
-    }];
+    let messages = vec![Message::new_user("Hello, help me with a task")];
 
     let result_messages = agent.inject_naming_reminder_if_needed(messages.clone());
     assert_eq!(result_messages.len(), 1);
@@ -1185,29 +1144,16 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
 
     // Test case 2: User message with only tool results should be skipped
     let messages_with_tool_results = vec![
-        Message {
-            role: MessageRole::User,
-            content: MessageContent::Text("Hello, help me with a task".to_string()),
-            request_id: None,
-            usage: None,
-        },
-        Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Structured(vec![ContentBlock::new_text(
-                "I'll help you with that task.",
-            )]),
-            request_id: Some(1),
-            usage: Some(Usage::zero()),
-        },
-        Message {
-            role: MessageRole::User,
-            content: MessageContent::Structured(vec![ContentBlock::new_tool_result(
-                "tool-1-1",
-                "Tool execution result",
-            )]),
-            request_id: None,
-            usage: None,
-        },
+        Message::new_user("Hello, help me with a task"),
+        Message::new_assistant_content(vec![ContentBlock::new_text(
+            "I'll help you with that task.",
+        )])
+        .with_request_id(1)
+        .with_usage(Usage::zero()),
+        Message::new_user_content(vec![ContentBlock::new_tool_result(
+            "tool-1-1",
+            "Tool execution result",
+        )]),
     ];
 
     let result_messages =
@@ -1252,15 +1198,10 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     }
 
     // Test case 3: User message with mixed content (text + tool results) should get reminder
-    let mixed_message = vec![Message {
-        role: MessageRole::User,
-        content: MessageContent::Structured(vec![
-            ContentBlock::new_text("Please analyze this file"),
-            ContentBlock::new_tool_result("tool-1-1", "Previous tool result"),
-        ]),
-        request_id: None,
-        usage: None,
-    }];
+    let mixed_message = vec![Message::new_user_content(vec![
+        ContentBlock::new_text("Please analyze this file"),
+        ContentBlock::new_tool_result("tool-1-1", "Previous tool result"),
+    ])];
 
     let result_messages = agent.inject_naming_reminder_if_needed(mixed_message.clone());
     assert_eq!(result_messages.len(), 1);
