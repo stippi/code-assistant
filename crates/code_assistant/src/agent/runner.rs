@@ -2,6 +2,7 @@ use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
 use crate::persistence::{ChatMetadata, SessionModelConfig};
+use crate::session::instance::SessionActivityState;
 use crate::session::SessionConfig;
 use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{generate_system_message, ParserRegistry, ToolRequest};
@@ -197,6 +198,18 @@ impl Agent {
         } else {
             false
         }
+    }
+
+    async fn update_activity_state(&self, new_state: SessionActivityState) -> Result<()> {
+        if let Some(session_id) = &self.session_id {
+            self.ui
+                .send_event(UiEvent::UpdateSessionActivityState {
+                    session_id: session_id.clone(),
+                    activity_state: new_state,
+                })
+                .await?;
+        }
+        Ok(())
     }
 
     /// Build current session metadata
@@ -1187,7 +1200,12 @@ impl Agent {
 
         let mut messages = self.render_tool_results_in_messages();
         messages.push(compaction_message);
-        let (response, _) = self.get_non_streaming_response(messages).await?;
+        self.update_activity_state(SessionActivityState::WaitingForResponse)
+            .await?;
+        let response_result = self.get_non_streaming_response(messages).await;
+        self.update_activity_state(SessionActivityState::AgentRunning)
+            .await?;
+        let (response, _) = response_result?;
 
         let summary_text = Self::extract_compaction_summary_text(&response.content);
         let summary_message = Message {

@@ -517,6 +517,15 @@ impl UserInterface for ProxyUI {
                     // The agent task will set the state to Idle when it terminates
                 }
             }
+            UiEvent::UpdateSessionActivityState {
+                session_id,
+                activity_state,
+            } => {
+                if session_id == &self.session_id {
+                    self.update_activity_state(activity_state.clone());
+                    return Ok(());
+                }
+            }
             _ => {}
         }
 

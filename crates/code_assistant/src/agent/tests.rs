@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::persistence::MockStatePersistence;
 use crate::persistence::SessionModelConfig;
+use crate::session::instance::SessionActivityState;
 use crate::session::SessionConfig;
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
@@ -9,6 +10,7 @@ use crate::tests::mocks::{
 };
 use crate::tests::utils::parse_and_truncate_llm_response;
 use crate::types::*;
+use crate::ui::ui_events::UiEvent;
 use anyhow::Result;
 use llm::types::*;
 use std::path::PathBuf;
@@ -869,12 +871,13 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
     };
 
     let mock_llm = MockLLMProvider::new(vec![Ok(idle_response), Ok(summary_response)]);
+    let ui = Arc::new(MockUI::default());
 
     let components = AgentComponents {
         llm_provider: Box::new(mock_llm),
         project_manager: Box::new(MockProjectManager::new()),
         command_executor: Box::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
+        ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
     };
 
@@ -937,6 +940,26 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
     assert!(
         has_summary,
         "Compaction summary should be stored in history"
+    );
+
+    let events = ui.events();
+    let observed_states: Vec<_> = events
+        .iter()
+        .filter_map(|event| {
+            if let UiEvent::UpdateSessionActivityState { activity_state, .. } = event {
+                Some(activity_state.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        observed_states.contains(&SessionActivityState::WaitingForResponse),
+        "Compaction should set activity state to WaitingForResponse"
+    );
+    assert!(
+        observed_states.contains(&SessionActivityState::AgentRunning),
+        "Compaction should restore activity state to AgentRunning"
     );
 
     Ok(())
