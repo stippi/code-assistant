@@ -76,14 +76,7 @@ pub struct Agent {
 }
 
 const CONTEXT_USAGE_THRESHOLD: f32 = 0.8;
-const CONTEXT_COMPACTION_PROMPT: &str = r#"<system-compaction>
-The conversation history is nearing the model's context window limit. Provide a thorough summary that allows resuming the task without the earlier messages. Include:
-- The current objectives or tasks.
-- Key actions taken so far and their outcomes.
-- Important files, commands, or decisions that matter for continuing.
-- Outstanding questions or follow-up work that still needs attention.
-Respond with plain text only.
-</system-compaction>"#;
+const CONTEXT_COMPACTION_PROMPT: &str = include_str!("../../resources/compaction_prompt.md");
 
 impl Agent {
     /// Formats an error, particularly ToolErrors, into a user-friendly string.
@@ -1191,9 +1184,9 @@ impl Agent {
             content: MessageContent::Text(CONTEXT_COMPACTION_PROMPT.to_string()),
             ..Default::default()
         };
-        self.append_message(compaction_message)?;
 
-        let messages = self.render_tool_results_in_messages();
+        let mut messages = self.render_tool_results_in_messages();
+        messages.push(compaction_message);
         let (response, _) = self.get_non_streaming_response(messages).await?;
 
         let summary_text = Self::extract_compaction_summary_text(&response.content);

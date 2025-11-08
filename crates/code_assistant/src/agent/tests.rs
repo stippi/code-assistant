@@ -849,6 +849,100 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
+    let summary_text = "Summary to store after compaction";
+    let summary_response = LLMResponse {
+        content: vec![ContentBlock::new_text(summary_text)],
+        usage: Usage {
+            input_tokens: 20,
+            output_tokens: 8,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        },
+        rate_limit_info: None,
+    };
+
+    let idle_response = LLMResponse {
+        content: Vec::new(),
+        usage: Usage::zero(),
+        rate_limit_info: None,
+    };
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(idle_response), Ok(summary_response)]);
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        initial_project: String::new(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.set_test_session_metadata(
+        "session-1".to_string(),
+        SessionModelConfig::new_for_tests("test-model".to_string()),
+    );
+    agent.set_test_context_limit(100);
+
+    agent.append_message(Message::new_user("User request"))?;
+    agent.append_message(
+        Message::new_assistant_content(vec![ContentBlock::new_text(
+            "Assistant reply pushing over limit",
+        )])
+        .with_request_id(1)
+        .with_usage(Usage {
+            input_tokens: 85,
+            output_tokens: 12,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }),
+    )?;
+
+    agent.run_single_iteration().await?;
+
+    let compaction_prompt = include_str!("../../resources/compaction_prompt.md");
+    let history_contains_prompt =
+        agent
+            .message_history_for_tests()
+            .iter()
+            .any(|message| match &message.content {
+                MessageContent::Text(text) => text.contains(compaction_prompt),
+                MessageContent::Structured(blocks) => blocks.iter().any(|block| match block {
+                    ContentBlock::Text { text, .. } => text.contains(compaction_prompt),
+                    ContentBlock::Thinking { thinking, .. } => thinking.contains(compaction_prompt),
+                    ContentBlock::ToolResult { content, .. } => content.contains(compaction_prompt),
+                    _ => false,
+                }),
+            });
+
+    assert!(
+        !history_contains_prompt,
+        "Compaction prompt should not be persisted in the session history",
+    );
+
+    // Still ensure the summary made it into history for future iterations
+    let has_summary = agent.message_history_for_tests().iter().any(|message| {
+        message.is_compaction_summary
+            && matches!(&message.content, MessageContent::Text(text) if text == summary_text)
+    });
+    assert!(
+        has_summary,
+        "Compaction summary should be stored in history"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_context_compaction_uses_only_messages_after_previous_summary() -> Result<()> {
     let new_summary_text = "Second compaction summary";
     let previous_summary_text = "Earlier summary text";
