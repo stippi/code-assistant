@@ -288,13 +288,7 @@ impl Agent {
             // Check for pending user message and add it to history at start of each iteration
             if let Some(pending_message) = self.get_and_clear_pending_message() {
                 debug!("Processing pending user message: {}", pending_message);
-                let user_msg = Message {
-                    role: MessageRole::User,
-                    content: MessageContent::Text(pending_message.clone()),
-                    request_id: None,
-                    usage: None,
-                };
-                self.append_message(user_msg)?;
+                self.append_message(Message::new_user(pending_message.clone()))?;
 
                 // Notify UI about the user message
                 self.ui
@@ -312,12 +306,11 @@ impl Agent {
 
             // 2. Add original LLM response to message history if it has content
             if !llm_response.content.is_empty() {
-                self.append_message(Message {
-                    role: MessageRole::Assistant,
-                    content: MessageContent::Structured(llm_response.content.clone()),
-                    request_id: Some(request_id),
-                    usage: Some(llm_response.usage.clone()),
-                })?;
+                self.append_message(
+                    Message::new_assistant_content(llm_response.content.clone())
+                        .with_request_id(request_id)
+                        .with_usage(llm_response.usage.clone()),
+                )?;
             }
 
             // 3. Extract tool requests from LLM response and get truncated response
@@ -528,12 +521,7 @@ impl Agent {
                     ToolSyntax::Native => {
                         // For native mode, keep text message since parsing errors occur before
                         // we have any LLM-provided tool IDs to reference
-                        Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Text(error_text),
-                            request_id: None,
-                            usage: None,
-                        }
+                        Message::new_user(error_text)
                     }
                     _ => {
                         // For custom tool-syntax modes, create structured tool-result message like regular tool results
@@ -545,18 +533,13 @@ impl Agent {
                             ToolExecution::create_parse_error(tool_id.clone(), error_text.clone());
                         self.tool_executions.push(tool_execution);
 
-                        Message {
-                            role: MessageRole::User,
-                            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                                tool_use_id: tool_id,
-                                content: error_text,
-                                is_error: Some(true),
-                                start_time: Some(SystemTime::now()),
-                                end_time: None,
-                            }]),
-                            request_id: None,
-                            usage: None,
-                        }
+                        Message::new_user_content(vec![ContentBlock::ToolResult {
+                            tool_use_id: tool_id,
+                            content: error_text,
+                            is_error: Some(true),
+                            start_time: Some(SystemTime::now()),
+                            end_time: None,
+                        }])
                     }
                 };
 
@@ -603,12 +586,7 @@ impl Agent {
 
         // Only add message if there were actual tool executions (not just complete_task)
         if !content_blocks.is_empty() {
-            let result_message = Message {
-                role: MessageRole::User,
-                content: MessageContent::Structured(content_blocks),
-                request_id: None,
-                usage: None,
-            };
+            let result_message = Message::new_user_content(content_blocks);
             self.append_message(result_message)?;
         }
         Ok(LoopFlow::Continue)
@@ -630,13 +608,7 @@ impl Agent {
             .await?;
 
         // Create the initial user message
-        let user_msg = Message {
-            role: MessageRole::User,
-            content: MessageContent::Text(task.clone()),
-            request_id: None,
-            usage: None,
-        };
-        self.append_message(user_msg)?;
+        self.append_message(Message::new_user(task.clone()))?;
 
         // Notify UI of initial working memory
         let _ = self

@@ -265,14 +265,9 @@ mod tests {
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Create a message with text content containing XML-style tags
-        let message = llm::Message {
-            role: llm::MessageRole::Assistant,
-            content: llm::MessageContent::Text(
-                "I'll help you. <thinking>Let me plan this.</thinking> Here's what I'll do: <tool:read_files><param:path>main.rs</param:path></tool:read_files>".to_string()
-            ),
-            request_id: Some(1u64),
-            usage: None,
-        };
+        let message = llm::Message::new_assistant(
+            "I'll help you. <thinking>Let me plan this.</thinking> Here's what I'll do: <tool:read_files><param:path>main.rs</param:path></tool:read_files>"
+        ).with_request_id(1);
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
 
@@ -310,15 +305,11 @@ mod tests {
             "paths": ["src/main.rs", "Cargo.toml"]
         });
 
-        let message = llm::Message {
-            role: llm::MessageRole::Assistant,
-            content: llm::MessageContent::Structured(vec![
-                llm::ContentBlock::new_text("I'll search the files."),
-                llm::ContentBlock::new_tool_use("search_456", "search_files", tool_input),
-            ]),
-            request_id: Some(1u64),
-            usage: None,
-        };
+        let message = llm::Message::new_assistant_content(vec![
+            llm::ContentBlock::new_text("I'll search the files."),
+            llm::ContentBlock::new_tool_use("search_456", "search_files", tool_input),
+        ])
+        .with_request_id(1);
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
 
@@ -353,23 +344,18 @@ mod tests {
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Create a message with mixed content blocks
-        let message = llm::Message {
-            role: llm::MessageRole::Assistant,
-            content: llm::MessageContent::Structured(vec![
-                llm::ContentBlock::new_thinking("I should write a file.", "sig"),
-                llm::ContentBlock::new_text("Let me create the file. <thinking>What content should I write?</thinking> I'll write something useful."),
-                llm::ContentBlock::new_tool_use(
-                    "write_789",
-                    "write_file",
-                    serde_json::json!({
-                        "path": "test.txt",
-                        "content": "Hello XML world!"
-                    })
-                ),
-            ]),
-            request_id: Some(1u64),
-            usage: None,
-        };
+        let message = llm::Message::new_assistant_content(vec![
+            llm::ContentBlock::new_thinking("I should write a file.", "sig"),
+            llm::ContentBlock::new_text("Let me create the file. <thinking>What content should I write?</thinking> I'll write something useful."),
+            llm::ContentBlock::new_tool_use(
+                "write_789",
+                "write_file",
+                serde_json::json!({
+                    "path": "test.txt",
+                    "content": "Hello XML world!"
+                })
+            ),
+        ]).with_request_id(1);
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
 
@@ -445,21 +431,16 @@ mod tests {
     #[test]
     fn test_user_messages_not_parsed_for_xml_tags() {
         // Test that user messages with XML-like content are treated as plain text
-        use llm::{Message, MessageContent, MessageRole};
+        use llm::Message;
 
         let test_ui = TestUI::new();
         let ui_arc = Arc::new(test_ui.clone());
         let mut processor = XmlStreamProcessor::new(ui_arc, 42);
 
         // Create a user message with XML-like content
-        let user_message = Message {
-            role: MessageRole::User,
-            content: MessageContent::Text(
-                "Please use <tool:read_files> to read <param:path>test.txt</param:path> and show me <thinking>what should I do</thinking>".to_string()
-            ),
-            request_id: None,
-            usage: None,
-        };
+        let user_message = Message::new_user(
+            "Please use <tool:read_files> to read <param:path>test.txt</param:path> and show me <thinking>what should I do</thinking>"
+        );
 
         let fragments = processor
             .extract_fragments_from_message(&user_message)

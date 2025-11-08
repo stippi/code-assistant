@@ -1,99 +1,6 @@
-//! Tests for the caret stream processor
-//!
-//! # Current Test Status: 7/21 Passing ✅
-//!
-//! ## ✅ Passing Tests (Core Functionality Working)
-//!
-//! - `test_simple_text_processing` - Basic text without caret syntax ✅
-//! - `test_caret_must_start_at_line_beginning` - Caret positioning validation ✅
-//! - `test_caret_simple_tool` - Basic tool invocation ✅
-//! - `test_extract_fragments_from_complete_message` - Message processing ✅
-//! - All `tools::parse::tests::test_parse_caret_*` - Non-streaming parser ✅
-//!
-//! ## ❌ Failing Tests (Known Issues)
-//!
-//! ### Chunking Issues (High Priority)
-//! - `test_caret_chunked_across_tool_closing` - **CRITICAL**: Tool end not processed with small chunks
-//! - `test_caret_chunked_across_tool_opening` - Parameters emitted as PlainText instead of ToolParameter
-//! - **Root Cause**: Buffering strategy too conservative for chunk sizes 2+
-//!
-//! ### Parameter Processing (High Priority)
-//! - Tests expecting `ToolParameter` fragments get `PlainText` instead
-//! - **Issue**: Inside tool blocks, `"project: test"` not recognized as parameter
-//! - **Status**: Basic infrastructure exists, parsing logic incomplete
-//!
-//! ### Advanced Features (Medium Priority)
-//! - `test_caret_array_syntax_*` - Array parameter parsing not implemented
-//! - `test_caret_multiline_*` - Multiline parameter parsing not implemented
-//! - **Status**: State tracking exists, but parsing logic missing
-//!
-//! ### Edge Cases (Low Priority)
-//! - `test_caret_incomplete_tool_at_buffer_end` - Buffer finalization incomplete
-//! - `test_caret_false_positive_prevention` - Some chunking edge cases
-//!
-//! # Test Strategy & Insights
-//!
-//! ## The Chunking Challenge: Critical Insight
-//!
-//! **The core testing challenge**: Caret syntax must work identically regardless
-//! of how input is chunked. A tool invocation like:
-//!
-//! ```text
-//! "Let me help.\n^^^read_files\nproject: test\n^^^"
-//! ```
-//!
-//! **Must produce identical results** whether processed as:
-//! - Single chunk (size = length)
-//! - Large chunks (size = 10)
-//! - Medium chunks (size = 5)
-//! - Small chunks (size = 2) ⚠️ **Currently failing**
-//! - Tiny chunks (size = 1) ✅ **Works**
-//!
-//! **Why size 1 works but size 2+ fails:**
-//! - Size 1: Very conservative buffering, eventually processes correctly
-//! - Size 2+: Buffering too aggressive, entire input held until finalization
-//! - **Fix needed**: Smarter buffering decisions in `should_buffer_*` methods
-//!
-//! ## State-Aware Processing
-//!
-//! Tests validate that the processor correctly handles:
-//! - **Outside tool blocks**: Most content → PlainText fragments
-//! - **Inside tool blocks**: Parameter lines → ToolParameter fragments
-//! - **Syntax validation**: `^^^not_tool` in line middle → PlainText (not tool)
-//!
-//! ## Fragment Verification Strategy
-//!
-//! Tests check both:
-//! - **Raw fragments**: What processor emits during streaming
-//! - **Merged fragments**: Final result after TestUI combines adjacent text
-//!
-//! This catches subtle issues where individual fragments are correct but
-//! don't combine to expected final result.
-//!
-//! # Implementation Priority Guide
-//!
-//! ## 🚨 Critical (Blocking most tests)
-//! 1. **Fix buffering strategy**: `should_buffer_incomplete_line()` too conservative
-//! 2. **Parameter parsing**: Recognize `"key: value"` inside tool blocks
-//!
-//! ## 🔧 High Impact
-//! 3. **Tool end processing**: Ensure `^^^` lines processed in all chunk scenarios
-//! 4. **Finalization logic**: Handle incomplete tools at stream end
-//!
-//! ## 📋 Feature Complete
-//! 5. **Array parameters**: `key: [elem1, elem2]` syntax
-//! 6. **Multiline parameters**: `key ---\ncontent\n--- key` syntax
-//!
-//! ## 🎯 Polish
-//! 7. **Edge case handling**: Complex chunking scenarios
-//! 8. **Error recovery**: Malformed syntax handling
-//!
-//! **Key Insight**: The foundation is solid. Most failures are due to 1-2 core
-//! issues in buffering and parameter recognition, not fundamental design problems.
-
 use super::test_utils::{assert_fragments_match, chunk_str, TestUI};
 use crate::ui::streaming::{CaretStreamProcessor, DisplayFragment, StreamProcessorTrait};
-use llm::{Message, MessageContent, MessageRole, StreamingChunk};
+use llm::{Message, StreamingChunk};
 use std::sync::Arc;
 
 /// Process input text with a stream processor, breaking it into chunks
@@ -207,14 +114,7 @@ async fn test_extract_fragments_from_complete_message() {
     let ui_arc = Arc::new(test_ui.clone());
     let mut processor = CaretStreamProcessor::new(ui_arc, 123);
 
-    let message = Message {
-        role: MessageRole::Assistant,
-        content: MessageContent::Text(
-            "I'll create the file for you.\n\n^^^list_projects\n^^^".to_string(),
-        ),
-        request_id: None,
-        usage: None,
-    };
+    let message = Message::new_assistant("I'll create the file for you.\n\n^^^list_projects\n^^^");
 
     let fragments = processor.extract_fragments_from_message(&message).unwrap();
 
