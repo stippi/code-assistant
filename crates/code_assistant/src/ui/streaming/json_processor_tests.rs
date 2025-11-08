@@ -1057,14 +1057,9 @@ mod tests {
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
 
         // Create a message with text content containing thinking tags
-        let message = llm::Message {
-            role: llm::MessageRole::Assistant,
-            content: llm::MessageContent::Text(
-                "Let me analyze this. <thinking>This is complex.</thinking> Here's my answer."
-                    .to_string(),
-            ),
-            ..Default::default()
-        };
+        let message = llm::Message::new_assistant(
+            "Let me analyze this. <thinking>This is complex.</thinking> Here's my answer.",
+        );
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
 
@@ -1090,14 +1085,10 @@ mod tests {
             "path": "src/main.rs"
         });
 
-        let message = llm::Message {
-            role: llm::MessageRole::Assistant,
-            content: llm::MessageContent::Structured(vec![
-                llm::ContentBlock::new_text("I'll read the file for you."),
-                llm::ContentBlock::new_tool_use("tool_123", "read_files", tool_input),
-            ]),
-            ..Default::default()
-        };
+        let message = llm::Message::new_assistant_content(vec![
+            llm::ContentBlock::new_text("I'll read the file for you."),
+            llm::ContentBlock::new_tool_use("tool_123", "read_files", tool_input),
+        ]);
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
 
@@ -1133,25 +1124,21 @@ mod tests {
         let mut processor = JsonStreamProcessor::new(ui_arc, 42);
 
         // Create a message with mixed content blocks
-        let message = llm::Message {
-            role: llm::MessageRole::Assistant,
-            content: llm::MessageContent::Structured(vec![
-                llm::ContentBlock::new_thinking("Let me think about this request.", "sig"),
-                llm::ContentBlock::new_text(
-                    "I understand. <thinking>More thinking here.</thinking> Let me help.",
-                ),
-                llm::ContentBlock::new_tool_use(
-                    "write_123",
-                    "write_file",
-                    serde_json::json!({
-                        "content": "Hello world!",
-                        "path": "hello.txt"
-                    }),
-                ),
-                llm::ContentBlock::new_text("File has been written."),
-            ]),
-            ..Default::default()
-        };
+        let message = llm::Message::new_assistant_content(vec![
+            llm::ContentBlock::new_thinking("Let me think about this request.", "sig"),
+            llm::ContentBlock::new_text(
+                "I understand. <thinking>More thinking here.</thinking> Let me help.",
+            ),
+            llm::ContentBlock::new_tool_use(
+                "write_123",
+                "write_file",
+                serde_json::json!({
+                    "content": "Hello world!",
+                    "path": "hello.txt"
+                }),
+            ),
+            llm::ContentBlock::new_text("File has been written."),
+        ]);
 
         let fragments = processor.extract_fragments_from_message(&message).unwrap();
 

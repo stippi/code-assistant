@@ -176,11 +176,7 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
 
     // Create the request
     let request = LLMRequest {
-        messages: vec![Message {
-            role: MessageRole::User,
-            content: MessageContent::Text("Please refactor the Anthropic client".to_string()),
-            ..Default::default()
-        }],
+        messages: vec![Message::new_user("Please refactor the Anthropic client")],
         system_prompt: "You are a helpful assistant.".to_string(),
         ..Default::default()
     };

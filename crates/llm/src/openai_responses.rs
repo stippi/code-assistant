@@ -1284,11 +1284,7 @@ mod tests {
             "https://api.openai.com/v1".to_string(),
         );
 
-        let messages = vec![Message {
-            role: MessageRole::User,
-            content: MessageContent::Text("Hello".to_string()),
-            ..Default::default()
-        }];
+        let messages = vec![Message::new_user("Hello")];
 
         let converted = client.convert_messages(messages);
         assert_eq!(converted.len(), 1);
@@ -1316,17 +1312,9 @@ mod tests {
             "https://api.openai.com/v1".to_string(),
         );
 
-        let messages = vec![Message {
-            role: MessageRole::User,
-            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                tool_use_id: "test_id".to_string(),
-                content: "Tool output".to_string(),
-                is_error: Some(false),
-                start_time: None,
-                end_time: None,
-            }]),
-            ..Default::default()
-        }];
+        let messages = vec![Message::new_user_content(vec![
+            ContentBlock::new_tool_result("test_id", "Tool output"),
+        ])];
 
         let converted = client.convert_messages(messages);
         assert_eq!(converted.len(), 1);
@@ -1443,36 +1431,16 @@ mod tests {
         // 4. The encrypted reasoning should be preserved in the next request
 
         let conversation = vec![
-            Message {
-                role: MessageRole::User,
-                content: MessageContent::Text("What's 2+2?".to_string()),
-                ..Default::default()
-            },
-            Message {
-                role: MessageRole::Assistant,
-                content: MessageContent::Structured(vec![
-                    ContentBlock::RedactedThinking {
-                        id: "rs_12345".to_string(),
-                        summary: vec![ReasoningSummaryItem::SummaryText {
-                            text: "Math reasoning".to_string(),
-                        }],
-                        data: "encrypted_math_reasoning".to_string(),
-                        start_time: None,
-                        end_time: None,
-                    },
-                    ContentBlock::Text {
-                        text: "2+2 equals 4.".to_string(),
-                        start_time: None,
-                        end_time: None,
-                    },
-                ]),
-                ..Default::default()
-            },
-            Message {
-                role: MessageRole::User,
-                content: MessageContent::Text("What about 3+3?".to_string()),
-                ..Default::default()
-            },
+            Message::new_user("What's 2+2?"),
+            Message::new_assistant_content(vec![
+                ContentBlock::new_redacted_thinking(
+                    "rs_12345",
+                    vec!["Math reasoning"],
+                    "encrypted_math_reasoning",
+                ),
+                ContentBlock::new_text("2+2 equals 4."),
+            ]),
+            Message::new_user("What about 3+3?"),
         ];
 
         let converted = client.convert_messages(conversation);
@@ -1545,43 +1513,17 @@ mod tests {
             "https://api.openai.com/v1".to_string(),
         );
 
-        let messages = vec![Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Structured(vec![
-                ContentBlock::Text {
-                    text: "First text".to_string(),
-                    start_time: None,
-                    end_time: None,
-                },
-                ContentBlock::ToolUse {
-                    id: "tool_123".to_string(),
-                    name: "test_tool".to_string(),
-                    input: serde_json::json!({"arg": "value"}),
-                    start_time: None,
-                    end_time: None,
-                },
-                ContentBlock::Text {
-                    text: "Second text".to_string(),
-                    start_time: None,
-                    end_time: None,
-                },
-                ContentBlock::RedactedThinking {
-                    id: "rs_456".to_string(),
-                    summary: vec![ReasoningSummaryItem::SummaryText {
-                        text: "Some reasoning".to_string(),
-                    }],
-                    data: "encrypted_data".to_string(),
-                    start_time: None,
-                    end_time: None,
-                },
-                ContentBlock::Text {
-                    text: "Third text".to_string(),
-                    start_time: None,
-                    end_time: None,
-                },
-            ]),
-            ..Default::default()
-        }];
+        let messages = vec![Message::new_assistant_content(vec![
+            ContentBlock::new_text("First text"),
+            ContentBlock::new_tool_use(
+                "tool_123",
+                "test_tool",
+                serde_json::json!({"arg": "value"}),
+            ),
+            ContentBlock::new_text("Second text"),
+            ContentBlock::new_redacted_thinking("rs_456", vec!["Some reasoning"], "encrypted_data"),
+            ContentBlock::new_text("Third text"),
+        ])];
 
         let converted = client.convert_messages(messages);
         assert_eq!(converted.len(), 5);
@@ -1657,26 +1599,14 @@ mod tests {
             "https://api.openai.com/v1".to_string(),
         );
 
-        let messages = vec![Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Structured(vec![
-                ContentBlock::RedactedThinking {
-                    id: "rs_67890".to_string(),
-                    summary: vec![ReasoningSummaryItem::SummaryText {
-                        text: "Previous reasoning".to_string(),
-                    }],
-                    data: "encrypted_reasoning_data".to_string(),
-                    start_time: None,
-                    end_time: None,
-                },
-                ContentBlock::Text {
-                    text: "Based on my reasoning, here's the answer.".to_string(),
-                    start_time: None,
-                    end_time: None,
-                },
-            ]),
-            ..Default::default()
-        }];
+        let messages = vec![Message::new_assistant_content(vec![
+            ContentBlock::new_redacted_thinking(
+                "rs_67890",
+                vec!["Previous reasoning"],
+                "encrypted_reasoning_data",
+            ),
+            ContentBlock::new_text("Based on my reasoning, here's the answer."),
+        ])];
 
         let converted = client.convert_messages(messages);
         assert_eq!(converted.len(), 2);

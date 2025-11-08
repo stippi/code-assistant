@@ -218,12 +218,7 @@ impl SessionManager {
             session_instance.reload_from_persistence(&self.persistence)?;
 
             // Add structured user message to session
-            let user_msg = Message {
-                role: llm::MessageRole::User,
-                content: llm::MessageContent::Structured(content_blocks),
-                ..Default::default()
-            };
-            session_instance.add_message(user_msg);
+            session_instance.add_message(Message::new_user_content(content_blocks));
 
             // Clone all needed data to avoid borrowing conflicts
             let name = session_instance.session.name.clone();

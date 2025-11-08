@@ -1386,15 +1386,6 @@ mod tests {
     fn test_message_count_based_cache_markers() {
         let converter = DefaultMessageConverter::new();
 
-        // Helper function to create a simple text message
-        fn create_message(role: MessageRole, text: &str) -> Message {
-            Message {
-                role,
-                content: MessageContent::Text(text.to_string()),
-                ..Default::default()
-            }
-        }
-
         // Helper to count cache markers in messages
         fn count_message_cache_markers(result: &[AnthropicMessage]) -> Vec<usize> {
             let mut marker_positions = Vec::new();
@@ -1413,7 +1404,7 @@ mod tests {
         // Test 0-4 messages: No cache markers
         for msg_count in 0..=4 {
             let messages: Vec<Message> = (0..msg_count)
-                .map(|i| create_message(MessageRole::User, &format!("Message {i}")))
+                .map(|i| Message::new_user(format!("Message {i}")))
                 .collect();
 
             let result = converter.convert_messages_with_cache(messages);
@@ -1427,7 +1418,7 @@ mod tests {
         // Test 5-9 messages: Cache marker at index 4
         for msg_count in 5..=9 {
             let messages: Vec<Message> = (0..msg_count)
-                .map(|i| create_message(MessageRole::User, &format!("Message {i}")))
+                .map(|i| Message::new_user(format!("Message {i}")))
                 .collect();
 
             let result = converter.convert_messages_with_cache(messages);
@@ -1442,7 +1433,7 @@ mod tests {
         // Test 10-14 messages: Cache markers at indices 4 and 9
         for msg_count in 10..=14 {
             let messages: Vec<Message> = (0..msg_count)
-                .map(|i| create_message(MessageRole::User, &format!("Message {i}")))
+                .map(|i| Message::new_user(format!("Message {i}")))
                 .collect();
 
             let result = converter.convert_messages_with_cache(messages);
@@ -1457,7 +1448,7 @@ mod tests {
         // Test 15-19 messages: Cache markers at indices 9 and 14
         for msg_count in 15..=19 {
             let messages: Vec<Message> = (0..msg_count)
-                .map(|i| create_message(MessageRole::User, &format!("Message {i}")))
+                .map(|i| Message::new_user(format!("Message {i}")))
                 .collect();
 
             let result = converter.convert_messages_with_cache(messages);
@@ -1472,7 +1463,7 @@ mod tests {
         // Test 20-24 messages: Cache markers at indices 14 and 19
         for msg_count in 20..=24 {
             let messages: Vec<Message> = (0..msg_count)
-                .map(|i| create_message(MessageRole::User, &format!("Message {i}")))
+                .map(|i| Message::new_user(format!("Message {i}")))
                 .collect();
 
             let result = converter.convert_messages_with_cache(messages);
@@ -1492,49 +1483,21 @@ mod tests {
 
         // Helper to create tool use message
         fn create_tool_message(id: &str) -> Message {
-            Message {
-                role: MessageRole::Assistant,
-                content: MessageContent::Structured(vec![
-                    ContentBlock::Text {
-                        text: "Using tool".to_string(),
-                        start_time: None,
-                        end_time: None,
-                    },
-                    ContentBlock::ToolUse {
-                        id: id.to_string(),
-                        name: "test_tool".to_string(),
-                        input: json!({"param": "value"}),
-                        start_time: None,
-                        end_time: None,
-                    },
-                ]),
-                ..Default::default()
-            }
+            Message::new_assistant_content(vec![
+                ContentBlock::new_text("Using tool"),
+                ContentBlock::new_tool_use(id, "test_tool", json!({"param": "value"})),
+            ])
         }
 
         // Helper to create tool result message
         fn create_tool_result(tool_id: &str, content: &str) -> Message {
-            Message {
-                role: MessageRole::User,
-                content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                    tool_use_id: tool_id.to_string(),
-                    content: content.to_string(),
-                    is_error: Some(false),
-                    start_time: None,
-                    end_time: None,
-                }]),
-                ..Default::default()
-            }
+            Message::new_user_content(vec![ContentBlock::new_tool_result(tool_id, content)])
         }
 
         // Test with 15 messages (should have cache markers at indices 9 and 14)
         let mut messages = Vec::new();
         for i in 0..5 {
-            messages.push(Message {
-                role: MessageRole::User,
-                content: MessageContent::Text(format!("Request {i}")),
-                ..Default::default()
-            });
+            messages.push(Message::new_user(format!("Request {i}")));
             messages.push(create_tool_message(&format!("tool_{i}")));
             messages.push(create_tool_result(
                 &format!("tool_{i}"),
@@ -1584,30 +1547,13 @@ mod tests {
         let converter = DefaultMessageConverter::new();
 
         let mut messages: Vec<Message> = (0..4)
-            .map(|i| Message {
-                role: MessageRole::User,
-                content: MessageContent::Text(format!("Prelude {i}")),
-                ..Default::default()
-            })
+            .map(|i| Message::new_user(format!("Prelude {i}")))
             .collect();
 
-        messages.push(Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Structured(vec![
-                ContentBlock::Thinking {
-                    thinking: "internal reasoning".to_string(),
-                    signature: "sig".to_string(),
-                    start_time: None,
-                    end_time: None,
-                },
-                ContentBlock::Text {
-                    text: "Here is the result.".to_string(),
-                    start_time: None,
-                    end_time: None,
-                },
-            ]),
-            ..Default::default()
-        });
+        messages.push(Message::new_assistant_content(vec![
+            ContentBlock::new_thinking("internal reasoning", "sig"),
+            ContentBlock::new_text("Here is the result."),
+        ]));
 
         let result = converter.convert_messages_with_cache(messages);
 
@@ -1635,26 +1581,24 @@ mod tests {
 
         // Create two different message histories with the same count (15)
         let messages_a: Vec<Message> = (0..15)
-            .map(|i| Message {
-                role: if i % 2 == 0 {
-                    MessageRole::User
+            .map(|i| {
+                let content = format!("Message A{i}");
+                if i % 2 == 0 {
+                    Message::new_user(content)
                 } else {
-                    MessageRole::Assistant
-                },
-                content: MessageContent::Text(format!("Message A{i}")),
-                ..Default::default()
+                    Message::new_assistant(content)
+                }
             })
             .collect();
 
         let messages_b: Vec<Message> = (0..15)
-            .map(|i| Message {
-                role: if i % 2 == 0 {
-                    MessageRole::User
+            .map(|i| {
+                let content = format!("Completely different B{i}");
+                if i % 2 == 0 {
+                    Message::new_user(content)
                 } else {
-                    MessageRole::Assistant
-                },
-                content: MessageContent::Text(format!("Completely different B{i}")),
-                ..Default::default()
+                    Message::new_assistant(content)
+                }
             })
             .collect();
 
@@ -1701,11 +1645,7 @@ mod tests {
 
         // Test with different message counts to ensure it's truly stateless
         let messages_short: Vec<Message> = (0..7)
-            .map(|i| Message {
-                role: MessageRole::User,
-                content: MessageContent::Text(format!("Short {i}")),
-                ..Default::default()
-            })
+            .map(|i| Message::new_user(format!("Short {i}")))
             .collect();
 
         let result_short = converter.convert_messages_with_cache(messages_short);
@@ -1727,83 +1667,45 @@ mod tests {
         let mut messages = Vec::new();
 
         // Initial user request
-        messages.push(Message {
-            role: MessageRole::User,
-            content: MessageContent::Text("Help me analyze this data".to_string()),
-            ..Default::default()
-        });
+        messages.push(Message::new_user("Help me analyze this data"));
 
         // Assistant response with tool use
-        messages.push(Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Structured(vec![
-                ContentBlock::Text {
-                    text: "I'll help you analyze the data using the appropriate tools.".to_string(),
-                    start_time: None,
-                    end_time: None,
-                },
-                ContentBlock::ToolUse {
-                    id: "analysis_tool_1".to_string(),
-                    name: "data_analyzer".to_string(),
-                    input: json!({"dataset": "user_data.csv", "analysis_type": "statistical"}),
-                    start_time: None,
-                    end_time: None,
-                },
-            ]),
-            ..Default::default()
-        });
+        messages.push(Message::new_assistant_content(vec![
+            ContentBlock::new_text("I'll help you analyze the data using the appropriate tools."),
+            ContentBlock::new_tool_use(
+                "analysis_tool_1",
+                "data_analyzer",
+                json!({"dataset": "user_data.csv", "analysis_type": "statistical"}),
+            ),
+        ]));
 
         // Tool result
-        messages.push(Message {
-            role: MessageRole::User,
-            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                tool_use_id: "analysis_tool_1".to_string(),
-                content: "Analysis complete: Mean=45.2, StdDev=12.8, Outliers=3".to_string(),
-                is_error: Some(false),
-                start_time: None,
-                end_time: None,
-            }]),
-            ..Default::default()
-        });
+        messages.push(Message::new_user_content(vec![
+            ContentBlock::new_tool_result(
+                "analysis_tool_1",
+                "Analysis complete: Mean=45.2, StdDev=12.8, Outliers=3",
+            ),
+        ]));
 
         // Continue building conversation to 20+ messages
         for i in 1..=9 {
-            messages.push(Message {
-                role: MessageRole::User,
-                content: MessageContent::Text(format!("Follow up question {i}")),
-                ..Default::default()
-            });
+            messages.push(Message::new_user(format!("Follow up question {i}")));
 
-            messages.push(Message {
-                role: MessageRole::Assistant,
-                content: MessageContent::Structured(vec![
-                    ContentBlock::Text {
-                        text: format!("Let me help with question {i}."),
-                        start_time: None,
-                        end_time: None,
-                    },
-                    ContentBlock::ToolUse {
-                        id: format!("tool_{i}"),
-                        name: "helper_tool".to_string(),
-                        input: json!({"query": format!("query_{}", i), "context": "analysis"}),
-                        start_time: None,
-                        end_time: None,
-                    },
-                ]),
-                ..Default::default()
-            });
+            messages.push(Message::new_assistant_content(vec![
+                ContentBlock::new_text(format!("Let me help with question {i}.")),
+                ContentBlock::new_tool_use(
+                    format!("tool_{i}"),
+                    "helper_tool",
+                    json!({"query": format!("query_{}", i), "context": "analysis"}),
+                ),
+            ]));
 
-            messages.push(Message {
-                role: MessageRole::User,
-                content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                    tool_use_id: format!("tool_{i}"),
-                    content: format!("Tool result for query {i}"),
-                    is_error: Some(false),
-                    start_time: None,
-                    end_time: None,
-                }]),
-                ..Default::default()
-            });
+            messages.push(Message::new_user_content(vec![
+                ContentBlock::new_tool_result(
+                    format!("tool_{i}"),
+                    format!("Tool result for query {i}"),
+                ),
+            ]));
         }
 
         // We now have 30 messages total (3 initial + 27 from loop)
@@ -1931,49 +1833,30 @@ mod tests {
         {
             assert_eq!(tool_use_id, "analysis_tool_1");
             assert!(content.contains("Analysis complete"));
-            assert_eq!(*is_error, Some(false));
+            assert_eq!(*is_error, None);
         } else {
             panic!("Expected ToolResult content");
         }
 
         // Test with fake tool results (error case)
         let mut error_messages = messages.clone();
-        error_messages.push(Message {
-            role: MessageRole::User,
-            content: MessageContent::Text("Try something that might fail".to_string()),
-            ..Default::default()
-        });
+        error_messages.push(Message::new_user("Try something that might fail"));
 
-        error_messages.push(Message {
-            role: MessageRole::Assistant,
-            content: MessageContent::Structured(vec![
-                ContentBlock::Text {
-                    text: "I'll try that operation.".to_string(),
-                    start_time: None,
-                    end_time: None,
-                },
-                ContentBlock::ToolUse {
-                    id: "risky_tool".to_string(),
-                    name: "risky_operation".to_string(),
-                    input: json!({"operation": "dangerous_task", "safety": false}),
-                    start_time: None,
-                    end_time: None,
-                },
-            ]),
-            ..Default::default()
-        });
+        error_messages.push(Message::new_assistant_content(vec![
+            ContentBlock::new_text("I'll try that operation."),
+            ContentBlock::new_tool_use(
+                "risky_tool",
+                "risky_operation",
+                json!({"operation": "dangerous_task", "safety": false}),
+            ),
+        ]));
 
-        error_messages.push(Message {
-            role: MessageRole::User,
-            content: MessageContent::Structured(vec![ContentBlock::ToolResult {
-                tool_use_id: "risky_tool".to_string(),
-                content: "ERROR: Operation failed due to safety constraints".to_string(),
-                is_error: Some(true),
-                start_time: None,
-                end_time: None,
-            }]),
-            ..Default::default()
-        });
+        error_messages.push(Message::new_user_content(vec![
+            ContentBlock::new_error_tool_result(
+                "risky_tool",
+                "ERROR: Operation failed due to safety constraints",
+            ),
+        ]));
 
         // Convert with error scenario
         let error_result = converter.convert_messages_with_cache(error_messages);

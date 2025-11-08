@@ -1,6 +1,6 @@
 use gpui::{div, prelude::*, px, Context, Entity, EventEmitter, Focusable, Render, Window};
 use gpui_component::{
-    dropdown::{Dropdown, DropdownEvent, DropdownItem, DropdownState},
+    select::{Select, SelectEvent, SelectItem, SelectState},
     ActiveTheme, Icon, Sizable, Size,
 };
 use llm::provider_config::ConfigurationSystem;
@@ -32,7 +32,7 @@ impl ModelItem {
     }
 }
 
-impl DropdownItem for ModelItem {
+impl SelectItem for ModelItem {
     type Value = String;
 
     fn title(&self) -> gpui::SharedString {
@@ -68,7 +68,7 @@ impl DropdownItem for ModelItem {
 
 /// Model selector dropdown component using gpui-component's Dropdown
 pub struct ModelSelector {
-    dropdown_state: Entity<DropdownState<Vec<ModelItem>>>,
+    dropdown_state: Entity<SelectState<Vec<ModelItem>>>,
     config: Option<Arc<ConfigurationSystem>>,
     _dropdown_subscription: gpui::Subscription,
 }
@@ -79,7 +79,7 @@ impl ModelSelector {
     /// Create a new model selector
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let dropdown_state =
-            cx.new(|cx| DropdownState::new(Vec::<ModelItem>::new(), None, window, cx));
+            cx.new(|cx| SelectState::new(Vec::<ModelItem>::new(), None, window, cx));
 
         // Subscribe to dropdown events once during construction
         let dropdown_subscription =
@@ -113,19 +113,19 @@ impl ModelSelector {
     /// Handle dropdown events
     fn on_dropdown_event(
         &mut self,
-        _: &Entity<DropdownState<Vec<ModelItem>>>,
-        event: &DropdownEvent<Vec<ModelItem>>,
+        _: &Entity<SelectState<Vec<ModelItem>>>,
+        event: &SelectEvent<Vec<ModelItem>>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            DropdownEvent::Confirm(Some(model_name)) => {
+            SelectEvent::Confirm(Some(model_name)) => {
                 debug!("Model selected: {}", model_name);
                 cx.emit(ModelSelectorEvent::ModelChanged {
                     model_name: model_name.clone(),
                 });
             }
-            DropdownEvent::Confirm(None) => {
+            SelectEvent::Confirm(None) => {
                 debug!("Model selection cleared");
                 // Optionally handle clearing selection
             }
@@ -204,7 +204,7 @@ impl Focusable for ModelSelector {
 impl Render for ModelSelector {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         gpui::div().text_color(cx.theme().muted_foreground).child(
-            Dropdown::new(&self.dropdown_state)
+            Select::new(&self.dropdown_state)
                 .placeholder("Select Model")
                 .with_size(Size::XSmall)
                 .appearance(false)

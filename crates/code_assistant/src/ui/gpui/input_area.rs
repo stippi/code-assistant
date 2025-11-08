@@ -7,7 +7,7 @@ use gpui::{
     div, prelude::*, px, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter, FocusHandle,
     Focusable, MouseButton, MouseUpEvent, Render, Subscription, Window,
 };
-use gpui_component::input::{InputEvent, InputState, Paste, TextInput};
+use gpui_component::input::{Input, InputEvent, InputState, Paste};
 use gpui_component::ActiveTheme;
 
 /// Events emitted by the InputArea component
@@ -360,7 +360,7 @@ impl InputArea {
                             })
                             .rounded_md()
                             .track_focus(&text_input_handle)
-                            .child(TextInput::new(&self.text_input).appearance(false))
+                            .child(Input::new(&self.text_input).appearance(false))
                     })
                     .children({
                         let mut buttons = Vec::new();

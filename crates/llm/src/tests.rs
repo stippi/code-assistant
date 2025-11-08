@@ -28,11 +28,7 @@ impl TestCase {
         Self {
             name: "Simple text response".to_string(),
             request: LLMRequest {
-                messages: vec![Message {
-                    role: MessageRole::User,
-                    content: MessageContent::Text("Hello".to_string()),
-                    ..Default::default()
-                }],
+                messages: vec![Message::new_user("Hello")],
                 system_prompt: "You are a helpful assistant.".to_string(),
                 ..Default::default()
             },
@@ -64,11 +60,7 @@ impl TestCase {
         Self {
             name: "Function calling response".to_string(),
             request: LLMRequest {
-                messages: vec![Message {
-                    role: MessageRole::User,
-                    content: MessageContent::Text("What's the weather?".to_string()),
-                    ..Default::default()
-                }],
+                messages: vec![Message::new_user("What's the weather?")],
                 system_prompt: "Use the weather tool.".to_string(),
                 tools: Some(vec![ToolDefinition {
                     name: "get_weather".to_string(),
@@ -818,11 +810,7 @@ async fn test_anthropic_rate_limit_retry() -> Result<()> {
 
     // Send a test message that should trigger retries
     let request = LLMRequest {
-        messages: vec![Message {
-            role: MessageRole::User,
-            content: MessageContent::Text("Hello".to_string()),
-            ..Default::default()
-        }],
+        messages: vec![Message::new_user("Hello")],
         system_prompt: "You are a helpful assistant.".to_string(),
         ..Default::default()
     };
@@ -880,11 +868,7 @@ async fn test_image_content_blocks() -> Result<()> {
 #[tokio::test]
 async fn test_openai_message_conversion() -> Result<()> {
     // Test simple text message
-    let text_message = Message {
-        role: MessageRole::User,
-        content: MessageContent::Text("Hello world".to_string()),
-        ..Default::default()
-    };
+    let text_message = Message::new_user("Hello world");
 
     let openai_messages = OpenAIClient::convert_message(&text_message);
     assert_eq!(openai_messages.len(), 1);
@@ -896,14 +880,10 @@ async fn test_openai_message_conversion() -> Result<()> {
 
     // Test message with mixed text and image content
     let image_data = "aGVsbG8gd29ybGQ="; // "hello world" in base64
-    let mixed_message = Message {
-        role: MessageRole::User,
-        content: MessageContent::Structured(vec![
-            ContentBlock::new_text("What do you see in this image?"),
-            ContentBlock::new_image_base64("image/png", image_data),
-        ]),
-        ..Default::default()
-    };
+    let mixed_message = Message::new_user_content(vec![
+        ContentBlock::new_text("What do you see in this image?"),
+        ContentBlock::new_image_base64("image/png", image_data),
+    ]);
 
     let openai_messages = OpenAIClient::convert_message(&mixed_message);
     assert_eq!(openai_messages.len(), 1);
@@ -932,18 +912,14 @@ async fn test_openai_message_conversion() -> Result<()> {
     }
 
     // Test assistant message with tool calls
-    let assistant_message = Message {
-        role: MessageRole::Assistant,
-        content: MessageContent::Structured(vec![
-            ContentBlock::new_text("I'll help you with that."),
-            ContentBlock::new_tool_use(
-                "tool_123",
-                "get_weather",
-                serde_json::json!({"location": "Berlin"}),
-            ),
-        ]),
-        ..Default::default()
-    };
+    let assistant_message = Message::new_assistant_content(vec![
+        ContentBlock::new_text("I'll help you with that."),
+        ContentBlock::new_tool_use(
+            "tool_123",
+            "get_weather",
+            serde_json::json!({"location": "Berlin"}),
+        ),
+    ]);
 
     let openai_messages = OpenAIClient::convert_message(&assistant_message);
     assert_eq!(openai_messages.len(), 1);
@@ -959,15 +935,11 @@ async fn test_openai_message_conversion() -> Result<()> {
     assert_eq!(tool_calls[0].function.name, "get_weather");
 
     // Test user message with tool results
-    let user_with_tool_result = Message {
-        role: MessageRole::User,
-        content: MessageContent::Structured(vec![
-            ContentBlock::new_text("Here's some context."),
-            ContentBlock::new_tool_result("tool_123", "Weather is sunny, 25°C"),
-            ContentBlock::new_text("What should I wear?"),
-        ]),
-        ..Default::default()
-    };
+    let user_with_tool_result = Message::new_user_content(vec![
+        ContentBlock::new_text("Here's some context."),
+        ContentBlock::new_tool_result("tool_123", "Weather is sunny, 25°C"),
+        ContentBlock::new_text("What should I wear?"),
+    ]);
 
     let openai_messages = OpenAIClient::convert_message(&user_with_tool_result);
     assert_eq!(openai_messages.len(), 3); // user + tool + user
