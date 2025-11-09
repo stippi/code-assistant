@@ -379,7 +379,7 @@ impl CodeExplorer for MockExplorer {
         PathBuf::from("./root")
     }
 
-    fn read_file(&self, path: &Path) -> Result<String, anyhow::Error> {
+    async fn read_file(&self, path: &Path) -> Result<String, anyhow::Error> {
         self.files
             .lock()
             .unwrap()
@@ -388,13 +388,13 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))
     }
 
-    fn read_file_range(
+    async fn read_file_range(
         &self,
         path: &Path,
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String, anyhow::Error> {
-        let content = self.read_file(path)?;
+        let content = self.read_file(path).await?;
 
         // If no line range is specified, return the whole file
         if start_line.is_none() && end_line.is_none() {
@@ -426,7 +426,7 @@ impl CodeExplorer for MockExplorer {
         Ok(selected_content)
     }
 
-    fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String> {
+    async fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String> {
         // Check parent directories
         for component in path.parent().unwrap_or(path).components() {
             let current = PathBuf::from(component.as_os_str());
@@ -459,7 +459,7 @@ impl CodeExplorer for MockExplorer {
         Ok(result_content)
     }
 
-    fn delete_file(&self, path: &Path) -> Result<()> {
+    async fn delete_file(&self, path: &Path) -> Result<()> {
         let mut files = self.files.lock().unwrap();
         if files.contains_key(path) {
             files.remove(path);
@@ -477,7 +477,7 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("No file tree configured"))
     }
 
-    fn list_files(
+    async fn list_files(
         &mut self,
         path: &Path,
         _max_depth: Option<usize>,
@@ -518,7 +518,11 @@ impl CodeExplorer for MockExplorer {
         Ok(entry.clone())
     }
 
-    fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String> {
+    async fn apply_replacements(
+        &self,
+        path: &Path,
+        replacements: &[FileReplacement],
+    ) -> Result<String> {
         let mut files = self.files.lock().unwrap();
 
         let content = files
@@ -546,13 +550,13 @@ impl CodeExplorer for MockExplorer {
         };
 
         // Capture original content
-        let original_content = self.read_file(path)?;
+        let original_content = self.read_file(path).await?;
 
         // Find matches and detect adjacency/overlap
         let (matches, has_conflicts) = find_replacement_matches(&original_content, replacements)?;
 
         // Apply replacements first
-        let updated_content = self.apply_replacements(path, replacements)?;
+        let updated_content = self.apply_replacements(path, replacements).await?;
 
         // Execute the format command to simulate formatting
         let output = command_executor
@@ -594,7 +598,7 @@ impl CodeExplorer for MockExplorer {
         Ok((final_content, updated_replacements))
     }
 
-    fn search(
+    async fn search(
         &self,
         path: &Path,
         options: SearchOptions,
@@ -666,8 +670,8 @@ impl CodeExplorer for MockExplorer {
     }
 }
 
-#[test]
-fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
+#[tokio::test]
+async fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
     let mut files = HashMap::new();
     files.insert(
         PathBuf::from("./root/test1.txt"),
@@ -685,48 +689,56 @@ fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
     let explorer = MockExplorer::new(files, None);
 
     // Test basic search
-    let results = explorer.search(
-        &PathBuf::from("./root"),
-        SearchOptions {
-            query: "matching".to_string(),
-            ..Default::default()
-        },
-    )?;
+    let results = explorer
+        .search(
+            &PathBuf::from("./root"),
+            SearchOptions {
+                query: "matching".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
     assert_eq!(results.len(), 2);
     assert!(results.iter().any(|r| r.file.ends_with("test2.txt")));
     assert!(results.iter().any(|r| r.file.ends_with("test3.txt")));
 
     // Test case-sensitive search
-    let results = explorer.search(
-        &PathBuf::from("./root"),
-        SearchOptions {
-            query: "LINE".to_string(),
-            case_sensitive: true,
-            ..Default::default()
-        },
-    )?;
+    let results = explorer
+        .search(
+            &PathBuf::from("./root"),
+            SearchOptions {
+                query: "LINE".to_string(),
+                case_sensitive: true,
+                ..Default::default()
+            },
+        )
+        .await?;
     assert_eq!(results.len(), 0); // Should find nothing with case-sensitive search
 
     // Test case-insensitive search
-    let results = explorer.search(
-        &PathBuf::from("./root"),
-        SearchOptions {
-            query: "LINE".to_string(),
-            case_sensitive: false,
-            ..Default::default()
-        },
-    )?;
+    let results = explorer
+        .search(
+            &PathBuf::from("./root"),
+            SearchOptions {
+                query: "LINE".to_string(),
+                case_sensitive: false,
+                ..Default::default()
+            },
+        )
+        .await?;
     assert!(!results.is_empty()); // Should find matches
 
     // Test whole word search
-    let results = explorer.search(
-        &PathBuf::from("./root"),
-        SearchOptions {
-            query: "line".to_string(),
-            whole_words: true,
-            ..Default::default()
-        },
-    )?;
+    let results = explorer
+        .search(
+            &PathBuf::from("./root"),
+            SearchOptions {
+                query: "line".to_string(),
+                whole_words: true,
+                ..Default::default()
+            },
+        )
+        .await?;
     // When searching for whole words, matches should not be part of other words
     assert!(results.iter().all(|r| {
         r.line_content.iter().all(|line| {
@@ -738,70 +750,80 @@ fn test_mock_explorer_search() -> Result<(), anyhow::Error> {
     }));
 
     // Test regex mode
-    let results = explorer.search(
-        &PathBuf::from("./root"),
-        SearchOptions {
-            query: r"line \d".to_string(),
-            mode: SearchMode::Regex,
-            ..Default::default()
-        },
-    )?;
+    let results = explorer
+        .search(
+            &PathBuf::from("./root"),
+            SearchOptions {
+                query: r"line \d".to_string(),
+                mode: SearchMode::Regex,
+                ..Default::default()
+            },
+        )
+        .await?;
     assert!(results.iter().any(|r| r
         .line_content
         .iter()
         .any(|line| line.contains(&"line 1".to_string()))));
 
     // Test regex search
-    let results = explorer.search(
-        &PathBuf::from("./root"),
-        SearchOptions {
-            query: r"line \d+".to_string(), // Match "line" followed by numbers
-            mode: SearchMode::Regex,
-            ..Default::default()
-        },
-    )?;
+    let results = explorer
+        .search(
+            &PathBuf::from("./root"),
+            SearchOptions {
+                query: r"line \d+".to_string(), // Match "line" followed by numbers
+                mode: SearchMode::Regex,
+                ..Default::default()
+            },
+        )
+        .await?;
     assert!(results.iter().any(|r| r
         .line_content
         .iter()
         .any(|line| line.contains(&"line 1".to_string()))));
 
     // Test with max_results
-    let results = explorer.search(
-        &PathBuf::from("./root"),
-        SearchOptions {
-            query: "line".to_string(),
-            max_results: Some(2),
-            ..Default::default()
-        },
-    )?;
+    let results = explorer
+        .search(
+            &PathBuf::from("./root"),
+            SearchOptions {
+                query: "line".to_string(),
+                max_results: Some(2),
+                ..Default::default()
+            },
+        )
+        .await?;
     assert_eq!(results.len(), 2);
 
     // Test search in subdirectory
-    let results = explorer.search(
-        &PathBuf::from("./root/subdir"),
-        SearchOptions {
-            query: "subdir".to_string(),
-            ..Default::default()
-        },
-    )?;
+    let results = explorer
+        .search(
+            &PathBuf::from("./root/subdir"),
+            SearchOptions {
+                query: "subdir".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
     assert_eq!(results.len(), 1);
     assert!(results[0].file.ends_with("test3.txt"));
 
     // Test search with no matches
-    let results = explorer.search(
-        &PathBuf::from("./root"),
-        SearchOptions {
-            query: "nonexistent".to_string(),
-            ..Default::default()
-        },
-    )?;
+    let results = explorer
+        .search(
+            &PathBuf::from("./root"),
+            SearchOptions {
+                query: "nonexistent".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
     assert_eq!(results.len(), 0);
 
     Ok(())
 }
 
-#[test]
-fn test_mock_explorer_apply_replacements() -> Result<(), anyhow::Error> {
+#[tokio::test]
+async fn test_mock_explorer_apply_replacements() -> Result<(), anyhow::Error> {
     let mut files = HashMap::new();
     files.insert(
         PathBuf::from("./root/test.txt"),
@@ -823,7 +845,9 @@ fn test_mock_explorer_apply_replacements() -> Result<(), anyhow::Error> {
         },
     ];
 
-    let result = explorer.apply_replacements(&PathBuf::from("./root/test.txt"), &replacements)?;
+    let result = explorer
+        .apply_replacements(&PathBuf::from("./root/test.txt"), &replacements)
+        .await?;
 
     assert_eq!(result, "Hi there\nThis is a test\nSee you");
     Ok(())

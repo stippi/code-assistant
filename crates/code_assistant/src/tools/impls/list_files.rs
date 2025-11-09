@@ -207,7 +207,7 @@ impl Tool for ListFilesTool {
             }
 
             let full_path = explorer.root_dir().join(&path);
-            match explorer.list_files(&full_path, max_depth) {
+            match explorer.list_files(&full_path, max_depth).await {
                 Ok(tree_entry) => {
                     expanded_paths.push((path, tree_entry));
                 }

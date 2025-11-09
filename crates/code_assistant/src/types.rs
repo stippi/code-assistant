@@ -344,22 +344,26 @@ impl ValueEnum for ToolSyntax {
 pub trait CodeExplorer: Send + Sync {
     fn root_dir(&self) -> PathBuf;
     /// Reads the content of a file
-    fn read_file(&self, path: &Path) -> Result<String>;
+    async fn read_file(&self, path: &Path) -> Result<String>;
     /// Reads the content of a file between specific line numbers
-    fn read_file_range(
+    async fn read_file_range(
         &self,
         path: &Path,
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String>;
     /// Write the content of a file and return the complete content after writing
-    fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String>;
-    fn delete_file(&self, path: &Path) -> Result<()>;
+    async fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String>;
+    async fn delete_file(&self, path: &Path) -> Result<()>;
     #[allow(dead_code)]
     fn create_initial_tree(&mut self, max_depth: usize) -> Result<FileTreeEntry>;
-    fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry>;
+    async fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry>;
     /// Applies FileReplacements to a file
-    fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String>;
+    async fn apply_replacements(
+        &self,
+        path: &Path,
+        replacements: &[FileReplacement],
+    ) -> Result<String>;
     /// Applies FileReplacements to a file with formatting support
     async fn apply_replacements_with_formatting(
         &self,
@@ -369,7 +373,7 @@ pub trait CodeExplorer: Send + Sync {
         command_executor: &dyn crate::utils::CommandExecutor,
     ) -> Result<(String, Option<Vec<FileReplacement>>)>;
     /// Search for text in files with advanced options
-    fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>>;
+    async fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>>;
     /// Create a cloned box of this explorer
     #[allow(dead_code)]
     fn clone_box(&self) -> Box<dyn CodeExplorer>;

@@ -325,7 +325,7 @@ impl Tool for SearchFilesTool {
         // Perform searches across all specified paths
         let mut all_results = Vec::new();
         for search_path in search_paths {
-            let mut path_results = explorer.search(&search_path, options.clone())?;
+            let mut path_results = explorer.search(&search_path, options.clone()).await?;
             all_results.append(&mut path_results);
         }
 

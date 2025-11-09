@@ -183,7 +183,10 @@ impl Tool for EditTool {
                 )
                 .await
         } else {
-            match explorer.apply_replacements(&full_path, &[replacement]) {
+            match explorer
+                .apply_replacements(&full_path, &[replacement])
+                .await
+            {
                 Ok(content) => Ok((content, None)),
                 Err(e) => Err(e),
             }

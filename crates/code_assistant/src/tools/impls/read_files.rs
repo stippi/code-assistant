@@ -191,10 +191,12 @@ impl Tool for ReadFilesTool {
             let read_result = if parsed_path.start_line.is_some() || parsed_path.end_line.is_some()
             {
                 // We have line range information, use read_file_range
-                explorer.read_file_range(&full_path, parsed_path.start_line, parsed_path.end_line)
+                explorer
+                    .read_file_range(&full_path, parsed_path.start_line, parsed_path.end_line)
+                    .await
             } else {
                 // No line range specified, read the whole file
-                explorer.read_file(&full_path)
+                explorer.read_file(&full_path).await
             };
 
             match read_result {

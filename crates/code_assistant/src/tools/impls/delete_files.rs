@@ -145,7 +145,7 @@ impl Tool for DeleteFilesTool {
             let full_path = explorer.root_dir().join(&path);
 
             // Try to delete the file
-            match explorer.delete_file(&full_path) {
+            match explorer.delete_file(&full_path).await {
                 Ok(_) => {
                     deleted.push(path.clone());
 
