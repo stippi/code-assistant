@@ -185,13 +185,11 @@ pub fn restore_format(content: &str, format: &FileFormat) -> String {
     result
 }
 
-/// Writes content to a file using the specified file format
-/// Ensures the file ends with a newline
-pub fn write_file_with_format(path: &Path, content: &str, format: &FileFormat) -> Result<()> {
-    // First restore the original format
+/// Apply the stored file format (encoding + newline style) to normalized content.
+/// Ensures the result ends in exactly one newline matching the recorded line ending.
+pub fn apply_file_format(content: &str, format: &FileFormat) -> String {
     let mut formatted_content = restore_format(content, format);
 
-    // Ensure content ends with exactly one newline
     let line_ending = match format.line_ending {
         LineEnding::Crlf => "\r\n",
         LineEnding::CR => "\r",
@@ -200,14 +198,18 @@ pub fn write_file_with_format(path: &Path, content: &str, format: &FileFormat) -
 
     // Remove any trailing newlines
     while formatted_content.ends_with(line_ending) {
-        formatted_content =
-            formatted_content[..formatted_content.len() - line_ending.len()].to_string();
+        formatted_content.truncate(formatted_content.len() - line_ending.len());
     }
 
     // Add exactly one newline
     formatted_content.push_str(line_ending);
+    formatted_content
+}
 
-    // Then write with the correct encoding
+/// Writes content to a file using the specified file format
+/// Ensures the file ends with a newline
+pub fn write_file_with_format(path: &Path, content: &str, format: &FileFormat) -> Result<()> {
+    let formatted_content = apply_file_format(content, format);
     write_file_with_encoding(path, &formatted_content, &format.encoding)
 }
 

@@ -11,6 +11,40 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::debug;
 
+pub(crate) fn is_path_gitignored(root_dir: &Path, path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(root_dir);
+    let gitignore_path = root_dir.join(".gitignore");
+    if gitignore_path.exists() {
+        if let Some(err) = builder.add(gitignore_path) {
+            debug!("Error loading .gitignore: {:?}", err);
+            return false;
+        }
+    } else {
+        return false;
+    }
+
+    let gitignore = match builder.build() {
+        Ok(matcher) => matcher,
+        Err(err) => {
+            debug!("Error building gitignore matcher: {:?}", err);
+            return false;
+        }
+    };
+
+    let rel_path = match path.strip_prefix(root_dir) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+
+    gitignore
+        .matched_path_or_any_parents(rel_path, false)
+        .is_ignore()
+}
+
 // Default directories and files to ignore during file operations
 const DEFAULT_IGNORE_PATTERNS: [&str; 12] = [
     "target",
@@ -35,6 +69,7 @@ struct SearchSection {
 }
 
 /// Handles file system operations for code exploration
+#[derive(Clone)]
 pub struct Explorer {
     root_dir: PathBuf,
     // Track which paths were explicitly listed
@@ -134,44 +169,7 @@ impl Explorer {
     /// # Returns
     /// * `true` if the path should be ignored, `false` otherwise
     fn is_ignored(&self, path: &Path) -> bool {
-        // Simple check: if the path doesn't exist, it can't be ignored
-        if !path.exists() {
-            return false;
-        }
-
-        // Use the ignore crate's specialized matcher to check for ignores
-        let mut builder = ignore::gitignore::GitignoreBuilder::new(&self.root_dir);
-
-        // Try to add the .gitignore file
-        let gitignore_path = self.root_dir.join(".gitignore");
-        if gitignore_path.exists() {
-            if let Some(err) = builder.add(gitignore_path) {
-                debug!("Error loading .gitignore: {:?}", err);
-                return false;
-            }
-        } else {
-            return false; // No .gitignore file, nothing is ignored
-        }
-
-        // Build the gitignore matcher
-        let gitignore = match builder.build() {
-            Ok(matcher) => matcher,
-            Err(err) => {
-                debug!("Error building gitignore matcher: {:?}", err);
-                return false;
-            }
-        };
-
-        // Get the relative path from the project root
-        let rel_path = match path.strip_prefix(&self.root_dir) {
-            Ok(p) => p,
-            Err(_) => return false, // Path is outside project root
-        };
-
-        // Check if the path matches any ignore pattern
-        gitignore
-            .matched_path_or_any_parents(rel_path, false)
-            .is_ignore()
+        is_path_gitignored(&self.root_dir, path)
     }
 
     fn expand_directory(
@@ -338,12 +336,7 @@ impl Explorer {
 #[async_trait::async_trait]
 impl CodeExplorer for Explorer {
     fn clone_box(&self) -> Box<dyn CodeExplorer> {
-        Box::new(Explorer {
-            root_dir: self.root_dir.clone(),
-            expanded_paths: self.expanded_paths.clone(),
-            file_encodings: self.file_encodings.clone(),
-            file_formats: self.file_formats.clone(),
-        })
+        Box::new(self.clone())
     }
 
     fn root_dir(&self) -> PathBuf {
