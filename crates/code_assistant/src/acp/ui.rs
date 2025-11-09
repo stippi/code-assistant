@@ -33,6 +33,11 @@ impl ParameterValue {
     fn append(&mut self, chunk: &str) {
         self.value.push_str(chunk);
     }
+
+    fn replace(&mut self, value: &str) {
+        self.value.clear();
+        self.value.push_str(value);
+    }
 }
 
 struct ToolCallState {
@@ -85,6 +90,15 @@ impl ToolCallState {
         // Update title if we have a template for this tool
         if let Some(tool_name) = &self.tool_name {
             let tool_name = tool_name.clone(); // Clone to avoid borrow issues
+            self.update_title_from_template(&tool_name);
+        }
+    }
+
+    fn replace_parameter(&mut self, name: &str, value: &str) {
+        let entry = self.parameters.entry(name.to_string()).or_default();
+        entry.replace(value);
+        if let Some(tool_name) = &self.tool_name {
+            let tool_name = tool_name.clone();
             self.update_title_from_template(&tool_name);
         }
     }
@@ -606,9 +620,29 @@ impl UserInterface for ACPUserUI {
 
             UiEvent::AppendToTextBlock { .. }
             | UiEvent::AppendToThinkingBlock { .. }
-            | UiEvent::StartTool { .. }
-            | UiEvent::UpdateToolParameter { .. }
-            | UiEvent::EndTool { .. }
+            | UiEvent::StartTool { .. } => {
+                tracing::trace!(
+                    "ACPUserUI: streaming event received via send_event; handled via display_fragment"
+                );
+            }
+            UiEvent::UpdateToolParameter {
+                tool_id,
+                name,
+                value,
+            } => {
+                if tool_id.is_empty() {
+                    tracing::warn!("ACPUserUI: UpdateToolParameter with empty tool_id");
+                } else {
+                    let name = name.clone();
+                    let value = value.clone();
+                    let tool_call_update = self.update_tool_call(&tool_id, |state| {
+                        state.replace_parameter(&name, &value);
+                    });
+                    self.send_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update))
+                        .await?;
+                }
+            }
+            UiEvent::EndTool { .. }
             | UiEvent::AddImage { .. }
             | UiEvent::AppendToolOutput { .. }
             | UiEvent::StartReasoningSummaryItem

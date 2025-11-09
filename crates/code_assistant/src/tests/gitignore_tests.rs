@@ -50,13 +50,13 @@ fn setup_gitignore_test() -> Result<(TempDir, Explorer, PathBuf, PathBuf)> {
     Ok((temp_dir, explorer, visible_file, ignored_file))
 }
 
-#[test]
-fn test_list_files_respects_gitignore() -> Result<()> {
+#[tokio::test]
+async fn test_list_files_respects_gitignore() -> Result<()> {
     let (temp_dir, mut explorer, _, _) = setup_gitignore_test()?;
     let root_path = temp_dir.path();
 
     // List files in the root directory
-    let result = explorer.list_files(root_path, None)?;
+    let result = explorer.list_files(root_path, None).await?;
 
     // Convert the result to a string for easier inspection
     let listed_files = result.to_string();
@@ -84,7 +84,7 @@ fn test_list_files_respects_gitignore() -> Result<()> {
 
     // Also list files in the subdirectory to make sure that works
     let subdir_path = root_path.join("subdir");
-    let subdir_result = explorer.list_files(&subdir_path, None)?;
+    let subdir_result = explorer.list_files(&subdir_path, None).await?;
     let subdir_listed = subdir_result.to_string();
 
     // Verify subdirectory content is correct
@@ -93,16 +93,16 @@ fn test_list_files_respects_gitignore() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_read_files_respects_gitignore() -> Result<()> {
+#[tokio::test]
+async fn test_read_files_respects_gitignore() -> Result<()> {
     let (_temp_dir, explorer, visible_file, ignored_file) = setup_gitignore_test()?;
 
     // Reading a visible file should succeed
-    let visible_content = explorer.read_file(&visible_file)?;
+    let visible_content = explorer.read_file(&visible_file).await?;
     assert_eq!(visible_content, "This file should be visible");
 
     // Reading an ignored file should fail
-    let ignored_result = explorer.read_file(&ignored_file);
+    let ignored_result = explorer.read_file(&ignored_file).await;
     assert!(
         ignored_result.is_err(),
         "Should not be able to read ignored files"
@@ -116,13 +116,17 @@ fn test_read_files_respects_gitignore() -> Result<()> {
     );
 
     // Test read_file_range with line ranges
-    let visible_range = explorer.read_file_range(&visible_file, Some(1), Some(1))?;
+    let visible_range = explorer
+        .read_file_range(&visible_file, Some(1), Some(1))
+        .await?;
 
     // Check content is correct (trim needed due to line ending normalization)
     assert!(visible_range.trim_end() == "This file should be visible");
 
     // Reading an ignored file with line range should also fail
-    let ignored_range = explorer.read_file_range(&ignored_file, Some(1), Some(1));
+    let ignored_range = explorer
+        .read_file_range(&ignored_file, Some(1), Some(1))
+        .await;
     assert!(
         ignored_range.is_err(),
         "Should not be able to read ignored files with line range"
@@ -131,13 +135,15 @@ fn test_read_files_respects_gitignore() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn test_write_file_respects_gitignore() -> Result<()> {
+#[tokio::test]
+async fn test_write_file_respects_gitignore() -> Result<()> {
     let (_temp_dir, explorer, visible_file, ignored_file) = setup_gitignore_test()?;
 
     // Writing to a visible file should succeed
     let new_content = "Updated visible content";
-    let write_visible = explorer.write_file(&visible_file, new_content, false)?;
+    let write_visible = explorer
+        .write_file(&visible_file, new_content, false)
+        .await?;
 
     // Prüfen, dass der Inhalt korrekt ist (ignoriere mögliche Zeilenumbrüche am Ende)
     assert_eq!(write_visible.trim_end(), new_content);
@@ -147,7 +153,9 @@ fn test_write_file_respects_gitignore() -> Result<()> {
     assert_eq!(file_content.trim_end(), new_content);
 
     // Writing to an ignored file should fail
-    let write_ignored = explorer.write_file(&ignored_file, "Trying to update ignored file", false);
+    let write_ignored = explorer
+        .write_file(&ignored_file, "Trying to update ignored file", false)
+        .await;
     assert!(write_ignored.is_err());
 
     // The error should indicate the file is hidden by .gitignore
@@ -158,8 +166,9 @@ fn test_write_file_respects_gitignore() -> Result<()> {
     );
 
     // Appending to an ignored file should also fail
-    let append_ignored =
-        explorer.write_file(&ignored_file, "Trying to append to ignored file", true);
+    let append_ignored = explorer
+        .write_file(&ignored_file, "Trying to append to ignored file", true)
+        .await;
     assert!(append_ignored.is_err());
 
     Ok(())

@@ -160,7 +160,10 @@ impl Tool for WriteFileTool {
         let full_path = explorer.root_dir().join(&path);
 
         // Write the file first
-        match explorer.write_file(&full_path, &input.content, input.append) {
+        match explorer
+            .write_file(&full_path, &input.content, input.append)
+            .await
+        {
             Ok(mut full_content) => {
                 // If format-on-save applies, run the formatter
                 if let Some(command_line) = project_config.format_command_for(&path) {
@@ -170,7 +173,7 @@ impl Tool for WriteFileTool {
                         .await;
 
                     // Regardless of formatter success, try to re-read the file content
-                    if let Ok(updated) = explorer.read_file(&full_path) {
+                    if let Ok(updated) = explorer.read_file(&full_path).await {
                         full_content = updated;
                         // Update the input content to the formatted content so the LLM sees it
                         input.content = full_content.clone();

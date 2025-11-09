@@ -11,6 +11,40 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::debug;
 
+pub(crate) fn is_path_gitignored(root_dir: &Path, path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(root_dir);
+    let gitignore_path = root_dir.join(".gitignore");
+    if gitignore_path.exists() {
+        if let Some(err) = builder.add(gitignore_path) {
+            debug!("Error loading .gitignore: {:?}", err);
+            return false;
+        }
+    } else {
+        return false;
+    }
+
+    let gitignore = match builder.build() {
+        Ok(matcher) => matcher,
+        Err(err) => {
+            debug!("Error building gitignore matcher: {:?}", err);
+            return false;
+        }
+    };
+
+    let rel_path = match path.strip_prefix(root_dir) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+
+    gitignore
+        .matched_path_or_any_parents(rel_path, false)
+        .is_ignore()
+}
+
 // Default directories and files to ignore during file operations
 const DEFAULT_IGNORE_PATTERNS: [&str; 12] = [
     "target",
@@ -35,6 +69,7 @@ struct SearchSection {
 }
 
 /// Handles file system operations for code exploration
+#[derive(Clone)]
 pub struct Explorer {
     root_dir: PathBuf,
     // Track which paths were explicitly listed
@@ -134,44 +169,7 @@ impl Explorer {
     /// # Returns
     /// * `true` if the path should be ignored, `false` otherwise
     fn is_ignored(&self, path: &Path) -> bool {
-        // Simple check: if the path doesn't exist, it can't be ignored
-        if !path.exists() {
-            return false;
-        }
-
-        // Use the ignore crate's specialized matcher to check for ignores
-        let mut builder = ignore::gitignore::GitignoreBuilder::new(&self.root_dir);
-
-        // Try to add the .gitignore file
-        let gitignore_path = self.root_dir.join(".gitignore");
-        if gitignore_path.exists() {
-            if let Some(err) = builder.add(gitignore_path) {
-                debug!("Error loading .gitignore: {:?}", err);
-                return false;
-            }
-        } else {
-            return false; // No .gitignore file, nothing is ignored
-        }
-
-        // Build the gitignore matcher
-        let gitignore = match builder.build() {
-            Ok(matcher) => matcher,
-            Err(err) => {
-                debug!("Error building gitignore matcher: {:?}", err);
-                return false;
-            }
-        };
-
-        // Get the relative path from the project root
-        let rel_path = match path.strip_prefix(&self.root_dir) {
-            Ok(p) => p,
-            Err(_) => return false, // Path is outside project root
-        };
-
-        // Check if the path matches any ignore pattern
-        gitignore
-            .matched_path_or_any_parents(rel_path, false)
-            .is_ignore()
+        is_path_gitignored(&self.root_dir, path)
     }
 
     fn expand_directory(
@@ -254,7 +252,7 @@ impl Explorer {
     /// # Returns
     /// * `Ok(String)` - The content of the specified line range
     /// * `Err(...)` - If an error occurs during file reading or line extraction
-    fn read_file_lines(
+    async fn read_file_lines(
         &self,
         path: &Path,
         start_line: Option<usize>,
@@ -269,7 +267,7 @@ impl Explorer {
 
         // If no line range is specified, read the whole file
         if start_line.is_none() && end_line.is_none() {
-            return self.read_file(path);
+            return self.read_file(path).await;
         }
 
         // Check if file is ignored by .gitignore
@@ -338,12 +336,7 @@ impl Explorer {
 #[async_trait::async_trait]
 impl CodeExplorer for Explorer {
     fn clone_box(&self) -> Box<dyn CodeExplorer> {
-        Box::new(Explorer {
-            root_dir: self.root_dir.clone(),
-            expanded_paths: self.expanded_paths.clone(),
-            file_encodings: self.file_encodings.clone(),
-            file_formats: self.file_formats.clone(),
-        })
+        Box::new(self.clone())
     }
 
     fn root_dir(&self) -> PathBuf {
@@ -368,7 +361,7 @@ impl CodeExplorer for Explorer {
         Ok(root)
     }
 
-    fn read_file(&self, path: &Path) -> Result<String> {
+    async fn read_file(&self, path: &Path) -> Result<String> {
         debug!("Reading entire file: {}", path.display());
 
         // Check if file is ignored by .gitignore
@@ -411,16 +404,16 @@ impl CodeExplorer for Explorer {
     }
 
     // New method for reading partial files with line ranges
-    fn read_file_range(
+    async fn read_file_range(
         &self,
         path: &Path,
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String> {
-        self.read_file_lines(path, start_line, end_line)
+        self.read_file_lines(path, start_line, end_line).await
     }
 
-    fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String> {
+    async fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String> {
         debug!("Writing file: {}, append: {}", path.display(), append);
 
         // Check if file is ignored by .gitignore
@@ -463,12 +456,12 @@ impl CodeExplorer for Explorer {
         Ok(content_to_write)
     }
 
-    fn delete_file(&self, path: &Path) -> Result<()> {
+    async fn delete_file(&self, path: &Path) -> Result<()> {
         std::fs::remove_file(path)?;
         Ok(())
     }
 
-    fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry> {
+    async fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry> {
         // Check if the path exists before proceeding
         if !path.exists() {
             return Err(anyhow::anyhow!("Path not found"));
@@ -499,7 +492,11 @@ impl CodeExplorer for Explorer {
         Ok(entry)
     }
 
-    fn apply_replacements(&self, path: &Path, replacements: &[FileReplacement]) -> Result<String> {
+    async fn apply_replacements(
+        &self,
+        path: &Path,
+        replacements: &[FileReplacement],
+    ) -> Result<String> {
         // Get the original content
         let original_content = std::fs::read_to_string(path)?;
 
@@ -607,7 +604,7 @@ impl CodeExplorer for Explorer {
         Ok((formatted_content, updated_replacements))
     }
 
-    fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>> {
+    async fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>> {
         let mut results = Vec::new();
         let max_results = options.max_results.unwrap_or(usize::MAX);
         let context_lines = 2; // Lines of context before and after
@@ -849,44 +846,48 @@ mod tests {
         Ok(file_path)
     }
 
-    #[test]
-    fn test_read_file() -> Result<()> {
+    #[tokio::test]
+    async fn test_read_file() -> Result<()> {
         let (temp_dir, explorer) = setup_test_directory()?;
         let test_content = "Hello, World!";
         let file_path = create_test_file(temp_dir.path(), "test.txt", test_content)?;
 
-        let result = explorer.read_file(&file_path)?;
+        let result = explorer.read_file(&file_path).await?;
         assert_eq!(result, test_content);
         Ok(())
     }
 
-    #[test]
-    fn test_read_file_range() -> Result<()> {
+    #[tokio::test]
+    async fn test_read_file_range() -> Result<()> {
         let (temp_dir, explorer) = setup_test_directory()?;
         let test_content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5";
         let file_path = create_test_file(temp_dir.path(), "test_lines.txt", test_content)?;
 
         // Test reading a specific line range
-        let result = explorer.read_file_range(&file_path, Some(2), Some(4))?;
+        let result = explorer
+            .read_file_range(&file_path, Some(2), Some(4))
+            .await?;
         assert_eq!(result, "Line 2\nLine 3\nLine 4");
 
         // Test reading from a specific line to the end
-        let result = explorer.read_file_range(&file_path, Some(4), None)?;
+        let result = explorer.read_file_range(&file_path, Some(4), None).await?;
         assert_eq!(result, "Line 4\nLine 5");
 
         // Test reading from the beginning to a specific line
-        let result = explorer.read_file_range(&file_path, None, Some(2))?;
+        let result = explorer.read_file_range(&file_path, None, Some(2)).await?;
         assert_eq!(result, "Line 1\nLine 2");
 
         // Test invalid ranges
-        let result = explorer.read_file_range(&file_path, Some(10), Some(15));
+        let result = explorer
+            .read_file_range(&file_path, Some(10), Some(15))
+            .await;
         assert!(result.is_err());
 
         Ok(())
     }
 
-    #[test]
-    fn test_apply_replacements() -> Result<()> {
+    #[tokio::test]
+    async fn test_apply_replacements() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let test_file = temp_dir.path().join("test.txt");
         std::fs::write(&test_file, "line 1\nline 2\nline 3")?;
@@ -907,7 +908,9 @@ mod tests {
         ];
 
         // Apply replacements and verify content is functionally equivalent
-        let result = explorer.apply_replacements(&test_file, &replacements)?;
+        let result = explorer
+            .apply_replacements(&test_file, &replacements)
+            .await?;
 
         // Anstatt exakte Stringvergleiche zu machen, überprüfen wir nur, ob beide Strings
         // die erwarteten Inhalte haben, unabhängig von der genauen Anzahl der Zeilenumbrüche
@@ -922,14 +925,16 @@ mod tests {
         assert!(content.contains("new line 3"));
 
         // Test error case with ambiguous search
-        let result = explorer.apply_replacements(
-            &test_file,
-            &[FileReplacement {
-                search: "line".to_string(),
-                replace: "test".to_string(),
-                replace_all: false,
-            }],
-        );
+        let result = explorer
+            .apply_replacements(
+                &test_file,
+                &[FileReplacement {
+                    search: "line".to_string(),
+                    replace: "test".to_string(),
+                    replace_all: false,
+                }],
+            )
+            .await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -939,8 +944,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_search() -> Result<()> {
+    #[tokio::test]
+    async fn test_search() -> Result<()> {
         let (temp_dir, explorer) = setup_test_directory()?;
 
         // Create test files with content
@@ -964,13 +969,15 @@ mod tests {
         )?;
 
         // Test searching with different queries
-        let results = explorer.search(
-            temp_dir.path(),
-            SearchOptions {
-                query: "line 2".to_string(),
-                ..Default::default()
-            },
-        )?;
+        let results = explorer
+            .search(
+                temp_dir.path(),
+                SearchOptions {
+                    query: "line 2".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
         assert_eq!(results.len(), 3);
         assert!(results
             .iter()
@@ -984,34 +991,40 @@ mod tests {
             .any(|r| r.line_content.iter().any(|l| l.contains("Subdir line 2"))));
 
         // Test with max_results
-        let results = explorer.search(
-            temp_dir.path(),
-            SearchOptions {
-                query: "line".to_string(),
-                max_results: Some(2),
-                ..Default::default()
-            },
-        )?;
+        let results = explorer
+            .search(
+                temp_dir.path(),
+                SearchOptions {
+                    query: "line".to_string(),
+                    max_results: Some(2),
+                    ..Default::default()
+                },
+            )
+            .await?;
         assert_eq!(results.len(), 2);
 
         // Test with non-matching query
-        let results = explorer.search(
-            temp_dir.path(),
-            SearchOptions {
-                query: "nonexistent".to_string(),
-                ..Default::default()
-            },
-        )?;
+        let results = explorer
+            .search(
+                temp_dir.path(),
+                SearchOptions {
+                    query: "nonexistent".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
         assert_eq!(results.len(), 0);
 
         // Test with query containing a line break
-        let results = explorer.search(
-            temp_dir.path(),
-            SearchOptions {
-                query: "line 1\nAnother".to_string(),
-                ..Default::default()
-            },
-        )?;
+        let results = explorer
+            .search(
+                temp_dir.path(),
+                SearchOptions {
+                    query: "line 1\nAnother".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
         assert_eq!(results.len(), 1);
 
         Ok(())
@@ -1048,13 +1061,13 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_list_files_nonexistent_path() -> Result<()> {
+    #[tokio::test]
+    async fn test_list_files_nonexistent_path() -> Result<()> {
         let (temp_dir, mut explorer) = setup_test_directory()?;
         let nonexistent_path = temp_dir.path().join("nonexistent");
 
         // Test with a non-existent path
-        let result = explorer.list_files(&nonexistent_path, None);
+        let result = explorer.list_files(&nonexistent_path, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Path not found"));
 

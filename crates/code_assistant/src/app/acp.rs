@@ -1,5 +1,7 @@
 use super::AgentRunConfig;
-use crate::acp::{register_terminal_worker, set_acp_client_connection, ACPAgentImpl};
+use crate::acp::{
+    register_fs_worker, register_terminal_worker, set_acp_client_connection, ACPAgentImpl,
+};
 use crate::persistence::FileSessionPersistence;
 use crate::session::{SessionConfig, SessionManager};
 use agent_client_protocol::Client;
@@ -92,6 +94,7 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
             let conn_arc = Arc::new(conn);
             set_acp_client_connection(conn_arc.clone());
             register_terminal_worker(conn_arc.clone());
+            register_fs_worker(conn_arc.clone());
 
             // Kick off a background task to send session notifications to the client
             let conn_for_notifications = conn_arc.clone();

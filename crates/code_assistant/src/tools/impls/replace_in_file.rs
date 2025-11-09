@@ -212,7 +212,7 @@ impl Tool for ReplaceInFileTool {
                 )
                 .await
         } else {
-            match explorer.apply_replacements(&full_path, &replacements) {
+            match explorer.apply_replacements(&full_path, &replacements).await {
                 Ok(content) => Ok((content, None)),
                 Err(e) => Err(e),
             }

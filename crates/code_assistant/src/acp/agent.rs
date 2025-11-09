@@ -9,8 +9,8 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::acp::error_handling::to_acp_error;
 use crate::acp::types::convert_prompt_to_content_blocks;
-use crate::acp::ACPUserUI;
-use crate::config::DefaultProjectManager;
+use crate::acp::{ACPUserUI, AcpProjectManager};
+use crate::config::{DefaultProjectManager, ProjectManager};
 use crate::persistence::SessionModelConfig;
 use crate::session::instance::SessionActivityState;
 use crate::session::{SessionConfig, SessionManager};
@@ -491,6 +491,7 @@ impl acp::Agent for ACPAgentImpl {
         let fast_playback = self.fast_playback;
         let active_uis = self.active_uis.clone();
         let client_capabilities = self.client_capabilities.clone();
+        let client_connection = get_acp_client_connection();
 
         Box::pin(async move {
             tracing::info!(
@@ -501,6 +502,13 @@ impl acp::Agent for ACPAgentImpl {
             let terminal_supported = {
                 let caps = client_capabilities.lock().await;
                 caps.as_ref().map(|caps| caps.terminal).unwrap_or(false)
+            };
+
+            let filesystem_supported = {
+                let caps = client_capabilities.lock().await;
+                caps.as_ref()
+                    .map(|caps| caps.fs.read_text_file && caps.fs.write_text_file)
+                    .unwrap_or(false)
             };
 
             let base_path = {
@@ -573,12 +581,21 @@ impl acp::Agent for ACPAgentImpl {
                 }
             };
 
+            let use_acp_fs = filesystem_supported && client_connection.is_some();
+
             // Create project manager and command executor
-            let project_manager = Box::new(DefaultProjectManager::new());
+            let project_manager: Box<dyn ProjectManager> = if use_acp_fs {
+                Box::new(AcpProjectManager::new(
+                    DefaultProjectManager::new(),
+                    arguments.session_id.clone(),
+                ))
+            } else {
+                Box::new(DefaultProjectManager::new())
+            };
 
             // Use ACP Terminal Command Executor if client connection is available
             let command_executor: Box<dyn crate::utils::command::CommandExecutor> = {
-                if terminal_supported && get_acp_client_connection().is_some() {
+                if terminal_supported && client_connection.is_some() {
                     tracing::info!(
                         "ACP: Using ACPTerminalCommandExecutor for session {}",
                         arguments.session_id.0

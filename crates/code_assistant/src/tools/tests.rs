@@ -183,7 +183,9 @@ async fn test_write_file_tool() -> Result<()> {
         let explorer = context
             .project_manager
             .get_explorer_for_project("test-project")?;
-        let updated_content = explorer.read_file(&PathBuf::from("./root/existing.txt"))?;
+        let updated_content = explorer
+            .read_file(&PathBuf::from("./root/existing.txt"))
+            .await?;
         assert!(updated_content.contains("This is replacement content\nAppended content"));
     }
 
@@ -260,7 +262,9 @@ async fn test_replace_in_file_tool() -> Result<()> {
         let explorer = context
             .project_manager
             .get_explorer_for_project("test-project")?;
-        let updated_content = explorer.read_file(&PathBuf::from("./root/source.txt"))?;
+        let updated_content = explorer
+            .read_file(&PathBuf::from("./root/source.txt"))
+            .await?;
 
         // Verify both replacements were made
         assert!(updated_content.contains("console.log(\"new message\")"));
