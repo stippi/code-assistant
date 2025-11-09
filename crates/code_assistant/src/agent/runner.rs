@@ -1436,6 +1436,15 @@ impl Agent {
 
                 // Update message history if input was modified
                 if input_modified {
+                    if !is_hidden {
+                        self.notify_tool_parameter_updates(
+                            &tool_request.input,
+                            &input,
+                            &tool_request.id,
+                        )
+                        .await?;
+                    }
+
                     if let Err(e) =
                         self.update_message_history_with_formatted_tool(&final_tool_request)
                     {
@@ -1490,6 +1499,41 @@ impl Agent {
         };
 
         result
+    }
+
+    async fn notify_tool_parameter_updates(
+        &self,
+        original: &serde_json::Value,
+        updated: &serde_json::Value,
+        tool_id: &str,
+    ) -> Result<()> {
+        let (Some(original_map), Some(updated_map)) = (original.as_object(), updated.as_object())
+        else {
+            return Ok(());
+        };
+
+        for (key, new_value) in updated_map {
+            let old_value = original_map.get(key);
+            if old_value == Some(new_value) {
+                continue;
+            }
+
+            let value_str = if let Some(s) = new_value.as_str() {
+                s.to_string()
+            } else {
+                new_value.to_string()
+            };
+
+            self.ui
+                .send_event(UiEvent::UpdateToolParameter {
+                    tool_id: tool_id.to_string(),
+                    name: key.clone(),
+                    value: value_str,
+                })
+                .await?;
+        }
+
+        Ok(())
     }
 
     /// Update message history to reflect formatted tool parameters
