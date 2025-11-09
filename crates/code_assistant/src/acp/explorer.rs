@@ -7,9 +7,14 @@ use std::sync::{Arc, OnceLock, RwLock};
 use crate::config::{DefaultProjectManager, ProjectManager};
 use crate::explorer::{is_path_gitignored, Explorer};
 use crate::types::{
-    CodeExplorer, FileFormat, FileReplacement, FileTreeEntry, Project, SearchOptions, SearchResult,
+    CodeExplorer, FileEncoding, FileFormat, FileReplacement, FileTreeEntry, Project, SearchOptions,
+    SearchResult,
 };
 use crate::utils::encoding::{apply_file_format, detect_line_ending, normalize_content};
+use crate::utils::file_updater::{
+    apply_matches, extract_stable_ranges, find_replacement_matches,
+    reconstruct_formatted_replacements,
+};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::spawn_blocking;
 
@@ -173,7 +178,7 @@ impl AcpCodeExplorer {
         Ok((normalize_content(&response.content), abs))
     }
 
-    async fn write_entire(&self, path: &Path, content: &str) -> Result<()> {
+    async fn write_entire(&self, path: &Path, content: &str) -> Result<String> {
         let abs = self.ensure_allowed(path)?;
         let format = self.format_for_path(&abs);
         let formatted = apply_file_format(content, &format);
@@ -184,8 +189,23 @@ impl AcpCodeExplorer {
             meta: None,
         })
         .await?;
-        self.store_format(&abs, format);
-        Ok(())
+        let response = fs_read_text_file(acp::ReadTextFileRequest {
+            session_id: self.session_id.clone(),
+            path: abs.clone(),
+            line: None,
+            limit: None,
+            meta: None,
+        })
+        .await?;
+        let line_ending = detect_line_ending(&response.content);
+        self.store_format(
+            &abs,
+            FileFormat {
+                encoding: FileEncoding::UTF8,
+                line_ending,
+            },
+        );
+        Ok(normalize_content(&response.content))
     }
 }
 
@@ -239,14 +259,13 @@ impl CodeExplorer for AcpCodeExplorer {
     }
 
     async fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String> {
-        let mut final_content = content.to_string();
+        let mut new_content = content.to_string();
         if append {
             if let Ok((existing, _)) = self.read_entire(path).await {
-                final_content = format!("{existing}{content}");
+                new_content = format!("{existing}{content}");
             }
         }
-        self.write_entire(path, &final_content).await?;
-        Ok(final_content)
+        self.write_entire(path, &new_content).await
     }
 
     async fn delete_file(&self, path: &Path) -> Result<()> {
@@ -274,8 +293,7 @@ impl CodeExplorer for AcpCodeExplorer {
     ) -> Result<String> {
         let (original_content, _) = self.read_entire(path).await?;
         let updated = crate::utils::apply_replacements_normalized(&original_content, replacements)?;
-        self.write_entire(path, &updated).await?;
-        Ok(updated)
+        self.write_entire(path, &updated).await
     }
 
     async fn apply_replacements_with_formatting(
@@ -285,8 +303,23 @@ impl CodeExplorer for AcpCodeExplorer {
         _format_command: &str,
         _command_executor: &dyn crate::utils::CommandExecutor,
     ) -> Result<(String, Option<Vec<FileReplacement>>)> {
-        let content = self.apply_replacements(path, replacements).await?;
-        Ok((content, None))
+        let (original_content, _) = self.read_entire(path).await?;
+        let (matches, has_conflicts) = find_replacement_matches(&original_content, replacements)?;
+        let updated_content = apply_matches(&original_content, &matches, replacements)?;
+        let final_content = self.write_entire(path, &updated_content).await?;
+        let updated_replacements = if has_conflicts {
+            None
+        } else {
+            let stable_ranges = extract_stable_ranges(&original_content, &matches);
+            reconstruct_formatted_replacements(
+                &original_content,
+                &final_content,
+                &stable_ranges,
+                &matches,
+                replacements,
+            )
+        };
+        Ok((final_content, updated_replacements))
     }
 
     async fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>> {

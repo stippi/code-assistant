@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::acp::error_handling::to_acp_error;
 use crate::acp::types::convert_prompt_to_content_blocks;
-use crate::acp::{AcpProjectManager, ACPUserUI};
+use crate::acp::{ACPUserUI, AcpProjectManager};
 use crate::config::{DefaultProjectManager, ProjectManager};
 use crate::persistence::SessionModelConfig;
 use crate::session::instance::SessionActivityState;
