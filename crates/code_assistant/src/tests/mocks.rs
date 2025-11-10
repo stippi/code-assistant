@@ -166,7 +166,7 @@ impl CommandExecutor for MockCommandExecutor {
         &self,
         command_line: &str,
         working_dir: Option<&PathBuf>,
-        callback: Option<&dyn crate::utils::command::StreamingCallback>,
+        callback: Option<&dyn crate::utils::StreamingCallback>,
     ) -> Result<CommandOutput> {
         // For mock, just call the regular execute and simulate streaming if callback provided
         let result = self.execute(command_line, working_dir).await?;

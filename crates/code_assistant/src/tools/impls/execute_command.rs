@@ -3,7 +3,7 @@ use crate::tools::core::{
 };
 use crate::ui::streaming::DisplayFragment;
 use crate::ui::UserInterface;
-use crate::utils::command::StreamingCallback;
+use crate::utils::StreamingCallback;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;

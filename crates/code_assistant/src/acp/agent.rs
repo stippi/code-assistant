@@ -603,7 +603,7 @@ impl acp::Agent for ACPAgentImpl {
             };
 
             // Use ACP Terminal Command Executor if client connection is available
-            let command_executor: Box<dyn crate::utils::command::CommandExecutor> = {
+            let command_executor: Box<dyn crate::utils::CommandExecutor> = {
                 if terminal_supported && client_connection.is_some() {
                     tracing::info!(
                         "ACP: Using ACPTerminalCommandExecutor for session {}",
