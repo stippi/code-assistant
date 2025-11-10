@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(tag = "mode", rename_all = "kebab-case")]
 pub enum SandboxPolicy {
+    #[default]
     DangerFullAccess,
     ReadOnly,
     WorkspaceWrite {
@@ -17,12 +18,6 @@ pub enum SandboxPolicy {
         #[serde(default)]
         exclude_slash_tmp: bool,
     },
-}
-
-impl Default for SandboxPolicy {
-    fn default() -> Self {
-        SandboxPolicy::DangerFullAccess
-    }
 }
 
 impl SandboxPolicy {
@@ -73,12 +68,10 @@ impl SandboxPolicy {
                     }
                 }
 
-                if !exclude_tmpdir_env_var {
-                    if let Some(tmpdir) = std::env::var_os("TMPDIR") {
-                        if !tmpdir.is_empty() {
-                            roots.push(PathBuf::from(tmpdir));
-                        }
-                    }
+                if let Some(tmpdir) = std::env::var_os("TMPDIR")
+                    .filter(|tmpdir| !exclude_tmpdir_env_var && !tmpdir.is_empty())
+                {
+                    roots.push(PathBuf::from(tmpdir));
                 }
 
                 roots

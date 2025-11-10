@@ -3,16 +3,16 @@ mod macos_sandbox_tests {
     use crate::utils::sandboxed_executor::SandboxedCommandExecutor;
     use crate::utils::{CommandExecutor, DefaultCommandExecutor};
     use sandbox::SandboxPolicy;
-    use std::path::PathBuf;
+    use std::path::Path;
     use tempfile::tempdir;
 
     fn executor_with_policy(policy: SandboxPolicy) -> SandboxedCommandExecutor {
         SandboxedCommandExecutor::new(Box::new(DefaultCommandExecutor), policy, None)
     }
 
-    fn workspace_policy(root: &PathBuf) -> SandboxPolicy {
+    fn workspace_policy(root: &Path) -> SandboxPolicy {
         SandboxPolicy::WorkspaceWrite {
-            writable_roots: vec![root.clone()],
+            writable_roots: vec![root.to_path_buf()],
             network_access: false,
             exclude_tmpdir_env_var: true,
             exclude_slash_tmp: true,
