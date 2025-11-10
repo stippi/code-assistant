@@ -124,9 +124,12 @@ impl Render for PlanBanner {
         } else {
             let markdown = build_plan_markdown(plan);
             if !markdown.is_empty() {
-                container = container.child(div().text_color(cx.theme().foreground).child(
-                    TextView::markdown("session-plan-markdown", markdown, window, cx).selectable(),
-                ));
+                container = container.child(
+                    div().text_color(cx.theme().foreground).child(
+                        TextView::markdown("session-plan-markdown", markdown, window, cx)
+                            .selectable(true),
+                    ),
+                );
             }
         }
 

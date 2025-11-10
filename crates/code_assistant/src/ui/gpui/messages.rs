@@ -228,7 +228,7 @@ impl Render for MessagesView {
                                         window,
                                         cx,
                                     )
-                                    .selectable(),
+                                    .selectable(true),
                                 ),
                         ),
                 );

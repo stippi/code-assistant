@@ -2895,7 +2895,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.4.0-preview1"
-source = "git+https://github.com/longbridge/gpui-component.git#b899100d09afa2d3a072b8c7b7364e5e7620f4b5"
+source = "git+https://github.com/longbridge/gpui-component.git#9228dbfb1395ff40c69c7765e2f1b030a07da667"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2933,7 +2933,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.4.0-preview1"
-source = "git+https://github.com/longbridge/gpui-component.git#b899100d09afa2d3a072b8c7b7364e5e7620f4b5"
+source = "git+https://github.com/longbridge/gpui-component.git#9228dbfb1395ff40c69c7765e2f1b030a07da667"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3379,7 +3379,7 @@ dependencies = [
  "httpdate",
  "itoa",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.4.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -6841,16 +6841,6 @@ checksum = "9f7916fc008ca5542385b89a3d3ce689953c143e9304a9bf8beec1de48994c0d"
 dependencies = [
  "libc",
  "winapi",
-]
-
-[[package]]
-name = "socket2"
-version = "0.5.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
-dependencies = [
- "libc",
- "windows-sys 0.52.0",
 ]
 
 [[package]]

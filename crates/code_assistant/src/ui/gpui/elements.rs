@@ -875,7 +875,7 @@ impl Render for BlockView {
                     .text_color(cx.theme().foreground)
                     .child(
                         TextView::markdown("md-block", block.content.clone(), window, cx)
-                            .selectable(),
+                            .selectable(true),
                     )
                     .into_any_element()
             }
@@ -1571,7 +1571,7 @@ impl Render for BlockView {
                                     window,
                                     cx,
                                 )
-                                .selectable(),
+                                .selectable(true),
                             )
                             .into_any_element(),
                     );
