@@ -1,0 +1,56 @@
+(version 1)
+
+; Allow everything by default; we'll layer on top with specific denies.
+(allow default)
+
+; Allow manipulating processes (needed for shells)
+(allow process*)
+
+; Allow common syscalls used by standard tools
+(allow sysctl-read)
+
+; Allow working with standard file descriptors and termios
+(allow file-ioctl (literal "/dev/tty"))
+(allow signal (target self))
+
+; Allow interacting with /dev/null, /dev/zero, /dev/tty
+(allow file-read-data (literal "/dev/null"))
+(allow file-read-data (literal "/dev/zero"))
+(allow file-read-data (literal "/dev/tty"))
+(allow file-write-data (literal "/dev/tty"))
+(allow file-write-data (literal "/dev/null"))
+
+; Allow reading basic system files
+(allow file-read-metadata)
+(allow file-read-data (regex #"^/usr/"))
+(allow file-read-data (regex #"^/System/"))
+(allow file-read-data (regex #"^/private/etc/"))
+(allow file-read-data (regex #"^/Library/"))
+(allow file-read-data (literal "/dev/dtracehelper"))
+(allow file-read-data (literal "/dev/dtracehelper_dof"))
+(allow file-read-data (literal "/etc/hosts"))
+(allow file-read-data (literal "/etc/resolv.conf"))
+(allow file-read-data (literal "/etc/localtime"))
+(allow file-read-data (literal "/etc/services"))
+(allow file-read-data (literal "/etc/protocols"))
+(allow file-read-data (literal "/etc/networks"))
+(allow file-read-data (literal "/etc/proftpd.conf"))
+(allow file-read-data (literal "/etc/syslog.conf"))
+(allow file-read-data (literal "/etc/spwd.db"))
+(allow file-read-data (literal "/etc/hosts.equiv"))
+(allow file-read-data (literal "/etc/hosts.lpd"))
+(allow file-read-data (literal "/etc/hosts.secu"))
+
+; Allow DNS lookups via mDNSResponder / resolver configuration
+(allow mach-lookup (global-name "com.apple.system.logger"))
+(allow mach-lookup (global-name "com.apple.system.notification_center"))
+(allow mach-lookup (global-name "com.apple.system.opendirectoryd.api"))
+(allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))
+(allow mach-lookup (global-name "com.apple.system.opendirectoryd.membership"))
+(allow mach-lookup (global-name "com.apple.system.coreservices.usernotification"))
+(allow mach-lookup (global-name "com.apple.CoreServices.coreservicesd"))
+(allow mach-lookup (global-name "com.apple.SecurityServer"))
+(allow mach-lookup (global-name "com.apple.trustd"))
+(allow mach-lookup (global-name "com.apple.notifyd.matching"))
+(allow mach-lookup (global-name "com.apple.bsd.dirhelper"))
+(allow mach-lookup (global-name "com.apple.autofsd"))

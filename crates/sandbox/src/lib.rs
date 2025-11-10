@@ -135,3 +135,7 @@ pub enum SandboxError {
     #[error("Sandbox unavailable: {0}")]
     Unavailable(String),
 }
+#[cfg(target_os = "macos")]
+mod seatbelt;
+#[cfg(target_os = "macos")]
+pub use seatbelt::{SeatbeltInvocation, build_invocation as build_seatbelt_invocation};

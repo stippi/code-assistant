@@ -1,0 +1,5 @@
+(allow network-outbound
+    (remote tcp "*:0-65535")
+    (remote udp "*:0-65535")
+    (remote tcp6 "*:0-65535")
+    (remote udp6 "*:0-65535"))

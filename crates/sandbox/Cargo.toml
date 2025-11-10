@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 serde = { version = "1.0.215", features = ["derive"] }
 thiserror = "1.0.69"
+tempfile = "3.13.0"
