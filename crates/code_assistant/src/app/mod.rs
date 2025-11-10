@@ -4,6 +4,7 @@ pub mod server;
 pub mod terminal;
 
 use crate::types::ToolSyntax;
+use sandbox::SandboxPolicy;
 
 use std::path::PathBuf;
 
@@ -19,4 +20,5 @@ pub struct AgentRunConfig {
     pub record: Option<PathBuf>,
     pub playback: Option<PathBuf>,
     pub fast_playback: bool,
+    pub sandbox_policy: SandboxPolicy,
 }

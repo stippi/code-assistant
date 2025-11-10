@@ -2,6 +2,7 @@ use crate::agent::ToolExecution;
 use crate::persistence::SessionModelConfig;
 use crate::types::{PlanState, ToolSyntax};
 use llm::Message;
+use sandbox::SandboxPolicy;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -23,6 +24,8 @@ pub struct SessionConfig {
     pub tool_syntax: ToolSyntax,
     #[serde(default)]
     pub use_diff_blocks: bool,
+    #[serde(default)]
+    pub sandbox_policy: SandboxPolicy,
 }
 
 fn default_tool_syntax() -> ToolSyntax {
@@ -36,6 +39,7 @@ impl Default for SessionConfig {
             initial_project: String::new(),
             tool_syntax: default_tool_syntax(),
             use_diff_blocks: false,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
         }
     }
 }

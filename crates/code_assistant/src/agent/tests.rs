@@ -13,6 +13,7 @@ use crate::types::*;
 use crate::ui::ui_events::UiEvent;
 use anyhow::Result;
 use llm::types::*;
+use sandbox::SandboxPolicy;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -398,6 +399,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         initial_project: String::new(),
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -517,6 +519,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         initial_project: String::new(),
         tool_syntax: ToolSyntax::Xml,
         use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -639,6 +642,7 @@ async fn test_parse_error_handling() -> Result<()> {
         initial_project: String::new(),
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -771,6 +775,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
         initial_project: String::new(),
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -886,6 +891,7 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
         initial_project: String::new(),
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -1010,6 +1016,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
         initial_project: String::new(),
         tool_syntax: ToolSyntax::Native,
         use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
     };
 
     let mut agent = Agent::new(components, session_config);
@@ -1117,6 +1124,7 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
             initial_project: String::new(),
             tool_syntax: ToolSyntax::Xml,
             use_diff_blocks: false,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
         },
         None,
     );
@@ -1483,6 +1491,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         initial_project: String::new(),
         tool_syntax: ToolSyntax::Xml,
         use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
     };
 
     let mut agent = Agent::new(components, session_config);

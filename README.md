@@ -272,6 +272,8 @@ code-assistant --playback session.json --fast-playback
 - `--model <name>`: Specify model from models.json (use `--list-models` to see available options)
 - `--continue-task`: Resume from previous session state
 - `--use-diff-format`: Enable alternative diff format for file editing
+- `--sandbox-mode <danger-full-access|read-only|workspace-write>`: Choose the sandbox policy for command execution (default `danger-full-access`)
+- `--sandbox-network`: When combined with `--sandbox-mode workspace-write`, allow outbound network access - inside the sandbox
 - `--verbose` / `-v`: Enable detailed logging (use multiple times for more verbosity)
 </details>
 

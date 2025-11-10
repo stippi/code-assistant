@@ -97,13 +97,21 @@ very small `crates/platform_utils/` with only those primitives.
 
 ## Phased Implementation Plan
 
-### Phase 0 – Scaffolding & Observability
+### Phase 0 – Scaffolding, New Crates & Observability
 - **Deliverables**
-  - Introduce `sandbox` module with `SandboxPolicy`, `WritableRoot`, and helper
-    enums/types copied/simplified from codex.
+  - Create `crates/sandbox/` housing `SandboxPolicy`, `WritableRoot`, policy
+    serialization, and shared errors.
+  - Extract existing `CommandExecutor` trait + `DefaultCommandExecutor` into
+    `crates/command_executor/` (or similar) and wire current callers through the new
+    crate. Likewise, move CodeExplorer + file encoding helpers into
+    `crates/fs_explorer/`. Keep the APIs unchanged initially to minimize churn.
   - Add tracing around `CommandExecutor` and `CodeExplorer` to log attempted paths
     and whether sandbox enforcement is active.
-  - Define error types (`SandboxViolation`, `SandboxUnavailable`).
+  - Define error types (`SandboxViolation`, `SandboxUnavailable`) within the sandbox
+    crate so all consumers use the same semantics.
+  - Surface sandbox selection at the CLI/session-config level so every session
+    persists its desired policy (defaulting to `danger-full-access` for backward
+    compatibility).
 - **Testing**
   - Unit tests for policy serialization/deserialization.
   - Snapshot tests ensuring writable-root derivation includes `.git` as read-only.

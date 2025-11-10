@@ -36,6 +36,8 @@ async fn main() -> Result<()> {
             model,
             tool_syntax,
             use_diff_format,
+            sandbox_mode,
+            sandbox_network,
         }) => {
             // Ensure the path exists and is a directory
             if !path.is_dir() {
@@ -54,6 +56,7 @@ async fn main() -> Result<()> {
                 record: None,
                 playback: None,
                 fast_playback: false,
+                sandbox_policy: sandbox_mode.to_policy(sandbox_network),
             };
 
             app::acp::run(verbose, config).await
@@ -73,6 +76,7 @@ async fn main() -> Result<()> {
             }
 
             let model_name = args.get_model_name()?;
+            let sandbox_policy = args.sandbox_policy();
 
             let config = app::AgentRunConfig {
                 path: args.path,
@@ -84,6 +88,7 @@ async fn main() -> Result<()> {
                 record: args.record,
                 playback: args.playback,
                 fast_playback: args.fast_playback,
+                sandbox_policy,
             };
 
             if args.ui {

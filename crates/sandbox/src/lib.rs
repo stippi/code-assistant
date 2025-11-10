@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "mode", rename_all = "kebab-case")]
 pub enum SandboxPolicy {
     DangerFullAccess,
@@ -17,6 +17,12 @@ pub enum SandboxPolicy {
         #[serde(default)]
         exclude_slash_tmp: bool,
     },
+}
+
+impl Default for SandboxPolicy {
+    fn default() -> Self {
+        SandboxPolicy::DangerFullAccess
+    }
 }
 
 impl SandboxPolicy {
@@ -84,6 +90,10 @@ impl SandboxPolicy {
                     .collect()
             }
         }
+    }
+
+    pub fn requires_restrictions(&self) -> bool {
+        !matches!(self, SandboxPolicy::DangerFullAccess)
     }
 }
 

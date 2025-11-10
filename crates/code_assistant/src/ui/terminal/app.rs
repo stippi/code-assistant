@@ -260,6 +260,7 @@ impl TerminalTuiApp {
                 .to_string(),
             tool_syntax: config.tool_syntax,
             use_diff_blocks: config.use_diff_format,
+            sandbox_policy: config.sandbox_policy.clone(),
         };
 
         // Create session manager

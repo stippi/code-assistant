@@ -14,6 +14,7 @@ use crate::session::instance::SessionInstance;
 use crate::session::{SessionConfig, SessionState};
 use crate::ui::ui_events::UiEvent;
 use crate::ui::UserInterface;
+use crate::utils::sandboxed_executor::SandboxedCommandExecutor;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
 use tracing::{debug, error};
@@ -278,6 +279,17 @@ impl SessionManager {
         let state_storage = Box::new(crate::agent::persistence::SessionStatePersistence::new(
             session_manager_ref,
         ));
+
+        let command_executor: Box<dyn CommandExecutor> =
+            if session_config.sandbox_policy.requires_restrictions() {
+                Box::new(SandboxedCommandExecutor::new(
+                    command_executor,
+                    session_config.sandbox_policy.clone(),
+                    Some(session_id.to_string()),
+                ))
+            } else {
+                command_executor
+            };
 
         let components = AgentComponents {
             llm_provider,
