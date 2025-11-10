@@ -218,7 +218,7 @@ jobs:
           PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
         with:
           command: build
-          args: --release --target ${{ matrix.target }}
+          args: --locked --release --target ${{ matrix.target }}
 
       - name: Package Binary
         shell: bash
