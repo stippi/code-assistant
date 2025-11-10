@@ -16,6 +16,7 @@ pub mod parameter_renderers;
 mod path_util;
 mod plan_banner;
 mod root;
+pub mod sandbox_selector;
 pub mod simple_renderers;
 pub mod theme;
 
@@ -41,6 +42,7 @@ use gpui_component::Root;
 pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
+use sandbox::SandboxPolicy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, trace, warn};
@@ -97,6 +99,8 @@ pub struct Gpui {
 
     // Current model selection
     current_model: Arc<Mutex<Option<String>>>,
+    // Current sandbox selection
+    current_sandbox_policy: Arc<Mutex<Option<SandboxPolicy>>>,
 }
 
 fn init(cx: &mut App) {
@@ -291,6 +295,8 @@ impl Gpui {
 
             // Current model selection
             current_model: Arc::new(Mutex::new(None)),
+            // Current sandbox selection
+            current_sandbox_policy: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -981,6 +987,11 @@ impl Gpui {
                 // Refresh UI to update the model selector
                 cx.refresh().expect("Failed to refresh windows");
             }
+            UiEvent::UpdateSandboxPolicy { policy } => {
+                debug!("UI: UpdateSandboxPolicy event with policy: {:?}", policy);
+                *self.current_sandbox_policy.lock().unwrap() = Some(policy.clone());
+                cx.refresh().expect("Failed to refresh windows");
+            }
         }
     }
 
@@ -1111,6 +1122,10 @@ impl Gpui {
 
     pub fn get_plan_state(&self) -> Option<PlanState> {
         self.plan_state.lock().unwrap().clone()
+    }
+
+    pub fn get_current_sandbox_policy(&self) -> Option<SandboxPolicy> {
+        self.current_sandbox_policy.lock().unwrap().clone()
     }
 
     // Extended draft management methods with attachments
@@ -1299,6 +1314,21 @@ impl Gpui {
                     );
                 }
             }
+            BackendResponse::SandboxPolicyChanged { session_id, policy } => {
+                let current_session_id = self.current_session_id.lock().unwrap().clone();
+                if current_session_id.as_deref() == Some(session_id.as_str()) {
+                    debug!(
+                        "Received BackendResponse::SandboxPolicyChanged for active session {}",
+                        session_id
+                    );
+                    self.push_event(UiEvent::UpdateSandboxPolicy { policy });
+                } else {
+                    debug!(
+                        "Ignoring BackendResponse::SandboxPolicyChanged for session {} (current: {:?})",
+                        session_id, current_session_id
+                    );
+                }
+            }
         }
     }
 }
@@ -1322,6 +1352,9 @@ impl UserInterface for Gpui {
                         .unwrap()
                         .remove(current_session_id);
                 }
+            }
+            UiEvent::UpdateSandboxPolicy { policy } => {
+                *self.current_sandbox_policy.lock().unwrap() = Some(policy.clone());
             }
             _ => {}
         }

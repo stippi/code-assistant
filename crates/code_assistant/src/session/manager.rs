@@ -17,6 +17,7 @@ use crate::ui::UserInterface;
 use crate::utils::sandboxed_executor::SandboxedCommandExecutor;
 use crate::utils::CommandExecutor;
 use llm::LLMProvider;
+use sandbox::SandboxPolicy;
 use tracing::{debug, error};
 
 /// The main SessionManager that manages multiple active sessions with on-demand agents
@@ -180,6 +181,15 @@ impl SessionManager {
 
         ui_events.push(UiEvent::UpdateCurrentModel {
             model_name: model_name_for_event.clone(),
+        });
+
+        let sandbox_policy_for_event = {
+            let session_instance = self.active_sessions.get(&session_id).unwrap();
+            session_instance.session.config.sandbox_policy.clone()
+        };
+
+        ui_events.push(UiEvent::UpdateSandboxPolicy {
+            policy: sandbox_policy_for_event,
         });
 
         // Set as active
@@ -454,6 +464,26 @@ impl SessionManager {
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
             instance.session.model_config = model_config;
+        }
+
+        Ok(())
+    }
+
+    pub fn set_session_sandbox_policy(
+        &mut self,
+        session_id: &str,
+        policy: SandboxPolicy,
+    ) -> Result<()> {
+        let mut session = self
+            .persistence
+            .load_chat_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+
+        session.config.sandbox_policy = policy.clone();
+        self.persistence.save_chat_session(&session)?;
+
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.config.sandbox_policy = policy;
         }
 
         Ok(())

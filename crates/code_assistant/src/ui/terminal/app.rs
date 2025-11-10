@@ -430,6 +430,17 @@ impl TerminalTuiApp {
                                 "Switched to model: {model_name}",
                             )));
                         }
+                        BackendResponse::SandboxPolicyChanged {
+                            session_id: _,
+                            policy,
+                        } => {
+                            let mut state = app_state_clone.lock().await;
+                            state.update_sandbox_policy(Some(policy.clone()));
+                            state.set_info_message(Some(format!(
+                                "Sandbox mode set to {:?}",
+                                policy
+                            )));
+                        }
                     }
                 }
             });

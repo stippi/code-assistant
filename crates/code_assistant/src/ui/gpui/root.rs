@@ -239,6 +239,21 @@ impl RootView {
                     }
                 }
             }
+            InputAreaEvent::SandboxChanged { policy } => {
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::ChangeSandboxPolicy {
+                            session_id: session_id.clone(),
+                            policy: policy.clone(),
+                        });
+                    } else {
+                        error!("Failed to lock backend event sender");
+                    }
+                }
+            }
         }
     }
 
@@ -615,18 +630,25 @@ impl Focusable for RootView {
 impl Render for RootView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Get current chat state from global Gpui
-        let (chat_sessions, current_session_id, current_activity_state, current_model, plan_state) =
-            if let Some(gpui) = cx.try_global::<Gpui>() {
-                (
-                    gpui.get_chat_sessions(),
-                    gpui.get_current_session_id(),
-                    gpui.current_session_activity_state.lock().unwrap().clone(),
-                    gpui.get_current_model(),
-                    gpui.get_plan_state(),
-                )
-            } else {
-                (Vec::new(), None, None, None, None)
-            };
+        let (
+            chat_sessions,
+            current_session_id,
+            current_activity_state,
+            current_model,
+            plan_state,
+            current_sandbox_policy,
+        ) = if let Some(gpui) = cx.try_global::<Gpui>() {
+            (
+                gpui.get_chat_sessions(),
+                gpui.get_current_session_id(),
+                gpui.current_session_activity_state.lock().unwrap().clone(),
+                gpui.get_current_model(),
+                gpui.get_plan_state(),
+                gpui.get_current_sandbox_policy(),
+            )
+        } else {
+            (Vec::new(), None, None, None, None, None)
+        };
 
         // Update chat sidebar if needed
         if self.chat_sessions != chat_sessions || self.current_session_id != current_session_id {
@@ -661,6 +683,14 @@ impl Render for RootView {
             self.input_area.update(cx, |input_area, cx| {
                 input_area.set_current_model(model_to_set, window, cx);
             });
+        }
+
+        if let Some(policy) = current_sandbox_policy {
+            if self.input_area.read(cx).current_sandbox_policy() != policy {
+                self.input_area.update(cx, |input_area, cx| {
+                    input_area.set_current_sandbox_policy(policy.clone(), window, cx);
+                });
+            }
         }
 
         // Update InputArea with current agent state
