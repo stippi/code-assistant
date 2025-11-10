@@ -1,8 +1,8 @@
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
-use crate::types::{SearchMode, SearchOptions, SearchResult};
 use anyhow::{anyhow, Result};
+use fs_explorer::{SearchMode, SearchOptions, SearchResult};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;

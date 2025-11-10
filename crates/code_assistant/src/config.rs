@@ -1,6 +1,6 @@
-use crate::explorer::Explorer;
-use crate::types::{CodeExplorer, Project};
+use crate::types::Project;
 use anyhow::Result;
+use fs_explorer::{CodeExplorer, Explorer};
 use std::collections::HashMap;
 use std::path::PathBuf;
 

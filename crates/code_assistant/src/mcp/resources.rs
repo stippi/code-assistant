@@ -1,5 +1,5 @@
 use super::types::{Resource, ResourceContent};
-use crate::types::FileTreeEntry;
+use fs_explorer::FileTreeEntry;
 use std::collections::HashSet;
 
 pub struct ResourceManager {

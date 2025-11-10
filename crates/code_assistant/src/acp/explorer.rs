@@ -5,15 +5,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::config::{DefaultProjectManager, ProjectManager};
-use crate::explorer::{is_path_gitignored, Explorer};
-use crate::types::{
-    CodeExplorer, FileEncoding, FileFormat, FileReplacement, FileTreeEntry, Project, SearchOptions,
-    SearchResult,
-};
-use crate::utils::encoding::{apply_file_format, detect_line_ending, normalize_content};
-use crate::utils::file_updater::{
-    apply_matches, extract_stable_ranges, find_replacement_matches,
+use crate::types::Project;
+use command_executor::CommandExecutor;
+use fs_explorer::encoding::{apply_file_format, detect_line_ending, normalize_content};
+use fs_explorer::file_updater::{
+    apply_matches, apply_replacements_normalized, extract_stable_ranges, find_replacement_matches,
     reconstruct_formatted_replacements,
+};
+use fs_explorer::{
+    is_path_gitignored, CodeExplorer, Explorer, FileEncoding, FileFormat, FileReplacement,
+    FileTreeEntry, SearchOptions, SearchResult,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::spawn_blocking;
@@ -170,7 +171,7 @@ impl AcpCodeExplorer {
         self.store_format(
             &abs,
             FileFormat {
-                encoding: crate::types::FileEncoding::UTF8,
+                encoding: FileEncoding::UTF8,
                 line_ending,
             },
         );
@@ -278,11 +279,7 @@ impl CodeExplorer for AcpCodeExplorer {
         Ok(())
     }
 
-    async fn list_files(
-        &mut self,
-        path: &Path,
-        max_depth: Option<usize>,
-    ) -> Result<crate::types::FileTreeEntry> {
+    async fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry> {
         self.delegate.list_files(path, max_depth).await
     }
 
@@ -292,7 +289,7 @@ impl CodeExplorer for AcpCodeExplorer {
         replacements: &[FileReplacement],
     ) -> Result<String> {
         let (original_content, _) = self.read_entire(path).await?;
-        let updated = crate::utils::apply_replacements_normalized(&original_content, replacements)?;
+        let updated = apply_replacements_normalized(&original_content, replacements)?;
         self.write_entire(path, &updated).await
     }
 
@@ -301,7 +298,7 @@ impl CodeExplorer for AcpCodeExplorer {
         path: &Path,
         replacements: &[FileReplacement],
         _format_command: &str,
-        _command_executor: &dyn crate::utils::CommandExecutor,
+        _command_executor: &dyn CommandExecutor,
     ) -> Result<(String, Option<Vec<FileReplacement>>)> {
         let (original_content, _) = self.read_entire(path).await?;
         let (matches, has_conflicts) = find_replacement_matches(&original_content, replacements)?;

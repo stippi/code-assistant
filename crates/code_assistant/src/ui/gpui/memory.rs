@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex};
 use gpui::{div, prelude::*, px, App, Axis, Context, Entity, FocusHandle, Focusable, Window};
 use gpui_component::{ActiveTheme, StyledExt};
 
-use crate::types::{FileSystemEntryType, FileTreeEntry, LoadedResource, WorkingMemory};
+use crate::types::{LoadedResource, WorkingMemory};
 use crate::ui::gpui::file_icons;
+use fs_explorer::{FileSystemEntryType, FileTreeEntry};
 
 // Entity for displaying loaded resources
 pub struct LoadedResourcesView {

@@ -1,14 +1,10 @@
 use clap::ValueEnum;
+use fs_explorer::FileTreeEntry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use web::{WebPage, WebSearchResult};
-
-pub use fs_explorer::{
-    CodeExplorer, FileEncoding, FileFormat, FileReplacement, FileSystemEntryType, FileTreeEntry,
-    SearchMode, SearchOptions, SearchResult,
-};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Project {

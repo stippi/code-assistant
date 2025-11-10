@@ -3,7 +3,6 @@ mod agent;
 mod app;
 mod cli;
 mod config;
-mod explorer;
 mod logging;
 mod mcp;
 mod persistence;

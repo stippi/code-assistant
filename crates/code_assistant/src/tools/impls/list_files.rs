@@ -1,8 +1,8 @@
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
-use crate::types::FileTreeEntry;
 use anyhow::Result;
+use fs_explorer::{FileSystemEntryType, FileTreeEntry};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
@@ -55,7 +55,7 @@ fn update_tree_entry(
             .entry(first.clone())
             .or_insert_with(|| FileTreeEntry {
                 name: first.clone(),
-                entry_type: crate::types::FileSystemEntryType::Directory,
+                entry_type: FileSystemEntryType::Directory,
                 children: std::collections::HashMap::new(),
                 is_expanded: true,
             });
@@ -225,7 +225,7 @@ impl Tool for ListFilesTool {
                 .entry(input.project.clone())
                 .or_insert_with(|| FileTreeEntry {
                     name: input.project.clone(),
-                    entry_type: crate::types::FileSystemEntryType::Directory,
+                    entry_type: FileSystemEntryType::Directory,
                     children: std::collections::HashMap::new(),
                     is_expanded: true,
                 });
@@ -269,7 +269,7 @@ impl Tool for ListFilesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::FileSystemEntryType;
+    use fs_explorer::FileSystemEntryType;
     use std::collections::HashMap;
 
     // Helper to create a simple file tree for testing

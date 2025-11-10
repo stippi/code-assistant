@@ -3,12 +3,13 @@ use crate::tools::core::{Tool, ToolContext};
 use crate::tools::impls::edit::{EditInput, EditTool};
 use crate::tools::impls::replace_in_file::{ReplaceInFileInput, ReplaceInFileTool};
 use crate::tools::impls::write_file::{WriteFileInput, WriteFileTool};
-use crate::types::{FileReplacement, LoadedResource, Project, WorkingMemory};
-use crate::utils::file_updater::{
-    extract_stable_ranges, reconstruct_formatted_replacements, MatchRange,
-};
+use crate::types::{LoadedResource, Project, WorkingMemory};
 use crate::utils::CommandOutput;
 use anyhow::Result;
+use fs_explorer::file_updater::{
+    extract_stable_ranges, reconstruct_formatted_replacements, MatchRange,
+};
+use fs_explorer::FileReplacement;
 use std::collections::HashMap;
 use std::path::PathBuf;
 

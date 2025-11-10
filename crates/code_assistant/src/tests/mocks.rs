@@ -5,6 +5,14 @@ use crate::ui::{UIError, UiEvent, UserInterface};
 use crate::utils::{CommandExecutor, CommandOutput};
 use anyhow::Result;
 use async_trait::async_trait;
+use fs_explorer::{
+    file_updater::{
+        apply_replacements_normalized, extract_stable_ranges, find_replacement_matches,
+        reconstruct_formatted_replacements,
+    },
+    CodeExplorer, FileReplacement, FileSystemEntryType, FileTreeEntry, SearchMode, SearchOptions,
+    SearchResult,
+};
 use llm::{types::*, LLMProvider, LLMRequest, StreamingCallback};
 use regex::RegexBuilder;
 use std::collections::HashMap;
@@ -530,7 +538,7 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))?
             .clone();
 
-        let updated_content = crate::utils::apply_replacements_normalized(&content, replacements)?;
+        let updated_content = apply_replacements_normalized(&content, replacements)?;
 
         // Update the stored content
         files.insert(path.to_path_buf(), updated_content.clone());
@@ -545,10 +553,6 @@ impl CodeExplorer for MockExplorer {
         format_command: &str,
         command_executor: &dyn crate::utils::CommandExecutor,
     ) -> Result<(String, Option<Vec<FileReplacement>>)> {
-        use crate::utils::file_updater::{
-            extract_stable_ranges, find_replacement_matches, reconstruct_formatted_replacements,
-        };
-
         // Capture original content
         let original_content = self.read_file(path).await?;
 

@@ -46,13 +46,13 @@ Convenience methods on Project:
 ## Implementation Status
 
 ### ✅ Core text replacement + normalization
-- File: crates/code_assistant/src/utils/file_updater.rs
+- File: crates/fs_explorer/src/file_updater.rs
 - Features:
   - Split responsibilities: find_replacement_matches (detects overlapping/adjacent), apply_matches (applies matches), and higher-level apply_replacements_normalized
   - Normalization of content (line endings, trailing whitespace) to make matching robust
 
 ### ✅ Stable range extraction and conservative reconstruction
-- File: crates/code_assistant/src/utils/file_updater.rs
+- File: crates/fs_explorer/src/file_updater.rs
 - StableRange extraction now retains whitespace-only anchors (no trimming) so whitespace doesn’t bleed into replacements
 - reconstruct_formatted_replacements now uses conservative guards:
   - Locates surrounding stable ranges in the formatted content (falls back to file edges for start/end-of-file matches)
@@ -85,7 +85,7 @@ Convenience methods on Project:
   - After writing, runs formatter (if configured), re-reads the file, and overwrites input.content with the formatted content so follow-up edits align with reality
 
 ### ✅ Explorer integration
-- File: crates/code_assistant/src/explorer.rs (real explorer)
+- File: crates/fs_explorer/src/explorer.rs (real explorer)
 - Mock: crates/code_assistant/src/tests/mocks.rs
   - MockExplorer simulates formatting by replacing file contents after a format command
   - On command failure (success == false), returns None for updated replacements (graceful failure)

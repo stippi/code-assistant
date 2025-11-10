@@ -1,9 +1,9 @@
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
-use crate::types::{FileReplacement, LoadedResource};
-use crate::utils::FileUpdaterError;
+use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
+use fs_explorer::{FileReplacement, FileUpdaterError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
