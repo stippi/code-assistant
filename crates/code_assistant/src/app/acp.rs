@@ -115,4 +115,5 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
             handle_io.await
         })
         .await
+        .map_err(anyhow::Error::new)
 }

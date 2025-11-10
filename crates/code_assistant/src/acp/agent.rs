@@ -75,6 +75,14 @@ impl ACPAgentImpl {
         }
     }
 
+    fn agent_info() -> acp::Implementation {
+        acp::Implementation {
+            name: "code-assistant".to_string(),
+            title: Some("Code Assistant".to_string()),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
+
     fn compute_model_state(
         default_model: &str,
         preferred_model: Option<&str>,
@@ -272,6 +280,7 @@ impl acp::Agent for ACPAgentImpl {
                     })),
                 },
                 auth_methods: Vec::new(),
+                agent_info: Some(Self::agent_info()),
                 meta: None,
             })
         })

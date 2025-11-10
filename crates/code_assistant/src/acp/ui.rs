@@ -443,6 +443,13 @@ impl ACPUserUI {
         self.should_continue.store(false, Ordering::Relaxed);
     }
 
+    fn content_chunk(content: acp::ContentBlock) -> acp::ContentChunk {
+        acp::ContentChunk {
+            content,
+            meta: None,
+        }
+    }
+
     /// Send a session update notification
     async fn send_session_update(&self, update: acp::SessionUpdate) -> Result<(), UIError> {
         tracing::debug!("ACPUserUI: Sending session update: {:?}", update);
@@ -537,13 +544,13 @@ impl UserInterface for ACPUserUI {
                 attachments,
             } => {
                 // Send user message content
-                self.send_session_update(acp::SessionUpdate::UserMessageChunk {
-                    content: acp::ContentBlock::Text(acp::TextContent {
+                self.send_session_update(acp::SessionUpdate::UserMessageChunk(
+                    Self::content_chunk(acp::ContentBlock::Text(acp::TextContent {
                         annotations: None,
                         text: content,
                         meta: None,
-                    }),
-                })
+                    })),
+                ))
                 .await?;
 
                 // Send attachments as additional content blocks
@@ -551,15 +558,15 @@ impl UserInterface for ACPUserUI {
                     #[allow(clippy::single_match)]
                     match attachment {
                         crate::persistence::DraftAttachment::Image { content, mime_type } => {
-                            self.send_session_update(acp::SessionUpdate::UserMessageChunk {
-                                content: acp::ContentBlock::Image(acp::ImageContent {
+                            self.send_session_update(acp::SessionUpdate::UserMessageChunk(
+                                Self::content_chunk(acp::ContentBlock::Image(acp::ImageContent {
                                     annotations: None,
                                     data: content,
                                     mime_type,
                                     uri: None,
                                     meta: None,
-                                }),
-                            })
+                                })),
+                            ))
                             .await?;
                         }
                         _ => {} // Ignore other attachment types for now
@@ -686,15 +693,18 @@ impl UserInterface for ACPUserUI {
         match fragment {
             DisplayFragment::PlainText(_) | DisplayFragment::Image { .. } => {
                 let content = fragment_to_content_block(fragment);
-                self.queue_session_update(acp::SessionUpdate::AgentMessageChunk { content });
+                let chunk = Self::content_chunk(content);
+                self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(chunk));
             }
             DisplayFragment::CompactionDivider { .. } => {
                 let content = fragment_to_content_block(fragment);
-                self.queue_session_update(acp::SessionUpdate::AgentMessageChunk { content });
+                let chunk = Self::content_chunk(content);
+                self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(chunk));
             }
             DisplayFragment::ThinkingText(_) => {
                 let content = fragment_to_content_block(fragment);
-                self.queue_session_update(acp::SessionUpdate::AgentThoughtChunk { content });
+                let chunk = Self::content_chunk(content);
+                self.queue_session_update(acp::SessionUpdate::AgentThoughtChunk(chunk));
             }
             DisplayFragment::ToolName { name, id } => {
                 if id.is_empty() {
@@ -798,13 +808,13 @@ impl UserInterface for ACPUserUI {
                 // No ACP representation needed yet
             }
             DisplayFragment::ReasoningSummaryDelta(delta) => {
-                self.queue_session_update(acp::SessionUpdate::AgentMessageChunk {
-                    content: acp::ContentBlock::Text(acp::TextContent {
+                self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(
+                    Self::content_chunk(acp::ContentBlock::Text(acp::TextContent {
                         annotations: None,
                         text: delta.clone(),
                         meta: None,
-                    }),
-                });
+                    })),
+                ));
             }
         }
         Ok(())
@@ -969,7 +979,7 @@ mod tests {
         send_result.unwrap();
 
         match notification.update {
-            acp::SessionUpdate::UserMessageChunk { content } => match content {
+            acp::SessionUpdate::UserMessageChunk(chunk) => match chunk.content {
                 acp::ContentBlock::Text(text) => assert_eq!(text.text, "Hello"),
                 other => panic!("unexpected content: {other:?}"),
             },
