@@ -166,27 +166,24 @@ impl Tool for EditTool {
         let full_path = explorer.root_dir().join(&path);
 
         // Create a FileReplacement from the input
-        let replacement = FileReplacement {
+        let replacements = [FileReplacement {
             search: input.old_text.clone(),
             replace: input.new_text.clone(),
             replace_all: input.replace_all,
-        };
+        }];
 
         // Apply with or without formatting, based on project configuration
         let format_result = if let Some(format_command) = project_config.format_command_for(&path) {
             explorer
                 .apply_replacements_with_formatting(
                     &full_path,
-                    &[replacement.clone()],
+                    &replacements,
                     &format_command,
                     context.command_executor,
                 )
                 .await
         } else {
-            match explorer
-                .apply_replacements(&full_path, &[replacement])
-                .await
-            {
+            match explorer.apply_replacements(&full_path, &replacements).await {
                 Ok(content) => Ok((content, None)),
                 Err(e) => Err(e),
             }

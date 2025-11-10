@@ -228,21 +228,6 @@ impl MessageConverter for DefaultMessageConverter {
     }
 }
 
-/// Response structure for Anthropic error messages
-#[derive(Debug, Serialize, serde::Deserialize)]
-struct AnthropicErrorResponse {
-    #[serde(rename = "type")]
-    error_type: String,
-    error: AnthropicErrorPayload,
-}
-
-#[derive(Debug, Serialize, serde::Deserialize)]
-struct AnthropicErrorPayload {
-    #[serde(rename = "type")]
-    error_type: String,
-    message: String,
-}
-
 /// Rate limit information extracted from response headers
 #[derive(Debug, Default)]
 struct AnthropicRateLimitInfo {

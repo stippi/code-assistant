@@ -64,8 +64,9 @@ pub enum LoadedResource {
     WebPage(WebPage),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum FileEncoding {
+    #[default]
     UTF8,
     UTF16LE,
     UTF16BE,
@@ -74,23 +75,12 @@ pub enum FileEncoding {
     Other(String),
 }
 
-impl Default for FileEncoding {
-    fn default() -> Self {
-        Self::UTF8
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum LineEnding {
-    LF,   // Unix: \n
+    #[default]
+    LF, // Unix: \n
     Crlf, // Windows: \r\n
     CR,   // Legacy Mac: \r
-}
-
-impl Default for LineEnding {
-    fn default() -> Self {
-        Self::LF
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,33 +116,23 @@ pub struct WorkingMemory {
 }
 
 /// Priority levels for plan items
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanItemPriority {
     High,
+    #[default]
     Medium,
     Low,
 }
 
-impl Default for PlanItemPriority {
-    fn default() -> Self {
-        Self::Medium
-    }
-}
-
 /// Execution status for plan items
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanItemStatus {
+    #[default]
     Pending,
     InProgress,
     Completed,
-}
-
-impl Default for PlanItemStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 /// A single plan item maintained by the agent
@@ -269,31 +249,19 @@ pub enum ToolError {
     ParseError(String),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct FileSystemEntry {
-    pub path: PathBuf,
-    pub name: String,
-    pub entry_type: FileSystemEntryType,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum FileSystemEntryType {
     File,
     Directory,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum SearchMode {
     /// Standard text search, case-insensitive by default
+    #[default]
     Exact,
     /// Regular expression search
     Regex,
-}
-
-impl Default for SearchMode {
-    fn default() -> Self {
-        Self::Exact
-    }
 }
 
 #[derive(Debug, Clone, Default)]

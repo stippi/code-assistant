@@ -488,7 +488,7 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("No file tree configured"))?;
 
         // Handle request for root
-        if path == PathBuf::from("./root") {
+        if path == Path::new("./root") {
             return Ok(root.clone());
         }
 
@@ -1106,7 +1106,7 @@ impl ToolTestFixture {
     }
 
     /// Create a ToolContext from this fixture
-    pub fn context(&mut self) -> ToolContext {
+    pub fn context(&mut self) -> ToolContext<'_> {
         ToolContext {
             project_manager: &self.project_manager,
             command_executor: &self.command_executor,

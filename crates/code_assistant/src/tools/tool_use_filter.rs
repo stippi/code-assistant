@@ -16,6 +16,7 @@ pub trait ToolUseFilter: Send + Sync {
 
 /// Default filter that allows only one tool per message
 /// This prevents the LLM from chaining multiple tools before seeing the results
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct SingleToolFilter;
 
 impl ToolUseFilter for SingleToolFilter {
@@ -31,6 +32,7 @@ impl ToolUseFilter for SingleToolFilter {
 }
 
 /// Filter that allows unlimited tools (for backwards compatibility or special cases)
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct UnlimitedToolFilter;
 
 impl ToolUseFilter for UnlimitedToolFilter {
