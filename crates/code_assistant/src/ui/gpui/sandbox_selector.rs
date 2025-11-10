@@ -13,17 +13,12 @@ pub enum SandboxSelectorEvent {
 #[derive(Clone, Debug)]
 struct SandboxOption {
     label: &'static str,
-    description: &'static str,
     policy: SandboxPolicy,
 }
 
 impl SandboxOption {
-    fn new(label: &'static str, description: &'static str, policy: SandboxPolicy) -> Self {
-        Self {
-            label,
-            description,
-            policy,
-        }
+    fn new(label: &'static str, policy: SandboxPolicy) -> Self {
+        Self { label, policy }
     }
 }
 
@@ -35,13 +30,7 @@ impl SelectItem for SandboxOption {
     }
 
     fn display_title(&self) -> Option<gpui::AnyElement> {
-        let row = div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(div().text_sm().child(self.label))
-            .child(div().text_xs().child(self.description));
-        Some(row.into_any_element())
+        None
     }
 
     fn value(&self) -> &Self::Value {
@@ -78,19 +67,10 @@ impl SandboxSelector {
 
     fn options() -> Vec<SandboxOption> {
         vec![
-            SandboxOption::new(
-                "Danger Full Access",
-                "No sandboxing; full system access (default)",
-                SandboxPolicy::DangerFullAccess,
-            ),
-            SandboxOption::new(
-                "Read Only",
-                "Read-only filesystem; commands cannot modify files",
-                SandboxPolicy::ReadOnly,
-            ),
+            SandboxOption::new("Full Access", SandboxPolicy::DangerFullAccess),
+            SandboxOption::new("Read Only", SandboxPolicy::ReadOnly),
             SandboxOption::new(
                 "Workspace Write",
-                "Writes limited to session workspace and temp dirs",
                 SandboxPolicy::WorkspaceWrite {
                     writable_roots: Vec::new(),
                     network_access: false,
