@@ -937,10 +937,12 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Found 3 occurrences"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Found 3 occurrences")
+        );
 
         Ok(())
     }
@@ -980,16 +982,21 @@ mod tests {
             )
             .await?;
         assert_eq!(results.len(), 3);
-        assert!(results
-            .iter()
-            .any(|r| r.line_content.iter().any(|l| l.contains("This is line 2"))));
-        assert!(results.iter().any(|r| r
-            .line_content
-            .iter()
-            .any(|l| l.contains("Another file line 2"))));
-        assert!(results
-            .iter()
-            .any(|r| r.line_content.iter().any(|l| l.contains("Subdir line 2"))));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.line_content.iter().any(|l| l.contains("This is line 2")))
+        );
+        assert!(results.iter().any(|r| {
+            r.line_content
+                .iter()
+                .any(|l| l.contains("Another file line 2"))
+        }));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.line_content.iter().any(|l| l.contains("Subdir line 2")))
+        );
 
         // Test with max_results
         let results = explorer
