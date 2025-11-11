@@ -7,8 +7,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{Duration, Instant};
 
-use crate::utils::DefaultCommandExecutor;
-use crate::utils::{CommandExecutor, CommandOutput, StreamingCallback};
+use command_executor::{CommandExecutor, CommandOutput, DefaultCommandExecutor, StreamingCallback};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 const OUTPUT_BYTE_LIMIT: u64 = 1_048_576;

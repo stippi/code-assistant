@@ -1,7 +1,6 @@
 #[cfg(target_os = "macos")]
 mod macos_sandbox_tests {
-    use crate::utils::sandboxed_executor::SandboxedCommandExecutor;
-    use crate::utils::{CommandExecutor, DefaultCommandExecutor};
+    use command_executor::{CommandExecutor, DefaultCommandExecutor, SandboxedCommandExecutor};
     use sandbox::SandboxPolicy;
     use std::path::Path;
     use tempfile::tempdir;

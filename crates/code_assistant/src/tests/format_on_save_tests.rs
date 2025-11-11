@@ -4,7 +4,7 @@ use crate::tools::impls::edit::{EditInput, EditTool};
 use crate::tools::impls::replace_in_file::{ReplaceInFileInput, ReplaceInFileTool};
 use crate::tools::impls::write_file::{WriteFileInput, WriteFileTool};
 use crate::types::{LoadedResource, Project, WorkingMemory};
-use crate::utils::CommandOutput;
+use command_executor::CommandOutput;
 use anyhow::Result;
 use fs_explorer::file_updater::{
     extract_stable_ranges, reconstruct_formatted_replacements, MatchRange,

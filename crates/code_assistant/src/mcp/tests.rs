@@ -1,7 +1,8 @@
 use crate::config::{DefaultProjectManager, ProjectManager};
 use crate::mcp::handler::MessageHandler;
 use crate::tests::mocks::MockProjectManager;
-use crate::utils::{CommandExecutor, DefaultCommandExecutor, MockWriter};
+use crate::utils::MockWriter;
+use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use anyhow::Result;
 use fs_explorer::Explorer;
 use std::sync::Arc;

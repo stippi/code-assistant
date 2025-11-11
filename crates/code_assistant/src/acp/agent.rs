@@ -15,7 +15,7 @@ use crate::persistence::SessionModelConfig;
 use crate::session::instance::SessionActivityState;
 use crate::session::{SessionConfig, SessionManager};
 use crate::ui::UserInterface;
-use crate::utils::DefaultCommandExecutor;
+use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
 
@@ -603,7 +603,7 @@ impl acp::Agent for ACPAgentImpl {
             };
 
             // Use ACP Terminal Command Executor if client connection is available
-            let command_executor: Box<dyn crate::utils::CommandExecutor> = {
+            let command_executor: Box<dyn CommandExecutor> = {
                 if terminal_supported && client_connection.is_some() {
                     tracing::info!(
                         "ACP: Using ACPTerminalCommandExecutor for session {}",

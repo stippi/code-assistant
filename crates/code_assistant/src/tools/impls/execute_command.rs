@@ -3,7 +3,7 @@ use crate::tools::core::{
 };
 use crate::ui::streaming::DisplayFragment;
 use crate::ui::UserInterface;
-use crate::utils::StreamingCallback;
+use command_executor::StreamingCallback;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -222,6 +222,7 @@ impl Tool for ExecuteCommandTool {
 mod tests {
     use super::*;
     use crate::tests::mocks::ToolTestFixture;
+    use command_executor::CommandOutput;
 
     #[tokio::test]
     async fn test_execute_command_output_rendering() {
@@ -265,7 +266,7 @@ mod tests {
     async fn test_execute_command_success() -> Result<()> {
         // Create test fixture with command executor and UI
         let mut fixture =
-            ToolTestFixture::with_command_responses(vec![Ok(crate::utils::CommandOutput {
+            ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
                 success: true,
                 output: "Command output".to_string(),
             })])
@@ -302,7 +303,7 @@ mod tests {
     async fn test_execute_command_failure() -> Result<()> {
         // Create test fixture with failing command executor and UI
         let mut fixture =
-            ToolTestFixture::with_command_responses(vec![Ok(crate::utils::CommandOutput {
+            ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
                 success: false,
                 output: "Command failed: permission denied".to_string(),
             })])
@@ -337,8 +338,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_command_streaming() -> Result<()> {
-        use crate::utils::CommandOutput;
-
         // Create test fixture with multi-line output and UI for streaming
         let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
             success: true,

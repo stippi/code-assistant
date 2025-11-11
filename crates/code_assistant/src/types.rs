@@ -1,4 +1,5 @@
 use clap::ValueEnum;
+use command_executor::build_format_command;
 use fs_explorer::FileTreeEntry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -42,7 +43,7 @@ impl Project {
     /// Builds a formatter command for the given relative path using the optional {path} placeholder.
     pub fn format_command_for(&self, rel_path: &Path) -> Option<String> {
         self.formatter_template_for(rel_path)
-            .map(|template| crate::utils::build_format_command(&template, rel_path))
+            .map(|template| build_format_command(&template, rel_path))
     }
 }
 

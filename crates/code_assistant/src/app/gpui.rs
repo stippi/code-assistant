@@ -2,7 +2,7 @@ use super::AgentRunConfig;
 use crate::config::DefaultProjectManager;
 use crate::session::{SessionConfig, SessionManager};
 use crate::ui::{self, UserInterface};
-use crate::utils::DefaultCommandExecutor;
+use command_executor::DefaultCommandExecutor;
 use anyhow::Result;
 use llm::factory::create_llm_client_from_model;
 use std::sync::Arc;

@@ -7,7 +7,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 use crate::tools::impls::{ExecuteCommandTool, ReplaceInFileTool};
-use crate::utils::CommandOutput;
+use command_executor::CommandOutput;
 
 #[tokio::test]
 async fn test_read_files_tool() -> Result<()> {

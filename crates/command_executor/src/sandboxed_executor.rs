@@ -2,10 +2,11 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use command_executor::{CommandExecutor, CommandOutput, StreamingCallback};
 use sandbox::SandboxPolicy;
 #[cfg(not(target_os = "macos"))]
 use tracing::warn;
+
+use crate::{CommandExecutor, CommandOutput, StreamingCallback};
 
 #[cfg(target_os = "macos")]
 use {
@@ -120,7 +121,7 @@ impl SandboxedCommandExecutor {
         command_vec.extend(shell_args);
 
         let invocation = sandbox::build_seatbelt_invocation(command_vec, &self.policy, &cwd)
-            .map_err(|e| anyhow::anyhow!("Failed to prepare seatbelt invocation: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to prepare seatbelt invocation: {e}"))?;
 
         if redirect_stderr {
             self.run_blocking(invocation, &cwd).await

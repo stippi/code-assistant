@@ -2,7 +2,7 @@ use crate::config::ProjectManager;
 use crate::tools::core::tool::ToolContext;
 use crate::types::*;
 use crate::ui::{UIError, UiEvent, UserInterface};
-use crate::utils::{CommandExecutor, CommandOutput};
+use command_executor::{CommandExecutor, CommandOutput, StreamingCallback};
 use anyhow::Result;
 use async_trait::async_trait;
 use fs_explorer::{
@@ -13,7 +13,7 @@ use fs_explorer::{
     CodeExplorer, FileReplacement, FileSystemEntryType, FileTreeEntry, SearchMode, SearchOptions,
     SearchResult,
 };
-use llm::{types::*, LLMProvider, LLMRequest, StreamingCallback};
+use llm::{types::*, LLMProvider, LLMRequest, StreamingCallback as LlmStreamingCallback};
 use regex::RegexBuilder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -82,7 +82,7 @@ impl LLMProvider for MockLLMProvider {
     async fn send_message(
         &mut self,
         request: LLMRequest,
-        _streaming_callback: Option<&StreamingCallback>,
+        _streaming_callback: Option<&LlmStreamingCallback>,
     ) -> Result<LLMResponse, anyhow::Error> {
         self.requests.lock().unwrap().push(request);
         self.responses
@@ -174,7 +174,7 @@ impl CommandExecutor for MockCommandExecutor {
         &self,
         command_line: &str,
         working_dir: Option<&PathBuf>,
-        callback: Option<&dyn crate::utils::StreamingCallback>,
+        callback: Option<&dyn StreamingCallback>,
     ) -> Result<CommandOutput> {
         // For mock, just call the regular execute and simulate streaming if callback provided
         let result = self.execute(command_line, working_dir).await?;
@@ -211,7 +211,7 @@ pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
 #[allow(dead_code)]
 pub fn create_test_tool_context<'a>(
     project_manager: &'a dyn crate::config::ProjectManager,
-    command_executor: &'a dyn crate::utils::CommandExecutor,
+    command_executor: &'a dyn CommandExecutor,
     working_memory: Option<&'a mut crate::types::WorkingMemory>,
     plan: Option<&'a mut crate::types::PlanState>,
     ui: Option<&'a dyn crate::ui::UserInterface>,
@@ -551,7 +551,7 @@ impl CodeExplorer for MockExplorer {
         path: &Path,
         replacements: &[FileReplacement],
         format_command: &str,
-        command_executor: &dyn crate::utils::CommandExecutor,
+        command_executor: &dyn CommandExecutor,
     ) -> Result<(String, Option<Vec<FileReplacement>>)> {
         // Capture original content
         let original_content = self.read_file(path).await?;
