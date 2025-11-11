@@ -8,8 +8,8 @@ use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope}
 use crate::tools::{generate_system_message, ParserRegistry, ToolRequest};
 use crate::types::*;
 use crate::ui::{DisplayFragment, UiEvent, UserInterface};
-use command_executor::CommandExecutor;
 use anyhow::Result;
+use command_executor::CommandExecutor;
 use llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
     StreamingChunk,

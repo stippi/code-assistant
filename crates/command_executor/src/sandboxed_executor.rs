@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use sandbox::SandboxPolicy;
 #[cfg(not(target_os = "macos"))]

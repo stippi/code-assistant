@@ -2,9 +2,9 @@ use crate::config::ProjectManager;
 use crate::tools::core::tool::ToolContext;
 use crate::types::*;
 use crate::ui::{UIError, UiEvent, UserInterface};
-use command_executor::{CommandExecutor, CommandOutput, StreamingCallback};
 use anyhow::Result;
 use async_trait::async_trait;
+use command_executor::{CommandExecutor, CommandOutput, StreamingCallback};
 use fs_explorer::{
     file_updater::{
         apply_replacements_normalized, extract_stable_ranges, find_replacement_matches,

@@ -3,8 +3,8 @@ use crate::tools::core::{
 };
 use crate::ui::streaming::DisplayFragment;
 use crate::ui::UserInterface;
-use command_executor::StreamingCallback;
 use anyhow::{anyhow, Result};
+use command_executor::StreamingCallback;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
@@ -265,13 +265,12 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_success() -> Result<()> {
         // Create test fixture with command executor and UI
-        let mut fixture =
-            ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-                success: true,
-                output: "Command output".to_string(),
-            })])
-            .with_ui()
-            .with_tool_id("test-tool-1".to_string());
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
+            success: true,
+            output: "Command output".to_string(),
+        })])
+        .with_ui()
+        .with_tool_id("test-tool-1".to_string());
         let mut context = fixture.context();
 
         // Create input
@@ -302,13 +301,12 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_failure() -> Result<()> {
         // Create test fixture with failing command executor and UI
-        let mut fixture =
-            ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-                success: false,
-                output: "Command failed: permission denied".to_string(),
-            })])
-            .with_ui()
-            .with_tool_id("test-tool-2".to_string());
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
+            success: false,
+            output: "Command failed: permission denied".to_string(),
+        })])
+        .with_ui()
+        .with_tool_id("test-tool-2".to_string());
         let mut context = fixture.context();
 
         // Create input

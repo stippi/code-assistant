@@ -3,8 +3,8 @@ use super::types::*;
 use crate::config::{DefaultProjectManager, ProjectManager};
 use crate::tools::core::ToolRegistry;
 use crate::utils::{MessageWriter, StdoutWriter};
-use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use anyhow::Result;
+use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use tokio::io::Stdout;
 use tracing::{debug, error, trace};
 
