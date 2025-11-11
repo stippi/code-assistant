@@ -122,12 +122,11 @@ impl Render for SandboxSelector {
                 .appearance(false)
                 .icon(
                     Icon::default()
-                        .path("icons/shield_check.svg")
+                        .path("icons/chevron_up_down.svg")
                         .with_size(Size::XSmall)
                         .text_color(cx.theme().muted_foreground),
                 )
-                .min_w(px(180.))
-                .max_w(px(280.)),
+                .min_w(px(130.)),
         )
     }
 }

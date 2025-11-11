@@ -484,18 +484,8 @@ impl InputArea {
                     .gap_2()
                     .px_2()
                     .pb_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(160.))
-                            .child(self.model_selector.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(160.))
-                            .child(self.sandbox_selector.clone()),
-                    ),
+                    .child(div().flex_1().flex().child(self.model_selector.clone()))
+                    .child(div().flex_1().flex().child(self.sandbox_selector.clone())),
             )
     }
 }
