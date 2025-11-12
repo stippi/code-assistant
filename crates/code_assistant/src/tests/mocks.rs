@@ -1,4 +1,5 @@
 use crate::config::ProjectManager;
+use crate::permissions::PermissionMediator;
 use crate::tools::core::tool::ToolContext;
 use crate::types::*;
 use crate::ui::{UIError, UiEvent, UserInterface};
@@ -990,6 +991,7 @@ pub struct ToolTestFixture {
     plan: Option<PlanState>,
     ui: Option<MockUI>,
     tool_id: Option<String>,
+    permission_handler: Option<Arc<dyn PermissionMediator>>,
 }
 
 impl ToolTestFixture {
@@ -1002,6 +1004,7 @@ impl ToolTestFixture {
             plan: None,
             ui: None,
             tool_id: None,
+            permission_handler: None,
         }
     }
 
@@ -1067,6 +1070,7 @@ impl ToolTestFixture {
             plan: None,
             ui: None,
             tool_id: None,
+            permission_handler: None,
         }
     }
 
@@ -1079,6 +1083,7 @@ impl ToolTestFixture {
             plan: None,
             ui: None,
             tool_id: None,
+            permission_handler: None,
         }
     }
 
@@ -1117,6 +1122,15 @@ impl ToolTestFixture {
         self
     }
 
+    /// Attach a permission handler to this fixture
+    pub fn with_permission_handler<T>(mut self, handler: Arc<T>) -> Self
+    where
+        T: PermissionMediator + 'static,
+    {
+        self.permission_handler = Some(handler);
+        self
+    }
+
     /// Create a ToolContext from this fixture
     pub fn context(&mut self) -> ToolContext<'_> {
         ToolContext {
@@ -1126,7 +1140,7 @@ impl ToolTestFixture {
             plan: self.plan.as_mut(),
             ui: self.ui.as_ref().map(|ui| ui as &dyn UserInterface),
             tool_id: self.tool_id.clone(),
-            permission_handler: None,
+            permission_handler: self.permission_handler.as_deref(),
         }
     }
 

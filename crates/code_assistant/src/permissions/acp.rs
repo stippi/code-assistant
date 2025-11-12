@@ -4,9 +4,13 @@ use agent_client_protocol::{self as acp, Client};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::{runtime::Handle, task::block_in_place};
 
+const ALLOW_ALWAYS_OPTION_ID: &str = "allow-always";
 const ALLOW_OPTION_ID: &str = "allow-once";
 const DENY_OPTION_ID: &str = "deny-once";
 
@@ -14,6 +18,7 @@ pub struct AcpPermissionMediator {
     session_id: acp::SessionId,
     connection: Arc<acp::AgentSideConnection>,
     ui: Arc<ACPUserUI>,
+    allow_execute_command_always: AtomicBool,
 }
 
 impl AcpPermissionMediator {
@@ -26,6 +31,7 @@ impl AcpPermissionMediator {
             session_id,
             connection,
             ui,
+            allow_execute_command_always: AtomicBool::new(false),
         }
     }
 
@@ -95,10 +101,24 @@ impl AcpPermissionMediator {
 impl PermissionMediator for AcpPermissionMediator {
     async fn request_permission(
         &self,
-        request: PermissionRequest<'_>,
+        permission_request: PermissionRequest<'_>,
     ) -> Result<PermissionDecision> {
-        let tool_call = self.tool_call_update(&request);
+        if matches!(
+            permission_request.reason,
+            PermissionRequestReason::ExecuteCommand { .. }
+        ) && self.allow_execute_command_always.load(Ordering::Relaxed)
+        {
+            return Ok(PermissionDecision::GrantedSession);
+        }
+
+        let tool_call = self.tool_call_update(&permission_request);
         let options = vec![
+            acp::PermissionOption {
+                id: acp::PermissionOptionId::from(ALLOW_ALWAYS_OPTION_ID),
+                name: "Always allow in this session".into(),
+                kind: acp::PermissionOptionKind::AllowAlways,
+                meta: None,
+            },
             acp::PermissionOption {
                 id: acp::PermissionOptionId::from(ALLOW_OPTION_ID),
                 name: "Allow this command".into(),
@@ -113,7 +133,7 @@ impl PermissionMediator for AcpPermissionMediator {
             },
         ];
 
-        let request = acp::RequestPermissionRequest {
+        let acp_request = acp::RequestPermissionRequest {
             session_id: self.session_id.clone(),
             tool_call,
             options,
@@ -123,15 +143,27 @@ impl PermissionMediator for AcpPermissionMediator {
         let connection = self.connection.clone();
         let handle = Handle::current();
         let response = block_in_place(|| {
-            handle.block_on(async move { connection.request_permission(request).await })
+            handle.block_on(async move { connection.request_permission(acp_request).await })
         })?;
 
         let decision = match response.outcome {
             acp::RequestPermissionOutcome::Cancelled => PermissionDecision::Denied,
             acp::RequestPermissionOutcome::Selected { option_id }
+                if option_id == acp::PermissionOptionId::from(ALLOW_ALWAYS_OPTION_ID) =>
+            {
+                if matches!(
+                    permission_request.reason,
+                    PermissionRequestReason::ExecuteCommand { .. }
+                ) {
+                    self.allow_execute_command_always
+                        .store(true, Ordering::Relaxed);
+                }
+                PermissionDecision::GrantedSession
+            }
+            acp::RequestPermissionOutcome::Selected { option_id }
                 if option_id == acp::PermissionOptionId::from(ALLOW_OPTION_ID) =>
             {
-                PermissionDecision::Granted
+                PermissionDecision::GrantedOnce
             }
             acp::RequestPermissionOutcome::Selected { option_id }
                 if option_id == acp::PermissionOptionId::from(DENY_OPTION_ID) =>

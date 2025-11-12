@@ -56,6 +56,13 @@ impl CommandExecutor for SandboxedCommandExecutor {
         working_dir: Option<&PathBuf>,
         sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
+        if self.should_bypass(sandbox_request) {
+            return self
+                .inner
+                .execute(command_line, working_dir, sandbox_request)
+                .await;
+        }
+
         if !self.policy.requires_restrictions() {
             return self
                 .inner
@@ -91,6 +98,13 @@ impl CommandExecutor for SandboxedCommandExecutor {
         callback: Option<&dyn StreamingCallback>,
         sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
+        if self.should_bypass(sandbox_request) {
+            return self
+                .inner
+                .execute_streaming(command_line, working_dir, callback, sandbox_request)
+                .await;
+        }
+
         if !self.policy.requires_restrictions() {
             return self
                 .inner
@@ -121,6 +135,10 @@ impl CommandExecutor for SandboxedCommandExecutor {
 }
 
 impl SandboxedCommandExecutor {
+    fn should_bypass(&self, request: Option<&SandboxCommandRequest>) -> bool {
+        request.map_or(false, |req| req.bypass_sandbox)
+    }
+
     fn effective_policy(&self, request: Option<&SandboxCommandRequest>) -> SandboxPolicy {
         let mut policy = if request.is_some_and(|req| req.read_only) {
             SandboxPolicy::ReadOnly

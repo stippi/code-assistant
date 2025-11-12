@@ -25,7 +25,8 @@ pub struct PermissionRequest<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionDecision {
-    Granted,
+    GrantedOnce,
+    GrantedSession,
     Denied,
 }
 

@@ -16,6 +16,7 @@ pub struct CommandOutput {
 pub struct SandboxCommandRequest {
     pub writable_roots: Vec<PathBuf>,
     pub read_only: bool,
+    pub bypass_sandbox: bool,
 }
 
 /// Callback trait for streaming command output
