@@ -116,7 +116,7 @@ very small `crates/platform_utils/` with only those primitives.
   - Unit tests for policy serialization/deserialization.
   - Snapshot tests ensuring writable-root derivation includes `.git` as read-only.
 
-### Phase 1 – Path Validation for CodeExplorer (in progress)
+### Phase 1 – Path Validation for CodeExplorer ✅
 - **Deliverables**
   - Canonicalize project paths on load; store `ProjectSandboxScope { root, allowed_subprojects }`.  
     ✅ Implemented via `SandboxContext` + canonical roots registered by `SandboxAwareProjectManager`.
@@ -127,29 +127,24 @@ very small `crates/platform_utils/` with only those primitives.
     `WorkingMemory.available_projects`.  
     ✅ Newly opened projects register their roots automatically.
 - **Testing**
-  - Unit tests using `tempdir` and `MockExplorer` to confirm attempts to escape via
-    `../` or symlinks fail. **Still TODO** (currently covered only indirectly via existing tests).
-  - Integration test for multi-project session: ensure files inside the secondary
-    project root remain accessible once added to the scope. **Still TODO**.
+  - Unit tests using `tempdir` to confirm attempts to escape via `../` or symlinks fail.  
+    ✅ Added in `crates/fs_explorer/src/explorer.rs` (see `test_read_file_blocks_directory_traversal_escape`
+    and `test_read_file_blocks_symlink_escape`).
+  - Integration test for multi-project session ensures newly added projects remain accessible.  
+    ✅ `crates/code_assistant/src/tests/integration_tests.rs::test_multi_project_roots_are_registered_and_accessible`.
 
-### Phase 2 – macOS Seatbelt CommandExecutor Prototype
+### Phase 2 – macOS Seatbelt CommandExecutor Prototype (mostly complete)
 - **Deliverables**
-  - Port codex’s seatbelt launcher into `crates/code_assistant/src/sandbox/seatbelt.rs`
-    with minimal dependencies (policy text embedded in `docs/` or `src/sandbox`).
-  - Implement `SeatbeltCommandExecutor` that:
-    - Accepts a `SandboxCommandRequest` (command line, cwd, desired policy). ✅ Trait + executor updated; per-command hints now flow from tools.
-    - Builds SBPL policy with writable roots = union of selected project root(s)
-      and optional `TMPDIR`.
-    - Spawns via `/usr/bin/sandbox-exec`; falls back to `DefaultCommandExecutor`
-      if the binary is missing or macOS APIs fail, emitting telemetry.
-  - Provide feature flag / CLI toggle to opt into the prototype.
+  - Seatbelt launcher + SBPL builder lives in `crates/sandbox/src/seatbelt.rs` with base/network policies embedded ✔️
+  - `SandboxedCommandExecutor` (in `crates/command_executor/src/sandboxed_executor.rs`) accepts
+    `SandboxCommandRequest`s, merges session + per-command writable roots, and spawns `/usr/bin/sandbox-exec`
+    on macOS with env markers ✔️
+  - CLI & UI toggles (`--sandbox-mode`, `--sandbox-network`, session policy switcher) already surface the prototype ✔️
 - **Testing**
-  - Unit tests for SBPL argument generation (mirroring codex’s tests, e.g.,
-    ensuring `.git` becomes read-only).
-  - Integration tests guarded by `#[cfg(target_os = "macos")]` that spawn a simple
-    command inside the sandbox and verify write attempts outside allowed roots fail.
-  - Manual QA script (documented in `docs/sandbox-plan.md`) describing how to run
-    `cargo test --package code-assistant sandbox::seatbelt::tests`.
+  - SBPL argument generation unit tests – **remaining** (add to `crates/sandbox/src/seatbelt.rs`)
+  - macOS-only integration test – currently covered by `crates/code_assistant/src/tests/sandbox_tests.rs`
+    which exercises `SandboxedCommandExecutor` with `echo`/write attempts under seatbelt ✔️
+  - Manual QA playbook – **not required**; rely on automated tests + README flags instead
 
 ### Phase 3 – Permission Elevation & UX Hooks (not started)
 - **Deliverables**
