@@ -269,6 +269,7 @@ impl MessageHandler {
                 plan: None,
                 ui: None,
                 tool_id: None,
+                permission_handler: None,
             };
 
             // Invoke the tool

@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::agent::{Agent, AgentComponents};
 use crate::config::ProjectManager;
+use crate::permissions::PermissionMediator;
 use crate::persistence::{
     generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig,
 };
@@ -208,6 +209,7 @@ impl SessionManager {
 
     /// Start an agent for a session with a user message
     /// This is the key method - agents run on-demand for specific messages
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_agent_for_message(
         &mut self,
         session_id: &str,
@@ -216,6 +218,7 @@ impl SessionManager {
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         ui: Arc<dyn UserInterface>,
+        permission_handler: Option<Arc<dyn PermissionMediator>>,
     ) -> Result<()> {
         // Prepare session - need to scope the mutable borrow carefully
         let (
@@ -322,6 +325,7 @@ impl SessionManager {
             command_executor,
             ui: proxy_ui,
             state_persistence: state_storage,
+            permission_handler,
         };
 
         let mut agent = Agent::new(components, session_config.clone());

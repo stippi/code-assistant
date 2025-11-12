@@ -360,6 +360,7 @@ async fn handle_send_user_message(
                             project_manager,
                             command_executor,
                             user_interface,
+                            None,
                         )
                         .await
                 }

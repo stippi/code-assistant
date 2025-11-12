@@ -11,6 +11,7 @@ use crate::acp::error_handling::to_acp_error;
 use crate::acp::types::convert_prompt_to_content_blocks;
 use crate::acp::{ACPUserUI, AcpProjectManager};
 use crate::config::{DefaultProjectManager, ProjectManager};
+use crate::permissions::{AcpPermissionMediator, PermissionMediator};
 use crate::persistence::SessionModelConfig;
 use crate::session::instance::SessionActivityState;
 use crate::session::{SessionConfig, SessionManager};
@@ -637,6 +638,15 @@ impl acp::Agent for ACPAgentImpl {
                 }
             }
 
+            let permission_handler: Option<Arc<dyn PermissionMediator>> =
+                client_connection.clone().map(|connection| {
+                    Arc::new(AcpPermissionMediator::new(
+                        arguments.session_id.clone(),
+                        connection,
+                        acp_ui.clone(),
+                    )) as Arc<dyn PermissionMediator>
+                });
+
             // Start agent
             if let Err(e) = async {
                 let mut manager = session_manager.lock().await;
@@ -652,6 +662,7 @@ impl acp::Agent for ACPAgentImpl {
                         project_manager,
                         command_executor,
                         ui.clone(),
+                        permission_handler,
                     )
                     .await
             }

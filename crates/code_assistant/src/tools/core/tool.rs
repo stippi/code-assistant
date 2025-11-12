@@ -1,6 +1,7 @@
 use super::render::Render;
 use super::result::ToolResult;
 use super::spec::ToolSpec;
+use crate::permissions::PermissionMediator;
 use crate::types::{PlanState, WorkingMemory};
 use anyhow::{anyhow, Result};
 use command_executor::CommandExecutor;
@@ -20,6 +21,8 @@ pub struct ToolContext<'a> {
     pub ui: Option<&'a dyn crate::ui::UserInterface>,
     /// Optional current tool ID for streaming output
     pub tool_id: Option<String>,
+    /// Optional permission handler for potentially sensitive operations
+    pub permission_handler: Option<&'a dyn PermissionMediator>,
 }
 
 /// Core trait for tools, defining the execution interface

@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod logging;
 mod mcp;
+mod permissions;
 mod persistence;
 mod session;
 mod tools;

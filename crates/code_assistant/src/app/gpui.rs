@@ -108,6 +108,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                             project_manager,
                             command_executor,
                             user_interface,
+                            None,
                         )
                         .await
                         .expect("Failed to start agent with initial task");

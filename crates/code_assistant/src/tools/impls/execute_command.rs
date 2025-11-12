@@ -1,3 +1,4 @@
+use crate::permissions::{PermissionDecision, PermissionRequest, PermissionRequestReason};
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
@@ -182,6 +183,25 @@ impl Tool for ExecuteCommandTool {
             .as_ref()
             .map(|dir| project_root.join(dir))
             .unwrap_or_else(|| project_root.clone());
+
+        if let Some(handler) = context.permission_handler {
+            let decision = handler
+                .request_permission(PermissionRequest {
+                    tool_id: context.tool_id.as_deref(),
+                    tool_name: "execute_command",
+                    reason: PermissionRequestReason::ExecuteCommand {
+                        command_line: &input.command_line,
+                        working_dir: Some(effective_working_dir.as_path()),
+                    },
+                })
+                .await?;
+
+            if decision == PermissionDecision::Denied {
+                return Err(anyhow!(
+                    "Command execution cancelled: user denied permission"
+                ));
+            }
+        }
 
         let mut sandbox_request = SandboxCommandRequest::default();
         sandbox_request.writable_roots.push(project_root);

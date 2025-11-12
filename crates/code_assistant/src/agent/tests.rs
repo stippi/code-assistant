@@ -392,6 +392,7 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
     };
 
     let session_config = SessionConfig {
@@ -512,6 +513,7 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
     };
 
     let session_config = SessionConfig {
@@ -635,6 +637,7 @@ async fn test_parse_error_handling() -> Result<()> {
         command_executor: Box::new(create_command_executor_mock()),
         ui: Arc::new(MockUI::default()),
         state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
     };
 
     let session_config = SessionConfig {
@@ -768,6 +771,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
         command_executor: Box::new(create_command_executor_mock()),
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
     };
 
     let session_config = SessionConfig {
@@ -884,6 +888,7 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
         command_executor: Box::new(create_command_executor_mock()),
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
     };
 
     let session_config = SessionConfig {
@@ -1009,6 +1014,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
         command_executor: Box::new(create_command_executor_mock()),
         ui: ui.clone(),
         state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
     };
 
     let session_config = SessionConfig {
@@ -1484,6 +1490,7 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
         command_executor,
         ui,
         state_persistence,
+        permission_handler: None,
     };
 
     let session_config = SessionConfig {
