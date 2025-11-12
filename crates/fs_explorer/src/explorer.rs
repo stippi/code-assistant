@@ -182,11 +182,7 @@ impl Explorer {
         // compare physical paths before rejecting access.
         match canonicalize_with_existing_parent(&cleaned) {
             Ok(canonical) if canonical.starts_with(&self.root_dir) => Ok(canonical),
-            _ => Err(anyhow!(
-                "Access outside project root is not allowed: {} (root: {})",
-                cleaned.display(),
-                self.root_dir.display()
-            )),
+            _ => Err(anyhow!("File access outside project root is not allowed")),
         }
     }
 
