@@ -10,8 +10,8 @@ use sandbox::SandboxContext;
 use serde_json::json;
 use std::fs;
 use std::sync::{Arc, Mutex};
-use tokio::net::TcpListener;
 use tempfile::tempdir;
+use tokio::net::TcpListener;
 
 #[tokio::test]
 async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {

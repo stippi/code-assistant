@@ -176,22 +176,29 @@ impl Explorer {
         // Canonicalize the candidate (falling back to the nearest existing ancestor) so we can
         // compare physical paths before rejecting access. This catches cases where the path
         // looks like it's inside the root (e.g., via symlinks) but actually points elsewhere.
-        let canonical = canonicalize_with_existing_parent(&cleaned).map_err(|err| {
-            anyhow!(
-                "Failed to canonicalize path {}: {}",
-                cleaned.display(),
-                err
-            )
-        })?;
+        let canonical = match canonicalize_with_existing_parent(&cleaned) {
+            Ok(path) => path,
+            Err(err) => {
+                debug!(
+                    "Failed to canonicalize path {} relative to root {}: {}",
+                    cleaned.display(),
+                    self.root_dir.display(),
+                    err
+                );
+                return Err(anyhow!("Failed to resolve requested path"));
+            }
+        };
 
         if canonical.starts_with(&self.root_dir) {
             Ok(canonical)
         } else {
-            Err(anyhow!(
-                "Access outside project root is not allowed: {} (root: {})",
-                cleaned.display(),
+            debug!(
+                "Rejected path outside root. Requested: {} | Resolved: {} | Root: {}",
+                path.display(),
+                canonical.display(),
                 self.root_dir.display()
-            ))
+            );
+            Err(anyhow!("Access outside project root is not allowed"))
         }
     }
 
@@ -1221,10 +1228,7 @@ mod tests {
         unix_fs::symlink(&outside_file, &link_path)?;
 
         let result = explorer.read_file(&link_path).await;
-        assert!(
-            result.is_err(),
-            "Symlink traversal should be rejected"
-        );
+        assert!(result.is_err(), "Symlink traversal should be rejected");
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("Access outside project root"),

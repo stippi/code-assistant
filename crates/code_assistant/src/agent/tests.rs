@@ -12,10 +12,12 @@ use crate::tests::utils::parse_and_truncate_llm_response;
 use crate::types::*;
 use crate::ui::ui_events::UiEvent;
 use anyhow::Result;
+use fs_explorer::Explorer;
 use llm::types::*;
 use sandbox::SandboxPolicy;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tempfile::tempdir;
 
 #[test]
 fn test_flexible_xml_parsing() -> Result<()> {
@@ -736,6 +738,110 @@ async fn test_parse_error_handling() -> Result<()> {
     } else {
         panic!("Expected Structured content in third message");
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_write_file_outside_root_error_masks_paths() -> Result<()> {
+    let temp_project = tempdir()?;
+    let project_root = temp_project.path().to_path_buf();
+    let project_name = "secure_project";
+
+    let write_file_response = create_test_response(
+        "write-file-escape",
+        "write_file",
+        serde_json::json!({
+            "project": project_name,
+            "path": "../outside.txt",
+            "content": "should not be written"
+        }),
+        "Attempting to escape project root",
+    );
+
+    let completion_response =
+        create_test_response_text("Noted the error. Ending the task after the failure.");
+
+    let mock_llm = MockLLMProvider::new(vec![Ok(completion_response), Ok(write_file_response)]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let project_manager = MockProjectManager::default().with_project_path(
+        project_name,
+        project_root.clone(),
+        Box::new(Explorer::new(project_root.clone())),
+    );
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(project_manager),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(project_root.clone()),
+        initial_project: project_name.to_string(),
+        tool_syntax: ToolSyntax::Native,
+        use_diff_blocks: false,
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent
+        .start_with_task("Attempt a write outside the root".to_string())
+        .await?;
+
+    let requests = mock_llm_ref.get_requests();
+    assert!(
+        requests.len() >= 2,
+        "Expected at least two LLM requests to capture the error"
+    );
+
+    let error_request = &requests[1];
+    assert!(
+        error_request.messages.len() >= 3,
+        "Conversation should include tool failure response"
+    );
+
+    let error_message = &error_request.messages[2];
+    assert_eq!(error_message.role, MessageRole::User);
+
+    let root_display = project_root.display().to_string();
+    let mut found_tool_result = false;
+    if let MessageContent::Structured(blocks) = &error_message.content {
+        for block in blocks {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } = block
+            {
+                if tool_use_id == "write-file-escape" {
+                    found_tool_result = true;
+                    assert!(is_error.unwrap_or(false));
+                    assert!(
+                        content.contains("Access outside project root is not allowed"),
+                        "Tool result should mention access restriction: {content}"
+                    );
+                    assert!(
+                        !content.contains(&root_display),
+                        "Tool result should not leak the project root path: {content}"
+                    );
+                }
+            }
+        }
+    } else {
+        panic!("Expected structured user message containing tool results");
+    }
+
+    assert!(
+        found_tool_result,
+        "Did not find tool result block for the write_file escape attempt"
+    );
 
     Ok(())
 }
