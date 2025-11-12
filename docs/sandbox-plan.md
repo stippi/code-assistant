@@ -157,7 +157,7 @@ very small `crates/platform_utils/` with only those primitives.
     - Session config already stores `sandbox_policy`; approval cache + exceptions remain outstanding.
   - Wire `CommandExecutor` and `CodeExplorer` errors into a user-facing prompt
     (“Command X needs write access to Y; allow once / allow for session / deny”).
-    - **Not implemented yet.** Today failed `execute_command` calls simply surface an error; there is no UI to request elevated permissions.
+    - Prototype ACP permission requests fire *before* command execution, which is a stopgap. We still need the full “optimistic run → sandbox denial → request permission → retry” flow to avoid prompting on every command.
   - Cache approvals; when granted, widen the sandbox scope (e.g., add a writable
     root) and retry the blocked operation automatically.
   - Persist the decision in session history so restarts reapply policies.
