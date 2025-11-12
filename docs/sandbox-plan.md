@@ -116,25 +116,28 @@ very small `crates/platform_utils/` with only those primitives.
   - Unit tests for policy serialization/deserialization.
   - Snapshot tests ensuring writable-root derivation includes `.git` as read-only.
 
-### Phase 1 – Path Validation for CodeExplorer
+### Phase 1 – Path Validation for CodeExplorer (in progress)
 - **Deliverables**
-  - Canonicalize project paths on load; store `ProjectSandboxScope { root, allowed_subprojects }`.
+  - Canonicalize project paths on load; store `ProjectSandboxScope { root, allowed_subprojects }`.  
+    ✅ Implemented via `SandboxContext` + canonical roots registered by `SandboxAwareProjectManager`.
   - Update `Explorer::read_file`, `write_file`, `apply_replacements`, `list_files`, etc.
-    to call `sandbox::ensure_within_scope(path)`.
+    to call `sandbox::ensure_within_scope(path)`.  
+    ✅ All file ops now resolve against the canonical root and reject traversal outside it.
   - Provide an allowlist of additional project roots gathered from the session’s
-    `WorkingMemory.available_projects`.
+    `WorkingMemory.available_projects`.  
+    ✅ Newly opened projects register their roots automatically.
 - **Testing**
   - Unit tests using `tempdir` and `MockExplorer` to confirm attempts to escape via
-    `../` or symlinks fail.
+    `../` or symlinks fail. **Still TODO** (currently covered only indirectly via existing tests).
   - Integration test for multi-project session: ensure files inside the secondary
-    project root remain accessible once added to the scope.
+    project root remain accessible once added to the scope. **Still TODO**.
 
 ### Phase 2 – macOS Seatbelt CommandExecutor Prototype
 - **Deliverables**
   - Port codex’s seatbelt launcher into `crates/code_assistant/src/sandbox/seatbelt.rs`
     with minimal dependencies (policy text embedded in `docs/` or `src/sandbox`).
   - Implement `SeatbeltCommandExecutor` that:
-    - Accepts a `SandboxedCommandRequest` (command line, cwd, desired policy).
+    - Accepts a `SandboxCommandRequest` (command line, cwd, desired policy). ✅ Trait + executor updated; per-command hints now flow from tools.
     - Builds SBPL policy with writable roots = union of selected project root(s)
       and optional `TMPDIR`.
     - Spawns via `/usr/bin/sandbox-exec`; falls back to `DefaultCommandExecutor`
@@ -148,11 +151,13 @@ very small `crates/platform_utils/` with only those primitives.
   - Manual QA script (documented in `docs/sandbox-plan.md`) describing how to run
     `cargo test --package code-assistant sandbox::seatbelt::tests`.
 
-### Phase 3 – Permission Elevation & UX Hooks
+### Phase 3 – Permission Elevation & UX Hooks (not started)
 - **Deliverables**
   - Extend session state with `sandbox_policy: SandboxPolicy` and `approved_exceptions`.
+    - Session config already stores `sandbox_policy`; approval cache + exceptions remain outstanding.
   - Wire `CommandExecutor` and `CodeExplorer` errors into a user-facing prompt
     (“Command X needs write access to Y; allow once / allow for session / deny”).
+    - **Not implemented yet.** Today failed `execute_command` calls simply surface an error; there is no UI to request elevated permissions.
   - Cache approvals; when granted, widen the sandbox scope (e.g., add a writable
     root) and retry the blocked operation automatically.
   - Persist the decision in session history so restarts reapply policies.
