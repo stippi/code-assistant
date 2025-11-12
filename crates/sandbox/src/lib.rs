@@ -1,6 +1,10 @@
+mod context;
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+pub use context::SandboxContext;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(tag = "mode", rename_all = "kebab-case")]

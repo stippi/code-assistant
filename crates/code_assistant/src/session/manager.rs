@@ -218,7 +218,14 @@ impl SessionManager {
         ui: Arc<dyn UserInterface>,
     ) -> Result<()> {
         // Prepare session - need to scope the mutable borrow carefully
-        let (session_config, proxy_ui, session_state, activity_state_ref, pending_message_ref) = {
+        let (
+            session_config,
+            proxy_ui,
+            session_state,
+            activity_state_ref,
+            pending_message_ref,
+            sandbox_context,
+        ) = {
             let session_instance = self
                 .active_sessions
                 .get_mut(session_id)
@@ -264,6 +271,7 @@ impl SessionManager {
                 session_state,
                 activity_state_ref,
                 pending_message_ref,
+                session_instance.sandbox_context.clone(),
             )
         };
 
@@ -289,20 +297,28 @@ impl SessionManager {
             session_manager_ref,
         ));
 
+        let sandbox_context_clone = sandbox_context.clone();
+
         let command_executor: Box<dyn CommandExecutor> =
             if session_config.sandbox_policy.requires_restrictions() {
                 Box::new(SandboxedCommandExecutor::new(
                     command_executor,
                     session_config.sandbox_policy.clone(),
+                    Some(sandbox_context_clone.clone()),
                     Some(session_id.to_string()),
                 ))
             } else {
                 command_executor
             };
 
+        let sandboxed_project_manager = Box::new(crate::config::SandboxAwareProjectManager::new(
+            project_manager,
+            sandbox_context_clone,
+        ));
+
         let components = AgentComponents {
             llm_provider,
-            project_manager,
+            project_manager: sandboxed_project_manager,
             command_executor,
             ui: proxy_ui,
             state_persistence: state_storage,

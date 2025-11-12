@@ -2,9 +2,10 @@ use crate::types::{
     CodeExplorer, FileEncoding, FileFormat, FileReplacement, FileSystemEntryType, FileTreeEntry,
     SearchMode, SearchOptions, SearchResult,
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use command_executor::CommandExecutor;
 use ignore::WalkBuilder;
+use path_clean::PathClean;
 use regex::RegexBuilder;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -154,12 +155,31 @@ impl Explorer {
     /// # Arguments
     /// * `root_dir` - The root directory to explore
     pub fn new(root_dir: PathBuf) -> Self {
+        let canonical_root = root_dir.canonicalize().unwrap_or_else(|_| root_dir.clean());
         Self {
-            root_dir,
+            root_dir: canonical_root,
             expanded_paths: HashSet::new(),
             file_encodings: Arc::new(RwLock::new(HashMap::new())),
             file_formats: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
+        let candidate = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root_dir.join(path)
+        };
+
+        let cleaned = candidate.clean();
+        if !cleaned.starts_with(&self.root_dir) {
+            return Err(anyhow!(
+                "Access outside project root is not allowed: {} (root: {})",
+                cleaned.display(),
+                self.root_dir.display()
+            ));
+        }
+        Ok(cleaned)
     }
 
     /// Checks if a file or directory should be ignored based on .gitignore rules
@@ -259,6 +279,8 @@ impl Explorer {
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String> {
+        let resolved = self.resolve_path(path)?;
+        let path = resolved.as_path();
         debug!(
             "Reading file with line range - path: {}, start_line: {:?}, end_line: {:?}",
             path.display(),
@@ -298,11 +320,11 @@ impl Explorer {
 
         // Store the format information
         let mut formats = self.file_formats.write().unwrap();
-        formats.insert(path.to_path_buf(), file_format.clone());
+        formats.insert(resolved.clone(), file_format.clone());
 
         // Also store in the old encodings map for backward compatibility
         let mut encodings = self.file_encodings.write().unwrap();
-        encodings.insert(path.to_path_buf(), encoding);
+        encodings.insert(resolved.clone(), encoding);
 
         // Normalize content for consistent line ending and removal of trailing whitespace
         let normalized_content = crate::encoding::normalize_content(&content);
@@ -363,6 +385,8 @@ impl CodeExplorer for Explorer {
     }
 
     async fn read_file(&self, path: &Path) -> Result<String> {
+        let resolved = self.resolve_path(path)?;
+        let path = resolved.as_path();
         debug!("Reading entire file: {}", path.display());
 
         // Check if file is ignored by .gitignore
@@ -411,10 +435,14 @@ impl CodeExplorer for Explorer {
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String> {
-        self.read_file_lines(path, start_line, end_line).await
+        let resolved = self.resolve_path(path)?;
+        self.read_file_lines(resolved.as_path(), start_line, end_line)
+            .await
     }
 
     async fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String> {
+        let resolved = self.resolve_path(path)?;
+        let path = resolved.as_path();
         debug!("Writing file: {}, append: {}", path.display(), append);
 
         // Check if file is ignored by .gitignore
@@ -458,18 +486,21 @@ impl CodeExplorer for Explorer {
     }
 
     async fn delete_file(&self, path: &Path) -> Result<()> {
-        std::fs::remove_file(path)?;
+        let resolved = self.resolve_path(path)?;
+        std::fs::remove_file(resolved.as_path())?;
         Ok(())
     }
 
     async fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry> {
+        let resolved = self.resolve_path(path)?;
+        let path = resolved.as_path();
         // Check if the path exists before proceeding
         if !path.exists() {
             return Err(anyhow::anyhow!("Path not found"));
         }
 
         // Remember that this path was explicitly listed
-        self.expanded_paths.insert(path.to_path_buf());
+        self.expanded_paths.insert(resolved.clone());
 
         let mut entry = FileTreeEntry {
             name: path
@@ -498,6 +529,8 @@ impl CodeExplorer for Explorer {
         path: &Path,
         replacements: &[FileReplacement],
     ) -> Result<String> {
+        let resolved = self.resolve_path(path)?;
+        let path = resolved.as_path();
         // Get the original content
         let original_content = std::fs::read_to_string(path)?;
 
@@ -541,6 +574,9 @@ impl CodeExplorer for Explorer {
             reconstruct_formatted_replacements,
         };
 
+        let resolved = self.resolve_path(path)?;
+        let path = resolved.as_path();
+
         // Get the original content
         let original_content = std::fs::read_to_string(path)?;
 
@@ -572,7 +608,7 @@ impl CodeExplorer for Explorer {
 
         // Phase 4: Run formatting
         let output = command_executor
-            .execute(format_command, Some(&self.root_dir))
+            .execute(format_command, Some(&self.root_dir), None)
             .await?;
 
         if !output.success {
@@ -606,6 +642,7 @@ impl CodeExplorer for Explorer {
     }
 
     async fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>> {
+        let path = self.resolve_path(path)?;
         let mut results = Vec::new();
         let max_results = options.max_results.unwrap_or(usize::MAX);
         let context_lines = 2; // Lines of context before and after
@@ -634,7 +671,7 @@ impl CodeExplorer for Explorer {
             }
         };
 
-        let walker = WalkBuilder::new(path)
+        let walker = WalkBuilder::new(&path)
             .hidden(false)
             .git_ignore(true)
             .filter_entry(move |e| {

@@ -1,12 +1,13 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
-use sandbox::SandboxPolicy;
+use sandbox::{SandboxContext, SandboxPolicy};
 #[cfg(not(target_os = "macos"))]
 use tracing::warn;
 
-use crate::{CommandExecutor, CommandOutput, StreamingCallback};
+use crate::{CommandExecutor, CommandOutput, SandboxCommandRequest, StreamingCallback};
 
 #[cfg(target_os = "macos")]
 use {
@@ -21,6 +22,7 @@ use {
 pub struct SandboxedCommandExecutor {
     inner: Box<dyn CommandExecutor>,
     policy: SandboxPolicy,
+    sandbox_context: Option<Arc<SandboxContext>>,
     #[allow(dead_code)]
     session_id: Option<String>,
 }
@@ -29,11 +31,13 @@ impl SandboxedCommandExecutor {
     pub fn new(
         inner: Box<dyn CommandExecutor>,
         policy: SandboxPolicy,
+        sandbox_context: Option<Arc<SandboxContext>>,
         session_id: Option<String>,
     ) -> Self {
         Self {
             inner,
             policy,
+            sandbox_context,
             session_id,
         }
     }
@@ -50,15 +54,21 @@ impl CommandExecutor for SandboxedCommandExecutor {
         &self,
         command_line: &str,
         working_dir: Option<&PathBuf>,
+        sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
         if !self.policy.requires_restrictions() {
-            return self.inner.execute(command_line, working_dir).await;
+            return self
+                .inner
+                .execute(command_line, working_dir, sandbox_request)
+                .await;
         }
+
+        let policy = self.effective_policy(sandbox_request);
 
         #[cfg(target_os = "macos")]
         {
             return self
-                .execute_with_seatbelt(command_line, working_dir, true, None)
+                .execute_with_seatbelt(&policy, command_line, working_dir, true, None)
                 .await;
         }
 
@@ -66,9 +76,11 @@ impl CommandExecutor for SandboxedCommandExecutor {
         {
             warn!(
                 "Sandbox policy {:?} requested but sandboxing is not supported on this platform; running unrestricted",
-                self.policy
+                policy
             );
-            self.inner.execute(command_line, working_dir).await
+            self.inner
+                .execute(command_line, working_dir, sandbox_request)
+                .await
         }
     }
 
@@ -77,18 +89,21 @@ impl CommandExecutor for SandboxedCommandExecutor {
         command_line: &str,
         working_dir: Option<&PathBuf>,
         callback: Option<&dyn StreamingCallback>,
+        sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
         if !self.policy.requires_restrictions() {
             return self
                 .inner
-                .execute_streaming(command_line, working_dir, callback)
+                .execute_streaming(command_line, working_dir, callback, sandbox_request)
                 .await;
         }
+
+        let policy = self.effective_policy(sandbox_request);
 
         #[cfg(target_os = "macos")]
         {
             return self
-                .execute_with_seatbelt(command_line, working_dir, false, callback)
+                .execute_with_seatbelt(&policy, command_line, working_dir, false, callback)
                 .await;
         }
 
@@ -96,12 +111,50 @@ impl CommandExecutor for SandboxedCommandExecutor {
         {
             warn!(
                 "Sandbox policy {:?} requested but sandboxing is not supported on this platform; running unrestricted",
-                self.policy
+                policy
             );
             self.inner
-                .execute_streaming(command_line, working_dir, callback)
+                .execute_streaming(command_line, working_dir, callback, sandbox_request)
                 .await
         }
+    }
+}
+
+impl SandboxedCommandExecutor {
+    fn effective_policy(&self, request: Option<&SandboxCommandRequest>) -> SandboxPolicy {
+        let mut policy = if request.is_some_and(|req| req.read_only) {
+            SandboxPolicy::ReadOnly
+        } else {
+            self.policy.clone()
+        };
+
+        if let SandboxPolicy::WorkspaceWrite {
+            ref mut writable_roots,
+            ..
+        } = policy
+        {
+            if let Some(context) = &self.sandbox_context {
+                for root in context.roots() {
+                    push_unique_root(writable_roots, root);
+                }
+            }
+            if let Some(req) = request {
+                for root in &req.writable_roots {
+                    push_unique_root(writable_roots, root.clone());
+                }
+            }
+        }
+
+        policy
+    }
+}
+
+fn push_unique_root(roots: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if !roots
+        .iter()
+        .any(|existing| existing.starts_with(&candidate) || candidate.starts_with(existing))
+    {
+        roots.push(candidate);
     }
 }
 
@@ -109,6 +162,7 @@ impl CommandExecutor for SandboxedCommandExecutor {
 impl SandboxedCommandExecutor {
     async fn execute_with_seatbelt(
         &self,
+        policy: &SandboxPolicy,
         command_line: &str,
         working_dir: Option<&PathBuf>,
         redirect_stderr: bool,
@@ -120,18 +174,19 @@ impl SandboxedCommandExecutor {
         command_vec.push(shell);
         command_vec.extend(shell_args);
 
-        let invocation = sandbox::build_seatbelt_invocation(command_vec, &self.policy, &cwd)
+        let invocation = sandbox::build_seatbelt_invocation(command_vec, policy, &cwd)
             .map_err(|e| anyhow::anyhow!("Failed to prepare seatbelt invocation: {e}"))?;
 
         if redirect_stderr {
-            self.run_blocking(invocation, &cwd).await
+            self.run_blocking(policy, invocation, &cwd).await
         } else {
-            self.run_streaming(invocation, &cwd, callback).await
+            self.run_streaming(invocation, &cwd, callback, policy).await
         }
     }
 
     async fn run_blocking(
         &self,
+        policy: &SandboxPolicy,
         invocation: SeatbeltInvocation,
         cwd: &PathBuf,
     ) -> Result<CommandOutput> {
@@ -145,7 +200,7 @@ impl SandboxedCommandExecutor {
         cmd.args(&args);
         cmd.current_dir(cwd);
         cmd.env("CODE_ASSISTANT_SANDBOX", "seatbelt");
-        if !self.policy.has_full_network_access() {
+        if !policy.has_full_network_access() {
             cmd.env("CODE_ASSISTANT_SANDBOX_NETWORK_DISABLED", "1");
         }
 
@@ -168,6 +223,7 @@ impl SandboxedCommandExecutor {
         invocation: SeatbeltInvocation,
         cwd: &PathBuf,
         callback: Option<&dyn StreamingCallback>,
+        policy: &SandboxPolicy,
     ) -> Result<CommandOutput> {
         let SeatbeltInvocation {
             executable,
@@ -182,7 +238,7 @@ impl SandboxedCommandExecutor {
         cmd.stderr(Stdio::piped());
         cmd.stdin(Stdio::null());
         cmd.env("CODE_ASSISTANT_SANDBOX", "seatbelt");
-        if !self.policy.has_full_network_access() {
+        if !policy.has_full_network_access() {
             cmd.env("CODE_ASSISTANT_SANDBOX_NETWORK_DISABLED", "1");
         }
 

@@ -6,7 +6,7 @@ mod macos_sandbox_tests {
     use tempfile::tempdir;
 
     fn executor_with_policy(policy: SandboxPolicy) -> SandboxedCommandExecutor {
-        SandboxedCommandExecutor::new(Box::new(DefaultCommandExecutor), policy, None)
+        SandboxedCommandExecutor::new(Box::new(DefaultCommandExecutor), policy, None, None)
     }
 
     fn workspace_policy(root: &Path) -> SandboxPolicy {
@@ -25,7 +25,7 @@ mod macos_sandbox_tests {
 
         let executor = executor_with_policy(SandboxPolicy::ReadOnly);
         let result = executor
-            .execute("echo blocked > denied.txt", Some(&working_dir))
+            .execute("echo blocked > denied.txt", Some(&working_dir), None)
             .await
             .expect("command result");
         assert!(
@@ -47,7 +47,7 @@ mod macos_sandbox_tests {
         let policy = workspace_policy(&working_dir);
         let executor = executor_with_policy(policy);
         let result = executor
-            .execute("echo allowed > ok.txt", Some(&working_dir))
+            .execute("echo allowed > ok.txt", Some(&working_dir), None)
             .await
             .expect("command result");
         assert!(
@@ -70,7 +70,7 @@ mod macos_sandbox_tests {
         let policy = workspace_policy(&working_dir);
         let executor = executor_with_policy(policy);
         let result = executor
-            .execute("echo nope > ../outside.txt", Some(&working_dir))
+            .execute("echo nope > ../outside.txt", Some(&working_dir), None)
             .await
             .expect("command result");
         assert!(

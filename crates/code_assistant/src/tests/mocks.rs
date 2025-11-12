@@ -4,7 +4,7 @@ use crate::types::*;
 use crate::ui::{UIError, UiEvent, UserInterface};
 use anyhow::Result;
 use async_trait::async_trait;
-use command_executor::{CommandExecutor, CommandOutput, StreamingCallback};
+use command_executor::{CommandExecutor, CommandOutput, SandboxCommandRequest, StreamingCallback};
 use fs_explorer::{
     file_updater::{
         apply_replacements_normalized, extract_stable_ranges, find_replacement_matches,
@@ -123,6 +123,8 @@ pub fn create_test_response_text(text: &str) -> LLMResponse {
 pub struct CapturedCommand {
     pub command_line: String,
     pub working_dir: Option<PathBuf>,
+    #[allow(dead_code)]
+    pub sandbox_request: Option<SandboxCommandRequest>,
 }
 
 // Mock CommandExecutor
@@ -153,6 +155,7 @@ impl CommandExecutor for MockCommandExecutor {
         &self,
         command_line: &str,
         working_dir: Option<&PathBuf>,
+        sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.captured_commands
@@ -161,6 +164,7 @@ impl CommandExecutor for MockCommandExecutor {
             .push(CapturedCommand {
                 command_line: command_line.to_string(),
                 working_dir: working_dir.cloned(),
+                sandbox_request: sandbox_request.cloned(),
             });
 
         self.responses
@@ -175,9 +179,12 @@ impl CommandExecutor for MockCommandExecutor {
         command_line: &str,
         working_dir: Option<&PathBuf>,
         callback: Option<&dyn StreamingCallback>,
+        sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
         // For mock, just call the regular execute and simulate streaming if callback provided
-        let result = self.execute(command_line, working_dir).await?;
+        let result = self
+            .execute(command_line, working_dir, sandbox_request)
+            .await?;
 
         if let Some(callback) = callback {
             // Simulate streaming by sending the output in chunks
@@ -564,7 +571,7 @@ impl CodeExplorer for MockExplorer {
 
         // Execute the format command to simulate formatting
         let output = command_executor
-            .execute(format_command, Some(&PathBuf::from("./root")))
+            .execute(format_command, Some(&PathBuf::from("./root")), None)
             .await?;
 
         // If formatting failed, do not attempt to reconstruct replacements

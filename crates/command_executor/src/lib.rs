@@ -12,6 +12,12 @@ pub struct CommandOutput {
     pub output: String,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct SandboxCommandRequest {
+    pub writable_roots: Vec<PathBuf>,
+    pub read_only: bool,
+}
+
 /// Callback trait for streaming command output
 pub trait StreamingCallback: Send + Sync {
     fn on_output_chunk(&self, chunk: &str) -> Result<()>;
@@ -27,6 +33,7 @@ pub trait CommandExecutor: Send + Sync {
         &self,
         command_line: &str,
         working_dir: Option<&PathBuf>,
+        sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput>;
 
     /// Execute command with streaming output callback
@@ -35,6 +42,7 @@ pub trait CommandExecutor: Send + Sync {
         command_line: &str,
         working_dir: Option<&PathBuf>,
         callback: Option<&dyn StreamingCallback>,
+        sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput>;
 }
 

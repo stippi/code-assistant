@@ -7,7 +7,10 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{Duration, Instant};
 
-use command_executor::{CommandExecutor, CommandOutput, DefaultCommandExecutor, StreamingCallback};
+use command_executor::{
+    CommandExecutor, CommandOutput, DefaultCommandExecutor, SandboxCommandRequest,
+    StreamingCallback,
+};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 const OUTPUT_BYTE_LIMIT: u64 = 1_048_576;
@@ -75,8 +78,9 @@ impl CommandExecutor for ACPTerminalCommandExecutor {
         &self,
         command_line: &str,
         working_dir: Option<&PathBuf>,
+        sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
-        self.execute_streaming(command_line, working_dir, None)
+        self.execute_streaming(command_line, working_dir, None, sandbox_request)
             .await
     }
 
@@ -85,6 +89,7 @@ impl CommandExecutor for ACPTerminalCommandExecutor {
         command_line: &str,
         working_dir: Option<&PathBuf>,
         callback: Option<&dyn StreamingCallback>,
+        sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
         let (command, args) = match Self::parse_command_line(command_line) {
             Ok(parsed) => parsed,
@@ -96,7 +101,7 @@ impl CommandExecutor for ACPTerminalCommandExecutor {
             None => {
                 tracing::warn!("ACP terminal worker unavailable, falling back to local execution");
                 return DefaultCommandExecutor
-                    .execute_streaming(command_line, working_dir, callback)
+                    .execute_streaming(command_line, working_dir, callback, sandbox_request)
                     .await;
             }
         };
@@ -120,7 +125,7 @@ impl CommandExecutor for ACPTerminalCommandExecutor {
                 "Failed to dispatch ACP terminal request, falling back to local execution"
             );
             return DefaultCommandExecutor
-                .execute_streaming(command_line, working_dir, callback)
+                .execute_streaming(command_line, working_dir, callback, sandbox_request)
                 .await;
         }
 

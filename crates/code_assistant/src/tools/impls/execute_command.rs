@@ -4,7 +4,7 @@ use crate::tools::core::{
 use crate::ui::streaming::DisplayFragment;
 use crate::ui::UserInterface;
 use anyhow::{anyhow, Result};
-use command_executor::StreamingCallback;
+use command_executor::{SandboxCommandRequest, StreamingCallback};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
@@ -163,6 +163,8 @@ impl Tool for ExecuteCommandTool {
                 )
             })?;
 
+        let project_root = explorer.root_dir();
+
         // Create a PathBuf for the working directory if provided
         let working_dir_path = input.working_dir.as_ref().map(PathBuf::from);
 
@@ -178,8 +180,11 @@ impl Tool for ExecuteCommandTool {
         // Prepare effective working directory
         let effective_working_dir = working_dir_path
             .as_ref()
-            .map(|dir| explorer.root_dir().join(dir))
-            .unwrap_or_else(|| explorer.root_dir());
+            .map(|dir| project_root.join(dir))
+            .unwrap_or_else(|| project_root.clone());
+
+        let mut sandbox_request = SandboxCommandRequest::default();
+        sandbox_request.writable_roots.push(project_root);
 
         // Execute the command using streaming
         let result = match (context.ui, &context.tool_id) {
@@ -196,6 +201,7 @@ impl Tool for ExecuteCommandTool {
                         &input.command_line,
                         Some(&effective_working_dir),
                         Some(&callback),
+                        Some(&sandbox_request),
                     )
                     .await?
             }
@@ -203,7 +209,12 @@ impl Tool for ExecuteCommandTool {
                 // No UI available, use regular execution
                 context
                     .command_executor
-                    .execute_streaming(&input.command_line, Some(&effective_working_dir), None)
+                    .execute_streaming(
+                        &input.command_line,
+                        Some(&effective_working_dir),
+                        None,
+                        Some(&sandbox_request),
+                    )
                     .await?
             }
         };

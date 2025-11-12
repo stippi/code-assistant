@@ -1,5 +1,6 @@
-use crate::{CommandExecutor, CommandOutput, PathBuf, StreamingCallback};
+use crate::{CommandExecutor, CommandOutput, SandboxCommandRequest, StreamingCallback};
 use anyhow::Result;
+use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -11,6 +12,7 @@ impl CommandExecutor for DefaultCommandExecutor {
         &self,
         command_line: &str,
         working_dir: Option<&PathBuf>,
+        _sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
         // Validate working_dir first
         if let Some(dir) = working_dir {
@@ -57,6 +59,7 @@ impl CommandExecutor for DefaultCommandExecutor {
         command_line: &str,
         working_dir: Option<&PathBuf>,
         callback: Option<&dyn StreamingCallback>,
+        _sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
         // Validate working_dir first
         if let Some(dir) = working_dir {

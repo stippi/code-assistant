@@ -11,6 +11,7 @@ use crate::ui::streaming::create_stream_processor;
 use crate::ui::ui_events::{MessageData, UiEvent};
 use crate::ui::{DisplayFragment, UIError, UserInterface};
 use async_trait::async_trait;
+use sandbox::SandboxContext;
 use tracing::{debug, error, trace};
 
 /// Represents the current activity state of a session
@@ -49,11 +50,19 @@ pub struct SessionInstance {
 
     /// Pending user message that will be processed by the next agent iteration
     pub pending_message: Arc<Mutex<Option<String>>>,
+
+    /// Tracks sandbox-approved roots for this session
+    pub sandbox_context: Arc<SandboxContext>,
 }
 
 impl SessionInstance {
     /// Create a new session instance
     pub fn new(session: ChatSession) -> Self {
+        let sandbox_context = Arc::new(SandboxContext::default());
+        if let Some(path) = session.config.init_path.as_ref() {
+            let _ = sandbox_context.register_root(path);
+        }
+
         Self {
             session,
             task_handle: None,
@@ -61,6 +70,7 @@ impl SessionInstance {
             is_ui_connected: Arc::new(Mutex::new(false)),
             activity_state: Arc::new(Mutex::new(SessionActivityState::Idle)),
             pending_message: Arc::new(Mutex::new(None)),
+            sandbox_context,
         }
     }
 
@@ -166,6 +176,9 @@ impl SessionInstance {
         if let Some(session) = persistence.load_chat_session(&self.session.id)? {
             debug!("Reloading session {} from persistence", self.session.id);
             self.session = session;
+            if let Some(path) = self.session.config.init_path.as_ref() {
+                let _ = self.sandbox_context.register_root(path);
+            }
         }
         Ok(())
     }

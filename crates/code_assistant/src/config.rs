@@ -1,8 +1,10 @@
 use crate::types::Project;
 use anyhow::Result;
 use fs_explorer::{CodeExplorer, Explorer};
+use sandbox::SandboxContext;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Get the path to the configuration file
 pub fn get_config_path() -> Result<PathBuf> {
@@ -21,6 +23,65 @@ pub trait ProjectManager: Send + Sync {
     fn get_projects(&self) -> Result<HashMap<String, Project>>;
     fn get_project(&self, name: &str) -> Result<Option<Project>>;
     fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn CodeExplorer>>;
+}
+
+pub struct SandboxAwareProjectManager {
+    inner: Box<dyn ProjectManager>,
+    sandbox_context: Arc<SandboxContext>,
+}
+
+impl SandboxAwareProjectManager {
+    pub fn new(inner: Box<dyn ProjectManager>, sandbox_context: Arc<SandboxContext>) -> Self {
+        Self {
+            inner,
+            sandbox_context,
+        }
+    }
+
+    fn register_project_root(&self, project: &Project) {
+        if let Err(err) = self.sandbox_context.register_root(&project.path) {
+            tracing::warn!(
+                "Failed to register sandbox root {}: {}",
+                project.path.display(),
+                err
+            );
+        }
+    }
+}
+
+impl ProjectManager for SandboxAwareProjectManager {
+    fn add_temporary_project(&mut self, path: PathBuf) -> Result<String> {
+        let name = self.inner.add_temporary_project(path.clone())?;
+        if let Some(project) = self.inner.get_project(&name)? {
+            self.register_project_root(&project);
+        } else if let Err(err) = self.sandbox_context.register_root(path) {
+            tracing::warn!("Failed to register sandbox root for temp project: {}", err);
+        }
+        Ok(name)
+    }
+
+    fn get_projects(&self) -> Result<HashMap<String, Project>> {
+        let projects = self.inner.get_projects()?;
+        for project in projects.values() {
+            self.register_project_root(project);
+        }
+        Ok(projects)
+    }
+
+    fn get_project(&self, name: &str) -> Result<Option<Project>> {
+        let project = self.inner.get_project(name)?;
+        if let Some(ref project) = project {
+            self.register_project_root(project);
+        }
+        Ok(project)
+    }
+
+    fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn CodeExplorer>> {
+        if let Some(project) = self.inner.get_project(name)? {
+            self.register_project_root(&project);
+        }
+        self.inner.get_explorer_for_project(name)
+    }
 }
 
 // Default implementation of ProjectManager that loads from config file
