@@ -1,11 +1,17 @@
+use crate::config::{ProjectManager, SandboxAwareProjectManager};
+use crate::tests::mocks::MockProjectManager;
 use crate::tests::utils::parse_and_truncate_llm_response;
 use anyhow::Result;
 use axum::{routing::post, Router};
+use fs_explorer::Explorer;
 use llm::types::*;
 use llm::{AnthropicClient, LLMProvider, StreamingCallback, StreamingChunk};
+use sandbox::SandboxContext;
 use serde_json::json;
+use std::fs;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
+use tempfile::tempdir;
 
 #[tokio::test]
 async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
@@ -288,6 +294,59 @@ async fn test_tool_limit_with_realistic_anthropic_chunks() -> Result<()> {
         *tool_limit_triggered.lock().unwrap(),
         "Tool limit should have been triggered"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multi_project_roots_are_registered_and_accessible() -> Result<()> {
+    let primary_dir = tempdir()?;
+    let secondary_dir = tempdir()?;
+
+    let _primary_file = primary_dir.path().join("primary.txt");
+    fs::write(&_primary_file, "primary file")?;
+    let secondary_file = secondary_dir.path().join("secondary.txt");
+    fs::write(&secondary_file, "secondary file")?;
+
+    let manager_impl = MockProjectManager::default()
+        .with_project_path(
+            "primary",
+            primary_dir.path().to_path_buf(),
+            Box::new(Explorer::new(primary_dir.path().to_path_buf())),
+        )
+        .with_project_path(
+            "secondary",
+            secondary_dir.path().to_path_buf(),
+            Box::new(Explorer::new(secondary_dir.path().to_path_buf())),
+        );
+
+    let sandbox_context = Arc::new(SandboxContext::default());
+    let project_manager =
+        SandboxAwareProjectManager::new(Box::new(manager_impl), sandbox_context.clone());
+
+    project_manager
+        .get_project("primary")?
+        .expect("primary project missing");
+    let primary_canonical = primary_dir.path().canonicalize()?;
+    let mut roots = sandbox_context.roots();
+    assert!(
+        roots.iter().any(|root| root == &primary_canonical),
+        "primary root was not registered"
+    );
+
+    project_manager
+        .get_project("secondary")?
+        .expect("secondary project missing");
+    let secondary_canonical = secondary_dir.path().canonicalize()?;
+    roots = sandbox_context.roots();
+    assert!(
+        roots.iter().any(|root| root == &secondary_canonical),
+        "secondary root was not registered"
+    );
+
+    let explorer = project_manager.get_explorer_for_project("secondary")?;
+    let content = explorer.read_file(&secondary_file).await?;
+    assert_eq!(content, "secondary file");
 
     Ok(())
 }

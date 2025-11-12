@@ -173,16 +173,25 @@ impl Explorer {
         };
 
         let cleaned = candidate.clean();
-        if cleaned.starts_with(&self.root_dir) {
-            return Ok(cleaned);
-        }
-
-        // Paths like /var/... and /private/var/... can reference the same location on macOS.
         // Canonicalize the candidate (falling back to the nearest existing ancestor) so we can
-        // compare physical paths before rejecting access.
-        match canonicalize_with_existing_parent(&cleaned) {
-            Ok(canonical) if canonical.starts_with(&self.root_dir) => Ok(canonical),
-            _ => Err(anyhow!("File access outside project root is not allowed")),
+        // compare physical paths before rejecting access. This catches cases where the path
+        // looks like it's inside the root (e.g., via symlinks) but actually points elsewhere.
+        let canonical = canonicalize_with_existing_parent(&cleaned).map_err(|err| {
+            anyhow!(
+                "Failed to canonicalize path {}: {}",
+                cleaned.display(),
+                err
+            )
+        })?;
+
+        if canonical.starts_with(&self.root_dir) {
+            Ok(canonical)
+        } else {
+            Err(anyhow!(
+                "Access outside project root is not allowed: {} (root: {})",
+                cleaned.display(),
+                self.root_dir.display()
+            ))
         }
     }
 
@@ -905,6 +914,8 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs as unix_fs;
     use tempfile::TempDir;
 
     // Helper function to setup temporary test environment
@@ -1153,6 +1164,74 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Path not found"));
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_file_blocks_directory_traversal_escape() -> Result<()> {
+        let (temp_dir, explorer) = setup_test_directory()?;
+        let parent_dir = temp_dir
+            .path()
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("tempdir has no parent"))?
+            .to_path_buf();
+        let sibling_dir = parent_dir.join(format!(
+            "escape-test-{}",
+            temp_dir
+                .path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("escape")
+        ));
+        fs::create_dir_all(&sibling_dir)?;
+        let outside_file = sibling_dir.join("outside.txt");
+        fs::write(&outside_file, "secret")?;
+
+        let traversal_path = Path::new("..")
+            .join(
+                sibling_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing sibling dir name"))?,
+            )
+            .join("outside.txt");
+
+        let result = explorer.read_file(&traversal_path).await;
+        assert!(result.is_err(), "Traversal should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Access outside project root"),
+            "Unexpected error message: {err}"
+        );
+
+        fs::remove_file(&outside_file)?;
+        fs::remove_dir_all(&sibling_dir)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_read_file_blocks_symlink_escape() -> Result<()> {
+        let (temp_dir, explorer) = setup_test_directory()?;
+        let outside_dir = TempDir::new()?;
+        let outside_file = outside_dir.path().join("symlink_target.txt");
+        fs::write(&outside_file, "symlinked secret")?;
+
+        let link_path = temp_dir.path().join("link.txt");
+        unix_fs::symlink(&outside_file, &link_path)?;
+
+        let result = explorer.read_file(&link_path).await;
+        assert!(
+            result.is_err(),
+            "Symlink traversal should be rejected"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Access outside project root"),
+            "Unexpected error message: {err}"
+        );
+
+        fs::remove_file(&link_path)?;
         Ok(())
     }
 }
