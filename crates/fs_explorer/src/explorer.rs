@@ -8,6 +8,7 @@ use ignore::WalkBuilder;
 use path_clean::PathClean;
 use regex::RegexBuilder;
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -172,14 +173,21 @@ impl Explorer {
         };
 
         let cleaned = candidate.clean();
-        if !cleaned.starts_with(&self.root_dir) {
-            return Err(anyhow!(
+        if cleaned.starts_with(&self.root_dir) {
+            return Ok(cleaned);
+        }
+
+        // Paths like /var/... and /private/var/... can reference the same location on macOS.
+        // Canonicalize the candidate (falling back to the nearest existing ancestor) so we can
+        // compare physical paths before rejecting access.
+        match canonicalize_with_existing_parent(&cleaned) {
+            Ok(canonical) if canonical.starts_with(&self.root_dir) => Ok(canonical),
+            _ => Err(anyhow!(
                 "Access outside project root is not allowed: {} (root: {})",
                 cleaned.display(),
                 self.root_dir.display()
-            ));
+            )),
         }
-        Ok(cleaned)
     }
 
     /// Checks if a file or directory should be ignored based on .gitignore rules
@@ -354,6 +362,39 @@ impl Explorer {
 
         Ok(selected_content)
     }
+}
+
+fn canonicalize_with_existing_parent(path: &Path) -> std::io::Result<PathBuf> {
+    if path.exists() {
+        return path.canonicalize();
+    }
+
+    let mut components: Vec<OsString> = Vec::new();
+    let mut current = path;
+
+    while !current.exists() {
+        if let Some(name) = current.file_name() {
+            components.push(name.to_os_string());
+        } else {
+            break;
+        }
+
+        current = match current.parent() {
+            Some(parent) => parent,
+            None => break,
+        };
+    }
+
+    if !current.exists() {
+        return current.canonicalize();
+    }
+
+    let mut canonical_base = current.canonicalize()?;
+    for component in components.into_iter().rev() {
+        canonical_base.push(component);
+    }
+
+    Ok(canonical_base)
 }
 
 #[async_trait::async_trait]
