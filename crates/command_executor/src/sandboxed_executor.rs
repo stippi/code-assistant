@@ -136,7 +136,7 @@ impl CommandExecutor for SandboxedCommandExecutor {
 
 impl SandboxedCommandExecutor {
     fn should_bypass(&self, request: Option<&SandboxCommandRequest>) -> bool {
-        request.map_or(false, |req| req.bypass_sandbox)
+        request.is_some_and(|req| req.bypass_sandbox)
     }
 
     fn effective_policy(&self, request: Option<&SandboxCommandRequest>) -> SandboxPolicy {
