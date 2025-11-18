@@ -11,11 +11,12 @@ use crate::acp::error_handling::to_acp_error;
 use crate::acp::types::convert_prompt_to_content_blocks;
 use crate::acp::{ACPUserUI, AcpProjectManager};
 use crate::config::{DefaultProjectManager, ProjectManager};
+use crate::permissions::{AcpPermissionMediator, PermissionMediator};
 use crate::persistence::SessionModelConfig;
 use crate::session::instance::SessionActivityState;
 use crate::session::{SessionConfig, SessionManager};
 use crate::ui::UserInterface;
-use crate::utils::DefaultCommandExecutor;
+use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
 
@@ -603,7 +604,7 @@ impl acp::Agent for ACPAgentImpl {
             };
 
             // Use ACP Terminal Command Executor if client connection is available
-            let command_executor: Box<dyn crate::utils::command::CommandExecutor> = {
+            let command_executor: Box<dyn CommandExecutor> = {
                 if terminal_supported && client_connection.is_some() {
                     tracing::info!(
                         "ACP: Using ACPTerminalCommandExecutor for session {}",
@@ -637,6 +638,15 @@ impl acp::Agent for ACPAgentImpl {
                 }
             }
 
+            let permission_handler: Option<Arc<dyn PermissionMediator>> =
+                client_connection.clone().map(|connection| {
+                    Arc::new(AcpPermissionMediator::new(
+                        arguments.session_id.clone(),
+                        connection,
+                        acp_ui.clone(),
+                    )) as Arc<dyn PermissionMediator>
+                });
+
             // Start agent
             if let Err(e) = async {
                 let mut manager = session_manager.lock().await;
@@ -652,6 +662,7 @@ impl acp::Agent for ACPAgentImpl {
                         project_manager,
                         command_executor,
                         ui.clone(),
+                        permission_handler,
                     )
                     .await
             }

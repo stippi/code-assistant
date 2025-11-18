@@ -1,6 +1,7 @@
 use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
 use crate::types::{PlanState, WorkingMemory};
+use sandbox::SandboxPolicy;
 use std::collections::HashMap;
 
 pub struct AppState {
@@ -16,6 +17,7 @@ pub struct AppState {
     pub tool_statuses: HashMap<String, crate::ui::ToolStatus>,
     pub current_model: Option<String>,
     pub info_message: Option<String>,
+    pub current_sandbox_policy: Option<SandboxPolicy>,
 }
 
 impl AppState {
@@ -33,6 +35,7 @@ impl AppState {
             tool_statuses: HashMap::new(),
             current_model: None,
             info_message: None,
+            current_sandbox_policy: None,
         }
     }
 
@@ -59,6 +62,10 @@ impl AppState {
 
     pub fn update_current_model(&mut self, model: Option<String>) {
         self.current_model = model;
+    }
+
+    pub fn update_sandbox_policy(&mut self, policy: Option<SandboxPolicy>) {
+        self.current_sandbox_policy = policy;
     }
 
     pub fn set_info_message(&mut self, message: Option<String>) {

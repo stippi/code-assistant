@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crate::explorer::Explorer;
-use crate::types::CodeExplorer;
 use anyhow::Result;
+use fs_explorer::CodeExplorer;
+use fs_explorer::Explorer;
 use tempfile::TempDir;
 
 /// Sets up a test directory with a .gitignore file and various test files

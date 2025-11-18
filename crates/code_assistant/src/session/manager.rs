@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::agent::{Agent, AgentComponents};
 use crate::config::ProjectManager;
+use crate::permissions::PermissionMediator;
 use crate::persistence::{
     generate_session_id, ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig,
 };
@@ -14,8 +15,9 @@ use crate::session::instance::SessionInstance;
 use crate::session::{SessionConfig, SessionState};
 use crate::ui::ui_events::UiEvent;
 use crate::ui::UserInterface;
-use crate::utils::CommandExecutor;
+use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
+use sandbox::SandboxPolicy;
 use tracing::{debug, error};
 
 /// The main SessionManager that manages multiple active sessions with on-demand agents
@@ -181,6 +183,15 @@ impl SessionManager {
             model_name: model_name_for_event.clone(),
         });
 
+        let sandbox_policy_for_event = {
+            let session_instance = self.active_sessions.get(&session_id).unwrap();
+            session_instance.session.config.sandbox_policy.clone()
+        };
+
+        ui_events.push(UiEvent::UpdateSandboxPolicy {
+            policy: sandbox_policy_for_event,
+        });
+
         // Set as active
         self.active_session_id = Some(session_id.clone());
 
@@ -198,6 +209,7 @@ impl SessionManager {
 
     /// Start an agent for a session with a user message
     /// This is the key method - agents run on-demand for specific messages
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_agent_for_message(
         &mut self,
         session_id: &str,
@@ -206,9 +218,17 @@ impl SessionManager {
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
         ui: Arc<dyn UserInterface>,
+        permission_handler: Option<Arc<dyn PermissionMediator>>,
     ) -> Result<()> {
         // Prepare session - need to scope the mutable borrow carefully
-        let (session_config, proxy_ui, session_state, activity_state_ref, pending_message_ref) = {
+        let (
+            session_config,
+            proxy_ui,
+            session_state,
+            activity_state_ref,
+            pending_message_ref,
+            sandbox_context,
+        ) = {
             let session_instance = self
                 .active_sessions
                 .get_mut(session_id)
@@ -254,6 +274,7 @@ impl SessionManager {
                 session_state,
                 activity_state_ref,
                 pending_message_ref,
+                session_instance.sandbox_context.clone(),
             )
         };
 
@@ -279,12 +300,32 @@ impl SessionManager {
             session_manager_ref,
         ));
 
+        let sandbox_context_clone = sandbox_context.clone();
+
+        let command_executor: Box<dyn CommandExecutor> =
+            if session_config.sandbox_policy.requires_restrictions() {
+                Box::new(SandboxedCommandExecutor::new(
+                    command_executor,
+                    session_config.sandbox_policy.clone(),
+                    Some(sandbox_context_clone.clone()),
+                    Some(session_id.to_string()),
+                ))
+            } else {
+                command_executor
+            };
+
+        let sandboxed_project_manager = Box::new(crate::config::SandboxAwareProjectManager::new(
+            project_manager,
+            sandbox_context_clone,
+        ));
+
         let components = AgentComponents {
             llm_provider,
-            project_manager,
+            project_manager: sandboxed_project_manager,
             command_executor,
             ui: proxy_ui,
             state_persistence: state_storage,
+            permission_handler,
         };
 
         let mut agent = Agent::new(components, session_config.clone());
@@ -442,6 +483,26 @@ impl SessionManager {
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
             instance.session.model_config = model_config;
+        }
+
+        Ok(())
+    }
+
+    pub fn set_session_sandbox_policy(
+        &mut self,
+        session_id: &str,
+        policy: SandboxPolicy,
+    ) -> Result<()> {
+        let mut session = self
+            .persistence
+            .load_chat_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+
+        session.config.sandbox_policy = policy.clone();
+        self.persistence.save_chat_session(&session)?;
+
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.config.sandbox_policy = policy;
         }
 
         Ok(())

@@ -4,7 +4,10 @@ version = "0.1.17"
 edition = "2021"
 
 [dependencies]
+command_executor = { path = "../command_executor" }
+fs_explorer = { path = "../fs_explorer" }
 llm = { path = "../llm" }
+sandbox = { path = "../sandbox" }
 web = { path = "../web" }
 
 glob = "0.3"
@@ -54,8 +57,6 @@ shell-words = "1.1"
 chrono = { version = "0.4", features = ["serde"] }
 
 # File content inspection
-content_inspector = "0.2"
-encoding_rs = "0.8.35"
 unicode-segmentation = "1.12.0"
 rand = "0.8.5"
 

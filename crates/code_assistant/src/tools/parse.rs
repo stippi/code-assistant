@@ -1,8 +1,9 @@
 use crate::tools::core::ToolRegistry;
 use crate::tools::tool_use_filter::ToolUseFilter;
 use crate::tools::ToolRequest;
-use crate::types::{FileReplacement, ToolError};
+use crate::types::ToolError;
 use anyhow::{anyhow, Result};
+use fs_explorer::FileReplacement;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -1,0 +1,11 @@
+[package]
+name = "command_executor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.95"
+async-trait = "0.1.85"
+tokio = { version = "1.40.0", features = ["macros", "process", "io-util"] }
+sandbox = { path = "../sandbox" }
+tracing = "0.1"

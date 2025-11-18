@@ -2,16 +2,19 @@ use crate::types::{
     CodeExplorer, FileEncoding, FileFormat, FileReplacement, FileSystemEntryType, FileTreeEntry,
     SearchMode, SearchOptions, SearchResult,
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use command_executor::CommandExecutor;
 use ignore::WalkBuilder;
+use path_clean::PathClean;
 use regex::RegexBuilder;
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::debug;
 
-pub(crate) fn is_path_gitignored(root_dir: &Path, path: &Path) -> bool {
+pub fn is_path_gitignored(root_dir: &Path, path: &Path) -> bool {
     if !path.exists() {
         return false;
     }
@@ -153,11 +156,49 @@ impl Explorer {
     /// # Arguments
     /// * `root_dir` - The root directory to explore
     pub fn new(root_dir: PathBuf) -> Self {
+        let canonical_root = root_dir.canonicalize().unwrap_or_else(|_| root_dir.clean());
         Self {
-            root_dir,
+            root_dir: canonical_root,
             expanded_paths: HashSet::new(),
             file_encodings: Arc::new(RwLock::new(HashMap::new())),
             file_formats: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
+        let candidate = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root_dir.join(path)
+        };
+
+        let cleaned = candidate.clean();
+        // Canonicalize the candidate (falling back to the nearest existing ancestor) so we can
+        // compare physical paths before rejecting access. This catches cases where the path
+        // looks like it's inside the root (e.g., via symlinks) but actually points elsewhere.
+        let canonical = match canonicalize_with_existing_parent(&cleaned) {
+            Ok(path) => path,
+            Err(err) => {
+                debug!(
+                    "Failed to canonicalize path {} relative to root {}: {}",
+                    cleaned.display(),
+                    self.root_dir.display(),
+                    err
+                );
+                return Err(anyhow!("Failed to resolve requested path"));
+            }
+        };
+
+        if canonical.starts_with(&self.root_dir) {
+            Ok(canonical)
+        } else {
+            debug!(
+                "Rejected path outside root. Requested: {} | Resolved: {} | Root: {}",
+                path.display(),
+                canonical.display(),
+                self.root_dir.display()
+            );
+            Err(anyhow!("Access outside project root is not allowed"))
         }
     }
 
@@ -258,6 +299,8 @@ impl Explorer {
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String> {
+        let resolved = self.resolve_path(path)?;
+        let path = resolved.as_path();
         debug!(
             "Reading file with line range - path: {}, start_line: {:?}, end_line: {:?}",
             path.display(),
@@ -279,15 +322,15 @@ impl Explorer {
         }
 
         // Check if the file is a text file
-        if !crate::utils::encoding::is_text_file(path) {
+        if !crate::encoding::is_text_file(path) {
             return Err(anyhow::anyhow!("Not a text file: {}", path.display()));
         }
 
         // Read the file with encoding detection
-        let (content, encoding) = crate::utils::encoding::read_file_with_encoding(path)?;
+        let (content, encoding) = crate::encoding::read_file_with_encoding(path)?;
 
         // Detect line ending
-        let line_ending = crate::utils::encoding::detect_line_ending(&content);
+        let line_ending = crate::encoding::detect_line_ending(&content);
 
         // Create and store file format information
         let file_format = FileFormat {
@@ -297,14 +340,14 @@ impl Explorer {
 
         // Store the format information
         let mut formats = self.file_formats.write().unwrap();
-        formats.insert(path.to_path_buf(), file_format.clone());
+        formats.insert(resolved.clone(), file_format.clone());
 
         // Also store in the old encodings map for backward compatibility
         let mut encodings = self.file_encodings.write().unwrap();
-        encodings.insert(path.to_path_buf(), encoding);
+        encodings.insert(resolved.clone(), encoding);
 
         // Normalize content for consistent line ending and removal of trailing whitespace
-        let normalized_content = crate::utils::encoding::normalize_content(&content);
+        let normalized_content = crate::encoding::normalize_content(&content);
 
         // If we have line range parameters, extract the specified lines
         let lines: Vec<&str> = normalized_content.lines().collect();
@@ -331,6 +374,39 @@ impl Explorer {
 
         Ok(selected_content)
     }
+}
+
+fn canonicalize_with_existing_parent(path: &Path) -> std::io::Result<PathBuf> {
+    if path.exists() {
+        return path.canonicalize();
+    }
+
+    let mut components: Vec<OsString> = Vec::new();
+    let mut current = path;
+
+    while !current.exists() {
+        if let Some(name) = current.file_name() {
+            components.push(name.to_os_string());
+        } else {
+            break;
+        }
+
+        current = match current.parent() {
+            Some(parent) => parent,
+            None => break,
+        };
+    }
+
+    if !current.exists() {
+        return current.canonicalize();
+    }
+
+    let mut canonical_base = current.canonicalize()?;
+    for component in components.into_iter().rev() {
+        canonical_base.push(component);
+    }
+
+    Ok(canonical_base)
 }
 
 #[async_trait::async_trait]
@@ -362,6 +438,8 @@ impl CodeExplorer for Explorer {
     }
 
     async fn read_file(&self, path: &Path) -> Result<String> {
+        let resolved = self.resolve_path(path)?;
+        let path = resolved.as_path();
         debug!("Reading entire file: {}", path.display());
 
         // Check if file is ignored by .gitignore
@@ -373,15 +451,15 @@ impl CodeExplorer for Explorer {
         }
 
         // Check if file is a text file
-        if !crate::utils::encoding::is_text_file(path) {
+        if !crate::encoding::is_text_file(path) {
             return Err(anyhow::anyhow!("Not a text file: {}", path.display()));
         }
 
         // Read with encoding detection
-        let (content, encoding) = crate::utils::encoding::read_file_with_encoding(path)?;
+        let (content, encoding) = crate::encoding::read_file_with_encoding(path)?;
 
         // Detect line ending
-        let line_ending = crate::utils::encoding::detect_line_ending(&content);
+        let line_ending = crate::encoding::detect_line_ending(&content);
 
         // Create and store file format information
         let file_format = FileFormat {
@@ -398,7 +476,7 @@ impl CodeExplorer for Explorer {
         encodings.insert(path.to_path_buf(), encoding);
 
         // Normalize content for LLM
-        let normalized_content = crate::utils::encoding::normalize_content(&content);
+        let normalized_content = crate::encoding::normalize_content(&content);
 
         Ok(normalized_content)
     }
@@ -410,10 +488,14 @@ impl CodeExplorer for Explorer {
         start_line: Option<usize>,
         end_line: Option<usize>,
     ) -> Result<String> {
-        self.read_file_lines(path, start_line, end_line).await
+        let resolved = self.resolve_path(path)?;
+        self.read_file_lines(resolved.as_path(), start_line, end_line)
+            .await
     }
 
     async fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String> {
+        let resolved = self.resolve_path(path)?;
+        let path = resolved.as_path();
         debug!("Writing file: {}, append: {}", path.display(), append);
 
         // Check if file is ignored by .gitignore
@@ -437,10 +519,10 @@ impl CodeExplorer for Explorer {
 
         let content_to_write = if append && path.exists() {
             // Try to read existing content and append new content
-            match crate::utils::encoding::read_file_with_encoding(path) {
+            match crate::encoding::read_file_with_encoding(path) {
                 Ok((existing, _)) => {
                     // When appending, we need to normalize the existing content as well
-                    let normalized_existing = crate::utils::encoding::normalize_content(&existing);
+                    let normalized_existing = crate::encoding::normalize_content(&existing);
                     normalized_existing + content
                 }
                 Err(_) => content.to_string(), // Fallback if reading fails
@@ -450,25 +532,28 @@ impl CodeExplorer for Explorer {
         };
 
         // Write the content with the correct format
-        crate::utils::encoding::write_file_with_format(path, &content_to_write, &file_format)?;
+        crate::encoding::write_file_with_format(path, &content_to_write, &file_format)?;
 
         // Return the complete content after writing
         Ok(content_to_write)
     }
 
     async fn delete_file(&self, path: &Path) -> Result<()> {
-        std::fs::remove_file(path)?;
+        let resolved = self.resolve_path(path)?;
+        std::fs::remove_file(resolved.as_path())?;
         Ok(())
     }
 
     async fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry> {
+        let resolved = self.resolve_path(path)?;
+        let path = resolved.as_path();
         // Check if the path exists before proceeding
         if !path.exists() {
             return Err(anyhow::anyhow!("Path not found"));
         }
 
         // Remember that this path was explicitly listed
-        self.expanded_paths.insert(path.to_path_buf());
+        self.expanded_paths.insert(resolved.clone());
 
         let mut entry = FileTreeEntry {
             name: path
@@ -497,6 +582,8 @@ impl CodeExplorer for Explorer {
         path: &Path,
         replacements: &[FileReplacement],
     ) -> Result<String> {
+        let resolved = self.resolve_path(path)?;
+        let path = resolved.as_path();
         // Get the original content
         let original_content = std::fs::read_to_string(path)?;
 
@@ -508,7 +595,7 @@ impl CodeExplorer for Explorer {
                 None => {
                     // Detect format if not already known
                     let encoding = FileEncoding::UTF8; // Fallback
-                    let line_ending = crate::utils::encoding::detect_line_ending(&original_content);
+                    let line_ending = crate::encoding::detect_line_ending(&original_content);
                     FileFormat {
                         encoding,
                         line_ending,
@@ -519,10 +606,10 @@ impl CodeExplorer for Explorer {
 
         // Apply replacements with normalized content
         let updated_normalized =
-            crate::utils::apply_replacements_normalized(&original_content, replacements)?;
+            crate::file_updater::apply_replacements_normalized(&original_content, replacements)?;
 
         // Write the content back using the file format helper to ensure consistent newline handling
-        crate::utils::encoding::write_file_with_format(path, &updated_normalized, &file_format)?;
+        crate::encoding::write_file_with_format(path, &updated_normalized, &file_format)?;
 
         // Return the normalized content for LLM
         Ok(updated_normalized)
@@ -533,12 +620,15 @@ impl CodeExplorer for Explorer {
         path: &Path,
         replacements: &[FileReplacement],
         format_command: &str,
-        command_executor: &dyn crate::utils::CommandExecutor,
+        command_executor: &dyn CommandExecutor,
     ) -> Result<(String, Option<Vec<FileReplacement>>)> {
-        use crate::utils::file_updater::{
+        use crate::file_updater::{
             apply_matches, extract_stable_ranges, find_replacement_matches,
             reconstruct_formatted_replacements,
         };
+
+        let resolved = self.resolve_path(path)?;
+        let path = resolved.as_path();
 
         // Get the original content
         let original_content = std::fs::read_to_string(path)?;
@@ -551,7 +641,7 @@ impl CodeExplorer for Explorer {
                 None => {
                     // Detect format if not already known
                     let encoding = FileEncoding::UTF8; // Fallback
-                    let line_ending = crate::utils::encoding::detect_line_ending(&original_content);
+                    let line_ending = crate::encoding::detect_line_ending(&original_content);
                     FileFormat {
                         encoding,
                         line_ending,
@@ -567,16 +657,16 @@ impl CodeExplorer for Explorer {
         let updated_content = apply_matches(&original_content, &matches, replacements)?;
 
         // Phase 3: Write the file
-        crate::utils::encoding::write_file_with_format(path, &updated_content, &file_format)?;
+        crate::encoding::write_file_with_format(path, &updated_content, &file_format)?;
 
         // Phase 4: Run formatting
         let output = command_executor
-            .execute(format_command, Some(&self.root_dir))
+            .execute(format_command, Some(&self.root_dir), None)
             .await?;
 
         if !output.success {
             // Formatting failed - restore original content and return without updated replacements
-            crate::utils::encoding::write_file_with_format(path, &updated_content, &file_format)?;
+            crate::encoding::write_file_with_format(path, &updated_content, &file_format)?;
             return Ok((updated_content, None));
         }
 
@@ -605,6 +695,7 @@ impl CodeExplorer for Explorer {
     }
 
     async fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>> {
+        let path = self.resolve_path(path)?;
         let mut results = Vec::new();
         let max_results = options.max_results.unwrap_or(usize::MAX);
         let context_lines = 2; // Lines of context before and after
@@ -633,7 +724,7 @@ impl CodeExplorer for Explorer {
             }
         };
 
-        let walker = WalkBuilder::new(path)
+        let walker = WalkBuilder::new(&path)
             .hidden(false)
             .git_ignore(true)
             .filter_entry(move |e| {
@@ -652,12 +743,12 @@ impl CodeExplorer for Explorer {
             let path = entry.path();
 
             // Skip directories and non-text files
-            if path.is_dir() || !crate::utils::encoding::is_text_file(path) {
+            if path.is_dir() || !crate::encoding::is_text_file(path) {
                 continue;
             }
 
             // Read with encoding detection
-            let (content, _encoding) = match crate::utils::encoding::read_file_with_encoding(path) {
+            let (content, _encoding) = match crate::encoding::read_file_with_encoding(path) {
                 Ok(result) => result,
                 Err(e) => {
                     debug!(
@@ -670,7 +761,7 @@ impl CodeExplorer for Explorer {
             };
 
             // Normalize content for consistent search results
-            let content = crate::utils::encoding::normalize_content(&content);
+            let content = crate::encoding::normalize_content(&content);
 
             // Find all matches in the entire content
             let matches: Vec<_> = regex.find_iter(&content).collect();
@@ -830,6 +921,8 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs as unix_fs;
     use tempfile::TempDir;
 
     // Helper function to setup temporary test environment
@@ -936,10 +1029,12 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Found 3 occurrences"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Found 3 occurrences")
+        );
 
         Ok(())
     }
@@ -979,16 +1074,21 @@ mod tests {
             )
             .await?;
         assert_eq!(results.len(), 3);
-        assert!(results
-            .iter()
-            .any(|r| r.line_content.iter().any(|l| l.contains("This is line 2"))));
-        assert!(results.iter().any(|r| r
-            .line_content
-            .iter()
-            .any(|l| l.contains("Another file line 2"))));
-        assert!(results
-            .iter()
-            .any(|r| r.line_content.iter().any(|l| l.contains("Subdir line 2"))));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.line_content.iter().any(|l| l.contains("This is line 2")))
+        );
+        assert!(results.iter().any(|r| {
+            r.line_content
+                .iter()
+                .any(|l| l.contains("Another file line 2"))
+        }));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.line_content.iter().any(|l| l.contains("Subdir line 2")))
+        );
 
         // Test with max_results
         let results = explorer
@@ -1071,6 +1171,71 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Path not found"));
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_file_blocks_directory_traversal_escape() -> Result<()> {
+        let (temp_dir, explorer) = setup_test_directory()?;
+        let parent_dir = temp_dir
+            .path()
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("tempdir has no parent"))?
+            .to_path_buf();
+        let sibling_dir = parent_dir.join(format!(
+            "escape-test-{}",
+            temp_dir
+                .path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("escape")
+        ));
+        fs::create_dir_all(&sibling_dir)?;
+        let outside_file = sibling_dir.join("outside.txt");
+        fs::write(&outside_file, "secret")?;
+
+        let traversal_path = Path::new("..")
+            .join(
+                sibling_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing sibling dir name"))?,
+            )
+            .join("outside.txt");
+
+        let result = explorer.read_file(&traversal_path).await;
+        assert!(result.is_err(), "Traversal should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Access outside project root"),
+            "Unexpected error message: {err}"
+        );
+
+        fs::remove_file(&outside_file)?;
+        fs::remove_dir_all(&sibling_dir)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_read_file_blocks_symlink_escape() -> Result<()> {
+        let (temp_dir, explorer) = setup_test_directory()?;
+        let outside_dir = TempDir::new()?;
+        let outside_file = outside_dir.path().join("symlink_target.txt");
+        fs::write(&outside_file, "symlinked secret")?;
+
+        let link_path = temp_dir.path().join("link.txt");
+        unix_fs::symlink(&outside_file, &link_path)?;
+
+        let result = explorer.read_file(&link_path).await;
+        assert!(result.is_err(), "Symlink traversal should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Access outside project root"),
+            "Unexpected error message: {err}"
+        );
+
+        fs::remove_file(&link_path)?;
         Ok(())
     }
 }

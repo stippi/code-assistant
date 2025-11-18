@@ -214,8 +214,7 @@ impl Render for ModelSelector {
                         .with_size(Size::XSmall)
                         .text_color(cx.theme().muted_foreground),
                 )
-                .min_w(px(180.))
-                .max_w(px(280.)),
+                .min_w(px(280.)),
         )
     }
 }

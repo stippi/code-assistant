@@ -1,5 +1,6 @@
-use anyhow::Result;
 use clap::ValueEnum;
+use command_executor::build_format_command;
+use fs_explorer::FileTreeEntry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -42,16 +43,8 @@ impl Project {
     /// Builds a formatter command for the given relative path using the optional {path} placeholder.
     pub fn format_command_for(&self, rel_path: &Path) -> Option<String> {
         self.formatter_template_for(rel_path)
-            .map(|template| crate::utils::build_format_command(&template, rel_path))
+            .map(|template| build_format_command(&template, rel_path))
     }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct FileTreeEntry {
-    pub name: String,
-    pub entry_type: FileSystemEntryType,
-    pub children: HashMap<String, FileTreeEntry>,
-    pub is_expanded: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,40 +55,6 @@ pub enum LoadedResource {
         results: Vec<WebSearchResult>,
     },
     WebPage(WebPage),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub enum FileEncoding {
-    #[default]
-    UTF8,
-    UTF16LE,
-    UTF16BE,
-    Windows1252,
-    ISO8859_2,
-    Other(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub enum LineEnding {
-    #[default]
-    LF, // Unix: \n
-    Crlf, // Windows: \r\n
-    CR,   // Legacy Mac: \r
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileFormat {
-    pub encoding: FileEncoding,
-    pub line_ending: LineEnding,
-}
-
-impl Default for FileFormat {
-    fn default() -> Self {
-        Self {
-            encoding: FileEncoding::UTF8,
-            line_ending: LineEnding::LF,
-        }
-    }
 }
 
 /// Represents the agent's working memory during execution
@@ -226,19 +185,6 @@ impl WorkingMemory {
     }
 }
 
-/// Details for a text replacement operation
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct FileReplacement {
-    /// The text to search for. Must match exactly one location in the file
-    /// unless replace_all is set to true.
-    pub search: String,
-    /// The text to replace it with
-    pub replace: String,
-    /// If true, replaces all occurrences of the search text instead of requiring exactly one match
-    #[serde(default)]
-    pub replace_all: bool,
-}
-
 /// Tool description for LLM
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
@@ -247,39 +193,6 @@ pub enum ToolError {
 
     #[error("Failed to parse tool parameters: {0}")]
     ParseError(String),
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub enum FileSystemEntryType {
-    File,
-    Directory,
-}
-
-#[derive(Debug, Clone, Default)]
-pub enum SearchMode {
-    /// Standard text search, case-insensitive by default
-    #[default]
-    Exact,
-    /// Regular expression search
-    Regex,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct SearchOptions {
-    pub query: String,
-    pub case_sensitive: bool,
-    pub whole_words: bool,
-    pub mode: SearchMode,
-    pub max_results: Option<usize>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct SearchResult {
-    pub file: PathBuf,
-    pub start_line: usize, // First line in the section (including context)
-    pub line_content: Vec<String>, // All lines in the section
-    pub match_lines: Vec<usize>, // Line numbers with matches (relative to start_line)
-    pub match_ranges: Vec<Vec<(usize, usize)>>, // Match positions for each line, aligned with match_lines
 }
 
 /// Specifies the tool invocation syntax
@@ -306,43 +219,4 @@ impl ValueEnum for ToolSyntax {
             Self::Caret => Some(clap::builder::PossibleValue::new("caret")),
         }
     }
-}
-
-#[async_trait::async_trait]
-pub trait CodeExplorer: Send + Sync {
-    fn root_dir(&self) -> PathBuf;
-    /// Reads the content of a file
-    async fn read_file(&self, path: &Path) -> Result<String>;
-    /// Reads the content of a file between specific line numbers
-    async fn read_file_range(
-        &self,
-        path: &Path,
-        start_line: Option<usize>,
-        end_line: Option<usize>,
-    ) -> Result<String>;
-    /// Write the content of a file and return the complete content after writing
-    async fn write_file(&self, path: &Path, content: &str, append: bool) -> Result<String>;
-    async fn delete_file(&self, path: &Path) -> Result<()>;
-    #[allow(dead_code)]
-    fn create_initial_tree(&mut self, max_depth: usize) -> Result<FileTreeEntry>;
-    async fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry>;
-    /// Applies FileReplacements to a file
-    async fn apply_replacements(
-        &self,
-        path: &Path,
-        replacements: &[FileReplacement],
-    ) -> Result<String>;
-    /// Applies FileReplacements to a file with formatting support
-    async fn apply_replacements_with_formatting(
-        &self,
-        path: &Path,
-        replacements: &[FileReplacement],
-        format_command: &str,
-        command_executor: &dyn crate::utils::CommandExecutor,
-    ) -> Result<(String, Option<Vec<FileReplacement>>)>;
-    /// Search for text in files with advanced options
-    async fn search(&self, path: &Path, options: SearchOptions) -> Result<Vec<SearchResult>>;
-    /// Create a cloned box of this explorer
-    #[allow(dead_code)]
-    fn clone_box(&self) -> Box<dyn CodeExplorer>;
 }

@@ -2,8 +2,9 @@ use super::resources::ResourceManager;
 use super::types::*;
 use crate::config::{DefaultProjectManager, ProjectManager};
 use crate::tools::core::ToolRegistry;
-use crate::utils::{CommandExecutor, DefaultCommandExecutor, MessageWriter, StdoutWriter};
+use crate::utils::{MessageWriter, StdoutWriter};
 use anyhow::Result;
+use command_executor::{CommandExecutor, DefaultCommandExecutor};
 use tokio::io::Stdout;
 use tracing::{debug, error, trace};
 
@@ -268,6 +269,7 @@ impl MessageHandler {
                 plan: None,
                 ui: None,
                 tool_id: None,
+                permission_handler: None,
             };
 
             // Invoke the tool

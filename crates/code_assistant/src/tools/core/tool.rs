@@ -1,8 +1,10 @@
 use super::render::Render;
 use super::result::ToolResult;
 use super::spec::ToolSpec;
+use crate::permissions::PermissionMediator;
 use crate::types::{PlanState, WorkingMemory};
 use anyhow::{anyhow, Result};
+use command_executor::CommandExecutor;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 /// Context provided to tools during execution
@@ -10,7 +12,7 @@ pub struct ToolContext<'a> {
     /// Project manager for accessing files
     pub project_manager: &'a dyn crate::config::ProjectManager,
     /// Command executor for running shell commands
-    pub command_executor: &'a dyn crate::utils::CommandExecutor,
+    pub command_executor: &'a dyn CommandExecutor,
     /// Optional working memory (available in WorkingMemoryAgent mode)
     pub working_memory: Option<&'a mut WorkingMemory>,
     /// Optional plan state reference for plan-related tools
@@ -19,6 +21,8 @@ pub struct ToolContext<'a> {
     pub ui: Option<&'a dyn crate::ui::UserInterface>,
     /// Optional current tool ID for streaming output
     pub tool_id: Option<String>,
+    /// Optional permission handler for potentially sensitive operations
+    pub permission_handler: Option<&'a dyn PermissionMediator>,
 }
 
 /// Core trait for tools, defining the execution interface

@@ -1,9 +1,10 @@
 use crate::config::{DefaultProjectManager, ProjectManager};
-use crate::explorer::Explorer;
 use crate::mcp::handler::MessageHandler;
 use crate::tests::mocks::MockProjectManager;
-use crate::utils::{CommandExecutor, DefaultCommandExecutor, MockWriter};
+use crate::utils::MockWriter;
 use anyhow::Result;
+use command_executor::{CommandExecutor, DefaultCommandExecutor};
+use fs_explorer::Explorer;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::fs;

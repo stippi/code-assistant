@@ -527,6 +527,14 @@ impl ACPUserUI {
         }
     }
 
+    pub fn tool_call_update(&self, tool_id: &str) -> Option<acp::ToolCallUpdate> {
+        let base_path = self.base_path.as_deref();
+        let tool_calls = self.tool_calls.lock().unwrap();
+        tool_calls
+            .get(tool_id)
+            .map(|state| state.to_update(base_path))
+    }
+
     pub fn take_last_error(&self) -> Option<String> {
         self.last_error
             .lock()
@@ -676,7 +684,8 @@ impl UserInterface for ACPUserUI {
             | UiEvent::RequestPendingMessageEdit { .. }
             | UiEvent::UpdatePendingMessage { .. }
             | UiEvent::ClearError
-            | UiEvent::UpdateCurrentModel { .. } => {
+            | UiEvent::UpdateCurrentModel { .. }
+            | UiEvent::UpdateSandboxPolicy { .. } => {
                 // These are UI management events, not relevant for ACP
             }
             UiEvent::DisplayError { message } => {

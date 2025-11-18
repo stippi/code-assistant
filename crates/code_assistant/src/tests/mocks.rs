@@ -1,11 +1,20 @@
 use crate::config::ProjectManager;
+use crate::permissions::PermissionMediator;
 use crate::tools::core::tool::ToolContext;
 use crate::types::*;
 use crate::ui::{UIError, UiEvent, UserInterface};
-use crate::utils::{CommandExecutor, CommandOutput};
 use anyhow::Result;
 use async_trait::async_trait;
-use llm::{types::*, LLMProvider, LLMRequest, StreamingCallback};
+use command_executor::{CommandExecutor, CommandOutput, SandboxCommandRequest, StreamingCallback};
+use fs_explorer::{
+    file_updater::{
+        apply_replacements_normalized, extract_stable_ranges, find_replacement_matches,
+        reconstruct_formatted_replacements,
+    },
+    CodeExplorer, FileReplacement, FileSystemEntryType, FileTreeEntry, SearchMode, SearchOptions,
+    SearchResult,
+};
+use llm::{types::*, LLMProvider, LLMRequest, StreamingCallback as LlmStreamingCallback};
 use regex::RegexBuilder;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -74,7 +83,7 @@ impl LLMProvider for MockLLMProvider {
     async fn send_message(
         &mut self,
         request: LLMRequest,
-        _streaming_callback: Option<&StreamingCallback>,
+        _streaming_callback: Option<&LlmStreamingCallback>,
     ) -> Result<LLMResponse, anyhow::Error> {
         self.requests.lock().unwrap().push(request);
         self.responses
@@ -115,6 +124,8 @@ pub fn create_test_response_text(text: &str) -> LLMResponse {
 pub struct CapturedCommand {
     pub command_line: String,
     pub working_dir: Option<PathBuf>,
+    #[allow(dead_code)]
+    pub sandbox_request: Option<SandboxCommandRequest>,
 }
 
 // Mock CommandExecutor
@@ -145,6 +156,7 @@ impl CommandExecutor for MockCommandExecutor {
         &self,
         command_line: &str,
         working_dir: Option<&PathBuf>,
+        sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.captured_commands
@@ -153,6 +165,7 @@ impl CommandExecutor for MockCommandExecutor {
             .push(CapturedCommand {
                 command_line: command_line.to_string(),
                 working_dir: working_dir.cloned(),
+                sandbox_request: sandbox_request.cloned(),
             });
 
         self.responses
@@ -166,10 +179,13 @@ impl CommandExecutor for MockCommandExecutor {
         &self,
         command_line: &str,
         working_dir: Option<&PathBuf>,
-        callback: Option<&dyn crate::utils::command::StreamingCallback>,
+        callback: Option<&dyn StreamingCallback>,
+        sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
         // For mock, just call the regular execute and simulate streaming if callback provided
-        let result = self.execute(command_line, working_dir).await?;
+        let result = self
+            .execute(command_line, working_dir, sandbox_request)
+            .await?;
 
         if let Some(callback) = callback {
             // Simulate streaming by sending the output in chunks
@@ -203,7 +219,7 @@ pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
 #[allow(dead_code)]
 pub fn create_test_tool_context<'a>(
     project_manager: &'a dyn crate::config::ProjectManager,
-    command_executor: &'a dyn crate::utils::CommandExecutor,
+    command_executor: &'a dyn CommandExecutor,
     working_memory: Option<&'a mut crate::types::WorkingMemory>,
     plan: Option<&'a mut crate::types::PlanState>,
     ui: Option<&'a dyn crate::ui::UserInterface>,
@@ -216,6 +232,7 @@ pub fn create_test_tool_context<'a>(
         plan,
         ui,
         tool_id,
+        permission_handler: None,
     }
 }
 
@@ -530,7 +547,7 @@ impl CodeExplorer for MockExplorer {
             .ok_or_else(|| anyhow::anyhow!("File not found: {}", path.display()))?
             .clone();
 
-        let updated_content = crate::utils::apply_replacements_normalized(&content, replacements)?;
+        let updated_content = apply_replacements_normalized(&content, replacements)?;
 
         // Update the stored content
         files.insert(path.to_path_buf(), updated_content.clone());
@@ -543,12 +560,8 @@ impl CodeExplorer for MockExplorer {
         path: &Path,
         replacements: &[FileReplacement],
         format_command: &str,
-        command_executor: &dyn crate::utils::CommandExecutor,
+        command_executor: &dyn CommandExecutor,
     ) -> Result<(String, Option<Vec<FileReplacement>>)> {
-        use crate::utils::file_updater::{
-            extract_stable_ranges, find_replacement_matches, reconstruct_formatted_replacements,
-        };
-
         // Capture original content
         let original_content = self.read_file(path).await?;
 
@@ -560,7 +573,7 @@ impl CodeExplorer for MockExplorer {
 
         // Execute the format command to simulate formatting
         let output = command_executor
-            .execute(format_command, Some(&PathBuf::from("./root")))
+            .execute(format_command, Some(&PathBuf::from("./root")), None)
             .await?;
 
         // If formatting failed, do not attempt to reconstruct replacements
@@ -978,6 +991,7 @@ pub struct ToolTestFixture {
     plan: Option<PlanState>,
     ui: Option<MockUI>,
     tool_id: Option<String>,
+    permission_handler: Option<Arc<dyn PermissionMediator>>,
 }
 
 impl ToolTestFixture {
@@ -990,6 +1004,7 @@ impl ToolTestFixture {
             plan: None,
             ui: None,
             tool_id: None,
+            permission_handler: None,
         }
     }
 
@@ -1055,6 +1070,7 @@ impl ToolTestFixture {
             plan: None,
             ui: None,
             tool_id: None,
+            permission_handler: None,
         }
     }
 
@@ -1067,6 +1083,7 @@ impl ToolTestFixture {
             plan: None,
             ui: None,
             tool_id: None,
+            permission_handler: None,
         }
     }
 
@@ -1105,6 +1122,15 @@ impl ToolTestFixture {
         self
     }
 
+    /// Attach a permission handler to this fixture
+    pub fn with_permission_handler<T>(mut self, handler: Arc<T>) -> Self
+    where
+        T: PermissionMediator + 'static,
+    {
+        self.permission_handler = Some(handler);
+        self
+    }
+
     /// Create a ToolContext from this fixture
     pub fn context(&mut self) -> ToolContext<'_> {
         ToolContext {
@@ -1114,6 +1140,7 @@ impl ToolTestFixture {
             plan: self.plan.as_mut(),
             ui: self.ui.as_ref().map(|ui| ui as &dyn UserInterface),
             tool_id: self.tool_id.clone(),
+            permission_handler: self.permission_handler.as_deref(),
         }
     }
 

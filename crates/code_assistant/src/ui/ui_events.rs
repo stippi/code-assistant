@@ -3,6 +3,7 @@ use crate::session::instance::SessionActivityState;
 use crate::types::{PlanState, WorkingMemory};
 use crate::ui::gpui::elements::MessageRole;
 use crate::ui::{DisplayFragment, ToolStatus};
+use sandbox::SandboxPolicy;
 
 /// Data for a complete message with its display fragments
 #[derive(Debug, Clone)]
@@ -116,4 +117,6 @@ pub enum UiEvent {
     CompleteReasoning,
     /// Update the current model selection in the UI
     UpdateCurrentModel { model_name: String },
+    /// Update the current sandbox selection in the UI
+    UpdateSandboxPolicy { policy: SandboxPolicy },
 }

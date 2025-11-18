@@ -2,9 +2,11 @@ use crate::config::DefaultProjectManager;
 use crate::persistence::{ChatMetadata, DraftAttachment, SessionModelConfig};
 use crate::session::SessionManager;
 use crate::ui::UserInterface;
-use crate::utils::{content::content_blocks_from, DefaultCommandExecutor};
+use crate::utils::content::content_blocks_from;
+use command_executor::DefaultCommandExecutor;
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
+use sandbox::SandboxPolicy;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,6 +48,10 @@ pub enum BackendEvent {
         session_id: String,
         model_name: String,
     },
+    ChangeSandboxPolicy {
+        session_id: String,
+        policy: SandboxPolicy,
+    },
 }
 
 // Response from backend to UI
@@ -76,6 +82,10 @@ pub enum BackendResponse {
     ModelSwitched {
         session_id: String,
         model_name: String,
+    },
+    SandboxPolicyChanged {
+        session_id: String,
+        policy: SandboxPolicy,
     },
 }
 
@@ -151,6 +161,9 @@ pub async fn handle_backend_events(
                 session_id,
                 model_name,
             } => Some(handle_switch_model(&multi_session_manager, &session_id, &model_name).await),
+            BackendEvent::ChangeSandboxPolicy { session_id, policy } => Some(
+                handle_change_sandbox_policy(&multi_session_manager, &session_id, policy).await,
+            ),
         };
 
         // Send response back to UI only if there is one
@@ -347,6 +360,7 @@ async fn handle_send_user_message(
                             project_manager,
                             command_executor,
                             user_interface,
+                            None,
                         )
                         .await
                 }
@@ -508,5 +522,26 @@ async fn handle_switch_model(
                 message: format!("Failed to switch model: {e}"),
             }
         }
+    }
+}
+
+async fn handle_change_sandbox_policy(
+    multi_session_manager: &Arc<Mutex<SessionManager>>,
+    session_id: &str,
+    policy: SandboxPolicy,
+) -> BackendResponse {
+    let result = {
+        let mut manager = multi_session_manager.lock().await;
+        manager.set_session_sandbox_policy(session_id, policy.clone())
+    };
+
+    match result {
+        Ok(()) => BackendResponse::SandboxPolicyChanged {
+            session_id: session_id.to_string(),
+            policy,
+        },
+        Err(e) => BackendResponse::Error {
+            message: format!("Failed to update sandbox policy: {e}"),
+        },
     }
 }

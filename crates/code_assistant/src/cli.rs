@@ -1,7 +1,18 @@
 use crate::types::ToolSyntax;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use llm::provider_config::ConfigurationSystem;
+use sandbox::SandboxPolicy;
 use std::path::PathBuf;
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum SandboxModeArg {
+    #[value(name = "danger-full-access")]
+    DangerFullAccess,
+    #[value(name = "read-only")]
+    ReadOnly,
+    #[value(name = "workspace-write")]
+    WorkspaceWrite,
+}
 
 #[derive(Subcommand, Debug)]
 pub enum Mode {
@@ -33,6 +44,14 @@ pub enum Mode {
         /// Use the legacy diff format for file editing (enables replace_in_file tool instead of edit)
         #[arg(long)]
         use_diff_format: bool,
+
+        /// Sandbox mode for command execution
+        #[arg(long, value_enum, default_value_t = SandboxModeArg::DangerFullAccess)]
+        sandbox_mode: SandboxModeArg,
+
+        /// Allow network access when sandbox mode is workspace-write
+        #[arg(long, default_value_t = false)]
+        sandbox_network: bool,
     },
 }
 
@@ -94,6 +113,14 @@ pub struct Args {
     /// Use the legacy diff format for file editing (enables replace_in_file tool instead of edit)
     #[arg(long)]
     pub use_diff_format: bool,
+
+    /// Sandbox mode for command execution
+    #[arg(long, value_enum, default_value_t = SandboxModeArg::DangerFullAccess)]
+    pub sandbox_mode: SandboxModeArg,
+
+    /// Allow network access when sandbox mode is workspace-write
+    #[arg(long, default_value_t = false)]
+    pub sandbox_network: bool,
 }
 
 impl Args {
@@ -190,6 +217,25 @@ impl Args {
     /// Get the model name, with fallback to a default if none specified
     pub fn get_model_name(&self) -> anyhow::Result<String> {
         Self::resolve_model_name(self.model.clone())
+    }
+
+    pub fn sandbox_policy(&self) -> SandboxPolicy {
+        self.sandbox_mode.to_policy(self.sandbox_network)
+    }
+}
+
+impl SandboxModeArg {
+    pub fn to_policy(self, network: bool) -> SandboxPolicy {
+        match self {
+            SandboxModeArg::DangerFullAccess => SandboxPolicy::DangerFullAccess,
+            SandboxModeArg::ReadOnly => SandboxPolicy::ReadOnly,
+            SandboxModeArg::WorkspaceWrite => SandboxPolicy::WorkspaceWrite {
+                writable_roots: Vec::new(),
+                network_access: network,
+                exclude_tmpdir_env_var: false,
+                exclude_slash_tmp: false,
+            },
+        }
     }
 }
 

@@ -2,8 +2,8 @@ use super::AgentRunConfig;
 use crate::config::DefaultProjectManager;
 use crate::session::{SessionConfig, SessionManager};
 use crate::ui::{self, UserInterface};
-use crate::utils::DefaultCommandExecutor;
 use anyhow::Result;
+use command_executor::DefaultCommandExecutor;
 use llm::factory::create_llm_client_from_model;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -25,6 +25,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         initial_project: String::new(),
         tool_syntax: config.tool_syntax,
         use_diff_blocks: config.use_diff_format,
+        sandbox_policy: config.sandbox_policy.clone(),
     };
 
     let default_model = config.model.clone();
@@ -107,6 +108,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                             project_manager,
                             command_executor,
                             user_interface,
+                            None,
                         )
                         .await
                         .expect("Failed to start agent with initial task");

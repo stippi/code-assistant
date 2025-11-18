@@ -1,6 +1,7 @@
 use super::attachment::{AttachmentEvent, AttachmentView};
 use super::file_icons;
 use super::model_selector::{ModelSelector, ModelSelectorEvent};
+use super::sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
 use crate::persistence::DraftAttachment;
 use base64::Engine;
 use gpui::{
@@ -9,6 +10,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState, Paste};
 use gpui_component::ActiveTheme;
+use sandbox::SandboxPolicy;
 
 /// Events emitted by the InputArea component
 #[derive(Clone, Debug)]
@@ -31,13 +33,17 @@ pub enum InputAreaEvent {
     ClearDraftRequested,
     /// Model selection changed
     ModelChanged { model_name: String },
+    /// Sandbox mode changed
+    SandboxChanged { policy: SandboxPolicy },
 }
 
 /// Self-contained input area component that handles text input and attachments
 pub struct InputArea {
     text_input: Entity<InputState>,
     model_selector: Entity<ModelSelector>,
+    sandbox_selector: Entity<SandboxSelector>,
     current_model: Option<String>,
+    current_sandbox_policy: SandboxPolicy,
     attachments: Vec<DraftAttachment>,
     attachment_views: Vec<Entity<AttachmentView>>,
     focus_handle: FocusHandle,
@@ -48,6 +54,7 @@ pub struct InputArea {
     // Subscriptions
     _input_subscription: Subscription,
     _model_selector_subscription: Subscription,
+    _sandbox_selector_subscription: Subscription,
 }
 
 impl InputArea {
@@ -65,15 +72,20 @@ impl InputArea {
 
         // Create the model selector
         let model_selector = cx.new(|cx| ModelSelector::new(window, cx));
+        let sandbox_selector = cx.new(|cx| SandboxSelector::new(window, cx));
 
         // Subscribe to model selector events
         let model_selector_subscription =
             cx.subscribe_in(&model_selector, window, Self::on_model_selector_event);
+        let sandbox_selector_subscription =
+            cx.subscribe_in(&sandbox_selector, window, Self::on_sandbox_selector_event);
 
         Self {
             text_input,
             model_selector,
+            sandbox_selector,
             current_model: None,
+            current_sandbox_policy: SandboxPolicy::DangerFullAccess,
             attachments: Vec::new(),
             attachment_views: Vec::new(),
             focus_handle: cx.focus_handle(),
@@ -82,6 +94,7 @@ impl InputArea {
             cancel_enabled: false,
             _input_subscription: input_subscription,
             _model_selector_subscription: model_selector_subscription,
+            _sandbox_selector_subscription: sandbox_selector_subscription,
         }
     }
 
@@ -119,6 +132,22 @@ impl InputArea {
     /// Read the currently selected model name
     pub fn current_model(&self) -> Option<String> {
         self.current_model.clone()
+    }
+
+    pub fn set_current_sandbox_policy(
+        &mut self,
+        policy: SandboxPolicy,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.current_sandbox_policy = policy.clone();
+        self.sandbox_selector.update(cx, |selector, cx| {
+            selector.set_policy(policy, window, cx);
+        });
+    }
+
+    pub fn current_sandbox_policy(&self) -> SandboxPolicy {
+        self.current_sandbox_policy.clone()
     }
 
     /// Ensure the model list stays up to date
@@ -284,6 +313,23 @@ impl InputArea {
         }
     }
 
+    fn on_sandbox_selector_event(
+        &mut self,
+        _selector: &Entity<SandboxSelector>,
+        event: &SandboxSelectorEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SandboxSelectorEvent::PolicyChanged { policy } => {
+                self.current_sandbox_policy = policy.clone();
+                cx.emit(InputAreaEvent::SandboxChanged {
+                    policy: policy.clone(),
+                });
+            }
+        }
+    }
+
     /// Handle submit button click
     fn on_submit_click(&mut self, _: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
         let content = self.text_input.read(cx).value().to_string();
@@ -435,9 +481,11 @@ impl InputArea {
             .child(
                 div()
                     .flex()
+                    .gap_2()
                     .px_2()
                     .pb_2()
-                    .child(self.model_selector.clone()),
+                    .child(div().flex_1().flex().child(self.model_selector.clone()))
+                    .child(div().flex_1().flex().child(self.sandbox_selector.clone())),
             )
     }
 }

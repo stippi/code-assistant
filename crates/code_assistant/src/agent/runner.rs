@@ -1,6 +1,7 @@
 use crate::agent::persistence::AgentStatePersistence;
 use crate::agent::types::ToolExecution;
 use crate::config::ProjectManager;
+use crate::permissions::PermissionMediator;
 use crate::persistence::{ChatMetadata, SessionModelConfig};
 use crate::session::instance::SessionActivityState;
 use crate::session::SessionConfig;
@@ -8,8 +9,8 @@ use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope}
 use crate::tools::{generate_system_message, ParserRegistry, ToolRequest};
 use crate::types::*;
 use crate::ui::{DisplayFragment, UiEvent, UserInterface};
-use crate::utils::CommandExecutor;
 use anyhow::Result;
+use command_executor::CommandExecutor;
 use llm::{
     ContentBlock, LLMProvider, LLMRequest, Message, MessageContent, MessageRole, StreamingCallback,
     StreamingChunk,
@@ -28,6 +29,7 @@ pub struct AgentComponents {
     pub command_executor: Box<dyn CommandExecutor>,
     pub ui: Arc<dyn UserInterface>,
     pub state_persistence: Box<dyn AgentStatePersistence>,
+    pub permission_handler: Option<Arc<dyn PermissionMediator>>,
 }
 
 use super::ToolSyntax;
@@ -52,6 +54,7 @@ pub struct Agent {
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<dyn UserInterface>,
     state_persistence: Box<dyn AgentStatePersistence>,
+    permission_handler: Option<Arc<dyn PermissionMediator>>,
     // Store all messages exchanged
     message_history: Vec<Message>,
     // Store the history of tool executions
@@ -104,6 +107,7 @@ impl Agent {
             command_executor,
             ui,
             state_persistence,
+            permission_handler,
         } = components;
 
         let mut this = Self {
@@ -116,6 +120,7 @@ impl Agent {
             ui,
             command_executor,
             state_persistence,
+            permission_handler,
             message_history: Vec::new(),
             tool_executions: Vec::new(),
             cached_system_prompts: HashMap::new(),
@@ -1373,6 +1378,7 @@ impl Agent {
             plan: Some(&mut self.plan),
             ui: Some(self.ui.as_ref()),
             tool_id: Some(tool_request.id.clone()),
+            permission_handler: self.permission_handler.as_deref(),
         };
 
         // Execute the tool - could fail with ParseError or other errors

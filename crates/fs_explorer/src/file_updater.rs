@@ -1,5 +1,5 @@
+use crate::encoding;
 use crate::types::FileReplacement;
-use crate::utils::encoding;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FileUpdaterError {
@@ -38,7 +38,10 @@ impl std::fmt::Display for FileUpdaterError {
                 )
             }
             FileUpdaterError::MultipleMatches(count, index, _) => {
-                write!(f, "Found {count} occurrences of SEARCH block with index {index}\nA SEARCH block must match exactly one location. Try enlarging the section to replace.")
+                write!(
+                    f,
+                    "Found {count} occurrences of SEARCH block with index {index}\nA SEARCH block must match exactly one location. Try enlarging the section to replace."
+                )
             }
             FileUpdaterError::OverlappingMatches(index1, index2) => {
                 write!(

@@ -4,6 +4,7 @@ use crate::tools::core::{
 use crate::tools::parse::parse_search_replace_blocks;
 use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
+use fs_explorer::{FileReplacement, FileUpdaterError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
@@ -22,7 +23,7 @@ pub struct ReplaceInFileOutput {
     #[allow(dead_code)]
     pub project: String,
     pub path: PathBuf,
-    pub error: Option<crate::utils::FileUpdaterError>,
+    pub error: Option<FileUpdaterError>,
 }
 
 // Render implementation for output formatting
@@ -41,23 +42,23 @@ impl Render for ReplaceInFileOutput {
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
         if let Some(error) = &self.error {
             match error {
-                crate::utils::FileUpdaterError::SearchBlockNotFound(idx, _) => {
+                FileUpdaterError::SearchBlockNotFound(idx, _) => {
                     format!(
                         "Please adjust your SEARCH block with index {idx} to the current contents of the file."
                     )
                 }
-                crate::utils::FileUpdaterError::MultipleMatches(count, idx, _) => {
+                FileUpdaterError::MultipleMatches(count, idx, _) => {
                     format!(
                         "Found {count} occurrences of SEARCH block with index {idx}\nA SEARCH block must match exactly one location. Try enlarging the section to replace."
                     )
                 }
-                crate::utils::FileUpdaterError::OverlappingMatches(index1, index2) => {
+                FileUpdaterError::OverlappingMatches(index1, index2) => {
                     format!("Overlapping SEARCH blocks detected (blocks {index1} and {index2})")
                 }
-                crate::utils::FileUpdaterError::AdjacentMatches(index1, index2) => {
+                FileUpdaterError::AdjacentMatches(index1, index2) => {
                     format!("Adjacent SEARCH blocks detected (blocks {index1} and {index2})")
                 }
-                crate::utils::FileUpdaterError::Other(msg) => {
+                FileUpdaterError::Other(msg) => {
                     format!(
                         "Failed to replace in file '{}': {}",
                         self.path.display(),
@@ -81,7 +82,7 @@ impl ToolResult for ReplaceInFileOutput {
     }
 }
 
-fn render_diff_from_replacements(replacements: &[crate::types::FileReplacement]) -> String {
+fn render_diff_from_replacements(replacements: &[FileReplacement]) -> String {
     let mut out = String::new();
     for (i, r) in replacements.iter().enumerate() {
         if i > 0 {
@@ -179,7 +180,7 @@ impl Tool for ReplaceInFileTool {
                 return Ok(ReplaceInFileOutput {
                     project: input.project.clone(),
                     path: PathBuf::from(&input.path),
-                    error: Some(crate::utils::FileUpdaterError::Other(format!(
+                    error: Some(FileUpdaterError::Other(format!(
                         "Failed to parse replacements: {e}"
                     ))),
                 });
@@ -192,7 +193,7 @@ impl Tool for ReplaceInFileTool {
             return Ok(ReplaceInFileOutput {
                 project: input.project.clone(),
                 path,
-                error: Some(crate::utils::FileUpdaterError::Other(
+                error: Some(FileUpdaterError::Other(
                     "Absolute paths are not allowed".to_string(),
                 )),
             });
@@ -239,12 +240,11 @@ impl Tool for ReplaceInFileTool {
                 })
             }
             Err(e) => {
-                let error =
-                    if let Some(file_err) = e.downcast_ref::<crate::utils::FileUpdaterError>() {
-                        file_err.clone()
-                    } else {
-                        crate::utils::FileUpdaterError::Other(e.to_string())
-                    };
+                let error = if let Some(file_err) = e.downcast_ref::<FileUpdaterError>() {
+                    file_err.clone()
+                } else {
+                    FileUpdaterError::Other(e.to_string())
+                };
 
                 Ok(ReplaceInFileOutput {
                     project: input.project.clone(),
@@ -279,7 +279,7 @@ mod tests {
         let output_error = ReplaceInFileOutput {
             project: "test-project".to_string(),
             path: PathBuf::from("src/test.rs"),
-            error: Some(crate::utils::FileUpdaterError::SearchBlockNotFound(
+            error: Some(FileUpdaterError::SearchBlockNotFound(
                 0,
                 "missing content".to_string(),
             )),
@@ -292,7 +292,7 @@ mod tests {
         let output_multiple = ReplaceInFileOutput {
             project: "test-project".to_string(),
             path: PathBuf::from("src/test.rs"),
-            error: Some(crate::utils::FileUpdaterError::MultipleMatches(
+            error: Some(FileUpdaterError::MultipleMatches(
                 3,
                 0,
                 "common pattern".to_string(),
@@ -367,7 +367,7 @@ mod tests {
 
         // Verify error for multiple matches
         assert!(result.error.is_some());
-        if let Some(crate::utils::FileUpdaterError::MultipleMatches(count, _, _)) = result.error {
+        if let Some(FileUpdaterError::MultipleMatches(count, _, _)) = result.error {
             assert_eq!(count, 3);
         } else {
             panic!("Expected MultipleMatches error");
@@ -387,7 +387,7 @@ mod tests {
         // Verify error for missing content
         assert!(result.error.is_some());
         match &result.error {
-            Some(crate::utils::FileUpdaterError::SearchBlockNotFound(_, _)) => (),
+            Some(FileUpdaterError::SearchBlockNotFound(_, _)) => (),
             _ => panic!("Expected SearchBlockNotFound error"),
         }
 

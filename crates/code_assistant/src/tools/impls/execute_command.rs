@@ -1,10 +1,11 @@
+use crate::permissions::{PermissionDecision, PermissionRequest, PermissionRequestReason};
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use crate::ui::streaming::DisplayFragment;
 use crate::ui::UserInterface;
-use crate::utils::command::StreamingCallback;
 use anyhow::{anyhow, Result};
+use command_executor::{SandboxCommandRequest, StreamingCallback};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
@@ -16,6 +17,8 @@ pub struct ExecuteCommandInput {
     pub command_line: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
+    #[serde(default)]
+    pub ask_user_approval: bool,
 }
 
 // Output type
@@ -128,6 +131,11 @@ impl Tool for ExecuteCommandTool {
                     "working_dir": {
                         "type": "string",
                         "description": "Optional: working directory (relative to project root)"
+                    },
+                    "ask_user_approval": {
+                        "type": "boolean",
+                        "description": "Set to true if this command should request user approval to run outside the sandbox",
+                        "default": false
                     }
                 },
                 "required": ["project", "command_line"]
@@ -163,6 +171,8 @@ impl Tool for ExecuteCommandTool {
                 )
             })?;
 
+        let project_root = explorer.root_dir();
+
         // Create a PathBuf for the working directory if provided
         let working_dir_path = input.working_dir.as_ref().map(PathBuf::from);
 
@@ -178,8 +188,43 @@ impl Tool for ExecuteCommandTool {
         // Prepare effective working directory
         let effective_working_dir = working_dir_path
             .as_ref()
-            .map(|dir| explorer.root_dir().join(dir))
-            .unwrap_or_else(|| explorer.root_dir());
+            .map(|dir| project_root.join(dir))
+            .unwrap_or_else(|| project_root.clone());
+
+        let mut bypass_sandbox = false;
+        if input.ask_user_approval {
+            let handler = context.permission_handler.ok_or_else(|| {
+                anyhow!(
+                    "Cannot request user approval: no permission handler configured for execute_command"
+                )
+            })?;
+
+            let decision = handler
+                .request_permission(PermissionRequest {
+                    tool_id: context.tool_id.as_deref(),
+                    tool_name: "execute_command",
+                    reason: PermissionRequestReason::ExecuteCommand {
+                        command_line: &input.command_line,
+                        working_dir: Some(effective_working_dir.as_path()),
+                    },
+                })
+                .await?;
+
+            match decision {
+                PermissionDecision::Denied => {
+                    return Err(anyhow!(
+                        "Command execution cancelled: user denied permission"
+                    ))
+                }
+                PermissionDecision::GrantedOnce | PermissionDecision::GrantedSession => {
+                    bypass_sandbox = true;
+                }
+            }
+        }
+
+        let mut sandbox_request = SandboxCommandRequest::default();
+        sandbox_request.writable_roots.push(project_root.clone());
+        sandbox_request.bypass_sandbox = bypass_sandbox;
 
         // Execute the command using streaming
         let result = match (context.ui, &context.tool_id) {
@@ -196,6 +241,7 @@ impl Tool for ExecuteCommandTool {
                         &input.command_line,
                         Some(&effective_working_dir),
                         Some(&callback),
+                        Some(&sandbox_request),
                     )
                     .await?
             }
@@ -203,7 +249,12 @@ impl Tool for ExecuteCommandTool {
                 // No UI available, use regular execution
                 context
                     .command_executor
-                    .execute_streaming(&input.command_line, Some(&effective_working_dir), None)
+                    .execute_streaming(
+                        &input.command_line,
+                        Some(&effective_working_dir),
+                        None,
+                        Some(&sandbox_request),
+                    )
                     .await?
             }
         };
@@ -221,7 +272,42 @@ impl Tool for ExecuteCommandTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permissions::PermissionMediator;
     use crate::tests::mocks::ToolTestFixture;
+    use command_executor::CommandOutput;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    struct TestPermissionMediator {
+        decision: PermissionDecision,
+        call_count: AtomicUsize,
+    }
+
+    impl TestPermissionMediator {
+        fn new(decision: PermissionDecision) -> Self {
+            Self {
+                decision,
+                call_count: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.call_count.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PermissionMediator for TestPermissionMediator {
+        async fn request_permission(
+            &self,
+            _request: PermissionRequest<'_>,
+        ) -> Result<PermissionDecision> {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            Ok(self.decision)
+        }
+    }
 
     #[tokio::test]
     async fn test_execute_command_output_rendering() {
@@ -264,13 +350,12 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_success() -> Result<()> {
         // Create test fixture with command executor and UI
-        let mut fixture =
-            ToolTestFixture::with_command_responses(vec![Ok(crate::utils::CommandOutput {
-                success: true,
-                output: "Command output".to_string(),
-            })])
-            .with_ui()
-            .with_tool_id("test-tool-1".to_string());
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
+            success: true,
+            output: "Command output".to_string(),
+        })])
+        .with_ui()
+        .with_tool_id("test-tool-1".to_string());
         let mut context = fixture.context();
 
         // Create input
@@ -278,6 +363,7 @@ mod tests {
             project: "test".to_string(),
             command_line: "ls -la".to_string(),
             working_dir: Some("src".to_string()),
+            ask_user_approval: false,
         };
 
         // Execute tool
@@ -301,13 +387,12 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_failure() -> Result<()> {
         // Create test fixture with failing command executor and UI
-        let mut fixture =
-            ToolTestFixture::with_command_responses(vec![Ok(crate::utils::CommandOutput {
-                success: false,
-                output: "Command failed: permission denied".to_string(),
-            })])
-            .with_ui()
-            .with_tool_id("test-tool-2".to_string());
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
+            success: false,
+            output: "Command failed: permission denied".to_string(),
+        })])
+        .with_ui()
+        .with_tool_id("test-tool-2".to_string());
         let mut context = fixture.context();
 
         // Create input
@@ -315,6 +400,7 @@ mod tests {
             project: "test".to_string(),
             command_line: "rm -rf /tmp/nonexistent".to_string(),
             working_dir: None,
+            ask_user_approval: false,
         };
 
         // Execute tool
@@ -337,8 +423,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_command_streaming() -> Result<()> {
-        use crate::utils::CommandOutput;
-
         // Create test fixture with multi-line output and UI for streaming
         let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
             success: true,
@@ -353,6 +437,7 @@ mod tests {
             project: "test".to_string(),
             command_line: "echo 'test'".to_string(),
             working_dir: None,
+            ask_user_approval: false,
         };
 
         // Execute tool
@@ -372,6 +457,100 @@ mod tests {
 
         // The streaming output should contain the individual lines
         println!("Streaming output received: {streaming_output:?}");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_execute_command_without_permission_flag_does_not_prompt() -> Result<()> {
+        let mediator = Arc::new(TestPermissionMediator::new(PermissionDecision::GrantedOnce));
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
+            success: true,
+            output: "Command output".to_string(),
+        })])
+        .with_permission_handler(mediator.clone())
+        .with_ui()
+        .with_tool_id("test-tool-permission-free".to_string());
+        let mut context = fixture.context();
+
+        let mut input = ExecuteCommandInput {
+            project: "test".to_string(),
+            command_line: "ls".to_string(),
+            working_dir: None,
+            ask_user_approval: false,
+        };
+
+        let tool = ExecuteCommandTool;
+        let _ = tool.execute(&mut context, &mut input).await?;
+
+        assert_eq!(
+            mediator.calls(),
+            0,
+            "Permission handler should not be invoked without flag"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_execute_command_permission_denied() {
+        let mediator = Arc::new(TestPermissionMediator::new(PermissionDecision::Denied));
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
+            success: true,
+            output: "Command output".to_string(),
+        })])
+        .with_permission_handler(mediator.clone())
+        .with_ui()
+        .with_tool_id("test-tool-permission-denied".to_string());
+        let mut context = fixture.context();
+
+        let mut input = ExecuteCommandInput {
+            project: "test".to_string(),
+            command_line: "ls".to_string(),
+            working_dir: None,
+            ask_user_approval: true,
+        };
+
+        let tool = ExecuteCommandTool;
+        let result = tool.execute(&mut context, &mut input).await;
+        assert!(result.is_err(), "Execution should fail when user denies");
+        assert_eq!(mediator.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_execute_command_permission_bypasses_sandbox() -> Result<()> {
+        let mediator = Arc::new(TestPermissionMediator::new(PermissionDecision::GrantedOnce));
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
+            success: true,
+            output: "Command output".to_string(),
+        })])
+        .with_permission_handler(mediator.clone())
+        .with_ui()
+        .with_tool_id("test-tool-permission-bypass".to_string());
+        let mut context = fixture.context();
+
+        let mut input = ExecuteCommandInput {
+            project: "test".to_string(),
+            command_line: "ls".to_string(),
+            working_dir: None,
+            ask_user_approval: true,
+        };
+
+        let tool = ExecuteCommandTool;
+        let result = tool.execute(&mut context, &mut input).await?;
+        assert!(result.success);
+        assert_eq!(mediator.calls(), 1);
+
+        let commands = fixture.command_executor().get_captured_commands();
+        assert_eq!(commands.len(), 1);
+        let sandbox_request = commands[0]
+            .sandbox_request
+            .as_ref()
+            .expect("sandbox request should be present");
+        assert!(
+            sandbox_request.bypass_sandbox,
+            "bypass flag should be set after approval"
+        );
 
         Ok(())
     }

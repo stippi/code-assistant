@@ -3,6 +3,7 @@ use crate::tools::core::{
 };
 use crate::types::LoadedResource;
 use anyhow::Result;
+use command_executor::SandboxCommandRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
@@ -156,8 +157,10 @@ impl Tool for WriteFileTool {
             });
         }
 
+        let project_root = explorer.root_dir();
+
         // Join with root_dir to get full path
-        let full_path = explorer.root_dir().join(&path);
+        let full_path = project_root.join(&path);
 
         // Write the file first
         match explorer
@@ -167,9 +170,11 @@ impl Tool for WriteFileTool {
             Ok(mut full_content) => {
                 // If format-on-save applies, run the formatter
                 if let Some(command_line) = project_config.format_command_for(&path) {
+                    let mut format_request = SandboxCommandRequest::default();
+                    format_request.writable_roots.push(project_root.clone());
                     let _ = context
                         .command_executor
-                        .execute(&command_line, Some(&explorer.root_dir()))
+                        .execute(&command_line, Some(&project_root), Some(&format_request))
                         .await;
 
                     // Regardless of formatter success, try to re-read the file content
