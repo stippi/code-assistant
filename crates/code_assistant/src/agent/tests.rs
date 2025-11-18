@@ -2,7 +2,7 @@ use super::*;
 use crate::agent::persistence::MockStatePersistence;
 use crate::persistence::SessionModelConfig;
 use crate::session::instance::SessionActivityState;
-use crate::session::SessionConfig;
+use crate::session::{SessionConfig, SessionState};
 use crate::tests::mocks::MockLLMProvider;
 use crate::tests::mocks::{
     create_command_executor_mock, create_test_response, create_test_response_text,
@@ -1931,6 +1931,165 @@ fn test_update_tool_call_in_text_fallback_mode() -> Result<()> {
     assert!(result.contains("<param:project>test-project</param:project>"));
     assert!(result.contains("<param:path>test-file.txt</param:path>"));
     assert!(result.contains("</tool:read_files>"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Native,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config.clone());
+    agent.disable_naming_reminders();
+
+    let user_message = Message::new_user("Please inspect the project.");
+    let assistant_message = Message::new_assistant_content(vec![
+        ContentBlock::new_text("I'll read the file now."),
+        ContentBlock::new_tool_use(
+            "tool-1-1",
+            "read_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["README.md"]
+            }),
+        ),
+    ])
+    .with_request_id(1);
+
+    let session_state = SessionState {
+        session_id: "native-session".to_string(),
+        name: "Native Session".to_string(),
+        messages: vec![user_message, assistant_message],
+        tool_executions: Vec::new(),
+        working_memory: WorkingMemory::default(),
+        plan: PlanState::default(),
+        config: session_config.clone(),
+        next_request_id: Some(2),
+        model_config: None,
+    };
+
+    agent.load_from_session_state(session_state).await?;
+
+    let history = agent.message_history_for_tests();
+    assert_eq!(history.len(), 1);
+    assert!(matches!(history[0].role, MessageRole::User));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Xml,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config.clone());
+    agent.disable_naming_reminders();
+
+    let user_message = Message::new_user("Find the TODOs.");
+    let assistant_text = concat!(
+        "Searching for TODOs now.\n\n",
+        "<tool:search_files>\n",
+        "<param:project>test</param:project>\n",
+        "<param:regex>TODO</param:regex>\n",
+        "</tool:search_files>\n"
+    );
+    let assistant_message =
+        Message::new_assistant_content(vec![ContentBlock::new_text(assistant_text)])
+            .with_request_id(1);
+
+    let session_state = SessionState {
+        session_id: "xml-session".to_string(),
+        name: "XML Session".to_string(),
+        messages: vec![user_message, assistant_message],
+        tool_executions: Vec::new(),
+        working_memory: WorkingMemory::default(),
+        plan: PlanState::default(),
+        config: session_config.clone(),
+        next_request_id: Some(2),
+        model_config: None,
+    };
+
+    agent.load_from_session_state(session_state).await?;
+
+    let history = agent.message_history_for_tests();
+    assert_eq!(history.len(), 1);
+    assert!(matches!(history[0].role, MessageRole::User));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Native,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config.clone());
+    agent.disable_naming_reminders();
+
+    let user_message = Message::new_user("Summarize the repo.");
+    let assistant_message = Message::new_assistant("Here is a summary of the repository.");
+
+    let session_state = SessionState {
+        session_id: "text-session".to_string(),
+        name: "Regular Session".to_string(),
+        messages: vec![user_message.clone(), assistant_message.clone()],
+        tool_executions: Vec::new(),
+        working_memory: WorkingMemory::default(),
+        plan: PlanState::default(),
+        config: session_config.clone(),
+        next_request_id: Some(3),
+        model_config: None,
+    };
+
+    agent.load_from_session_state(session_state).await?;
+
+    let history = agent.message_history_for_tests();
+    assert_eq!(history.len(), 2);
+    assert!(matches!(history[0].role, MessageRole::User));
+    assert!(matches!(history[1].role, MessageRole::Assistant));
+    match (&history[1].content, &assistant_message.content) {
+        (MessageContent::Text(actual), MessageContent::Text(expected)) => {
+            assert_eq!(actual, expected);
+        }
+        _ => panic!("Expected assistant text content to be preserved"),
+    }
 
     Ok(())
 }

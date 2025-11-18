@@ -435,6 +435,7 @@ impl Agent {
             self.tool_scope = ToolScope::Agent;
             self.invalidate_system_message_cache();
         }
+        self.normalize_loaded_message_history();
         self.session_name = session_state.name;
         self.session_model_config = session_state.model_config;
         self.context_limit_override = None;
@@ -470,6 +471,41 @@ impl Agent {
             .await;
 
         Ok(())
+    }
+
+    fn normalize_loaded_message_history(&mut self) {
+        if self.message_history.is_empty() {
+            return;
+        }
+
+        let parser = ParserRegistry::get(self.tool_syntax());
+        let parser = parser.as_ref();
+        let mut removed = 0usize;
+
+        loop {
+            let should_remove = self
+                .message_history
+                .last()
+                .is_some_and(|message| parser.message_contains_tool_invocation(message));
+
+            if !should_remove {
+                break;
+            }
+
+            if let Some(message) = self.message_history.pop() {
+                debug!(
+                    "Removing dangling assistant tool request (request_id={:?}) from history",
+                    message.request_id
+                );
+                removed += 1;
+            }
+        }
+
+        if removed > 0 {
+            debug!(
+                "Normalized message history by dropping {removed} dangling tool request message(s)"
+            );
+        }
     }
 
     #[allow(dead_code)]

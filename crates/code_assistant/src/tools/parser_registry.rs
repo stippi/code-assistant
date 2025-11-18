@@ -8,8 +8,9 @@ use crate::tools::{
 use crate::ui::streaming::StreamProcessorTrait;
 use crate::ui::UserInterface;
 use anyhow::Result;
-use llm::{ContentBlock, LLMResponse};
+use llm::{ContentBlock, LLMResponse, Message, MessageContent};
 use std::sync::Arc;
+use tracing::debug;
 
 /// Trait for parsing tool invocations from LLM responses
 pub trait ToolInvocationParser: Send + Sync {
@@ -37,6 +38,25 @@ pub trait ToolInvocationParser: Send + Sync {
     /// Generate syntax documentation explaining how to use this parser's format.
     /// Returns None if this parser doesn't need syntax documentation (e.g., Native mode).
     fn generate_syntax_documentation(&self) -> Option<String>;
+
+    /// Determine whether the provided message contains any tool invocations using this syntax.
+    fn message_contains_tool_invocation(&self, message: &Message) -> bool;
+}
+
+fn message_text_segments(message: &Message) -> Vec<&str> {
+    match &message.content {
+        MessageContent::Text(text) => vec![text.as_str()],
+        MessageContent::Structured(blocks) => blocks
+            .iter()
+            .filter_map(|block| {
+                if let ContentBlock::Text { text, .. } = block {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+    }
 }
 
 /// Parse Caret tool requests from LLM response and return both requests and truncated response after first tool
@@ -198,6 +218,27 @@ impl ToolInvocationParser for XmlParser {
 
     fn generate_syntax_documentation(&self) -> Option<String> {
         Some(self.generate_xml_syntax_documentation())
+    }
+
+    fn message_contains_tool_invocation(&self, message: &Message) -> bool {
+        let request_id = message.request_id.unwrap_or(0);
+        for text in message_text_segments(message) {
+            if !text.contains("<tool:") {
+                continue;
+            }
+            match parse_xml_tool_invocations(text, request_id, 0, None) {
+                Ok((requests, _)) => {
+                    if !requests.is_empty() {
+                        return true;
+                    }
+                }
+                Err(error) => {
+                    debug!("Failed to parse XML tool invocation while inspecting message: {error}");
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 
@@ -439,6 +480,29 @@ impl ToolInvocationParser for CaretParser {
     fn generate_syntax_documentation(&self) -> Option<String> {
         Some(self.generate_caret_syntax_documentation())
     }
+
+    fn message_contains_tool_invocation(&self, message: &Message) -> bool {
+        let request_id = message.request_id.unwrap_or(0);
+        for text in message_text_segments(message) {
+            if !text.contains("^^^") {
+                continue;
+            }
+            match parse_caret_tool_invocations(text, request_id, 0, None) {
+                Ok((requests, _)) => {
+                    if !requests.is_empty() {
+                        return true;
+                    }
+                }
+                Err(error) => {
+                    debug!(
+                        "Failed to parse Caret tool invocation while inspecting message: {error}"
+                    );
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 impl CaretParser {
@@ -677,6 +741,16 @@ impl ToolInvocationParser for JsonParser {
     fn generate_syntax_documentation(&self) -> Option<String> {
         // Native mode uses API-provided function calls, no custom syntax documentation needed
         None
+    }
+
+    fn message_contains_tool_invocation(&self, message: &Message) -> bool {
+        if let MessageContent::Structured(blocks) = &message.content {
+            blocks
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
+        } else {
+            false
+        }
     }
 }
 
