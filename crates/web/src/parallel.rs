@@ -52,11 +52,7 @@ impl ParallelClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Parallel search failed ({}): {}",
-                status,
-                body
-            ));
+            return Err(anyhow!("Parallel search failed ({status}): {body}"));
         }
 
         let body: SearchResponse = response.json().await?;
@@ -93,11 +89,7 @@ impl ParallelClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Parallel extract failed ({}): {}",
-                status,
-                body
-            ));
+            return Err(anyhow!("Parallel extract failed ({status}): {body}"));
         }
 
         let body: ExtractResponse = response.json().await?;
@@ -187,8 +179,14 @@ struct ParallelExtractError {
 
 impl From<ParallelSearchResult> for WebSearchResult {
     fn from(result: ParallelSearchResult) -> WebSearchResult {
-        let snippet = result
-            .excerpts
+        let ParallelSearchResult {
+            url,
+            title,
+            publish_date,
+            excerpts,
+        } = result;
+
+        let snippet = excerpts
             .and_then(|excerpts| {
                 if excerpts.is_empty() {
                     None
@@ -198,11 +196,12 @@ impl From<ParallelSearchResult> for WebSearchResult {
             })
             .unwrap_or_else(|| "No excerpt available.".to_string());
 
-        let mut metadata = PageMetadata::default();
-        metadata.date = result.publish_date;
+        let metadata = PageMetadata {
+            date: publish_date,
+            ..PageMetadata::default()
+        };
 
-        let url = result.url;
-        let title = result.title.unwrap_or_else(|| url.clone());
+        let title = title.unwrap_or_else(|| url.clone());
 
         WebSearchResult {
             url,
@@ -215,14 +214,21 @@ impl From<ParallelSearchResult> for WebSearchResult {
 
 impl From<ParallelExtractResult> for WebPage {
     fn from(result: ParallelExtractResult) -> WebPage {
-        let mut metadata = PageMetadata::default();
-        metadata.date = result.publish_date;
+        let ParallelExtractResult {
+            url,
+            title,
+            publish_date,
+            excerpts,
+            full_content,
+        } = result;
 
-        let title = result.title;
+        let metadata = PageMetadata {
+            date: publish_date,
+            ..PageMetadata::default()
+        };
 
-        let mut content = result
-            .full_content
-            .or_else(|| result.excerpts.map(|excerpts| excerpts.join("\n\n")))
+        let mut content = full_content
+            .or_else(|| excerpts.map(|excerpts| excerpts.join("\n\n")))
             .unwrap_or_default();
 
         if let Some(title) = title {
@@ -236,7 +242,7 @@ impl From<ParallelExtractResult> for WebPage {
         }
 
         WebPage {
-            url: result.url,
+            url,
             content,
             metadata,
         }
