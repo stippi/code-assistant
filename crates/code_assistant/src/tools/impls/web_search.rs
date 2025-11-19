@@ -4,7 +4,7 @@ use crate::tools::core::{
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use web::{WebClient, WebSearchResult};
+use web::{ParallelClient, WebClient, WebSearchResult};
 
 // Input type for the web_search tool
 #[derive(Deserialize, Serialize)]
@@ -78,11 +78,10 @@ impl Tool for WebSearchTool {
 
     fn spec(&self) -> ToolSpec {
         let description = concat!(
-            "Search the web using DuckDuckGo. ",
-            "This tool performs a web search for the specified query and returns a list of search results, ",
-            "each containing a title, URL, and text snippet. ",
-            "The search results are paginated, and you can request different pages of results using the ",
-            "`hits_page_number` parameter (starting from 1)."
+            "Search the web for the specified query and return a list of results. ",
+            "When a Parallel API key is configured, the tool uses the Parallel Search API for higher fidelity results. ",
+            "Otherwise it falls back to DuckDuckGo scraping. ",
+            "Results contain a title, URL, and short snippet. "
         );
         ToolSpec {
             name: "web_search",
@@ -123,30 +122,45 @@ impl Tool for WebSearchTool {
         _context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
-        // Create new client for each request
-        let client = match WebClient::new().await {
-            Ok(client) => client,
-            Err(e) => {
-                return Ok(WebSearchOutput {
+        if let Some(api_key) = crate::settings::parallel_api_key() {
+            let client = ParallelClient::new(api_key);
+            match client.search(&input.query, input.hits_page_number).await {
+                Ok(results) => Ok(WebSearchOutput {
+                    query: input.query.clone(),
+                    results,
+                    error: None,
+                }),
+                Err(e) => Ok(WebSearchOutput {
                     query: input.query.clone(),
                     results: vec![],
-                    error: Some(format!("Failed to create web client: {e}")),
-                });
+                    error: Some(e.to_string()),
+                }),
             }
-        };
+        } else {
+            // Create new DuckDuckGo client for each request
+            let client = match WebClient::new().await {
+                Ok(client) => client,
+                Err(e) => {
+                    return Ok(WebSearchOutput {
+                        query: input.query.clone(),
+                        results: vec![],
+                        error: Some(format!("Failed to create web client: {e}")),
+                    });
+                }
+            };
 
-        // Execute search
-        match client.search(&input.query, input.hits_page_number).await {
-            Ok(results) => Ok(WebSearchOutput {
-                query: input.query.clone(),
-                results,
-                error: None,
-            }),
-            Err(e) => Ok(WebSearchOutput {
-                query: input.query.clone(),
-                results: vec![],
-                error: Some(e.to_string()),
-            }),
+            match client.search(&input.query, input.hits_page_number).await {
+                Ok(results) => Ok(WebSearchOutput {
+                    query: input.query.clone(),
+                    results,
+                    error: None,
+                }),
+                Err(e) => Ok(WebSearchOutput {
+                    query: input.query.clone(),
+                    results: vec![],
+                    error: Some(e.to_string()),
+                }),
+            }
         }
     }
 }

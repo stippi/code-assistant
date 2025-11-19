@@ -8,6 +8,7 @@ mod mcp;
 mod permissions;
 mod persistence;
 mod session;
+mod settings;
 mod tools;
 mod types;
 mod ui;

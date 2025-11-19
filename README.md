@@ -49,11 +49,15 @@ mkdir -p ~/.config/code-assistant
 # Copy example configurations
 cp providers.example.json ~/.config/code-assistant/providers.json
 cp models.example.json ~/.config/code-assistant/models.json
+cp settings.example.json ~/.config/code-assistant/settings.json
 
 # Edit the files to add your API keys
 # Set environment variables or update the JSON files directly
 export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."
+
+# Optional: enable Parallel-powered web tools
+# Edit ~/.config/code-assistant/settings.json and set "parallel_api_key"
 ```
 
 See the [Configuration](#configuration) section for detailed setup instructions.
@@ -195,6 +199,18 @@ The code-assistant uses two JSON configuration files to manage LLM providers and
 **Environment Variable Substitution**: Use `${VAR_NAME}` in provider configs to reference environment variables for API keys.
 
 **Full Examples**: See [`providers.example.json`](providers.example.json) and [`models.example.json`](models.example.json) for complete configuration examples with all supported providers (Anthropic, OpenAI, Ollama, SAP AI Core, Vertex AI, Groq, Cerebras, MistralAI, OpenRouter).
+
+### Web Tool Configuration
+
+Set up `~/.config/code-assistant/settings.json` to enable optional integrations used by the built-in tools. To enable the new [Parallel](https://parallel.ai) powered search/fetch implementation, provide your API key:
+
+```json
+{
+  "parallel_api_key": "pa_api_key"
+}
+```
+
+Environment variables can be referenced via `${VAR_NAME}` just like in `providers.json`. When no key is provided, the tools automatically fall back to the previous headless-browser and DuckDuckGo implementation.
 
 **List Available Models**:
 ```bash

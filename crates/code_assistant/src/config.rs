@@ -6,13 +6,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Get the path to the configuration file
-pub fn get_config_path() -> Result<PathBuf> {
+/// Location of the ~/.config/code-assistant directory.
+pub fn config_dir() -> Result<PathBuf> {
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
     let config_dir = home.join(".config").join("code-assistant");
     std::fs::create_dir_all(&config_dir)?; // Ensure directory exists
-    Ok(config_dir.join("projects.json"))
+    Ok(config_dir)
+}
+
+/// Get the path to the projects configuration file
+pub fn get_config_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("projects.json"))
 }
 
 // The main trait for project management

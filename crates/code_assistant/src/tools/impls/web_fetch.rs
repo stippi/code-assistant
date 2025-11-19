@@ -4,7 +4,7 @@ use crate::tools::core::{
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use web::{WebClient, WebPage};
+use web::{ParallelClient, WebClient, WebPage};
 
 // Input type for the web_fetch tool
 #[derive(Deserialize, Serialize)]
@@ -61,10 +61,8 @@ impl Tool for WebFetchTool {
     fn spec(&self) -> ToolSpec {
         let description = concat!(
             "Fetch and extract content from a web page.\n",
-            "This tool downloads the specified web page and converts its content to a readable format.\n",
-            "Optionally, you can provide CSS selectors to extract specific sections of the page.\n",
-            "The tool handles various formats and cleans up the output to provide readable content that ",
-            "can be used for further analysis."
+            "If a Parallel API key is configured, this tool uses the Parallel extract API for fast, structured access.\n",
+            "Otherwise, it launches a headless browser to download and clean the requested page."
         );
         ToolSpec {
             name: "web_fetch",
@@ -106,44 +104,53 @@ impl Tool for WebFetchTool {
         context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
-        // Create new client for each request
-        let client = match WebClient::new().await {
-            Ok(client) => client,
-            Err(e) => {
-                return Ok(WebFetchOutput {
-                    page: WebPage::default(),
-                    error: Some(format!("Failed to create web client: {e}")),
-                });
-            }
-        };
-
-        // Fetch the page
-        match client.fetch(&input.url).await {
-            Ok(page) => {
-                // Update working memory if available
-                if let Some(working_memory) = &mut context.working_memory {
-                    // Use the URL as path (normalized)
-                    let path =
-                        std::path::PathBuf::from(page.url.replace([':', '/', '?', '#'], "_"));
-
-                    // Use "web" as the project name for web resources
-                    let project = "web".to_string();
-
-                    // Store in working memory
-                    working_memory.add_resource(
-                        project,
-                        path,
-                        crate::types::LoadedResource::WebPage(page.clone()),
-                    );
+        if let Some(api_key) = crate::settings::parallel_api_key() {
+            let client = ParallelClient::new(api_key);
+            match client.fetch(&input.url).await {
+                Ok(page) => {
+                    store_in_working_memory(context, &page);
+                    Ok(WebFetchOutput { page, error: None })
                 }
-
-                Ok(WebFetchOutput { page, error: None })
+                Err(e) => Ok(WebFetchOutput {
+                    page: WebPage::default(),
+                    error: Some(e.to_string()),
+                }),
             }
-            Err(e) => Ok(WebFetchOutput {
-                page: WebPage::default(),
-                error: Some(e.to_string()),
-            }),
+        } else {
+            // Create new browser client for each request
+            let client = match WebClient::new().await {
+                Ok(client) => client,
+                Err(e) => {
+                    return Ok(WebFetchOutput {
+                        page: WebPage::default(),
+                        error: Some(format!("Failed to create web client: {e}")),
+                    });
+                }
+            };
+
+            match client.fetch(&input.url).await {
+                Ok(page) => {
+                    store_in_working_memory(context, &page);
+                    Ok(WebFetchOutput { page, error: None })
+                }
+                Err(e) => Ok(WebFetchOutput {
+                    page: WebPage::default(),
+                    error: Some(e.to_string()),
+                }),
+            }
         }
+    }
+}
+
+fn store_in_working_memory(context: &mut ToolContext<'_>, page: &WebPage) {
+    if let Some(working_memory) = &mut context.working_memory {
+        let path = std::path::PathBuf::from(page.url.replace([':', '/', '?', '#'], "_"));
+        let project = "web".to_string();
+        working_memory.add_resource(
+            project,
+            path,
+            crate::types::LoadedResource::WebPage(page.clone()),
+        );
     }
 }
 
