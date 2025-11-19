@@ -59,11 +59,7 @@ impl Tool for WebFetchTool {
     type Output = WebFetchOutput;
 
     fn spec(&self) -> ToolSpec {
-        let description = concat!(
-            "Fetch and extract content from a web page.\n",
-            "If a Parallel API key is configured, this tool uses the Parallel extract API for fast, structured access.\n",
-            "Otherwise, it launches a headless browser to download and clean the requested page."
-        );
+        let description = "Fetch and extract content from a web page.";
         ToolSpec {
             name: "web_fetch",
             description,

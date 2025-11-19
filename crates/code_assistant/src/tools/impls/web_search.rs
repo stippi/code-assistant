@@ -79,8 +79,6 @@ impl Tool for WebSearchTool {
     fn spec(&self) -> ToolSpec {
         let description = concat!(
             "Search the web for the specified query and return a list of results. ",
-            "When a Parallel API key is configured, the tool uses the Parallel Search API for higher fidelity results. ",
-            "Otherwise it falls back to DuckDuckGo scraping. ",
             "Results contain a title, URL, and short snippet. "
         );
         ToolSpec {
