@@ -93,7 +93,9 @@
     "id": "gemini-2.5-pro-preview-06-05",
     "context_token_limit": 200000,
     "config": {
-      "temperature": 0.8
+      "generation_config": {
+        "temperature": 0.8
+      }
     }
   },
   "AI Core Claude Sonnet 4": {
