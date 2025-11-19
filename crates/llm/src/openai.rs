@@ -754,6 +754,7 @@ impl OpenAIClient {
                                 id: call.id.clone(),
                                 name: call.function.name.clone(),
                                 input,
+                                thought_signature: None,
                                 start_time: None,
                                 end_time: None,
                             });
@@ -957,6 +958,7 @@ impl OpenAIClient {
                                             id: tool_id.clone(),
                                             name: tool_name.clone(),
                                             input: serde_json::Value::Object(serde_json::Map::new()),
+                                            thought_signature: None,
                                             start_time: Some(std::time::SystemTime::now()),
                                             end_time: None,
                                         });

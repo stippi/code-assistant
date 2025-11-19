@@ -160,6 +160,8 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        thought_signature: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         start_time: Option<SystemTime>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -414,6 +416,7 @@ impl ContentBlock {
             id: id.into(),
             name: name.into(),
             input: input.into(),
+            thought_signature: None,
             start_time: None,
             end_time: None,
         }
@@ -573,15 +576,19 @@ impl ContentBlock {
                     id: a_id,
                     name: a_name,
                     input: a_input,
+                    thought_signature: a_signature,
                     ..
                 },
                 ContentBlock::ToolUse {
                     id: b_id,
                     name: b_name,
                     input: b_input,
+                    thought_signature: b_signature,
                     ..
                 },
-            ) => a_id == b_id && a_name == b_name && a_input == b_input,
+            ) => {
+                a_id == b_id && a_name == b_name && a_input == b_input && a_signature == b_signature
+            }
             (
                 ContentBlock::ToolResult {
                     tool_use_id: a_id,

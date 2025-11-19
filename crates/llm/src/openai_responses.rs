@@ -607,6 +607,7 @@ impl OpenAIResponsesClient {
                         id: call_id,
                         name,
                         input,
+                        thought_signature: None,
                         start_time: None,
                         end_time: None,
                     });

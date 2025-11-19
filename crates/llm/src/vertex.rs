@@ -274,11 +274,16 @@ impl VertexClient {
                         function_call: None,
                         function_response: None,
                     }),
-                    ContentBlock::ToolUse { name, input, .. } => Some(VertexPart {
+                    ContentBlock::ToolUse {
+                        name,
+                        input,
+                        thought_signature,
+                        ..
+                    } => Some(VertexPart {
                         text: None,
                         inline_data: None,
                         thought: None,
-                        thought_signature: None,
+                        thought_signature: thought_signature.clone(),
                         function_call: Some(VertexFunctionCall {
                             name: name.clone(),
                             args: input.clone(),
@@ -422,6 +427,7 @@ impl VertexClient {
                                     id: tool_id,
                                     name: function_call.name,
                                     input: function_call.args,
+                                    thought_signature: part.thought_signature.clone(),
                                     start_time: None,
                                     end_time: None,
                                 }
@@ -615,6 +621,7 @@ impl VertexClient {
                                     id: tool_id.clone(),
                                     name: function_call.name.clone(),
                                     input: function_call.args.clone(),
+                                    thought_signature: part.thought_signature.clone(),
                                     start_time: Some(SystemTime::now()),
                                     end_time: None,
                                 });

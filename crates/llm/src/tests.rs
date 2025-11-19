@@ -85,6 +85,7 @@ impl TestCase {
                     id: tool_id,
                     name: "get_weather".to_string(),
                     input: json!({"location": "current"}),
+                    thought_signature: None,
                     start_time: None,
                     end_time: None,
                 }],

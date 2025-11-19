@@ -535,6 +535,7 @@ impl AiCoreClient {
                                                 .clone()
                                                 .unwrap_or_default(),
                                             input: serde_json::Value::Null,
+                                            thought_signature: None,
                                         }
                                     }
                                     _ => ContentBlock::Text {

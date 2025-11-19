@@ -283,6 +283,7 @@ impl OllamaClient {
                     id: format!("tool-{}-{}", request_id, index + 1),
                     name: tool_call.function.name,
                     input: tool_call.function.arguments,
+                    thought_signature: None,
                     start_time: None,
                     end_time: None,
                 });
@@ -402,6 +403,7 @@ impl OllamaClient {
                                         id: tool_id.clone(),
                                         name: tool_call.function.name.clone(),
                                         input: tool_call.function.arguments.clone(),
+                                        thought_signature: None,
                                         start_time: Some(std::time::SystemTime::now()),
                                         end_time: Some(std::time::SystemTime::now()), // Complete immediately for Ollama
                                     });

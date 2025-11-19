@@ -1039,6 +1039,7 @@ impl AnthropicClient {
                                         id: tool_id,
                                         name: tool_name,
                                         input: input_json,
+                                        thought_signature: None,
                                         start_time: Some(SystemTime::now()),
                                         end_time: None,
                                     }
