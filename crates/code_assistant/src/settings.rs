@@ -35,8 +35,21 @@ fn load_settings_from_disk() -> Result<AgentSettings> {
         return Ok(AgentSettings::default());
     }
 
-    let contents = std::fs::read_to_string(settings_path)?;
-    let mut settings: AgentSettings = serde_json::from_str(&contents)?;
+    let contents = std::fs::read_to_string(&settings_path).map_err(|err| {
+        tracing::warn!(
+            "Failed to read settings from {}: {err}",
+            settings_path.display()
+        );
+        err
+    })?;
+
+    let mut settings: AgentSettings = serde_json::from_str(&contents).map_err(|err| {
+        tracing::warn!(
+            "Failed to parse settings from {}: {err}",
+            settings_path.display()
+        );
+        err
+    })?;
 
     // Support env var substitution similar to providers.json by allowing ${VAR}
     if let Some(api_key) = &mut settings.parallel_api_key {

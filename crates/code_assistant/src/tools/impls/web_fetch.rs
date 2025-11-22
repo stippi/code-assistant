@@ -101,6 +101,7 @@ impl Tool for WebFetchTool {
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
         if let Some(api_key) = crate::settings::parallel_api_key() {
+            tracing::warn!("web_fetch is using the Parallel API");
             let client = ParallelClient::new(api_key);
             match client.fetch(&input.url).await {
                 Ok(page) => {

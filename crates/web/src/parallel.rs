@@ -6,6 +6,7 @@ use serde_json::json;
 
 const PARALLEL_BETA_HEADER_VALUE: &str = "search-extract-2025-10-10";
 const DEFAULT_PAGE_SIZE: usize = 10;
+const DEFAULT_EXCERPT_MAX_CHARS: u32 = 1500;
 
 pub struct ParallelClient {
     http_client: Client,
@@ -35,6 +36,8 @@ impl ParallelClient {
         let page = page.max(1);
         let max_results = (page as usize * DEFAULT_PAGE_SIZE).max(DEFAULT_PAGE_SIZE);
 
+        let search_queries = build_search_queries(query);
+
         let response = self
             .http_client
             .post(format!("{}/v1beta/search", self.base_url))
@@ -43,8 +46,11 @@ impl ParallelClient {
             .header("parallel-beta", PARALLEL_BETA_HEADER_VALUE)
             .json(&json!({
                 "mode": "one-shot",
-                "objective": query,
+                "search_queries": search_queries,
                 "max_results": max_results,
+                "excerpts": {
+                    "max_chars_per_result": DEFAULT_EXCERPT_MAX_CHARS
+                }
             }))
             .send()
             .await?;
@@ -177,6 +183,26 @@ struct ParallelExtractError {
     message: Option<String>,
 }
 
+fn build_search_queries(query: &str) -> Vec<String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return vec![trimmed.to_string()];
+    }
+
+    let sections: Vec<String> = trimmed
+        .split(['\n', ';'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_string())
+        .collect();
+
+    if sections.is_empty() {
+        vec![trimmed.to_string()]
+    } else {
+        sections
+    }
+}
+
 impl From<ParallelSearchResult> for WebSearchResult {
     fn from(result: ParallelSearchResult) -> WebSearchResult {
         let ParallelSearchResult {
@@ -252,6 +278,21 @@ impl From<ParallelExtractResult> for WebPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_search_queries_splits_on_newlines_and_semicolons() {
+        let queries = build_search_queries("foo bar;\nsecond query");
+        assert_eq!(
+            queries,
+            vec!["foo bar".to_string(), "second query".to_string()]
+        );
+    }
+
+    #[test]
+    fn build_search_queries_falls_back_to_single_entry() {
+        let queries = build_search_queries("just one query");
+        assert_eq!(queries, vec!["just one query".to_string()]);
+    }
 
     #[test]
     fn converts_search_results_with_defaults() {
