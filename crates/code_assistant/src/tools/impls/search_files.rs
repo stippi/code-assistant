@@ -60,7 +60,8 @@ impl SearchFilesOutput {
                     end = context_end;
 
                     if end.saturating_sub(start) > EXCERPT_TARGET {
-                        let mid = range_start.saturating_add(range_end.saturating_sub(range_start) / 2);
+                        let mid =
+                            range_start.saturating_add(range_end.saturating_sub(range_start) / 2);
                         let half_window = EXCERPT_TARGET / 2;
                         start = mid.saturating_sub(half_window);
                         end = (start + EXCERPT_TARGET).min(line.len());

@@ -483,28 +483,53 @@ impl Agent {
         let mut removed = 0usize;
 
         loop {
-            let should_remove = self
+            let Some(last_assistant_idx) = self
                 .message_history
-                .last()
-                .is_some_and(|message| parser.message_contains_tool_invocation(message));
+                .iter()
+                .rposition(|message| message.role == MessageRole::Assistant)
+            else {
+                break;
+            };
 
-            if !should_remove {
+            let last_assistant = &self.message_history[last_assistant_idx];
+
+            if !parser.message_contains_tool_invocation(last_assistant) {
                 break;
             }
 
-            if let Some(message) = self.message_history.pop() {
-                debug!(
-                    "Removing dangling assistant tool request (request_id={:?}) from history",
-                    message.request_id
-                );
-                removed += 1;
+            let has_tool_result_after = self.message_history[last_assistant_idx + 1..]
+                .iter()
+                .any(Self::is_user_tool_result_message);
+
+            if has_tool_result_after {
+                break;
             }
+
+            let message = self.message_history.remove(last_assistant_idx);
+            debug!(
+                "Removing dangling assistant tool request (request_id={:?}) from history",
+                message.request_id
+            );
+            removed += 1;
         }
 
         if removed > 0 {
             debug!(
                 "Normalized message history by dropping {removed} dangling tool request message(s)"
             );
+        }
+    }
+
+    fn is_user_tool_result_message(message: &Message) -> bool {
+        if message.role != MessageRole::User {
+            return false;
+        }
+
+        match &message.content {
+            MessageContent::Structured(blocks) => blocks
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. })),
+            MessageContent::Text(text) => text.trim().is_empty(),
         }
     }
 

@@ -1991,6 +1991,75 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![]);
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Box::new(MockProjectManager::new()),
+        command_executor: Box::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(MockStatePersistence::new()),
+        permission_handler: None,
+    };
+
+    let session_config = SessionConfig {
+        tool_syntax: ToolSyntax::Native,
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config.clone());
+    agent.disable_naming_reminders();
+
+    let user_message = Message::new_user("Please inspect the project.");
+    let assistant_message = Message::new_assistant_content(vec![
+        ContentBlock::new_text("I'll read the file now."),
+        ContentBlock::new_tool_use(
+            "tool-1-1",
+            "read_files",
+            serde_json::json!({
+                "project": "test",
+                "paths": ["README.md"]
+            }),
+        ),
+    ])
+    .with_request_id(1);
+    let followup_user_message = Message::new_user("Also check the contributing guide.");
+
+    let session_state = SessionState {
+        session_id: "native-session".to_string(),
+        name: "Native Session".to_string(),
+        messages: vec![
+            user_message.clone(),
+            assistant_message,
+            followup_user_message.clone(),
+        ],
+        tool_executions: Vec::new(),
+        working_memory: WorkingMemory::default(),
+        plan: PlanState::default(),
+        config: session_config.clone(),
+        next_request_id: Some(3),
+        model_config: None,
+    };
+
+    agent.load_from_session_state(session_state).await?;
+
+    let history = agent.message_history_for_tests();
+    assert_eq!(history.len(), 2);
+    assert!(matches!(history[0].role, MessageRole::User));
+    assert!(matches!(history[1].role, MessageRole::User));
+    match &history[0].content {
+        MessageContent::Text(content) => assert_eq!(content, "Please inspect the project."),
+        _ => panic!("Expected initial user message to be preserved"),
+    }
+    match &history[1].content {
+        MessageContent::Text(content) => assert_eq!(content, "Also check the contributing guide."),
+        _ => panic!("Expected follow-up user message to be preserved"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![]);
     let components = AgentComponents {
