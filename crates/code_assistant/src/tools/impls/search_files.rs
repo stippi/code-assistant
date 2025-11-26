@@ -31,6 +31,66 @@ pub struct SearchFilesOutput {
     pub summary_mode: bool,
 }
 
+impl SearchFilesOutput {
+    fn format_line_with_excerpt(
+        line: &str,
+        line_idx: usize,
+        match_lines: &[usize],
+        match_ranges: &[Vec<(usize, usize)>],
+    ) -> String {
+        const LONG_LINE_THRESHOLD: usize = 150;
+        const EXCERPT_TARGET: usize = 120;
+        const MATCH_CONTEXT: usize = 40;
+
+        if line.len() <= LONG_LINE_THRESHOLD {
+            return line.to_string();
+        }
+
+        // Default to showing the full line bounds so we only shrink when needed.
+        let mut start = 0;
+        let mut end = line.len();
+
+        // If we know where the match is on this line, center the excerpt around it.
+        if let Some(match_idx) = match_lines.iter().position(|&idx| idx == line_idx) {
+            if let Some(ranges) = match_ranges.get(match_idx) {
+                if let Some(&(range_start, range_end)) = ranges.first() {
+                    let context_start = range_start.saturating_sub(MATCH_CONTEXT);
+                    let context_end = (range_end + MATCH_CONTEXT).min(line.len());
+                    start = context_start;
+                    end = context_end;
+
+                    if end.saturating_sub(start) > EXCERPT_TARGET {
+                        let mid = range_start.saturating_add(range_end.saturating_sub(range_start) / 2);
+                        let half_window = EXCERPT_TARGET / 2;
+                        start = mid.saturating_sub(half_window);
+                        end = (start + EXCERPT_TARGET).min(line.len());
+                    }
+                }
+            }
+        }
+
+        // If we still have an oversized slice, trim from the start.
+        if end.saturating_sub(start) > EXCERPT_TARGET {
+            end = start.saturating_add(EXCERPT_TARGET).min(line.len());
+        }
+
+        if start >= end {
+            start = end.saturating_sub(EXCERPT_TARGET.min(end));
+        }
+
+        let mut excerpt = String::new();
+        if start > 0 {
+            excerpt.push_str("...");
+        }
+        excerpt.push_str(&line[start..end]);
+        if end < line.len() {
+            excerpt.push_str("...");
+        }
+
+        excerpt
+    }
+}
+
 // Render implementation for output formatting
 impl Render for SearchFilesOutput {
     fn status(&self) -> String {
@@ -122,11 +182,17 @@ impl Render for SearchFilesOutput {
                 ));
 
                 // Display the matched content with context
-                for line in result.line_content.iter() {
-                    formatted.push_str(&line.to_string());
+                for (line_idx, line) in result.line_content.iter().enumerate() {
+                    let rendered_line = Self::format_line_with_excerpt(
+                        line,
+                        line_idx,
+                        &result.match_lines,
+                        &result.match_ranges,
+                    );
+                    formatted.push_str(&rendered_line);
 
                     // Add a newline if not already present
-                    if !line.ends_with('\n') {
+                    if !rendered_line.ends_with('\n') {
                         formatted.push('\n');
                     }
                 }
@@ -514,6 +580,38 @@ mod tests {
         assert!(rendered.contains("Showing file paths only"));
         assert!(rendered.contains("matches"));
         assert!(!rendered.contains(">>>>> RESULT:")); // No snippets in summary mode
+    }
+
+    #[test]
+    fn test_long_line_is_excerpted() {
+        let prefix = "a".repeat(200);
+        let suffix = "b".repeat(200);
+        let long_line = format!("{prefix}NEEDLE{suffix}");
+
+        let result = SearchResult {
+            file: PathBuf::from("one_line.txt"),
+            start_line: 0,
+            line_content: vec![long_line.clone()],
+            match_lines: vec![0],
+            match_ranges: vec![vec![(200, 206)]],
+        };
+
+        let output = SearchFilesOutput {
+            project: "test-project".to_string(),
+            regex: "NEEDLE".to_string(),
+            results: vec![result],
+            total_matches: 1,
+            truncated: false,
+            summary_mode: false,
+        };
+
+        let mut tracker = ResourcesTracker::new();
+        let rendered = output.render(&mut tracker);
+
+        assert!(rendered.contains("\n..."));
+        assert!(rendered.contains("NEEDLE"));
+        assert!(rendered.matches("...").count() >= 2);
+        assert!(!rendered.contains(&long_line));
     }
 
     #[test]
