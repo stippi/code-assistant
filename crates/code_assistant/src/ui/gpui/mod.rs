@@ -449,7 +449,7 @@ impl Gpui {
                         });
 
                         // Wrap in Root component
-                        cx.new(|cx| Root::new(root_view.into(), window, cx))
+                        cx.new(|cx| Root::new(root_view, window, cx))
                     },
                 )
                 .expect("failed to open window");

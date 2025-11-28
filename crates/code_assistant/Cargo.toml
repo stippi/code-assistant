@@ -26,8 +26,8 @@ tui-textarea = "0.7"
 tui-markdown = "0.3.6"
 
 # GPUI related
-gpui = "=0.2.2"
-gpui-component = { git = "https://github.com/longbridge/gpui-component.git" }
+gpui = "0.2.2"
+gpui-component = "0.4.0"
 smallvec = "1.15"
 rust-embed = { version = "8.9", features = ["include-exclude"] }
 
