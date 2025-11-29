@@ -247,7 +247,10 @@ impl CodeExplorer for AcpCodeExplorer {
         }
         let total_lines = lines.len();
         let start = start_line.unwrap_or(1).saturating_sub(1);
-        let end = end_line.unwrap_or(total_lines).saturating_sub(1);
+        // Cap end to total_lines - 1 to prevent out-of-bounds access
+        let end = end_line
+            .map(|e| e.saturating_sub(1).min(total_lines - 1))
+            .unwrap_or(total_lines - 1);
         if start >= total_lines || start > end {
             return Err(anyhow!(
                 "Invalid line range: start={}, end={}, total_lines={}",
