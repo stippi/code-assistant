@@ -17,7 +17,7 @@ pub struct ExecuteCommandInput {
     pub command_line: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ask_user_approval: bool,
 }
 
