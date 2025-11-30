@@ -817,7 +817,8 @@ impl UserInterface for ACPUserUI {
                 // No ACP representation needed yet
             }
             DisplayFragment::ReasoningSummaryDelta(delta) => {
-                self.queue_session_update(acp::SessionUpdate::AgentMessageChunk(
+                // Reasoning summaries are emitted as AgentThoughtChunk, same as ThinkingText
+                self.queue_session_update(acp::SessionUpdate::AgentThoughtChunk(
                     Self::content_chunk(acp::ContentBlock::Text(acp::TextContent {
                         annotations: None,
                         text: delta.clone(),
