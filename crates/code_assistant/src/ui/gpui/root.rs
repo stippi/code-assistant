@@ -1,6 +1,6 @@
 use super::auto_scroll::AutoScrollContainer;
 use super::chat_sidebar::{ChatSidebar, ChatSidebarEvent};
-use super::file_icons;
+
 use super::input_area::{InputArea, InputAreaEvent};
 use super::messages::MessagesView;
 use super::plan_banner;
@@ -14,7 +14,8 @@ use gpui::{
     Context, Entity, FocusHandle, Focusable, MouseButton, MouseUpEvent, SharedString, Subscription,
     Transformation,
 };
-use gpui_component::ActiveTheme;
+
+use gpui_component::{ActiveTheme, Icon, Sizable, Size};
 use std::collections::HashMap;
 use tracing::{debug, error, trace, warn};
 
@@ -732,41 +733,35 @@ impl Render for RootView {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .justify_between()
-                    .px_4()
-                    // Left side - title
+                    .justify_start()
+                    // Left padding for macOS traffic lights (doubled for more space)
+                    .pl(px(86.))
+                    // Left side - controls
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .text_color(cx.theme().muted_foreground)
-                            .gap_2()
-                            .pl(px(80.))
-                            .child("Code Assistant"),
-                    )
-                    // Right side - controls
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
+                            .gap_1()
                             // Chat sidebar toggle button
                             .child(
                                 div()
-                                    .size(px(32.))
+                                    .size(px(28.))
                                     .rounded_sm()
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .cursor_pointer()
                                     .hover(|s| s.bg(cx.theme().muted))
-                                    .child(file_icons::render_icon(
-                                        &file_icons::get()
-                                            .get_type_icon(file_icons::MESSAGE_BUBBLES),
-                                        18.0,
-                                        cx.theme().muted_foreground,
-                                        "💬",
-                                    ))
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from(if self.chat_collapsed {
+                                                "icons/panel_left_open.svg"
+                                            } else {
+                                                "icons/panel_left_close.svg"
+                                            }))
+                                            .with_size(Size::Small)
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(Self::on_toggle_chat_sidebar),
@@ -775,23 +770,23 @@ impl Render for RootView {
                             // Theme toggle button
                             .child(
                                 div()
-                                    .size(px(32.))
+                                    .size(px(28.))
                                     .rounded_sm()
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .cursor_pointer()
                                     .hover(|s| s.bg(cx.theme().muted))
-                                    .child(file_icons::render_icon(
-                                        &file_icons::get().get_type_icon(if cx.theme().is_dark() {
-                                            file_icons::THEME_LIGHT
-                                        } else {
-                                            file_icons::THEME_DARK
-                                        }),
-                                        18.0,
-                                        cx.theme().muted_foreground,
-                                        if cx.theme().is_dark() { "*" } else { "c" },
-                                    ))
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from(if cx.theme().is_dark() {
+                                                "icons/theme_light.svg"
+                                            } else {
+                                                "icons/theme_dark.svg"
+                                            }))
+                                            .with_size(Size::Small)
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(Self::on_toggle_theme),

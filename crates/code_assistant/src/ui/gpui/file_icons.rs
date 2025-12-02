@@ -31,9 +31,6 @@ pub const CHEVRON_DOWN: &str = "chevron_down"; // chevron_down.svg
 pub const CHEVRON_UP: &str = "chevron_up"; // chevron_up.svg
 pub const WORKING_MEMORY: &str = "brain"; // brain.svg
 
-pub const THEME_DARK: &str = "theme_dark"; // theme_dark.svg
-pub const THEME_LIGHT: &str = "theme_light"; // theme_light.svg
-
 pub const SEND: &str = "send"; // send.svg
 pub const STOP: &str = "stop"; // circle_stop.svg
 pub const MESSAGE_BUBBLES: &str = "message_bubbles"; // message_bubbles.svg
