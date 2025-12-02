@@ -108,7 +108,7 @@ impl Render for PlanBanner {
             .border_t_1()
             .border_color(cx.theme().border)
             .px_4()
-            .py_1_5()
+            .py(px(6.))
             .gap_2()
             .text_size(px(11.))
             .line_height(px(15.))
