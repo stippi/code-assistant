@@ -439,9 +439,14 @@ impl Agent {
         self.session_name = session_state.name;
         self.session_model_config = session_state.model_config;
         self.context_limit_override = None;
-        if let Some(model_config) = self.session_model_config.as_mut() {
-            let model_name = model_config.model_name.clone();
-            self.set_model_hint(Some(model_name));
+        if let Some(model_config) = self.session_model_config.as_ref() {
+            // Resolve the model identifier (provider/id) from the display name
+            // This is used for system prompt selection based on model ID matching
+            let model_hint = llm::provider_config::ConfigurationSystem::load()
+                .ok()
+                .and_then(|config| config.model_identifier(&model_config.model_name))
+                .or_else(|| Some(model_config.model_name.clone()));
+            self.set_model_hint(model_hint);
         }
 
         // Restore next_request_id from session, or calculate from existing messages for backward compatibility

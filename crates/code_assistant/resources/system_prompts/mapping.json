@@ -2,6 +2,12 @@
   "default_prompt": "default.md",
   "prompts": [
     {
+      "file": "claude.md",
+      "model_substrings": [
+        "claude"
+      ]
+    },
+    {
       "file": "codex.md",
       "model_substrings": [
         "codex"
