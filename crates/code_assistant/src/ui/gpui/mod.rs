@@ -9,7 +9,6 @@ pub mod elements;
 pub mod file_icons;
 pub mod image;
 pub mod input_area;
-mod memory;
 mod messages;
 pub mod model_selector;
 pub mod parameter_renderers;
@@ -21,7 +20,7 @@ pub mod simple_renderers;
 pub mod theme;
 
 use crate::persistence::{ChatMetadata, DraftStorage};
-use crate::types::{PlanState, WorkingMemory};
+use crate::types::PlanState;
 use crate::ui::gpui::{
     content_renderer::ContentRenderer,
     diff_renderer::DiffParameterRenderer,
@@ -39,7 +38,6 @@ use gpui::{
     SharedString,
 };
 use gpui_component::Root;
-pub use memory::MemoryView;
 pub use messages::MessagesView;
 pub use root::RootView;
 use sandbox::SandboxPolicy;
@@ -65,7 +63,6 @@ pub use crate::ui::backend::{BackendEvent, BackendResponse};
 #[derive(Clone)]
 pub struct Gpui {
     message_queue: Arc<Mutex<Vec<Entity<MessageContainer>>>>,
-    working_memory: Arc<Mutex<Option<WorkingMemory>>>,
     plan_state: Arc<Mutex<Option<PlanState>>>,
     event_sender: Arc<Mutex<async_channel::Sender<UiEvent>>>,
     event_receiver: Arc<Mutex<async_channel::Receiver<UiEvent>>>,
@@ -212,7 +209,6 @@ impl Gpui {
 
     pub fn new() -> Self {
         let message_queue = Arc::new(Mutex::new(Vec::new()));
-        let working_memory = Arc::new(Mutex::new(None));
         let plan_state = Arc::new(Mutex::new(None));
         let event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
         let session_event_task = Arc::new(Mutex::new(None::<gpui::Task<()>>));
@@ -267,7 +263,6 @@ impl Gpui {
 
         Self {
             message_queue,
-            working_memory,
             plan_state,
             event_sender,
             event_receiver,
@@ -303,7 +298,6 @@ impl Gpui {
     // Run the application
     pub fn run_app(&self) {
         let message_queue = self.message_queue.clone();
-        let working_memory = self.working_memory.clone();
         let gpui_clone = self.clone();
 
         // Initialize app with assets
@@ -401,12 +395,9 @@ impl Gpui {
                 *task_guard = Some(chat_response_task);
             }
 
-            // Create memory view with our shared working memory
-            let memory_view = cx.new(|cx| MemoryView::new(working_memory.clone(), cx));
-
-            // Create window with larger size to accommodate chat sidebar, messages, and memory view
+            // Create window with larger size to accommodate chat sidebar and messages
             let bounds =
-                gpui::Bounds::centered(None, gpui::size(gpui::px(1400.0), gpui::px(700.0)), cx);
+                gpui::Bounds::centered(None, gpui::size(gpui::px(1100.0), gpui::px(700.0)), cx);
             // Open window with titlebar
             let window = cx
                 .open_window(
@@ -439,13 +430,7 @@ impl Gpui {
 
                         // Create RootView
                         let root_view = cx.new(|cx| {
-                            RootView::new(
-                                memory_view.clone(),
-                                messages_view,
-                                chat_sidebar.clone(),
-                                window,
-                                cx,
-                            )
+                            RootView::new(messages_view, chat_sidebar.clone(), window, cx)
                         });
 
                         // Wrap in Root component
@@ -579,11 +564,9 @@ impl Gpui {
                     message_container.end_tool_use(&id, cx);
                 });
             }
-            UiEvent::UpdateMemory { memory } => {
-                if let Ok(mut memory_guard) = self.working_memory.lock() {
-                    *memory_guard = Some(memory);
-                }
-                cx.refresh().expect("Failed to refresh windows");
+
+            UiEvent::UpdateMemory { memory: _ } => {
+                // Memory UI has been removed - this event is ignored
             }
             UiEvent::UpdatePlan { plan } => {
                 if let Ok(mut plan_guard) = self.plan_state.lock() {
@@ -991,6 +974,36 @@ impl Gpui {
                 debug!("UI: UpdateSandboxPolicy event with policy: {:?}", policy);
                 *self.current_sandbox_policy.lock().unwrap() = Some(policy.clone());
                 cx.refresh().expect("Failed to refresh windows");
+            }
+
+            // Resource events - logged for now, can be extended for features like "follow mode"
+            UiEvent::ResourceLoaded { project, path } => {
+                trace!(
+                    "UI: ResourceLoaded event - project: {}, path: {}",
+                    project,
+                    path.display()
+                );
+            }
+            UiEvent::ResourceWritten { project, path } => {
+                trace!(
+                    "UI: ResourceWritten event - project: {}, path: {}",
+                    project,
+                    path.display()
+                );
+            }
+            UiEvent::DirectoryListed { project, path } => {
+                trace!(
+                    "UI: DirectoryListed event - project: {}, path: {}",
+                    project,
+                    path.display()
+                );
+            }
+            UiEvent::ResourceDeleted { project, path } => {
+                trace!(
+                    "UI: ResourceDeleted event - project: {}, path: {}",
+                    project,
+                    path.display()
+                );
             }
         }
     }

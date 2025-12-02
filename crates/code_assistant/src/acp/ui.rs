@@ -668,6 +668,37 @@ impl UserInterface for ACPUserUI {
                 );
             }
 
+            // Resource events - could be used for "follow mode" in ACP
+            UiEvent::ResourceLoaded { project, path } => {
+                tracing::trace!(
+                    "ACPUserUI: ResourceLoaded - project: {}, path: {}",
+                    project,
+                    path.display()
+                );
+                // TODO: Could emit follow mode updates here
+            }
+            UiEvent::ResourceWritten { project, path } => {
+                tracing::trace!(
+                    "ACPUserUI: ResourceWritten - project: {}, path: {}",
+                    project,
+                    path.display()
+                );
+            }
+            UiEvent::DirectoryListed { project, path } => {
+                tracing::trace!(
+                    "ACPUserUI: DirectoryListed - project: {}, path: {}",
+                    project,
+                    path.display()
+                );
+            }
+            UiEvent::ResourceDeleted { project, path } => {
+                tracing::trace!(
+                    "ACPUserUI: ResourceDeleted - project: {}, path: {}",
+                    project,
+                    path.display()
+                );
+            }
+
             // Events that don't translate to ACP
             UiEvent::UpdateMemory { .. }
             | UiEvent::SetMessages { .. }

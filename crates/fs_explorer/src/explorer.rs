@@ -7,7 +7,7 @@ use command_executor::CommandExecutor;
 use ignore::WalkBuilder;
 use path_clean::PathClean;
 use regex::RegexBuilder;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -72,11 +72,10 @@ struct SearchSection {
 }
 
 /// Handles file system operations for code exploration
+
 #[derive(Clone)]
 pub struct Explorer {
     root_dir: PathBuf,
-    // Track which paths were explicitly listed
-    expanded_paths: HashSet<PathBuf>,
     // Track which files had which encoding
     file_encodings: Arc<RwLock<HashMap<PathBuf, FileEncoding>>>,
     // Track file format information (encoding + line ending)
@@ -157,9 +156,9 @@ impl Explorer {
     /// * `root_dir` - The root directory to explore
     pub fn new(root_dir: PathBuf) -> Self {
         let canonical_root = root_dir.canonicalize().unwrap_or_else(|_| root_dir.clean());
+
         Self {
             root_dir: canonical_root,
-            expanded_paths: HashSet::new(),
             file_encodings: Arc::new(RwLock::new(HashMap::new())),
             file_formats: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -220,12 +219,8 @@ impl Explorer {
         current_depth: usize,
         max_depth: usize,
     ) -> Result<()> {
-        // Expand if either:
-        // - Within max_depth during initial load
-        // - The path was explicitly listed before
-        let should_expand = current_depth < max_depth || self.expanded_paths.contains(path);
-
-        if !should_expand {
+        // Expand if within max_depth
+        if current_depth >= max_depth {
             entry.is_expanded = false;
             return Ok(());
         }
@@ -547,13 +542,11 @@ impl CodeExplorer for Explorer {
     async fn list_files(&mut self, path: &Path, max_depth: Option<usize>) -> Result<FileTreeEntry> {
         let resolved = self.resolve_path(path)?;
         let path = resolved.as_path();
+
         // Check if the path exists before proceeding
         if !path.exists() {
             return Err(anyhow::anyhow!("Path not found"));
         }
-
-        // Remember that this path was explicitly listed
-        self.expanded_paths.insert(resolved.clone());
 
         let mut entry = FileTreeEntry {
             name: path

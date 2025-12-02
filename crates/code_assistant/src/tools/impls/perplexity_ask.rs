@@ -4,7 +4,6 @@ use crate::tools::core::{
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::path::PathBuf;
 use web::{PerplexityCitation, PerplexityClient, PerplexityMessage};
 
 // Input type for the perplexity_ask tool
@@ -122,7 +121,7 @@ impl Tool for PerplexityAskTool {
 
     async fn execute<'a>(
         &self,
-        context: &mut ToolContext<'a>,
+        _context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Check if the API key exists
@@ -142,48 +141,12 @@ impl Tool for PerplexityAskTool {
 
         // Call Perplexity API
         match client.ask(&input.messages, None).await {
-            Ok(response) => {
-                // Update working memory if available
-                if let Some(working_memory) = &mut context.working_memory {
-                    // Store the result as a resource with a synthetic path
-                    let path = PathBuf::from(format!(
-                        "perplexity-ask-{}",
-                        percent_encoding::utf8_percent_encode(
-                            &query,
-                            percent_encoding::NON_ALPHANUMERIC
-                        )
-                    ));
-
-                    // Format the answer with citations
-                    let mut full_answer = response.content.clone();
-                    if !response.citations.is_empty() {
-                        full_answer.push_str("\n\nCitations:\n");
-                        for (i, citation) in response.citations.iter().enumerate() {
-                            full_answer.push_str(&format!(
-                                "[{}] {}: {}\n",
-                                i + 1,
-                                citation.text,
-                                citation.url
-                            ));
-                        }
-                    }
-
-                    // Store as a file resource
-                    let project = "perplexity".to_string();
-                    working_memory.add_resource(
-                        project,
-                        path,
-                        crate::types::LoadedResource::File(full_answer),
-                    );
-                }
-
-                Ok(PerplexityAskOutput {
-                    query,
-                    answer: response.content,
-                    citations: response.citations,
-                    error: None,
-                })
-            }
+            Ok(response) => Ok(PerplexityAskOutput {
+                query,
+                answer: response.content,
+                citations: response.citations,
+                error: None,
+            }),
             Err(e) => Ok(PerplexityAskOutput {
                 query,
                 answer: String::new(),

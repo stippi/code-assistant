@@ -149,12 +149,14 @@ impl Tool for DeleteFilesTool {
                 Ok(_) => {
                     deleted.push(path.clone());
 
-                    // If we have a working memory reference, remove the deleted file
-                    if let Some(working_memory) = &mut context.working_memory {
-                        // Remove from loaded resources
-                        working_memory
-                            .loaded_resources
-                            .remove(&(input.project.clone(), path.clone()));
+                    // Emit resource event
+                    if let Some(ui) = context.ui {
+                        let _ = ui
+                            .send_event(crate::ui::UiEvent::ResourceDeleted {
+                                project: input.project.clone(),
+                                path: path.clone(),
+                            })
+                            .await;
                     }
                 }
                 Err(e) => {
@@ -200,26 +202,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_files_working_memory_update() -> Result<()> {
-        // Create test fixture with working memory
+    async fn test_delete_files_emits_resource_deleted_event() -> Result<()> {
+        // Create test fixture with UI
         let mut fixture = ToolTestFixture::with_files(vec![
             ("file1.txt".to_string(), "File 1 content".to_string()),
             ("file2.txt".to_string(), "File 2 content".to_string()),
         ])
-        .with_working_memory();
-
-        // Pre-populate working memory with files
-        {
-            let working_memory = fixture.working_memory_mut().unwrap();
-            working_memory.loaded_resources.insert(
-                ("test-project".to_string(), PathBuf::from("file1.txt")),
-                crate::types::LoadedResource::File("File 1 content".to_string()),
-            );
-            working_memory.loaded_resources.insert(
-                ("test-project".to_string(), PathBuf::from("file2.txt")),
-                crate::types::LoadedResource::File("File 2 content".to_string()),
-            );
-        }
+        .with_ui();
 
         let mut context = fixture.context();
 
@@ -238,15 +227,16 @@ mod tests {
         assert_eq!(result.deleted[0], PathBuf::from("file1.txt"));
         assert!(result.failed.is_empty());
 
-        // Verify working memory updates
-        let working_memory = fixture.working_memory().unwrap();
-        assert_eq!(working_memory.loaded_resources.len(), 1);
-        assert!(!working_memory
-            .loaded_resources
-            .contains_key(&("test-project".to_string(), PathBuf::from("file1.txt"))));
-        assert!(working_memory
-            .loaded_resources
-            .contains_key(&("test-project".to_string(), PathBuf::from("file2.txt"))));
+        // Drop context to release borrow
+        drop(context);
+
+        // Verify ResourceDeleted event was emitted
+        let events = fixture.ui().unwrap().events();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            crate::ui::UiEvent::ResourceDeleted { project, path }
+            if project == "test-project" && path == &PathBuf::from("file1.txt")
+        )));
 
         Ok(())
     }

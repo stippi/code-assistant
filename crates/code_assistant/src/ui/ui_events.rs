@@ -4,6 +4,7 @@ use crate::types::{PlanState, WorkingMemory};
 use crate::ui::gpui::elements::MessageRole;
 use crate::ui::{DisplayFragment, ToolStatus};
 use sandbox::SandboxPolicy;
+use std::path::PathBuf;
 
 /// Data for a complete message with its display fragments
 #[derive(Debug, Clone)]
@@ -119,4 +120,14 @@ pub enum UiEvent {
     UpdateCurrentModel { model_name: String },
     /// Update the current sandbox selection in the UI
     UpdateSandboxPolicy { policy: SandboxPolicy },
+
+    // === Resource Events (for tool operations) ===
+    /// A file was loaded/read by a tool
+    ResourceLoaded { project: String, path: PathBuf },
+    /// A file was written/modified by a tool
+    ResourceWritten { project: String, path: PathBuf },
+    /// A directory was listed by a tool
+    DirectoryListed { project: String, path: PathBuf },
+    /// A file was deleted by a tool
+    ResourceDeleted { project: String, path: PathBuf },
 }
