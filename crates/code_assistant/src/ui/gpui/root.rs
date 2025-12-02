@@ -3,7 +3,9 @@ use super::chat_sidebar::{ChatSidebar, ChatSidebarEvent};
 
 use super::input_area::{InputArea, InputAreaEvent};
 use super::messages::MessagesView;
+use super::model_selector::{ModelSelector, ModelSelectorEvent};
 use super::plan_banner;
+use super::sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
 use super::theme;
 use super::BackendEvent;
 use super::{CloseWindow, Gpui, UiEventSender};
@@ -15,7 +17,7 @@ use gpui::{
     Transformation,
 };
 
-use gpui_component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_component::{ActiveTheme, Icon, Sizable, Size, StyledExt};
 use std::collections::HashMap;
 use tracing::{debug, error, trace, warn};
 
@@ -25,6 +27,10 @@ pub struct RootView {
     chat_sidebar: Entity<ChatSidebar>,
     auto_scroll_container: Entity<AutoScrollContainer<MessagesView>>,
     plan_banner: Entity<plan_banner::PlanBanner>,
+    model_selector: Entity<ModelSelector>,
+    sandbox_selector: Entity<SandboxSelector>,
+    current_model: Option<String>,
+    current_sandbox_policy: sandbox::SandboxPolicy,
     recent_keystrokes: Vec<gpui::Keystroke>,
     focus_handle: FocusHandle,
     // Chat sidebar state
@@ -37,6 +43,8 @@ pub struct RootView {
     _input_area_subscription: Subscription,
     _plan_banner_subscription: Subscription,
     _chat_sidebar_subscription: Subscription,
+    _model_selector_subscription: Subscription,
+    _sandbox_selector_subscription: Subscription,
 }
 
 impl RootView {
@@ -56,6 +64,10 @@ impl RootView {
         // Create the input area
         let input_area = cx.new(|cx| InputArea::new(window, cx));
 
+        // Create model selector and sandbox selector for the title bar
+        let model_selector = cx.new(|cx| ModelSelector::new(window, cx));
+        let sandbox_selector = cx.new(|cx| SandboxSelector::new(window, cx));
+
         // Subscribe to input area events
         let input_area_subscription =
             cx.subscribe_in(&input_area, window, Self::on_input_area_event);
@@ -68,11 +80,23 @@ impl RootView {
         let plan_banner_subscription =
             cx.subscribe_in(&plan_banner, window, Self::on_plan_banner_event);
 
+        // Subscribe to model selector events
+        let model_selector_subscription =
+            cx.subscribe_in(&model_selector, window, Self::on_model_selector_event);
+
+        // Subscribe to sandbox selector events
+        let sandbox_selector_subscription =
+            cx.subscribe_in(&sandbox_selector, window, Self::on_sandbox_selector_event);
+
         let mut root_view = Self {
             input_area,
             chat_sidebar,
             auto_scroll_container,
             plan_banner,
+            model_selector,
+            sandbox_selector,
+            current_model: None,
+            current_sandbox_policy: sandbox::SandboxPolicy::DangerFullAccess,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
             chat_collapsed: false, // Chat sidebar is visible by default
@@ -83,6 +107,8 @@ impl RootView {
             _input_area_subscription: input_area_subscription,
             _plan_banner_subscription: plan_banner_subscription,
             _chat_sidebar_subscription: chat_sidebar_subscription,
+            _model_selector_subscription: model_selector_subscription,
+            _sandbox_selector_subscription: sandbox_selector_subscription,
         };
 
         // Request initial chat session list
@@ -143,6 +169,84 @@ impl RootView {
     ) {
         theme::toggle_theme(Some(window), cx);
         cx.notify();
+    }
+
+    fn on_new_chat_click(
+        &mut self,
+        _: &MouseUpEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        debug!("New chat button clicked from title bar");
+        // Send event to create a new session
+        let gpui = cx
+            .try_global::<Gpui>()
+            .expect("Failed to obtain Gpui global");
+        if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+            let _ = sender.try_send(BackendEvent::CreateNewSession { name: None });
+        } else {
+            error!("Failed to lock backend event sender");
+        }
+    }
+
+    /// Handle ModelSelector events
+    fn on_model_selector_event(
+        &mut self,
+        _model_selector: &Entity<ModelSelector>,
+        event: &ModelSelectorEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ModelSelectorEvent::ModelChanged { model_name } => {
+                debug!("Model selection changed to: {}", model_name);
+                self.current_model = Some(model_name.clone());
+
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::SwitchModel {
+                            session_id: session_id.clone(),
+                            model_name: model_name.clone(),
+                        });
+                    } else {
+                        error!("Failed to lock backend event sender");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle SandboxSelector events
+    fn on_sandbox_selector_event(
+        &mut self,
+        _selector: &Entity<SandboxSelector>,
+        event: &SandboxSelectorEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SandboxSelectorEvent::PolicyChanged { policy } => {
+                debug!("Sandbox policy changed");
+                self.current_sandbox_policy = policy.clone();
+
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::ChangeSandboxPolicy {
+                            session_id: session_id.clone(),
+                            policy: policy.clone(),
+                        });
+                    } else {
+                        error!("Failed to lock backend event sender");
+                    }
+                }
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -206,38 +310,6 @@ impl RootView {
                     }
                 }
             }
-            InputAreaEvent::ModelChanged { model_name } => {
-                debug!("Model selection changed to: {}", model_name);
-
-                if let Some(session_id) = &self.current_session_id {
-                    let gpui = cx
-                        .try_global::<Gpui>()
-                        .expect("Failed to obtain Gpui global");
-                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::SwitchModel {
-                            session_id: session_id.clone(),
-                            model_name: model_name.clone(),
-                        });
-                    } else {
-                        error!("Failed to lock backend event sender");
-                    }
-                }
-            }
-            InputAreaEvent::SandboxChanged { policy } => {
-                if let Some(session_id) = &self.current_session_id {
-                    let gpui = cx
-                        .try_global::<Gpui>()
-                        .expect("Failed to obtain Gpui global");
-                    if let Some(sender) = gpui.backend_event_sender.lock().unwrap().as_ref() {
-                        let _ = sender.try_send(BackendEvent::ChangeSandboxPolicy {
-                            session_id: session_id.clone(),
-                            policy: policy.clone(),
-                        });
-                    } else {
-                        error!("Failed to lock backend event sender");
-                    }
-                }
-            }
         }
     }
 
@@ -263,9 +335,6 @@ impl RootView {
                     let _ = sender.try_send(BackendEvent::DeleteSession {
                         session_id: session_id.clone(),
                     });
-                }
-                ChatSidebarEvent::NewSessionRequested { name } => {
-                    let _ = sender.try_send(BackendEvent::CreateNewSession { name: name.clone() });
                 }
             }
         } else {
@@ -656,23 +725,24 @@ impl Render for RootView {
             }
         }
 
-        // Ensure InputArea stays in sync with the current model
-        let selected_model = self.input_area.read(cx).current_model();
-        if selected_model != current_model {
+        // Ensure model selector stays in sync with the current model
+        if self.current_model != current_model {
             debug!(
                 "Current model changed from {:?} to {:?}",
-                selected_model, current_model
+                self.current_model, current_model
             );
-            let model_to_set = current_model.clone();
-            self.input_area.update(cx, |input_area, cx| {
-                input_area.set_current_model(model_to_set, window, cx);
+            self.current_model = current_model.clone();
+            self.model_selector.update(cx, |selector, cx| {
+                selector.set_current_model(current_model.clone(), window, cx);
             });
         }
 
+        // Ensure sandbox selector stays in sync with the current policy
         if let Some(policy) = current_sandbox_policy {
-            if self.input_area.read(cx).current_sandbox_policy() != policy {
-                self.input_area.update(cx, |input_area, cx| {
-                    input_area.set_current_sandbox_policy(policy.clone(), window, cx);
+            if self.current_sandbox_policy != policy {
+                self.current_sandbox_policy = policy.clone();
+                self.sandbox_selector.update(cx, |selector, cx| {
+                    selector.set_policy(policy.clone(), window, cx);
                 });
             }
         }
@@ -733,15 +803,16 @@ impl Render for RootView {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .justify_start()
+                    .justify_between() // Space between left and right sections
                     // Left padding for macOS traffic lights (doubled for more space)
                     .pl(px(86.))
+                    .pr(px(12.)) // Right padding for symmetry
                     // Left side - controls
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_1()
+                            .gap_2()
                             // Chat sidebar toggle button
                             .child(
                                 div()
@@ -767,31 +838,67 @@ impl Render for RootView {
                                         cx.listener(Self::on_toggle_chat_sidebar),
                                     ),
                             )
-                            // Theme toggle button
+                            // "+ Chat" button with blue "+" and normal "Chat" text
                             .child(
                                 div()
-                                    .size(px(28.))
+                                    .h(px(28.))
+                                    .px_2()
                                     .rounded_sm()
                                     .flex()
                                     .items_center()
                                     .justify_center()
+                                    .gap_1()
                                     .cursor_pointer()
                                     .hover(|s| s.bg(cx.theme().muted))
                                     .child(
-                                        Icon::default()
-                                            .path(SharedString::from(if cx.theme().is_dark() {
-                                                "icons/theme_light.svg"
-                                            } else {
-                                                "icons/theme_dark.svg"
-                                            }))
-                                            .with_size(Size::Small)
-                                            .text_color(cx.theme().muted_foreground),
+                                        div()
+                                            .text_sm()
+                                            .font_medium()
+                                            .text_color(cx.theme().primary) // Blue color for "+"
+                                            .child("+"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_medium()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("Chat"),
                                     )
                                     .on_mouse_up(
                                         MouseButton::Left,
-                                        cx.listener(Self::on_toggle_theme),
+                                        cx.listener(Self::on_new_chat_click),
                                     ),
-                            ),
+                            )
+                            // Vertical separator
+                            .child(div().h(px(20.)).w(px(1.)).bg(cx.theme().border))
+                            // Model selector
+                            .child(self.model_selector.clone())
+                            // Sandbox/permissions selector
+                            .child(self.sandbox_selector.clone()),
+                    )
+                    // Right side - theme toggle (right-aligned)
+                    .child(
+                        div().flex().items_center().child(
+                            div()
+                                .size(px(28.))
+                                .rounded_sm()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(cx.theme().muted))
+                                .child(
+                                    Icon::default()
+                                        .path(SharedString::from(if cx.theme().is_dark() {
+                                            "icons/theme_light.svg"
+                                        } else {
+                                            "icons/theme_dark.svg"
+                                        }))
+                                        .with_size(Size::Small)
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_theme)),
+                        ),
                     ),
             )
             // Main content area with chat sidebar and messages+input (2-column layout)
