@@ -210,7 +210,7 @@ impl Tool for ReadFilesTool {
 
         // Emit resource events for loaded files
         if let Some(ui) = context.ui {
-            for (path, _) in &loaded_files {
+            for path in loaded_files.keys() {
                 // Get the base path without any line range information
                 let base_path =
                     if let Ok(parsed) = PathWithLineRange::parse(path.to_str().unwrap_or("")) {

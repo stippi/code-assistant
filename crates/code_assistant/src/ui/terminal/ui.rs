@@ -101,9 +101,6 @@ impl UserInterface for TerminalTuiUI {
                 }
             }
 
-            UiEvent::UpdateMemory { memory: _ } => {
-                // Memory UI has been removed - this event is ignored
-            }
             UiEvent::UpdatePlan { plan } => {
                 debug!("Updating plan");
                 let plan_clone = plan.clone();

@@ -12,7 +12,6 @@ pub mod input_area;
 mod messages;
 pub mod model_selector;
 pub mod parameter_renderers;
-mod path_util;
 mod plan_banner;
 mod root;
 pub mod sandbox_selector;
@@ -565,9 +564,6 @@ impl Gpui {
                 });
             }
 
-            UiEvent::UpdateMemory { memory: _ } => {
-                // Memory UI has been removed - this event is ignored
-            }
             UiEvent::UpdatePlan { plan } => {
                 if let Ok(mut plan_guard) = self.plan_state.lock() {
                     *plan_guard = Some(plan);

@@ -700,8 +700,7 @@ impl UserInterface for ACPUserUI {
             }
 
             // Events that don't translate to ACP
-            UiEvent::UpdateMemory { .. }
-            | UiEvent::SetMessages { .. }
+            UiEvent::SetMessages { .. }
             | UiEvent::DisplayCompactionSummary { .. }
             | UiEvent::StreamingStarted(_)
             | UiEvent::StreamingStopped { .. }
