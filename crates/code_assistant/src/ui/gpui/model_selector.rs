@@ -1,7 +1,7 @@
 use gpui::{div, prelude::*, px, Context, Entity, EventEmitter, Focusable, Render, Window};
 use gpui_component::{
     select::{Select, SelectEvent, SelectItem, SelectState},
-    Icon, Sizable, Size,
+    ActiveTheme, Icon, Sizable, Size,
 };
 use llm::provider_config::ConfigurationSystem;
 use std::sync::Arc;
@@ -202,11 +202,18 @@ impl Focusable for ModelSelector {
 }
 
 impl Render for ModelSelector {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        gpui::div().child(
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        gpui::div().text_color(cx.theme().muted_foreground).child(
             Select::new(&self.dropdown_state)
                 .placeholder("Select Model")
                 .with_size(Size::XSmall)
+                .appearance(false)
+                .icon(
+                    Icon::default()
+                        .path("icons/chevron_up_down.svg")
+                        .with_size(Size::XSmall)
+                        .text_color(cx.theme().muted_foreground),
+                )
                 .min_w(px(280.)),
         )
     }

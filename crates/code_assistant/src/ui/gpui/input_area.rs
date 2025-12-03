@@ -1,13 +1,13 @@
 use super::attachment::{AttachmentEvent, AttachmentView};
+use super::file_icons;
 use crate::persistence::DraftAttachment;
 use base64::Engine;
 use gpui::{
-    div, prelude::*, px, ClipboardEntry, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    MouseButton, MouseUpEvent, Render, Subscription, Window,
+    div, prelude::*, px, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter, FocusHandle,
+    Focusable, MouseButton, MouseUpEvent, Render, Subscription, Window,
 };
-use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState, Paste};
-use gpui_component::{ActiveTheme, Disableable, Icon, Sizable, Size};
+use gpui_component::ActiveTheme;
 
 /// Events emitted by the InputArea component
 #[derive(Clone, Debug)]
@@ -303,48 +303,74 @@ impl InputArea {
                             .track_focus(&text_input_handle)
                             .child(Input::new(&self.text_input).appearance(false))
                     })
-                    // Send button
-                    .child(
-                        Button::new("send-message")
-                            .icon(Icon::default().path("icons/send.svg"))
-                            .primary()
-                            .compact()
-                            .with_size(Size::Medium)
-                            .disabled(!has_input_content)
-                            .on_click(cx.listener(|this, _event, window, cx| {
-                                this.on_submit_click(
-                                    &MouseUpEvent {
-                                        button: MouseButton::Left,
-                                        position: gpui::Point::default(),
-                                        modifiers: gpui::Modifiers::default(),
-                                        click_count: 1,
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    )
-                    // Cancel button
-                    .child(
-                        Button::new("cancel-agent")
-                            .icon(Icon::default().path("icons/circle_stop.svg"))
-                            .danger()
-                            .compact()
-                            .with_size(Size::Medium)
-                            .disabled(!self.cancel_enabled)
-                            .on_click(cx.listener(|this, _event, window, cx| {
-                                this.on_cancel_click(
-                                    &MouseUpEvent {
-                                        button: MouseButton::Left,
-                                        position: gpui::Point::default(),
-                                        modifiers: gpui::Modifiers::default(),
-                                        click_count: 1,
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    ),
+                    .children({
+                        let mut buttons = Vec::new();
+
+                        // Show both send and cancel buttons
+                        // Send button - enabled when input has content
+                        let send_enabled = has_input_content;
+                        let mut send_button = div()
+                            .size(px(40.))
+                            .rounded_sm()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor(if send_enabled {
+                                CursorStyle::PointingHand
+                            } else {
+                                CursorStyle::OperationNotAllowed
+                            })
+                            .child(file_icons::render_icon(
+                                &file_icons::get().get_type_icon(file_icons::SEND),
+                                22.0,
+                                if send_enabled {
+                                    cx.theme().primary
+                                } else {
+                                    cx.theme().muted_foreground
+                                },
+                                ">",
+                            ));
+
+                        if send_enabled {
+                            send_button = send_button
+                                .hover(|s| s.bg(cx.theme().muted))
+                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_submit_click));
+                        }
+                        buttons.push(send_button);
+
+                        // Cancel button - always visible, but enabled/disabled based on agent state
+                        let mut cancel_button = div()
+                            .size(px(40.))
+                            .rounded_sm()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor(if self.cancel_enabled {
+                                CursorStyle::PointingHand
+                            } else {
+                                CursorStyle::OperationNotAllowed
+                            })
+                            .child(file_icons::render_icon(
+                                &file_icons::get().get_type_icon(file_icons::STOP),
+                                22.0,
+                                if self.cancel_enabled {
+                                    cx.theme().danger
+                                } else {
+                                    cx.theme().muted_foreground
+                                },
+                                "⬜",
+                            ));
+
+                        if self.cancel_enabled {
+                            cancel_button = cancel_button
+                                .hover(|s| s.bg(cx.theme().muted))
+                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_cancel_click));
+                        }
+
+                        buttons.push(cancel_button);
+
+                        buttons
+                    }),
             )
     }
 }
