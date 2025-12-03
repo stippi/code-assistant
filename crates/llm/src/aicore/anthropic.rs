@@ -1,5 +1,10 @@
+//! AI Core client for Anthropic (Claude) API
+//!
+//! This client wraps the Anthropic client with AI Core authentication.
+
 use crate::{
     anthropic::{AnthropicClient, AuthProvider, DefaultMessageConverter, RequestCustomizer},
+    auth::TokenManager,
     types::*,
     LLMProvider, StreamingCallback,
 };
@@ -8,9 +13,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 
-use super::auth::TokenManager;
-
-/// AiCore authentication provider using TokenManager
+/// AI Core authentication provider using TokenManager
 pub struct AiCoreAuthProvider {
     token_manager: Arc<TokenManager>,
 }
@@ -32,10 +35,10 @@ impl AuthProvider for AiCoreAuthProvider {
     }
 }
 
-/// AiCore request customizer
-pub struct AiCoreRequestCustomizer;
+/// AI Core request customizer for Anthropic API
+pub struct AiCoreAnthropicRequestCustomizer;
 
-impl RequestCustomizer for AiCoreRequestCustomizer {
+impl RequestCustomizer for AiCoreAnthropicRequestCustomizer {
     fn customize_request(&self, request: &mut serde_json::Value) -> Result<()> {
         if let Value::Object(ref mut map) = request {
             // Remove stream and model fields after URL routing is done
@@ -70,18 +73,19 @@ impl RequestCustomizer for AiCoreRequestCustomizer {
     }
 }
 
-pub struct AiCoreClient {
+/// AI Core client for Anthropic (Claude) models
+pub struct AiCoreAnthropicClient {
     anthropic_client: AnthropicClient,
     custom_config: Option<serde_json::Value>,
 }
 
-impl AiCoreClient {
+impl AiCoreAnthropicClient {
     fn create_anthropic_client(
         token_manager: Arc<TokenManager>,
         base_url: String,
     ) -> AnthropicClient {
         let auth_provider = Box::new(AiCoreAuthProvider::new(token_manager));
-        let request_customizer = Box::new(AiCoreRequestCustomizer);
+        let request_customizer = Box::new(AiCoreAnthropicRequestCustomizer);
         let message_converter = Box::new(DefaultMessageConverter::new());
 
         AnthropicClient::with_customization(
@@ -127,7 +131,7 @@ impl AiCoreClient {
 }
 
 #[async_trait]
-impl LLMProvider for AiCoreClient {
+impl LLMProvider for AiCoreAnthropicClient {
     async fn send_message(
         &mut self,
         request: LLMRequest,
