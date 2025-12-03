@@ -17,7 +17,10 @@ use gpui::{
     Transformation,
 };
 
-use gpui_component::{ActiveTheme, Icon, Sizable, Size, StyledExt};
+use gpui_component::{
+    button::{Button, ButtonVariants},
+    ActiveTheme, Icon, Sizable, Size,
+};
 use std::collections::HashMap;
 use tracing::{debug, error, trace, warn};
 
@@ -815,59 +818,50 @@ impl Render for RootView {
                             .gap_2()
                             // Chat sidebar toggle button
                             .child(
-                                div()
-                                    .size(px(28.))
-                                    .rounded_sm()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(cx.theme().muted))
-                                    .child(
-                                        Icon::default()
-                                            .path(SharedString::from(if self.chat_collapsed {
-                                                "icons/panel_left_open.svg"
-                                            } else {
-                                                "icons/panel_left_close.svg"
-                                            }))
-                                            .with_size(Size::Small)
-                                            .text_color(cx.theme().muted_foreground),
-                                    )
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::on_toggle_chat_sidebar),
-                                    ),
+                                Button::new("toggle-sidebar")
+                                    .icon(Icon::default().path(SharedString::from(
+                                        if self.chat_collapsed {
+                                            "icons/panel_left_open.svg"
+                                        } else {
+                                            "icons/panel_left_close.svg"
+                                        },
+                                    )))
+                                    .ghost()
+                                    .compact()
+                                    .with_size(Size::Small)
+                                    .on_click(cx.listener(|this, _event, window, cx| {
+                                        this.on_toggle_chat_sidebar(
+                                            &MouseUpEvent {
+                                                button: MouseButton::Left,
+                                                position: gpui::Point::default(),
+                                                modifiers: gpui::Modifiers::default(),
+                                                click_count: 1,
+                                            },
+                                            window,
+                                            cx,
+                                        );
+                                    })),
                             )
-                            // "+ Chat" button with blue "+" and normal "Chat" text
+                            // "+ Chat" button
                             .child(
-                                div()
-                                    .h(px(28.))
-                                    .px_2()
-                                    .rounded_sm()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .gap_1()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(cx.theme().muted))
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_medium()
-                                            .text_color(cx.theme().primary) // Blue color for "+"
-                                            .child("+"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_medium()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child("Chat"),
-                                    )
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::on_new_chat_click),
-                                    ),
+                                Button::new("new-chat")
+                                    .icon(Icon::default().path("icons/plus.svg"))
+                                    .label("Chat")
+                                    .ghost()
+                                    .compact()
+                                    .with_size(Size::Small)
+                                    .on_click(cx.listener(|this, _event, window, cx| {
+                                        this.on_new_chat_click(
+                                            &MouseUpEvent {
+                                                button: MouseButton::Left,
+                                                position: gpui::Point::default(),
+                                                modifiers: gpui::Modifiers::default(),
+                                                click_count: 1,
+                                            },
+                                            window,
+                                            cx,
+                                        );
+                                    })),
                             )
                             // Vertical separator
                             .child(div().h(px(20.)).w(px(1.)).bg(cx.theme().border))
@@ -879,25 +873,29 @@ impl Render for RootView {
                     // Right side - theme toggle (right-aligned)
                     .child(
                         div().flex().items_center().child(
-                            div()
-                                .size(px(28.))
-                                .rounded_sm()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(cx.theme().muted))
-                                .child(
-                                    Icon::default()
-                                        .path(SharedString::from(if cx.theme().is_dark() {
-                                            "icons/theme_light.svg"
-                                        } else {
-                                            "icons/theme_dark.svg"
-                                        }))
-                                        .with_size(Size::Small)
-                                        .text_color(cx.theme().muted_foreground),
-                                )
-                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_theme)),
+                            Button::new("toggle-theme")
+                                .icon(Icon::default().path(SharedString::from(
+                                    if cx.theme().is_dark() {
+                                        "icons/theme_light.svg"
+                                    } else {
+                                        "icons/theme_dark.svg"
+                                    },
+                                )))
+                                .ghost()
+                                .compact()
+                                .with_size(Size::Small)
+                                .on_click(cx.listener(|this, _event, window, cx| {
+                                    this.on_toggle_theme(
+                                        &MouseUpEvent {
+                                            button: MouseButton::Left,
+                                            position: gpui::Point::default(),
+                                            modifiers: gpui::Modifiers::default(),
+                                            click_count: 1,
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                })),
                         ),
                     ),
             )

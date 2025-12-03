@@ -1,4 +1,3 @@
-use super::file_icons;
 use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
 use gpui::{
@@ -6,9 +5,9 @@ use gpui::{
     InteractiveElement, MouseButton, MouseUpEvent, SharedString, StatefulInteractiveElement,
     Styled, Subscription, Window,
 };
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::scroll::ScrollbarAxis;
-
-use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, StyledExt};
+use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, Sizable, Size, StyledExt};
 use std::time::SystemTime;
 
 /// Events emitted by individual ChatListItem components
@@ -207,24 +206,23 @@ impl Render for ChatListItem {
                             )
                             .when(self.is_selected && self.is_hovered, |s| {
                                 s.child(
-                                    div()
-                                        .size(px(20.))
-                                        .rounded_sm()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .cursor_pointer()
-                                        .hover(|s| s.bg(cx.theme().danger.opacity(0.1)))
-                                        .child(file_icons::render_icon(
-                                            &file_icons::get().get_type_icon("trash"),
-                                            12.0,
-                                            cx.theme().danger,
-                                            "🗑",
-                                        ))
-                                        .on_mouse_up(
-                                            MouseButton::Left,
-                                            cx.listener(Self::on_session_delete),
-                                        ),
+                                    Button::new("delete-session")
+                                        .icon(Icon::default().path("icons/trash.svg"))
+                                        .ghost()
+                                        .compact()
+                                        .with_size(Size::XSmall)
+                                        .on_click(cx.listener(|this, _event, window, cx| {
+                                            this.on_session_delete(
+                                                &MouseUpEvent {
+                                                    button: MouseButton::Left,
+                                                    position: gpui::Point::default(),
+                                                    modifiers: gpui::Modifiers::default(),
+                                                    click_count: 1,
+                                                },
+                                                window,
+                                                cx,
+                                            );
+                                        })),
                                 )
                             }),
                     ),

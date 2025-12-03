@@ -1,7 +1,7 @@
 use gpui::{div, prelude::*, px, Context, Entity, EventEmitter, Focusable, Render, Window};
 use gpui_component::{
     select::{Select, SelectEvent, SelectItem, SelectState},
-    ActiveTheme, Icon, Sizable, Size,
+    Sizable, Size,
 };
 use sandbox::SandboxPolicy;
 
@@ -114,18 +114,11 @@ impl Focusable for SandboxSelector {
 }
 
 impl Render for SandboxSelector {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().text_color(cx.theme().muted_foreground).child(
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().child(
             Select::new(&self.dropdown_state)
                 .placeholder("Sandbox Mode")
                 .with_size(Size::XSmall)
-                .appearance(false)
-                .icon(
-                    Icon::default()
-                        .path("icons/chevron_up_down.svg")
-                        .with_size(Size::XSmall)
-                        .text_color(cx.theme().muted_foreground),
-                )
                 .min_w(px(130.)),
         )
     }
