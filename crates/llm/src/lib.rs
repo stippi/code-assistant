@@ -2,7 +2,7 @@
 //!
 //! This module implements:
 //! - Common interface for LLM interactions via the LLMProvider trait
-//! - Support for multiple providers (Anthropic, OpenAI, Ollama, Vertex)
+//! - Support for multiple providers (Anthropic, OpenAI, Ollama, Vertex, AI Core)
 //! - Message streaming capabilities
 //! - Provider-specific implementations and optimizations
 //! - Shared types and utilities for LLM interactions
@@ -13,8 +13,7 @@ mod tests;
 
 mod utils;
 
-//pub mod aicore_converse;
-pub mod aicore_invoke;
+pub mod aicore;
 pub mod anthropic;
 pub mod auth;
 pub mod cerebras;
@@ -33,7 +32,10 @@ pub mod streaming;
 pub mod types;
 pub mod vertex;
 
-pub use aicore_invoke::AiCoreClient;
+pub use aicore::{
+    create_aicore_client, create_aicore_client_with_recorder, AiCoreAnthropicClient, AiCoreApiType,
+    AiCoreOpenAIClient, AiCoreVertexClient,
+};
 pub use anthropic::AnthropicClient;
 pub use cerebras::CerebrasClient;
 pub use groq::GroqClient;

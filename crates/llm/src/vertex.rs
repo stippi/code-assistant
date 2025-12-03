@@ -10,6 +10,86 @@ use serde_json::json;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, trace, warn};
 
+// ============================================================================
+// Customization Traits
+// ============================================================================
+
+/// Trait for providing authentication for Vertex API requests
+#[async_trait]
+pub trait AuthProvider: Send + Sync {
+    /// Get authentication to apply to the request.
+    /// Returns either query parameters or headers (or both).
+    async fn get_auth(&self) -> Result<VertexAuth>;
+}
+
+/// Authentication configuration for Vertex API
+pub struct VertexAuth {
+    /// Query parameters to add to the URL (e.g., `key=...`)
+    pub query_params: Vec<(String, String)>,
+    /// Headers to add to the request (e.g., `Authorization: Bearer ...`)
+    pub headers: Vec<(String, String)>,
+}
+
+/// Trait for customizing Vertex API requests
+pub trait RequestCustomizer: Send + Sync {
+    /// Customize the request JSON before sending
+    fn customize_request(&self, request: &mut serde_json::Value) -> Result<()>;
+    /// Get additional headers to include in requests
+    fn get_additional_headers(&self) -> Vec<(String, String)>;
+    /// Customize the URL for a request
+    fn customize_url(&self, base_url: &str, model: &str, streaming: bool) -> String;
+}
+
+// ============================================================================
+// Default Implementations
+// ============================================================================
+
+/// Default API key authentication provider (uses query parameter)
+pub struct ApiKeyAuth {
+    api_key: String,
+}
+
+impl ApiKeyAuth {
+    pub fn new(api_key: String) -> Self {
+        Self { api_key }
+    }
+}
+
+#[async_trait]
+impl AuthProvider for ApiKeyAuth {
+    async fn get_auth(&self) -> Result<VertexAuth> {
+        Ok(VertexAuth {
+            query_params: vec![("key".to_string(), self.api_key.clone())],
+            headers: vec![],
+        })
+    }
+}
+
+/// Default request customizer for Google Generative Language API
+pub struct DefaultRequestCustomizer;
+
+impl RequestCustomizer for DefaultRequestCustomizer {
+    fn customize_request(&self, _request: &mut serde_json::Value) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_additional_headers(&self) -> Vec<(String, String)> {
+        vec![("Content-Type".to_string(), "application/json".to_string())]
+    }
+
+    fn customize_url(&self, base_url: &str, model: &str, streaming: bool) -> String {
+        if streaming {
+            format!("{}/models/{}:streamGenerateContent", base_url, model)
+        } else {
+            format!("{}/models/{}:generateContent", base_url, model)
+        }
+    }
+}
+
+// ============================================================================
+// Request/Response Types
+// ============================================================================
+
 #[derive(Debug, Serialize)]
 struct VertexRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,14 +164,14 @@ struct VertexResponse {
     response_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct VertexUsageMetadata {
-    #[serde(rename = "promptTokenCount")]
+    #[serde(rename = "promptTokenCount", default)]
     prompt_token_count: u32,
-    #[serde(rename = "candidatesTokenCount")]
+    #[serde(rename = "candidatesTokenCount", default)]
     candidates_token_count: u32,
     #[allow(dead_code)]
-    #[serde(rename = "totalTokenCount")]
+    #[serde(rename = "totalTokenCount", default)]
     total_token_count: u32,
     #[serde(rename = "cachedContentTokenCount")]
     cached_content_token_count: Option<u32>,
@@ -165,27 +245,29 @@ impl RateLimitHandler for VertexRateLimitInfo {
 
 pub struct VertexClient {
     client: Client,
-    api_key: String,
     model: String,
     base_url: String,
     recorder: Option<APIRecorder>,
     custom_config: Option<serde_json::Value>,
+    // Customization points
+    auth_provider: Box<dyn AuthProvider>,
+    request_customizer: Box<dyn RequestCustomizer>,
 }
 
 impl VertexClient {
     pub fn default_base_url() -> String {
         "https://generativelanguage.googleapis.com/v1beta".to_string()
-        //"https://aiplatform.googleapis.com/v1/publishers/google".to_string()
     }
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
             client: Client::new(),
-            api_key,
             model,
             base_url,
             recorder: None,
             custom_config: None,
+            auth_provider: Box::new(ApiKeyAuth::new(api_key)),
+            request_customizer: Box::new(DefaultRequestCustomizer),
         }
     }
 
@@ -198,12 +280,37 @@ impl VertexClient {
     ) -> Self {
         Self {
             client: Client::new(),
-            api_key,
             model,
             base_url,
             recorder: Some(APIRecorder::new(recording_path)),
             custom_config: None,
+            auth_provider: Box::new(ApiKeyAuth::new(api_key)),
+            request_customizer: Box::new(DefaultRequestCustomizer),
         }
+    }
+
+    /// Create a new client with custom authentication and request handling
+    pub fn with_customization(
+        model: String,
+        base_url: String,
+        auth_provider: Box<dyn AuthProvider>,
+        request_customizer: Box<dyn RequestCustomizer>,
+    ) -> Self {
+        Self {
+            client: Client::new(),
+            model,
+            base_url,
+            recorder: None,
+            custom_config: None,
+            auth_provider,
+            request_customizer,
+        }
+    }
+
+    /// Add recording capability to an existing client
+    pub fn with_recorder<P: AsRef<std::path::Path>>(mut self, recording_path: P) -> Self {
+        self.recorder = Some(APIRecorder::new(recording_path));
+        self
     }
 
     /// Set custom model configuration to be merged into API requests
@@ -213,14 +320,8 @@ impl VertexClient {
     }
 
     fn get_url(&self, streaming: bool) -> String {
-        if streaming {
-            format!(
-                "{}/models/{}:streamGenerateContent",
-                self.base_url, self.model
-            )
-        } else {
-            format!("{}/models/{}:generateContent", self.base_url, self.model)
-        }
+        self.request_customizer
+            .customize_url(&self.base_url, &self.model, streaming)
     }
 
     fn convert_message(message: &Message) -> VertexMessage {
@@ -372,17 +473,38 @@ impl VertexClient {
             request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
         }
 
-        trace!(
+        // Allow request customizer to modify the request
+        self.request_customizer
+            .customize_request(&mut request_json)?;
+
+        debug!(
             "Sending Vertex request to {}:\n{}",
             self.model,
             serde_json::to_string_pretty(&request_json)?
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .query(&[("key", &self.api_key)])
-            .header("Content-Type", "application/json")
+        // Get authentication
+        let auth = self.auth_provider.get_auth().await?;
+
+        // Build request
+        let mut request_builder = self.client.post(&url);
+
+        // Add query parameters from auth
+        if !auth.query_params.is_empty() {
+            request_builder = request_builder.query(&auth.query_params);
+        }
+
+        // Add headers from auth
+        for (key, value) in auth.headers {
+            request_builder = request_builder.header(key, value);
+        }
+
+        // Add additional headers from customizer
+        for (key, value) in self.request_customizer.get_additional_headers() {
+            request_builder = request_builder.header(key, value);
+        }
+
+        let response = request_builder
             .json(&request_json)
             .send()
             .await
@@ -490,16 +612,43 @@ impl VertexClient {
             request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
         }
 
+        // Allow request customizer to modify the request
+        self.request_customizer
+            .customize_request(&mut request_json)?;
+
+        debug!(
+            "Sending Vertex streaming request to {}:\n{}",
+            self.model,
+            serde_json::to_string_pretty(&request_json)?
+        );
+
         // Start recording if a recorder is available
         if let Some(recorder) = &self.recorder {
             recorder.start_recording(request_json.clone())?;
         }
 
-        let response = self
-            .client
-            .post(self.get_url(true))
-            .query(&[("key", &self.api_key), ("alt", &"sse".to_string())])
-            .header("Content-Type", "application/json")
+        // Get authentication
+        let auth = self.auth_provider.get_auth().await?;
+
+        // Build request - start with URL and add SSE alt parameter
+        let mut request_builder = self.client.post(self.get_url(true));
+
+        // Combine auth query params with alt=sse
+        let mut query_params = auth.query_params;
+        query_params.push(("alt".to_string(), "sse".to_string()));
+        request_builder = request_builder.query(&query_params);
+
+        // Add headers from auth
+        for (key, value) in auth.headers {
+            request_builder = request_builder.header(key, value);
+        }
+
+        // Add additional headers from customizer
+        for (key, value) in self.request_customizer.get_additional_headers() {
+            request_builder = request_builder.header(key, value);
+        }
+
+        let response = request_builder
             .json(&request_json)
             .send()
             .await
