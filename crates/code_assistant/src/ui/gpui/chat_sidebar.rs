@@ -8,8 +8,9 @@ use gpui::{
 };
 use gpui_component::scroll::ScrollbarAxis;
 
-use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, StyledExt};
+use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, Sizable, Size, StyledExt};
 use std::time::SystemTime;
+use tracing::debug;
 
 /// Events emitted by individual ChatListItem components
 #[derive(Clone, Debug)]
@@ -27,6 +28,8 @@ pub enum ChatSidebarEvent {
     SessionSelected { session_id: String },
     /// User requested deletion of a chat session
     SessionDeleteRequested { session_id: String },
+    /// User requested creation of a new chat session
+    NewSessionRequested { name: Option<String> },
 }
 
 /// Individual chat list item component
@@ -455,6 +458,22 @@ impl ChatSidebar {
         cx.notify();
     }
 
+    fn on_new_chat_click(
+        &mut self,
+        _: &MouseUpEvent,
+        _window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        debug!("New chat button clicked");
+        self.request_new_session(cx);
+    }
+
+    /// Request creation of a new chat session
+    pub fn request_new_session(&mut self, cx: &mut Context<Self>) {
+        debug!("Requesting new chat session");
+        cx.emit(ChatSidebarEvent::NewSessionRequested { name: None });
+    }
+
     /// Handle events from ChatListItem components
     fn on_chat_list_item_event(
         &mut self,
@@ -488,8 +507,37 @@ impl Focusable for ChatSidebar {
 impl Render for ChatSidebar {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.is_collapsed {
-            // Collapsed view - completely invisible (no element rendered)
-            div().id("collapsed-chat-sidebar").size_0()
+            // Collapsed view - narrow bar with new chat button
+            div()
+                .id("collapsed-chat-sidebar")
+                .flex_none()
+                .w(px(40.))
+                .h_full()
+                .bg(cx.theme().sidebar)
+                .border_r_1()
+                .border_color(cx.theme().sidebar_border)
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_2()
+                .py_2()
+                .child(
+                    div()
+                        .size(px(28.))
+                        .rounded_sm()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(cx.theme().muted))
+                        .child(
+                            Icon::default()
+                                .path(SharedString::from("icons/plus.svg"))
+                                .with_size(Size::Small)
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_new_chat_click)),
+                )
         } else {
             // Full sidebar view
             div()
@@ -502,6 +550,44 @@ impl Render for ChatSidebar {
                 .border_color(cx.theme().sidebar_border)
                 .flex()
                 .flex_col()
+                .child(
+                    // Header with title and new chat button
+                    div()
+                        .flex_none()
+                        .p_3()
+                        .border_b_1()
+                        .border_color(cx.theme().sidebar_border)
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_medium()
+                                .text_color(cx.theme().foreground)
+                                .child("Chats"),
+                        )
+                        .child(
+                            div()
+                                .size(px(24.))
+                                .rounded_sm()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(cx.theme().muted))
+                                .child(file_icons::render_icon(
+                                    &file_icons::get().get_type_icon(file_icons::PLUS),
+                                    14.0,
+                                    cx.theme().muted_foreground,
+                                    "+",
+                                ))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(Self::on_new_chat_click),
+                                ),
+                        ),
+                )
                 .child(
                     // Chat list area - outer container with padding
                     div().flex_1().min_h(px(0.)).child(
