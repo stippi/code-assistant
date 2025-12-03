@@ -12,7 +12,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
 
 // Test scenario definition
 #[derive(Clone)]

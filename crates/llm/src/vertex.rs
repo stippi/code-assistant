@@ -164,14 +164,14 @@ struct VertexResponse {
     response_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct VertexUsageMetadata {
-    #[serde(rename = "promptTokenCount")]
+    #[serde(rename = "promptTokenCount", default)]
     prompt_token_count: u32,
-    #[serde(rename = "candidatesTokenCount")]
+    #[serde(rename = "candidatesTokenCount", default)]
     candidates_token_count: u32,
     #[allow(dead_code)]
-    #[serde(rename = "totalTokenCount")]
+    #[serde(rename = "totalTokenCount", default)]
     total_token_count: u32,
     #[serde(rename = "cachedContentTokenCount")]
     cached_content_token_count: Option<u32>,
@@ -477,7 +477,7 @@ impl VertexClient {
         self.request_customizer
             .customize_request(&mut request_json)?;
 
-        trace!(
+        debug!(
             "Sending Vertex request to {}:\n{}",
             self.model,
             serde_json::to_string_pretty(&request_json)?
@@ -615,6 +615,12 @@ impl VertexClient {
         // Allow request customizer to modify the request
         self.request_customizer
             .customize_request(&mut request_json)?;
+
+        debug!(
+            "Sending Vertex streaming request to {}:\n{}",
+            self.model,
+            serde_json::to_string_pretty(&request_json)?
+        );
 
         // Start recording if a recorder is available
         if let Some(recorder) = &self.recorder {
