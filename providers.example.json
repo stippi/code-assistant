@@ -103,8 +103,14 @@
       "api_base_url": "https://api.ai.dev.your-region.aws.ml.hana.ondemand.com/v2/inference",
       "models": {
         "claude-sonnet-4": "your-claude-deployment-uuid",
-        "gpt-4": "your-gpt4-deployment-uuid",
-        "gemini-pro": "your-gemini-deployment-uuid"
+        "gpt-4": {
+          "deployment": "your-gpt4-deployment-uuid",
+          "api_type": "openai"
+        },
+        "gemini-2.5-flash": {
+          "deployment": "your-gemini-deployment-uuid",
+          "api_type": "vertex"
+        }
       }
     }
   },
@@ -117,8 +123,14 @@
       "token_url": "https://your-prod-instance.authentication.sap.hana.ondemand.com/oauth/token",
       "api_base_url": "https://api.ai.your-region.aws.ml.hana.ondemand.com/v2/inference",
       "models": {
-        "claude-sonnet-4": "your-prod-claude-deployment-uuid",
-        "gpt-4": "your-prod-gpt4-deployment-uuid"
+        "claude-sonnet-4": {
+          "deployment": "your-prod-claude-deployment-uuid",
+          "api_type": "anthropic"
+        },
+        "gpt-4o": {
+          "deployment": "your-prod-gpt4o-deployment-uuid",
+          "api_type": "openai"
+        }
       }
     }
   }

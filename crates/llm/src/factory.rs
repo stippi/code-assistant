@@ -1,9 +1,10 @@
+use crate::aicore::{AiCoreAnthropicClient, AiCoreApiType, AiCoreOpenAIClient, AiCoreVertexClient};
 use crate::auth::TokenManager;
 use crate::provider_config::{ConfigurationSystem, ModelConfig, ProviderConfig};
 use crate::{
-    recording::PlaybackState, AiCoreClient, AnthropicClient, CerebrasClient, GroqClient,
-    LLMProvider, MistralAiClient, OllamaClient, OpenAIClient, OpenAIResponsesClient,
-    OpenRouterClient, VertexClient,
+    recording::PlaybackState, AnthropicClient, CerebrasClient, GroqClient, LLMProvider,
+    MistralAiClient, OllamaClient, OpenAIClient, OpenAIResponsesClient, OpenRouterClient,
+    VertexClient,
 };
 use anyhow::{Context, Result};
 use clap::ValueEnum;
@@ -106,7 +107,19 @@ impl WithCustomConfig for VertexClient {
     }
 }
 
-impl WithCustomConfig for AiCoreClient {
+impl WithCustomConfig for AiCoreAnthropicClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+impl WithCustomConfig for AiCoreOpenAIClient {
+    fn with_custom_config(self, custom_config: Value) -> Self {
+        self.with_custom_config(custom_config)
+    }
+}
+
+impl WithCustomConfig for AiCoreVertexClient {
     fn with_custom_config(self, custom_config: Value) -> Self {
         self.with_custom_config(custom_config)
     }
@@ -271,6 +284,86 @@ pub async fn create_llm_client_from_configs(
     }
 }
 
+/// AI Core model deployment configuration
+///
+/// The `models` field in the AI Core provider config can be specified in two formats:
+///
+/// 1. Simple format (backwards compatible) - just the deployment UUID:
+///    ```json
+///    "models": {
+///      "claude-3.5-sonnet": "deployment-uuid-here"
+///    }
+///    ```
+///    This defaults to Anthropic API type.
+///
+/// 2. Extended format - object with `deployment` and `api_type`:
+///    ```json
+///    "models": {
+///      "claude-3.5-sonnet": {
+///        "deployment": "deployment-uuid-here",
+///        "api_type": "anthropic"
+///      },
+///      "gpt-4o": {
+///        "deployment": "another-deployment-uuid",
+///        "api_type": "openai"
+///      },
+///      "gemini-pro": {
+///        "deployment": "vertex-deployment-uuid",
+///        "api_type": "vertex"
+///      }
+///    }
+///    ```
+#[derive(Debug)]
+struct AiCoreDeployment {
+    deployment_uuid: String,
+    api_type: AiCoreApiType,
+}
+
+fn parse_aicore_deployment(model_id: &str, value: &Value) -> Result<AiCoreDeployment> {
+    // Try simple string format first (backwards compatible)
+    if let Some(uuid) = value.as_str() {
+        return Ok(AiCoreDeployment {
+            deployment_uuid: uuid.to_string(),
+            api_type: AiCoreApiType::default(), // Defaults to Anthropic
+        });
+    }
+
+    // Try extended object format
+    if let Some(obj) = value.as_object() {
+        let deployment_uuid = obj
+            .get("deployment")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Missing 'deployment' field in AI Core config for model '{}'",
+                    model_id
+                )
+            })?
+            .to_string();
+
+        let api_type = if let Some(api_type_str) = obj.get("api_type").and_then(|v| v.as_str()) {
+            api_type_str.parse().with_context(|| {
+                format!(
+                    "Invalid api_type for model '{}'. Valid values are: anthropic, openai, vertex",
+                    model_id
+                )
+            })?
+        } else {
+            AiCoreApiType::default()
+        };
+
+        return Ok(AiCoreDeployment {
+            deployment_uuid,
+            api_type,
+        });
+    }
+
+    Err(anyhow::anyhow!(
+        "Invalid deployment configuration for model '{}'. Expected string (deployment UUID) or object with 'deployment' and optional 'api_type' fields",
+        model_id
+    ))
+}
+
 async fn create_ai_core_client(
     model_config: &ModelConfig,
     provider_config: &ProviderConfig,
@@ -303,15 +396,14 @@ async fn create_ai_core_client(
         .and_then(|v| v.as_object())
         .ok_or_else(|| anyhow::anyhow!("models not found in AI Core provider config"))?;
 
-    let deployment_uuid = models
-        .get(&model_config.id)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No deployment found for model '{}' in AI Core config",
-                model_config.id
-            )
-        })?;
+    let deployment_value = models.get(&model_config.id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "No deployment found for model '{}' in AI Core config",
+            model_config.id
+        )
+    })?;
+
+    let deployment = parse_aicore_deployment(&model_config.id, deployment_value)?;
 
     let token_manager = TokenManager::new(
         client_id.to_string(),
@@ -324,17 +416,49 @@ async fn create_ai_core_client(
     let api_url = format!(
         "{}/deployments/{}",
         api_base_url.trim_end_matches('/'),
-        deployment_uuid
+        deployment.deployment_uuid
     );
 
-    let client = if let Some(path) = record_path {
-        AiCoreClient::new_with_recorder(token_manager, api_url, path)
-    } else {
-        AiCoreClient::new(token_manager, api_url)
-    };
-
-    let client = apply_custom_config(client, model_config);
-    Ok(Box::new(client))
+    // Create the appropriate client based on API type
+    match deployment.api_type {
+        AiCoreApiType::Anthropic => {
+            let client = if let Some(path) = record_path {
+                AiCoreAnthropicClient::new_with_recorder(token_manager, api_url, path)
+            } else {
+                AiCoreAnthropicClient::new(token_manager, api_url)
+            };
+            let client = apply_custom_config(client, model_config);
+            Ok(Box::new(client))
+        }
+        AiCoreApiType::OpenAI => {
+            let client = if let Some(path) = record_path {
+                AiCoreOpenAIClient::new_with_recorder(
+                    token_manager,
+                    api_url,
+                    model_config.id.clone(),
+                    path,
+                )
+            } else {
+                AiCoreOpenAIClient::new(token_manager, api_url, model_config.id.clone())
+            };
+            let client = apply_custom_config(client, model_config);
+            Ok(Box::new(client))
+        }
+        AiCoreApiType::Vertex => {
+            let client = if let Some(path) = record_path {
+                AiCoreVertexClient::new_with_recorder(
+                    token_manager,
+                    api_url,
+                    model_config.id.clone(),
+                    path,
+                )
+            } else {
+                AiCoreVertexClient::new(token_manager, api_url, model_config.id.clone())
+            };
+            let client = apply_custom_config(client, model_config);
+            Ok(Box::new(client))
+        }
+    }
 }
 
 async fn create_anthropic_client(
