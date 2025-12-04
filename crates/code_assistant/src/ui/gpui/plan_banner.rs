@@ -108,19 +108,18 @@ impl Render for PlanBanner {
             .border_t_1()
             .border_color(cx.theme().border)
             .px_4()
-            .py_3()
+            .py(px(6.))
             .gap_2()
             .text_size(px(11.))
             .line_height(px(15.))
             .child(header);
 
         if self.collapsed {
-            let summary_color = if highlight_summary {
-                cx.theme().info
-            } else {
-                cx.theme().muted_foreground
-            };
-            container = container.child(div().text_color(summary_color).child(summary_text));
+            // Only show summary line if there's something meaningful (e.g., in-progress item)
+            // The header already shows the item count, so don't repeat it
+            if highlight_summary {
+                container = container.child(div().text_color(cx.theme().info).child(summary_text));
+            }
         } else {
             let markdown = build_plan_markdown(plan);
             if !markdown.is_empty() {

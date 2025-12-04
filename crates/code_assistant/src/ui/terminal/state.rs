@@ -1,11 +1,10 @@
 use crate::persistence::ChatMetadata;
 use crate::session::instance::SessionActivityState;
-use crate::types::{PlanState, WorkingMemory};
+use crate::types::PlanState;
 use sandbox::SandboxPolicy;
 use std::collections::HashMap;
 
 pub struct AppState {
-    pub working_memory: Option<WorkingMemory>,
     pub plan: Option<PlanState>,
     pub plan_expanded: bool,
     pub plan_dirty: bool,
@@ -23,7 +22,6 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         Self {
-            working_memory: None,
             plan: None,
             plan_expanded: false,
             plan_dirty: true,

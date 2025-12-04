@@ -103,7 +103,7 @@ impl Tool for WebFetchTool {
 
     async fn execute<'a>(
         &self,
-        context: &mut ToolContext<'a>,
+        _context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
         // Create new client for each request
@@ -119,26 +119,7 @@ impl Tool for WebFetchTool {
 
         // Fetch the page
         match client.fetch(&input.url).await {
-            Ok(page) => {
-                // Update working memory if available
-                if let Some(working_memory) = &mut context.working_memory {
-                    // Use the URL as path (normalized)
-                    let path =
-                        std::path::PathBuf::from(page.url.replace([':', '/', '?', '#'], "_"));
-
-                    // Use "web" as the project name for web resources
-                    let project = "web".to_string();
-
-                    // Store in working memory
-                    working_memory.add_resource(
-                        project,
-                        path,
-                        crate::types::LoadedResource::WebPage(page.clone()),
-                    );
-                }
-
-                Ok(WebFetchOutput { page, error: None })
-            }
+            Ok(page) => Ok(WebFetchOutput { page, error: None }),
             Err(e) => Ok(WebFetchOutput {
                 page: WebPage::default(),
                 error: Some(e.to_string()),

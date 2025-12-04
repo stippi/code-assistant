@@ -2,7 +2,6 @@ use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use crate::tools::parse::PathWithLineRange;
-use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -209,10 +208,9 @@ impl Tool for ReadFilesTool {
             }
         }
 
-        // If we have a working memory reference, update it with the loaded files
-        if let Some(working_memory) = &mut context.working_memory {
-            // Store successfully loaded files in working memory
-            for (path, content) in &loaded_files {
+        // Emit resource events for loaded files
+        if let Some(ui) = context.ui {
+            for path in loaded_files.keys() {
                 // Get the base path without any line range information
                 let base_path =
                     if let Ok(parsed) = PathWithLineRange::parse(path.to_str().unwrap_or("")) {
@@ -220,10 +218,12 @@ impl Tool for ReadFilesTool {
                     } else {
                         path.clone()
                     };
-                working_memory.loaded_resources.insert(
-                    (input.project.clone(), base_path.clone()),
-                    LoadedResource::File(content.clone()),
-                );
+                let _ = ui
+                    .send_event(crate::ui::UiEvent::ResourceLoaded {
+                        project: input.project.clone(),
+                        path: base_path,
+                    })
+                    .await;
             }
         }
 
@@ -266,7 +266,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_files_updates_memory() -> Result<()> {
+    async fn test_read_files_emits_resource_loaded_events() -> Result<()> {
+        use crate::ui::UiEvent;
+
         // Create a tool registry
         let registry = ToolRegistry::global();
 
@@ -275,7 +277,7 @@ mod tests {
             .get("read_files")
             .expect("read_files tool should be registered");
 
-        // Create test fixture with files and working memory
+        // Create test fixture with files and UI for event capture
         let mut fixture = ToolTestFixture::with_files(vec![
             (
                 "test.txt".to_string(),
@@ -283,7 +285,7 @@ mod tests {
             ),
             ("test2.txt".to_string(), "Another file content".to_string()),
         ])
-        .with_working_memory();
+        .with_ui();
         let mut context = fixture.context();
 
         // Parameters for read_files
@@ -302,17 +304,30 @@ mod tests {
         // Check the output
         assert!(output.contains("Successfully loaded"));
 
-        // Verify that the files were added to working memory
-        let working_memory = fixture.working_memory().unwrap();
-        assert_eq!(working_memory.loaded_resources.len(), 2);
+        // Drop context to release borrow before checking events
+        drop(context);
 
-        // Check that both files are in the working memory
-        assert!(working_memory
-            .loaded_resources
-            .contains_key(&("test-project".to_string(), "test.txt".into())));
-        assert!(working_memory
-            .loaded_resources
-            .contains_key(&("test-project".to_string(), "test2.txt".into())));
+        // Verify ResourceLoaded events were emitted
+        let events = fixture.ui().unwrap().events();
+        let resource_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, UiEvent::ResourceLoaded { .. }))
+            .collect();
+
+        assert_eq!(resource_events.len(), 2, "Expected 2 ResourceLoaded events");
+
+        // Check that both files have events
+        let has_test_txt = events.iter().any(|e| {
+            matches!(e, UiEvent::ResourceLoaded { project, path }
+                if project == "test-project" && path == &PathBuf::from("test.txt"))
+        });
+        let has_test2_txt = events.iter().any(|e| {
+            matches!(e, UiEvent::ResourceLoaded { project, path }
+                if project == "test-project" && path == &PathBuf::from("test2.txt"))
+        });
+
+        assert!(has_test_txt, "Expected ResourceLoaded event for test.txt");
+        assert!(has_test2_txt, "Expected ResourceLoaded event for test2.txt");
 
         Ok(())
     }

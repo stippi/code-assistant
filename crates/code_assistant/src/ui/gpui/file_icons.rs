@@ -1,11 +1,8 @@
 use gpui::{div, px, svg, App, AssetSource, IntoElement, ParentElement, SharedString, Styled};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing::{debug, trace, warn};
-
-use crate::ui::gpui::path_util::PathExt;
 
 /// Represents icon information for different file types
 #[derive(Deserialize, Debug)]
@@ -25,31 +22,14 @@ struct FileTypesConfig {
 pub struct FileIcons {
     /// The loaded configuration from file_types.json
     config: FileTypesConfig,
-    /// Fallback emoji icons for when SVGs aren't available
-    fallback_stems: HashMap<String, String>,
-    fallback_suffixes: HashMap<String, String>,
     /// Set of already logged missing icon paths to avoid duplicate warnings
     logged_missing_icons: Mutex<HashSet<String>>,
 }
 
-// Public icon type constants that already exist in file_types.json
-pub const DIRECTORY_COLLAPSED: &str = "collapsed_folder"; // folder.svg
-pub const DIRECTORY_EXPANDED: &str = "expanded_folder"; // folder_open.svg
-                                                        // pub const CHEVRON_LEFT: &str = "chevron_left"; // chevron_left.svg
-                                                        // pub const CHEVRON_RIGHT: &str = "chevron_right"; // chevron_right.svg
+// Public icon type constants
 pub const CHEVRON_DOWN: &str = "chevron_down"; // chevron_down.svg
 pub const CHEVRON_UP: &str = "chevron_up"; // chevron_up.svg
 pub const WORKING_MEMORY: &str = "brain"; // brain.svg
-pub const LIBRARY: &str = "library"; // library.svg
-pub const FILE_TREE: &str = "file_tree"; // file_tree.svg
-pub const MAGNIFYING_GLASS: &str = "magnifying_glass"; // magnifying_glass.svg
-pub const HTML: &str = "template"; // html.svg
-pub const DEFAULT: &str = "default"; // file.svg
-
-pub const PANEL_RIGHT_CLOSE: &str = "panel_right_close"; // panel_right_close.svg
-pub const PANEL_RIGHT_OPEN: &str = "panel_right_open"; // panel_right_open.svg
-pub const THEME_DARK: &str = "theme_dark"; // theme_dark.svg
-pub const THEME_LIGHT: &str = "theme_light"; // theme_light.svg
 
 pub const SEND: &str = "send"; // send.svg
 pub const STOP: &str = "stop"; // circle_stop.svg
@@ -57,7 +37,6 @@ pub const MESSAGE_BUBBLES: &str = "message_bubbles"; // message_bubbles.svg
 pub const PLUS: &str = "plus"; // plus.svg
 
 // Tool-specific icon mappings to actual SVG files
-// These are direct constants defining the paths to SVG icons or existing types
 pub const TOOL_READ_FILES: &str = "search_code"; // search_code.svg
 pub const TOOL_LIST_FILES: &str = "reveal"; // reveal.svg
 pub const TOOL_EXECUTE_COMMAND: &str = "terminal"; // terminal.svg
@@ -83,32 +62,8 @@ impl FileIcons {
         // Load the configuration from the JSON file
         let config = Self::load_config(&assets);
 
-        // Initialize fallback emoji mappings
-        let mut fallback_stems = HashMap::new();
-        let mut fallback_suffixes = HashMap::new();
-
-        // Initialize with common file types as fallbacks
-        fallback_suffixes.insert("rs".to_string(), "🦀".to_string());
-        fallback_suffixes.insert("js".to_string(), "📜".to_string());
-        fallback_suffixes.insert("jsx".to_string(), "⚛️".to_string());
-        fallback_suffixes.insert("ts".to_string(), "📘".to_string());
-        fallback_suffixes.insert("tsx".to_string(), "⚛️".to_string());
-        fallback_suffixes.insert("py".to_string(), "🐍".to_string());
-        fallback_suffixes.insert("html".to_string(), "🌐".to_string());
-        fallback_suffixes.insert("css".to_string(), "🎨".to_string());
-        fallback_suffixes.insert("json".to_string(), "📋".to_string());
-        fallback_suffixes.insert("md".to_string(), "📝".to_string());
-
-        // Special file stems
-        fallback_stems.insert("Cargo.toml".to_string(), "📦".to_string());
-        fallback_stems.insert("package.json".to_string(), "📦".to_string());
-        fallback_stems.insert("Dockerfile".to_string(), "🐳".to_string());
-        fallback_stems.insert("README.md".to_string(), "📚".to_string());
-
         Self {
             config,
-            fallback_stems,
-            fallback_suffixes,
             logged_missing_icons: Mutex::new(HashSet::new()),
         }
     }
@@ -152,69 +107,6 @@ impl FileIcons {
             warn!("{}", message);
             logged.insert(identifier.to_string());
         }
-    }
-
-    /// Get the appropriate icon for a file path
-    pub fn get_icon(&self, path: &Path) -> Option<SharedString> {
-        // Extract the stem or suffix from the path
-        let suffix = match path.icon_stem_or_suffix() {
-            Some(s) => s,
-            None => {
-                let path_str = path.to_string_lossy().to_string();
-                self.log_missing_icon(
-                    &format!("[FileIcons]: No suffix found for path: {path:?}"),
-                    &format!("no_suffix:{path_str}"),
-                );
-                return self.get_type_icon(DEFAULT);
-            }
-        };
-
-        // First check if we have a match in the stems mapping
-        if let Some(type_str) = self.config.stems.get(suffix) {
-            trace!(
-                "[FileIcons]: Found stem match: '{}' -> '{}'",
-                suffix,
-                type_str
-            );
-            return self.get_type_icon(type_str);
-        }
-
-        // Then check if we have a match in the suffixes mapping
-        if let Some(type_str) = self.config.suffixes.get(suffix) {
-            trace!(
-                "[FileIcons]: Found suffix match: '{}' -> '{}'",
-                suffix,
-                type_str
-            );
-            return self.get_type_icon(type_str);
-        }
-
-        // Try fallback stems for specific filenames
-        if let Some(filename) = path.file_name() {
-            if let Some(filename_str) = filename.to_str() {
-                if let Some(icon) = self.fallback_stems.get(filename_str) {
-                    debug!(
-                        "[FileIcons]: Using fallback stem icon for: '{}'",
-                        filename_str
-                    );
-                    return Some(SharedString::from(icon.clone()));
-                }
-            }
-        }
-
-        // Try fallback suffixes for extensions
-        if let Some(fallback) = self.fallback_suffixes.get(suffix) {
-            debug!("[FileIcons]: Using fallback suffix icon for: '{}'", suffix);
-            return Some(SharedString::from(fallback.clone()));
-        }
-
-        // Default icon
-        let path_str = path.to_string_lossy().to_string();
-        self.log_missing_icon(
-            &format!("[FileIcons]: Using default icon for: {path:?}"),
-            &format!("default_icon:{path_str}"),
-        );
-        self.get_type_icon(DEFAULT)
     }
 
     /// Get icon based on type name - this is the core method that all icon lookups use
