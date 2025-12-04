@@ -34,6 +34,7 @@ pub const WORKING_MEMORY: &str = "brain"; // brain.svg
 pub const SEND: &str = "send"; // send.svg
 pub const STOP: &str = "stop"; // circle_stop.svg
 pub const MESSAGE_BUBBLES: &str = "message_bubbles"; // message_bubbles.svg
+pub const PLUS: &str = "plus"; // plus.svg
 
 // Tool-specific icon mappings to actual SVG files
 pub const TOOL_READ_FILES: &str = "search_code"; // search_code.svg
