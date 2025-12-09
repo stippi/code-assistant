@@ -7,7 +7,8 @@ use gpui::{
     Styled, Subscription, Window,
 };
 use gpui_component::scroll::ScrollbarAxis;
-use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, StyledExt};
+
+use gpui_component::{tooltip::Tooltip, ActiveTheme, Icon, Sizable, Size, StyledExt};
 use std::time::SystemTime;
 use tracing::debug;
 
@@ -464,7 +465,12 @@ impl ChatSidebar {
         cx: &mut Context<Self>,
     ) {
         debug!("New chat button clicked");
-        // Emit event to parent to create a new chat session
+        self.request_new_session(cx);
+    }
+
+    /// Request creation of a new chat session
+    pub fn request_new_session(&mut self, cx: &mut Context<Self>) {
+        debug!("Requesting new chat session");
         cx.emit(ChatSidebarEvent::NewSessionRequested { name: None });
     }
 
@@ -501,7 +507,7 @@ impl Focusable for ChatSidebar {
 impl Render for ChatSidebar {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.is_collapsed {
-            // Collapsed view - narrow bar with toggle button
+            // Collapsed view - narrow bar with new chat button
             div()
                 .id("collapsed-chat-sidebar")
                 .flex_none()
@@ -517,17 +523,20 @@ impl Render for ChatSidebar {
                 .py_2()
                 .child(
                     div()
-                        .size(px(24.))
-                        .rounded_full()
+                        .size(px(28.))
+                        .rounded_sm()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(file_icons::render_icon(
-                            &file_icons::get().get_type_icon(file_icons::MESSAGE_BUBBLES),
-                            16.0,
-                            cx.theme().muted_foreground,
-                            "💬",
-                        )),
+                        .cursor_pointer()
+                        .hover(|s| s.bg(cx.theme().muted))
+                        .child(
+                            Icon::default()
+                                .path(SharedString::from("icons/plus.svg"))
+                                .with_size(Size::Small)
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_new_chat_click)),
                 )
         } else {
             // Full sidebar view

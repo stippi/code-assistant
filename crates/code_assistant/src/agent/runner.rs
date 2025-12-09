@@ -45,7 +45,6 @@ enum LoopFlow {
 }
 
 pub struct Agent {
-    working_memory: WorkingMemory,
     plan: PlanState,
     llm_provider: Box<dyn LLMProvider>,
     session_config: SessionConfig,
@@ -77,6 +76,10 @@ pub struct Agent {
     enable_naming_reminders: bool,
     // Shared pending message with SessionInstance
     pending_message_ref: Option<Arc<Mutex<Option<String>>>>,
+    // File trees for projects (used in system prompt)
+    file_trees: HashMap<String, String>,
+    // Available project names (used in system prompt)
+    available_projects: Vec<String>,
 }
 
 const CONTEXT_USAGE_THRESHOLD: f32 = 0.8;
@@ -111,7 +114,6 @@ impl Agent {
         } = components;
 
         let mut this = Self {
-            working_memory: WorkingMemory::default(),
             plan: PlanState::default(),
             llm_provider,
             session_config,
@@ -132,6 +134,8 @@ impl Agent {
             enable_naming_reminders: true, // Enabled by default
             pending_message_ref: None,
             model_hint: None,
+            file_trees: HashMap::new(),
+            available_projects: Vec::new(),
         };
         if this.session_config.use_diff_blocks {
             this.tool_scope = ToolScope::AgentWithDiffBlocks;
@@ -267,13 +271,21 @@ impl Agent {
             "saving {} messages to persistence",
             self.message_history.len()
         );
+
         if let Some(session_id) = &self.session_id {
+            // Create a WorkingMemory for backward-compatible persistence
+            // File trees are regenerated on load, so we only persist available_projects
+            let working_memory = WorkingMemory {
+                available_projects: self.available_projects.clone(),
+                ..Default::default()
+            };
+
             let session_state = crate::session::SessionState {
                 session_id: session_id.clone(),
                 name: self.session_name.clone(),
                 messages: self.message_history.clone(),
                 tool_executions: self.tool_executions.clone(),
-                working_memory: self.working_memory.clone(),
+                working_memory,
                 plan: self.plan.clone(),
                 config: self.session_config.clone(),
                 next_request_id: Some(self.next_request_id),
@@ -370,19 +382,14 @@ impl Agent {
                     debug!("Agent iteration complete - waiting for next user message");
                     return Ok(());
                 }
+
                 LoopFlow::Continue => {
                     if !tool_requests.is_empty() {
                         // Tools were requested, manage their execution
                         let flow = self.manage_tool_execution(&tool_requests).await?;
 
-                        // Save state and update memory after tool executions
+                        // Save state after tool executions
                         self.save_state()?;
-                        let _ = self
-                            .ui
-                            .send_event(UiEvent::UpdateMemory {
-                                memory: self.working_memory.clone(),
-                            })
-                            .await;
 
                         match flow {
                             LoopFlow::Continue => { /* Continue to the next iteration */ }
@@ -425,7 +432,6 @@ impl Agent {
             self.message_history.len()
         );
         self.tool_executions = session_state.tool_executions;
-        self.working_memory = session_state.working_memory;
         self.plan = session_state.plan.clone();
         self.session_config = session_state.config;
         if self.session_config.use_diff_blocks {
@@ -458,15 +464,12 @@ impl Agent {
                 + 1
         });
 
-        // Restore working memory file trees and project state
-        self.init_working_memory_projects()?;
+        // Restore available projects from persisted working memory
+        // (backward compatibility with existing sessions)
+        self.available_projects = session_state.working_memory.available_projects.clone();
 
-        let _ = self
-            .ui
-            .send_event(UiEvent::UpdateMemory {
-                memory: self.working_memory.clone(),
-            })
-            .await;
+        // Refresh project information from project manager (regenerates file trees)
+        self.init_projects()?;
 
         let _ = self
             .ui
@@ -539,18 +542,18 @@ impl Agent {
     }
 
     #[allow(dead_code)]
-    pub fn init_working_memory(&mut self) -> Result<()> {
+    pub fn init_project_context(&mut self) -> Result<()> {
         // Initialize empty structures for multi-project support
-        self.working_memory.file_trees = HashMap::new();
-        self.working_memory.available_projects = Vec::new();
+        self.file_trees = HashMap::new();
+        self.available_projects = Vec::new();
 
         // Reset the initial project
         self.session_config.initial_project = String::new();
 
-        self.init_working_memory_projects()
+        self.init_projects()
     }
 
-    fn init_working_memory_projects(&mut self) -> Result<()> {
+    fn init_projects(&mut self) -> Result<()> {
         // If a path was provided in args, add it as a temporary project
         if let Some(path) = &self.session_config.init_path {
             // Add as temporary project and get its name
@@ -565,23 +568,16 @@ impl Agent {
                 .get_explorer_for_project(&project_name)?;
             let tree = explorer.create_initial_tree(2)?; // Limited depth for initial tree
 
-            // Store in working memory
-            self.working_memory
-                .file_trees
-                .insert(project_name.clone(), tree);
+            // Store file tree as string for system prompt
+            self.file_trees
+                .insert(project_name.clone(), tree.to_string());
         }
 
         // Load all available projects
         let all_projects = self.project_manager.get_projects()?;
         for project_name in all_projects.keys() {
-            if !self
-                .working_memory
-                .available_projects
-                .contains(project_name)
-            {
-                self.working_memory
-                    .available_projects
-                    .push(project_name.clone());
+            if !self.available_projects.contains(project_name) {
+                self.available_projects.push(project_name.clone());
             }
         }
 
@@ -690,7 +686,7 @@ impl Agent {
     pub async fn start_with_task(&mut self, task: String) -> Result<()> {
         debug!("Starting agent with task: {}", task);
 
-        self.init_working_memory()?;
+        self.init_project_context()?;
 
         self.message_history.clear();
         self.ui
@@ -702,14 +698,6 @@ impl Agent {
 
         // Create the initial user message
         self.append_message(Message::new_user(task.clone()))?;
-
-        // Notify UI of initial working memory
-        let _ = self
-            .ui
-            .send_event(UiEvent::UpdateMemory {
-                memory: self.working_memory.clone(),
-            })
-            .await;
 
         self.run_single_iteration().await
     }
@@ -745,20 +733,16 @@ impl Agent {
             ));
 
             // Add file tree for the initial project if available
-            if let Some(tree) = self
-                .working_memory
-                .file_trees
-                .get(&self.session_config.initial_project)
-            {
+            if let Some(tree) = self.file_trees.get(&self.session_config.initial_project) {
                 project_info.push_str("### File Structure:\n");
                 project_info.push_str(&format!("```\n{tree}\n```\n\n"));
             }
         }
 
         // Add information about available projects
-        if !self.working_memory.available_projects.is_empty() {
+        if !self.available_projects.is_empty() {
             project_info.push_str("## Available Projects:\n");
-            for project in &self.working_memory.available_projects {
+            for project in &self.available_projects {
                 project_info.push_str(&format!("- {project}\n"));
             }
         }
@@ -1440,7 +1424,6 @@ impl Agent {
         let mut context = ToolContext {
             project_manager: self.project_manager.as_ref(),
             command_executor: self.command_executor.as_ref(),
-            working_memory: Some(&mut self.working_memory),
             plan: Some(&mut self.plan),
             ui: Some(self.ui.as_ref()),
             tool_id: Some(tool_request.id.clone()),

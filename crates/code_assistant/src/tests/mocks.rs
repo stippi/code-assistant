@@ -220,7 +220,6 @@ pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
 pub fn create_test_tool_context<'a>(
     project_manager: &'a dyn crate::config::ProjectManager,
     command_executor: &'a dyn CommandExecutor,
-    working_memory: Option<&'a mut crate::types::WorkingMemory>,
     plan: Option<&'a mut crate::types::PlanState>,
     ui: Option<&'a dyn crate::ui::UserInterface>,
     tool_id: Option<String>,
@@ -228,7 +227,6 @@ pub fn create_test_tool_context<'a>(
     crate::tools::core::ToolContext {
         project_manager,
         command_executor,
-        working_memory,
         plan,
         ui,
         tool_id,
@@ -987,7 +985,6 @@ impl ProjectManager for MockProjectManager {
 pub struct ToolTestFixture {
     project_manager: MockProjectManager,
     command_executor: MockCommandExecutor,
-    working_memory: Option<WorkingMemory>,
     plan: Option<PlanState>,
     ui: Option<MockUI>,
     tool_id: Option<String>,
@@ -1000,7 +997,6 @@ impl ToolTestFixture {
         Self {
             project_manager: MockProjectManager::new(),
             command_executor: MockCommandExecutor::new(vec![]),
-            working_memory: None,
             plan: None,
             ui: None,
             tool_id: None,
@@ -1066,7 +1062,6 @@ impl ToolTestFixture {
         Self {
             project_manager,
             command_executor: MockCommandExecutor::new(vec![]),
-            working_memory: None,
             plan: None,
             ui: None,
             tool_id: None,
@@ -1079,7 +1074,6 @@ impl ToolTestFixture {
         Self {
             project_manager: MockProjectManager::new(),
             command_executor: MockCommandExecutor::new(responses),
-            working_memory: None,
             plan: None,
             ui: None,
             tool_id: None,
@@ -1096,12 +1090,6 @@ impl ToolTestFixture {
         let mut fixture = Self::with_files(files);
         fixture.command_executor = MockCommandExecutor::new(responses);
         fixture
-    }
-
-    /// Enable working memory for this fixture
-    pub fn with_working_memory(mut self) -> Self {
-        self.working_memory = Some(WorkingMemory::default());
-        self
     }
 
     /// Enable plan state for this fixture
@@ -1136,7 +1124,6 @@ impl ToolTestFixture {
         ToolContext {
             project_manager: &self.project_manager,
             command_executor: &self.command_executor,
-            working_memory: self.working_memory.as_mut(),
             plan: self.plan.as_mut(),
             ui: self.ui.as_ref().map(|ui| ui as &dyn UserInterface),
             tool_id: self.tool_id.clone(),
@@ -1153,16 +1140,6 @@ impl ToolTestFixture {
     #[allow(dead_code)]
     pub fn project_manager(&self) -> &MockProjectManager {
         &self.project_manager
-    }
-
-    /// Get a reference to the working memory for assertions
-    pub fn working_memory(&self) -> Option<&WorkingMemory> {
-        self.working_memory.as_ref()
-    }
-
-    /// Get a mutable reference to the working memory for modifications
-    pub fn working_memory_mut(&mut self) -> Option<&mut WorkingMemory> {
-        self.working_memory.as_mut()
     }
 
     /// Get a reference to the plan state for assertions

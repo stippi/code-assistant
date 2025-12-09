@@ -1,8 +1,7 @@
 use super::auto_scroll::AutoScrollContainer;
 use super::chat_sidebar::{ChatSidebar, ChatSidebarEvent};
-use super::file_icons;
+
 use super::input_area::{InputArea, InputAreaEvent};
-use super::memory::MemoryView;
 use super::messages::MessagesView;
 use super::plan_banner;
 use super::theme;
@@ -15,21 +14,19 @@ use gpui::{
     Context, Entity, FocusHandle, Focusable, MouseButton, MouseUpEvent, SharedString, Subscription,
     Transformation,
 };
-use gpui_component::ActiveTheme;
+
+use gpui_component::{ActiveTheme, Icon, Sizable, Size};
 use std::collections::HashMap;
 use tracing::{debug, error, trace, warn};
 
 // Root View - handles overall layout and coordination
 pub struct RootView {
     input_area: Entity<InputArea>,
-    memory_view: Entity<MemoryView>,
     chat_sidebar: Entity<ChatSidebar>,
     auto_scroll_container: Entity<AutoScrollContainer<MessagesView>>,
     plan_banner: Entity<plan_banner::PlanBanner>,
     recent_keystrokes: Vec<gpui::Keystroke>,
     focus_handle: FocusHandle,
-    // Memory view state
-    memory_collapsed: bool,
     // Chat sidebar state
     chat_collapsed: bool,
     current_session_id: Option<String>,
@@ -44,7 +41,6 @@ pub struct RootView {
 
 impl RootView {
     pub fn new(
-        memory_view: Entity<MemoryView>,
         messages_view: Entity<MessagesView>,
         chat_sidebar: Entity<ChatSidebar>,
         window: &mut gpui::Window,
@@ -74,13 +70,11 @@ impl RootView {
 
         let mut root_view = Self {
             input_area,
-            memory_view,
             chat_sidebar,
             auto_scroll_container,
             plan_banner,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
-            memory_collapsed: false,
             chat_collapsed: false, // Chat sidebar is visible by default
             current_session_id: None,
             chat_sessions: Vec::new(),
@@ -95,16 +89,6 @@ impl RootView {
         root_view.refresh_chat_list(cx);
 
         root_view
-    }
-
-    pub fn on_toggle_memory(
-        &mut self,
-        _: &MouseUpEvent,
-        _window: &mut gpui::Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.memory_collapsed = !self.memory_collapsed;
-        cx.notify();
     }
 
     pub fn on_toggle_chat_sidebar(
@@ -749,41 +733,35 @@ impl Render for RootView {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .justify_between()
-                    .px_4()
-                    // Left side - title
+                    .justify_start()
+                    // Left padding for macOS traffic lights (doubled for more space)
+                    .pl(px(86.))
+                    // Left side - controls
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .text_color(cx.theme().muted_foreground)
-                            .gap_2()
-                            .pl(px(80.))
-                            .child("Code Assistant"),
-                    )
-                    // Right side - controls
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
+                            .gap_1()
                             // Chat sidebar toggle button
                             .child(
                                 div()
-                                    .size(px(32.))
+                                    .size(px(28.))
                                     .rounded_sm()
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .cursor_pointer()
                                     .hover(|s| s.bg(cx.theme().muted))
-                                    .child(file_icons::render_icon(
-                                        &file_icons::get()
-                                            .get_type_icon(file_icons::MESSAGE_BUBBLES),
-                                        18.0,
-                                        cx.theme().muted_foreground,
-                                        "💬",
-                                    ))
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from(if self.chat_collapsed {
+                                                "icons/panel_left_open.svg"
+                                            } else {
+                                                "icons/panel_left_close.svg"
+                                            }))
+                                            .with_size(Size::Small)
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(Self::on_toggle_chat_sidebar),
@@ -792,68 +770,41 @@ impl Render for RootView {
                             // Theme toggle button
                             .child(
                                 div()
-                                    .size(px(32.))
+                                    .size(px(28.))
                                     .rounded_sm()
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .cursor_pointer()
                                     .hover(|s| s.bg(cx.theme().muted))
-                                    .child(file_icons::render_icon(
-                                        &file_icons::get().get_type_icon(if cx.theme().is_dark() {
-                                            file_icons::THEME_LIGHT
-                                        } else {
-                                            file_icons::THEME_DARK
-                                        }),
-                                        18.0,
-                                        cx.theme().muted_foreground,
-                                        if cx.theme().is_dark() { "*" } else { "c" },
-                                    ))
+                                    .child(
+                                        Icon::default()
+                                            .path(SharedString::from(if cx.theme().is_dark() {
+                                                "icons/theme_light.svg"
+                                            } else {
+                                                "icons/theme_dark.svg"
+                                            }))
+                                            .with_size(Size::Small)
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(Self::on_toggle_theme),
                                     ),
-                            )
-                            // Memory toggle button
-                            .child(
-                                div()
-                                    .size(px(32.))
-                                    .rounded_sm()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(cx.theme().muted))
-                                    .child(file_icons::render_icon(
-                                        &file_icons::get().get_type_icon(
-                                            if self.memory_collapsed {
-                                                file_icons::PANEL_RIGHT_OPEN
-                                            } else {
-                                                file_icons::PANEL_RIGHT_CLOSE
-                                            },
-                                        ),
-                                        18.0,
-                                        cx.theme().muted_foreground,
-                                        "<>",
-                                    ))
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::on_toggle_memory),
-                                    ),
                             ),
                     ),
             )
-            // Main content area with chat sidebar, messages+input, and memory sidebar (3-column layout)
+            // Main content area with chat sidebar and messages+input (2-column layout)
             .child(
                 div()
                     .size_full()
                     .min_h_0()
                     .flex()
-                    .flex_row() // 3-column layout: chat | messages+input | memory
+                    .flex_row() // 2-column layout: chat | messages+input
                     // Left sidebar: Chat sessions
                     .child(self.chat_sidebar.clone())
                     .child(
-                        // Center: Messages and input (content area) with floating popover
+                        // Messages and input (content area) with floating popover
                         div()
                             .relative() // For popover positioning
                             .bg(cx.theme().popover)
@@ -879,57 +830,7 @@ impl Render for RootView {
                                     .border_color(cx.theme().border)
                                     .child(self.input_area.clone()),
                             ),
-                    )
-                    // Right sidebar with memory view - only show if not collapsed
-                    .when(!self.memory_collapsed, |s| {
-                        s.child(
-                            div()
-                                .id("memory-sidebar")
-                                .flex_none()
-                                .w(px(260.))
-                                .h_full()
-                                .bg(cx.theme().sidebar)
-                                .border_l_1()
-                                .border_color(cx.theme().sidebar_border)
-                                .overflow_hidden()
-                                .flex()
-                                .flex_col()
-                                .child(self.memory_view.clone()),
-                        )
-                    })
-                    // When memory view is collapsed, show only a narrow bar
-                    .when(self.memory_collapsed, |s| {
-                        s.child(
-                            div()
-                                .id("collapsed-memory-sidebar")
-                                .flex_none()
-                                .w(px(40.))
-                                .h_full()
-                                .bg(cx.theme().sidebar)
-                                .border_l_1()
-                                .border_color(cx.theme().sidebar_border)
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .gap_2()
-                                .py_2()
-                                .child(
-                                    div()
-                                        .size(px(24.))
-                                        .rounded_full()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(file_icons::render_icon(
-                                            &file_icons::get()
-                                                .get_type_icon(file_icons::WORKING_MEMORY),
-                                            16.0,
-                                            cx.theme().muted_foreground,
-                                            "🧠",
-                                        )),
-                                ),
-                        )
-                    }),
+                    ),
             )
     }
 }

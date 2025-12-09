@@ -178,13 +178,6 @@ impl std::fmt::Display for LoadedResource {
     }
 }
 
-impl WorkingMemory {
-    /// Add a new resource to working memory
-    pub fn add_resource(&mut self, project: String, path: PathBuf, resource: LoadedResource) {
-        self.loaded_resources.insert((project, path), resource);
-    }
-}
-
 /// Tool description for LLM
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {

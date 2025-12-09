@@ -100,10 +100,7 @@ impl UserInterface for TerminalTuiUI {
                         .insert(tool_result.tool_id, tool_result.status);
                 }
             }
-            UiEvent::UpdateMemory { memory } => {
-                debug!("Updating memory");
-                state.working_memory = Some(memory);
-            }
+
             UiEvent::UpdatePlan { plan } => {
                 debug!("Updating plan");
                 let plan_clone = plan.clone();
@@ -309,6 +306,35 @@ impl UserInterface for TerminalTuiUI {
                     let mut renderer_guard = renderer.lock().await;
                     renderer_guard.clear_error();
                 }
+            }
+            // Resource events - logged for debugging, can be extended for features like "follow mode"
+            UiEvent::ResourceLoaded { project, path } => {
+                tracing::trace!(
+                    "ResourceLoaded event - project: {}, path: {}",
+                    project,
+                    path.display()
+                );
+            }
+            UiEvent::ResourceWritten { project, path } => {
+                tracing::trace!(
+                    "ResourceWritten event - project: {}, path: {}",
+                    project,
+                    path.display()
+                );
+            }
+            UiEvent::DirectoryListed { project, path } => {
+                tracing::trace!(
+                    "DirectoryListed event - project: {}, path: {}",
+                    project,
+                    path.display()
+                );
+            }
+            UiEvent::ResourceDeleted { project, path } => {
+                tracing::trace!(
+                    "ResourceDeleted event - project: {}, path: {}",
+                    project,
+                    path.display()
+                );
             }
             _ => {
                 // For other events, just log them

@@ -1,7 +1,6 @@
 use agent_client_protocol::{self as acp, Client};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use shell_words::split as split_command_line;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -58,18 +57,6 @@ impl ACPTerminalCommandExecutor {
             default_timeout: DEFAULT_TIMEOUT,
         }
     }
-
-    fn parse_command_line(command_line: &str) -> Result<(String, Vec<String>)> {
-        let mut parts = split_command_line(command_line)
-            .map_err(|e| anyhow!("Failed to parse command line '{command_line}': {e}"))?
-            .into_iter();
-
-        let command = parts
-            .next()
-            .ok_or_else(|| anyhow!("Command line is empty"))?;
-        let args = parts.collect();
-        Ok((command, args))
-    }
 }
 
 #[async_trait]
@@ -91,11 +78,6 @@ impl CommandExecutor for ACPTerminalCommandExecutor {
         callback: Option<&dyn StreamingCallback>,
         sandbox_request: Option<&SandboxCommandRequest>,
     ) -> Result<CommandOutput> {
-        let (command, args) = match Self::parse_command_line(command_line) {
-            Ok(parsed) => parsed,
-            Err(err) => return Err(err),
-        };
-
         let sender = match terminal_worker_sender() {
             Some(sender) => sender,
             None => {
@@ -109,8 +91,7 @@ impl CommandExecutor for ACPTerminalCommandExecutor {
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         let request = TerminalExecuteRequest {
             session_id: self.session_id.clone(),
-            command,
-            args,
+            command_line: command_line.to_string(),
             cwd: working_dir.cloned(),
             timeout: self.default_timeout,
             streaming: callback.is_some(),
@@ -157,8 +138,7 @@ impl CommandExecutor for ACPTerminalCommandExecutor {
 #[derive(Debug)]
 struct TerminalExecuteRequest {
     session_id: acp::SessionId,
-    command: String,
-    args: Vec<String>,
+    command_line: String,
     cwd: Option<PathBuf>,
     timeout: Duration,
     streaming: bool,
@@ -204,18 +184,19 @@ async fn run_command(
 ) -> Result<CommandOutput> {
     let TerminalExecuteRequest {
         session_id,
-        command,
-        args,
+        command_line,
         cwd,
         timeout,
         streaming,
         ..
     } = request;
 
+    // Pass the complete command line as the command parameter with empty args.
+    // This avoids escaping issues on the Zed side when args are passed separately.
     let create_request = acp::CreateTerminalRequest {
         session_id: session_id.clone(),
-        command,
-        args,
+        command: command_line,
+        args: Vec::new(),
         env: Vec::new(),
         cwd,
         output_byte_limit: Some(OUTPUT_BYTE_LIMIT),
@@ -368,24 +349,4 @@ async fn wait_for_terminal_completion(
         success,
         output: output_response.output,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_command_line_handles_quotes() {
-        let (command, args) =
-            ACPTerminalCommandExecutor::parse_command_line("cargo test --package \"my crate\"")
-                .unwrap();
-        assert_eq!(command, "cargo");
-        assert_eq!(args, vec!["test", "--package", "my crate"]);
-    }
-
-    #[test]
-    fn parse_command_line_errors_on_empty_input() {
-        let err = ACPTerminalCommandExecutor::parse_command_line("").unwrap_err();
-        assert!(err.to_string().contains("empty"));
-    }
 }

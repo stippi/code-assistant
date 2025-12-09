@@ -2,7 +2,7 @@ use super::render::Render;
 use super::result::ToolResult;
 use super::spec::ToolSpec;
 use crate::permissions::PermissionMediator;
-use crate::types::{PlanState, WorkingMemory};
+use crate::types::PlanState;
 use anyhow::{anyhow, Result};
 use command_executor::CommandExecutor;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -13,8 +13,6 @@ pub struct ToolContext<'a> {
     pub project_manager: &'a dyn crate::config::ProjectManager,
     /// Command executor for running shell commands
     pub command_executor: &'a dyn CommandExecutor,
-    /// Optional working memory (available in WorkingMemoryAgent mode)
-    pub working_memory: Option<&'a mut WorkingMemory>,
     /// Optional plan state reference for plan-related tools
     pub plan: Option<&'a mut PlanState>,
     /// Optional UI instance for streaming output
