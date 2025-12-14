@@ -51,7 +51,6 @@ pub struct SessionState {
     pub name: String,
     pub messages: Vec<Message>,
     pub tool_executions: Vec<ToolExecution>,
-    pub working_memory: crate::types::WorkingMemory,
     pub plan: PlanState,
     pub config: SessionConfig,
     pub next_request_id: Option<u64>,

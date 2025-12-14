@@ -1,9 +1,10 @@
 use crate::persistence::{ChatMetadata, DraftAttachment};
 use crate::session::instance::SessionActivityState;
-use crate::types::{PlanState, WorkingMemory};
+use crate::types::PlanState;
 use crate::ui::gpui::elements::MessageRole;
 use crate::ui::{DisplayFragment, ToolStatus};
 use sandbox::SandboxPolicy;
+use std::path::PathBuf;
 
 /// Data for a complete message with its display fragments
 #[derive(Debug, Clone)]
@@ -56,8 +57,6 @@ pub enum UiEvent {
     AddImage { media_type: String, data: String },
     /// Append streaming tool output
     AppendToolOutput { tool_id: String, chunk: String },
-    /// Update the working memory view
-    UpdateMemory { memory: WorkingMemory },
     /// Update the session plan display
     UpdatePlan { plan: PlanState },
     /// Set all messages at once (for session loading, clears existing)
@@ -119,4 +118,14 @@ pub enum UiEvent {
     UpdateCurrentModel { model_name: String },
     /// Update the current sandbox selection in the UI
     UpdateSandboxPolicy { policy: SandboxPolicy },
+
+    // === Resource Events (for tool operations) ===
+    /// A file was loaded/read by a tool
+    ResourceLoaded { project: String, path: PathBuf },
+    /// A file was written/modified by a tool
+    ResourceWritten { project: String, path: PathBuf },
+    /// A directory was listed by a tool
+    DirectoryListed { project: String, path: PathBuf },
+    /// A file was deleted by a tool
+    ResourceDeleted { project: String, path: PathBuf },
 }

@@ -1,7 +1,6 @@
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
-use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
 use fs_explorer::{FileReplacement, FileUpdaterError};
 use serde::{Deserialize, Serialize};
@@ -190,7 +189,7 @@ impl Tool for EditTool {
         };
 
         match format_result {
-            Ok((new_content, updated_replacements)) => {
+            Ok((_new_content, updated_replacements)) => {
                 // If formatting updated the replacement parameters, update our input
                 if let Some(updated) = updated_replacements {
                     if let Some(updated_replacement) = updated.first() {
@@ -200,13 +199,14 @@ impl Tool for EditTool {
                     }
                 }
 
-                // If we have a working memory reference, update it with the modified file
-                if let Some(working_memory) = &mut context.working_memory {
-                    // Add the file with new content to working memory
-                    working_memory.loaded_resources.insert(
-                        (input.project.clone(), path.clone()),
-                        LoadedResource::File(new_content.clone()),
-                    );
+                // Emit resource event
+                if let Some(ui) = context.ui {
+                    let _ = ui
+                        .send_event(crate::ui::UiEvent::ResourceWritten {
+                            project: input.project.clone(),
+                            path: path.clone(),
+                        })
+                        .await;
                 }
 
                 Ok(EditOutput {
@@ -285,12 +285,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_edit_basic_replacement() -> Result<()> {
-        // Create test fixture with working memory
+        // Create test fixture with UI for event capture
         let mut fixture = ToolTestFixture::with_files(vec![(
             "test.rs".to_string(),
             "fn original() {\n    println!(\"Original\");\n}".to_string(),
         )])
-        .with_working_memory();
+        .with_ui();
         let mut context = fixture.context();
 
         // Create input for a valid replacement
@@ -309,30 +309,28 @@ mod tests {
         // Verify the result
         assert!(result.error.is_none());
 
-        // Verify that working memory was updated
-        let working_memory = fixture.working_memory().unwrap();
-        assert_eq!(working_memory.loaded_resources.len(), 1);
+        // Drop context to release borrow
+        drop(context);
 
-        // Verify the content in working memory
-        let key = ("test-project".to_string(), PathBuf::from("test.rs"));
-        if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&key) {
-            assert!(content.contains("fn renamed()"));
-            assert!(content.contains("println!(\"Updated\")"));
-        } else {
-            panic!("File not found in working memory or wrong resource type");
-        }
+        // Verify that ResourceWritten event was emitted
+        let events = fixture.ui().unwrap().events();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            crate::ui::UiEvent::ResourceWritten { project, path }
+            if project == "test-project" && path == &PathBuf::from("test.rs")
+        )));
 
         Ok(())
     }
 
     #[tokio::test]
     async fn test_edit_replace_all() -> Result<()> {
-        // Create test fixture with working memory
+        // Create test fixture with UI for event capture
         let mut fixture = ToolTestFixture::with_files(vec![(
             "test.js".to_string(),
             "console.log('test1');\nconsole.log('test2');\nconsole.log('test3');".to_string(),
         )])
-        .with_working_memory();
+        .with_ui();
         let mut context = fixture.context();
 
         // Create input for replace all
@@ -350,18 +348,6 @@ mod tests {
 
         // Verify the result
         assert!(result.error.is_none());
-
-        // Verify the content in working memory
-        let working_memory = fixture.working_memory().unwrap();
-        let key = ("test-project".to_string(), PathBuf::from("test.js"));
-        if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&key) {
-            assert!(content.contains("logger.debug('test1')"));
-            assert!(content.contains("logger.debug('test2')"));
-            assert!(content.contains("logger.debug('test3')"));
-            assert!(!content.contains("console.log"));
-        } else {
-            panic!("File not found in working memory or wrong resource type");
-        }
 
         Ok(())
     }
@@ -426,7 +412,7 @@ mod tests {
             "fn test() {\n    // TODO: Remove this comment\n    println!(\"Hello\");\n}"
                 .to_string(),
         )])
-        .with_working_memory();
+        .with_ui();
         let mut context = fixture.context();
 
         // Delete the TODO comment
@@ -444,17 +430,6 @@ mod tests {
         // Verify the result
         assert!(result.error.is_none());
 
-        // Verify the content in working memory
-        let working_memory = fixture.working_memory().unwrap();
-        let key = ("test-project".to_string(), PathBuf::from("test.rs"));
-        if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&key) {
-            assert!(!content.contains("TODO"));
-            assert!(content.contains("fn test() {"));
-            assert!(content.contains("println!(\"Hello\");"));
-        } else {
-            panic!("File not found in working memory or wrong resource type");
-        }
-
         Ok(())
     }
 
@@ -467,7 +442,7 @@ mod tests {
                 "function test() {\r\n  console.log('test');\r\n}".to_string(),
             ), // CRLF endings
         ])
-        .with_working_memory();
+        .with_ui();
         let mut context = fixture.context();
 
         // Use LF endings in search text, should still match CRLF in file
@@ -484,17 +459,6 @@ mod tests {
 
         // Verify the result
         assert!(result.error.is_none());
-
-        // Verify the content in working memory
-        let working_memory = fixture.working_memory().unwrap();
-        let key = ("test-project".to_string(), PathBuf::from("test.rs"));
-        if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&key) {
-            assert!(content.contains("function answer()"));
-            assert!(content.contains("return 42;"));
-            assert!(!content.contains("console.log"));
-        } else {
-            panic!("File not found in working memory or wrong resource type");
-        }
 
         Ok(())
     }

@@ -2,7 +2,6 @@ use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
 use crate::tools::parse::parse_search_replace_blocks;
-use crate::types::LoadedResource;
 use anyhow::{anyhow, Result};
 use fs_explorer::{FileReplacement, FileUpdaterError};
 use serde::{Deserialize, Serialize};
@@ -220,17 +219,20 @@ impl Tool for ReplaceInFileTool {
         };
 
         match result {
-            Ok((new_content, updated_replacements)) => {
+            Ok((_new_content, updated_replacements)) => {
                 // If we have updated replacements (after formatting), update the diff text
                 if let Some(updated) = updated_replacements {
                     input.diff = render_diff_from_replacements(&updated);
                 }
 
-                if let Some(working_memory) = &mut context.working_memory {
-                    working_memory.loaded_resources.insert(
-                        (input.project.clone(), path.clone()),
-                        LoadedResource::File(new_content.clone()),
-                    );
+                // Emit resource event
+                if let Some(ui) = context.ui {
+                    let _ = ui
+                        .send_event(crate::ui::UiEvent::ResourceWritten {
+                            project: input.project.clone(),
+                            path: path.clone(),
+                        })
+                        .await;
                 }
 
                 Ok(ReplaceInFileOutput {
@@ -305,13 +307,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_replace_in_file_working_memory_update() -> Result<()> {
-        // Create test fixture with working memory
+
+    async fn test_replace_in_file_emits_resource_event() -> Result<()> {
+        // Create test fixture with UI for event capture
         let mut fixture = ToolTestFixture::with_files(vec![(
             "test.rs".to_string(),
             "fn original() {\n    println!(\"Original\");\n}".to_string(),
         )])
-        .with_working_memory();
+        .with_ui();
         let mut context = fixture.context();
 
         // Create input for a valid replacement
@@ -328,18 +331,16 @@ mod tests {
         // Verify the result
         assert!(result.error.is_none());
 
-        // Verify that working memory was updated
-        let working_memory = fixture.working_memory().unwrap();
-        assert_eq!(working_memory.loaded_resources.len(), 1);
+        // Drop context to release borrow
+        drop(context);
 
-        // Verify the content in working memory
-        let key = ("test-project".to_string(), PathBuf::from("test.rs"));
-        if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&key) {
-            assert!(content.contains("fn renamed()"));
-            assert!(content.contains("println!(\"Updated\")"));
-        } else {
-            panic!("File not found in working memory or wrong resource type");
-        }
+        // Verify that ResourceWritten event was emitted
+        let events = fixture.ui().unwrap().events();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            crate::ui::UiEvent::ResourceWritten { project, path }
+            if project == "test-project" && path == &PathBuf::from("test.rs")
+        )));
 
         Ok(())
     }

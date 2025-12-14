@@ -257,7 +257,6 @@ impl SessionManager {
                     .iter()
                     .map(|se| se.deserialize())
                     .collect::<Result<Vec<_>>>()?,
-                working_memory: session_instance.session.working_memory.clone(),
                 plan: session_instance.session.plan.clone(),
                 config: session_config.clone(),
                 next_request_id: Some(session_instance.session.next_request_id),
@@ -529,12 +528,12 @@ impl SessionManager {
         // Update session with current state
         session.name = state.name;
         session.messages = state.messages;
+
         session.tool_executions = state
             .tool_executions
             .into_iter()
             .map(|te| te.serialize())
             .collect::<Result<Vec<_>>>()?;
-        session.working_memory = state.working_memory;
         session.plan = state.plan;
         session.config = state.config;
         session.model_config = state.model_config;

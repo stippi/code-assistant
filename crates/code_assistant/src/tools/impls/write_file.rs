@@ -1,7 +1,6 @@
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolScope, ToolSpec,
 };
-use crate::types::LoadedResource;
 use anyhow::Result;
 use command_executor::SandboxCommandRequest;
 use serde::{Deserialize, Serialize};
@@ -185,12 +184,14 @@ impl Tool for WriteFileTool {
                     }
                 }
 
-                // Update working memory if present
-                if let Some(working_memory) = &mut context.working_memory {
-                    working_memory.loaded_resources.insert(
-                        (input.project.clone(), path.clone()),
-                        LoadedResource::File(full_content.clone()),
-                    );
+                // Emit resource event
+                if let Some(ui) = context.ui {
+                    let _ = ui
+                        .send_event(crate::ui::UiEvent::ResourceWritten {
+                            project: input.project.clone(),
+                            path: path.clone(),
+                        })
+                        .await;
                 }
 
                 Ok(WriteFileOutput {
@@ -246,7 +247,8 @@ mod tests {
         let write_file_tool = WriteFileTool;
 
         // Create test fixture with working memory
-        let mut fixture = ToolTestFixture::new().with_working_memory();
+
+        let mut fixture = ToolTestFixture::new().with_ui();
         let mut context = fixture.context();
 
         // Parameters for write_file
@@ -263,37 +265,30 @@ mod tests {
         // Check the result
         assert!(result.error.is_none());
 
-        // Verify that the file was added to working memory
-        let working_memory = fixture.working_memory().unwrap();
-        assert_eq!(working_memory.loaded_resources.len(), 1);
+        // Drop context to release borrow
+        drop(context);
 
-        // Check that the file is in the working memory
-        let resource_key = ("test".to_string(), PathBuf::from("test.txt"));
-        assert!(working_memory.loaded_resources.contains_key(&resource_key));
-
-        // Check that the content matches
-        if let Some(LoadedResource::File(content)) =
-            working_memory.loaded_resources.get(&resource_key)
-        {
-            assert_eq!(content, "Test content");
-        } else {
-            panic!("Expected file resource in working memory");
-        }
+        // Verify that ResourceWritten event was emitted
+        let events = fixture.ui().unwrap().events();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            crate::ui::UiEvent::ResourceWritten { project, path }
+            if project == "test" && path == &PathBuf::from("test.txt")
+        )));
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_write_file_append_has_memory_update() -> Result<()> {
-        // Create a tool registry (not needed for this test but kept for consistency)
+    async fn test_write_file_append_emits_event() -> Result<()> {
         let write_file_tool = WriteFileTool;
 
-        // Create test fixture with existing file and working memory
+        // Create test fixture with existing file and UI
         let mut fixture = ToolTestFixture::with_files(vec![(
             "test.txt".to_string(),
             "Initial content".to_string(),
         )])
-        .with_working_memory();
+        .with_ui();
         let mut context = fixture.context();
 
         // Parameters for write_file with append=true
@@ -310,23 +305,16 @@ mod tests {
         // Check the result
         assert!(result.error.is_none());
 
-        // Verify that the file WAS added to working memory (we fixed the behavior)
-        let working_memory = fixture.working_memory().unwrap();
-        assert_eq!(working_memory.loaded_resources.len(), 1);
+        // Drop context to release borrow
+        drop(context);
 
-        // Check that the file is in the working memory
-        let resource_key = ("test-project".to_string(), PathBuf::from("test.txt"));
-        assert!(working_memory.loaded_resources.contains_key(&resource_key));
-
-        // Check that the content is the combined content (initial + appended)
-        if let Some(LoadedResource::File(content)) =
-            working_memory.loaded_resources.get(&resource_key)
-        {
-            assert!(content.contains("Initial content"));
-            assert!(content.contains("Test content"));
-        } else {
-            panic!("Expected file resource in working memory");
-        }
+        // Verify that ResourceWritten event was emitted
+        let events = fixture.ui().unwrap().events();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            crate::ui::UiEvent::ResourceWritten { project, path }
+            if project == "test-project" && path == &PathBuf::from("test.txt")
+        )));
 
         Ok(())
     }

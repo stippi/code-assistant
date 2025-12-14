@@ -1261,7 +1261,6 @@ fn test_ui_filtering_with_failed_tool_messages() -> Result<()> {
         Message::new_user("Thank you for the help!"),
     ];
     session.tool_executions = Vec::new();
-    session.working_memory = crate::types::WorkingMemory::default();
     session.next_request_id = 1;
 
     let session_instance = SessionInstance::new(session);
@@ -1974,7 +1973,6 @@ async fn test_load_normalizes_native_dangling_tool_request() -> Result<()> {
         name: "Native Session".to_string(),
         messages: vec![user_message, assistant_message],
         tool_executions: Vec::new(),
-        working_memory: WorkingMemory::default(),
         plan: PlanState::default(),
         config: session_config.clone(),
         next_request_id: Some(2),
@@ -2034,7 +2032,6 @@ async fn test_load_normalizes_native_dangling_tool_request_with_followup_user() 
             followup_user_message.clone(),
         ],
         tool_executions: Vec::new(),
-        working_memory: WorkingMemory::default(),
         plan: PlanState::default(),
         config: session_config.clone(),
         next_request_id: Some(3),
@@ -2096,7 +2093,6 @@ async fn test_load_normalizes_xml_dangling_tool_request() -> Result<()> {
         name: "XML Session".to_string(),
         messages: vec![user_message, assistant_message],
         tool_executions: Vec::new(),
-        working_memory: WorkingMemory::default(),
         plan: PlanState::default(),
         config: session_config.clone(),
         next_request_id: Some(2),
@@ -2140,7 +2136,6 @@ async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()
         name: "Regular Session".to_string(),
         messages: vec![user_message.clone(), assistant_message.clone()],
         tool_executions: Vec::new(),
-        working_memory: WorkingMemory::default(),
         plan: PlanState::default(),
         config: session_config.clone(),
         next_request_id: Some(3),

@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 
 use crate::session::SessionConfig;
 use crate::tools::ToolRequest;
-use crate::types::{PlanState, ToolSyntax, WorkingMemory};
+use crate::types::{PlanState, ToolSyntax};
 
 /// Model configuration for a session
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -39,8 +39,6 @@ pub struct ChatSession {
     pub messages: Vec<Message>,
     /// Serialized tool execution results
     pub tool_executions: Vec<SerializedToolExecution>,
-    /// Working memory state
-    pub working_memory: WorkingMemory,
     /// Current session plan
     #[serde(default)]
     pub plan: PlanState,
@@ -69,12 +67,16 @@ pub struct ChatSession {
         skip_serializing_if = "Option::is_none"
     )]
     legacy_tool_syntax: Option<ToolSyntax>,
+
     #[serde(
         rename = "use_diff_blocks",
         default,
         skip_serializing_if = "Option::is_none"
     )]
     legacy_use_diff_blocks: Option<bool>,
+    /// Legacy working memory from old session files (ignored)
+    #[serde(rename = "working_memory", default, skip_serializing)]
+    _legacy_working_memory: serde_json::Value,
 }
 
 impl ChatSession {
@@ -111,7 +113,6 @@ impl ChatSession {
             updated_at: SystemTime::now(),
             messages: Vec::new(),
             tool_executions: Vec::new(),
-            working_memory: WorkingMemory::default(),
             plan: PlanState::default(),
             config,
             next_request_id: 1,
@@ -120,6 +121,7 @@ impl ChatSession {
             legacy_initial_project: None,
             legacy_tool_syntax: None,
             legacy_use_diff_blocks: None,
+            _legacy_working_memory: serde_json::Value::Null,
         }
     }
 }

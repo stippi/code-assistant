@@ -3,7 +3,7 @@ use crate::tools::core::{Tool, ToolContext};
 use crate::tools::impls::edit::{EditInput, EditTool};
 use crate::tools::impls::replace_in_file::{ReplaceInFileInput, ReplaceInFileTool};
 use crate::tools::impls::write_file::{WriteFileInput, WriteFileTool};
-use crate::types::{LoadedResource, Project, WorkingMemory};
+use crate::types::Project;
 use anyhow::Result;
 use command_executor::CommandOutput;
 use fs_explorer::file_updater::{
@@ -191,11 +191,9 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut working_memory = WorkingMemory::default();
     let mut context = ToolContext {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
-        working_memory: Some(&mut working_memory),
         plan: None,
         ui: None,
         tool_id: None,
@@ -233,14 +231,6 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
     assert_eq!(input.old_text, "const y = 2;"); // search unchanged
     assert_eq!(input.new_text, "const y = 42;"); // replacement reflects formatted code
 
-    // Verify that working memory contains the formatted full file content
-    let key = ("test-project".to_string(), PathBuf::from("test.js"));
-    if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&key) {
-        assert_eq!(content, "const x = 1;const y = 42;const z = 3;");
-    } else {
-        panic!("Expected file in working memory");
-    }
-
     Ok(())
 }
 
@@ -274,11 +264,9 @@ async fn test_write_file_with_format_on_save() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut working_memory = WorkingMemory::default();
     let mut context = ToolContext {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
-        working_memory: Some(&mut working_memory),
         plan: None,
         ui: None,
         tool_id: None,
@@ -348,11 +336,9 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut working_memory = WorkingMemory::default();
     let mut context = ToolContext {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
-        working_memory: Some(&mut working_memory),
         plan: None,
         ui: None,
         tool_id: None,
@@ -396,15 +382,6 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
     assert!(input.diff.contains("version = \"0.2.0\""));
     assert!(input.diff.contains("serde = \"2.0\""));
 
-    // Verify that working memory contains the final formatted content
-    let key = ("test-project".to_string(), PathBuf::from("config.toml"));
-    if let Some(LoadedResource::File(content)) = working_memory.loaded_resources.get(&key) {
-        assert!(content.contains("version = \"0.2.0\""));
-        assert!(content.contains("serde = \"2.0\""));
-    } else {
-        panic!("Expected file in working memory");
-    }
-
     Ok(())
 }
 
@@ -433,11 +410,9 @@ async fn test_no_format_when_pattern_doesnt_match() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut working_memory = WorkingMemory::default();
     let mut context = ToolContext {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
-        working_memory: Some(&mut working_memory),
         plan: None,
         ui: None,
         tool_id: None,
@@ -511,11 +486,9 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut working_memory = WorkingMemory::default();
     let mut context = ToolContext {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
-        working_memory: Some(&mut working_memory),
         plan: None,
         ui: None,
         tool_id: None,
@@ -609,11 +582,9 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut working_memory = WorkingMemory::default();
     let mut context = ToolContext {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
-        working_memory: Some(&mut working_memory),
         plan: None,
         ui: None,
         tool_id: None,
@@ -700,11 +671,9 @@ async fn test_format_on_save_with_conflicting_matches() -> Result<()> {
         Box::new(explorer),
     ));
 
-    let mut working_memory = WorkingMemory::default();
     let mut context = ToolContext {
         project_manager: project_manager.as_ref(),
         command_executor: &command_executor,
-        working_memory: Some(&mut working_memory),
         plan: None,
         ui: None,
         tool_id: None,
