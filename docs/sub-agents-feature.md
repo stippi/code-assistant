@@ -1,5 +1,33 @@
 # Sub-agents feature (`spawn_agent` tool)
 
+## Implementation Status
+
+### Completed
+- [x] `SubAgentRunner` trait and `DefaultSubAgentRunner` implementation (`sub_agent.rs`)
+- [x] `SubAgentCancellationRegistry` for managing cancellation tokens
+- [x] `SubAgentUiAdapter` for streaming progress to parent tool block
+- [x] `ToolScope::SubAgentReadOnly` and `ToolScope::SubAgentDefault` variants
+- [x] Tool scope updates for read-only tools (search_files, read_files, glob_files, list_files, web_fetch, web_search, perplexity_ask)
+- [x] `spawn_agent` tool implementation (`spawn_agent.rs`)
+- [x] Tool registration in `mod.rs` and `registry.rs`
+- [x] Session manager wiring of `DefaultSubAgentRunner` with UI and permission handler
+- [x] Added required `Agent` methods: `set_tool_scope`, `set_session_model_config`, `set_session_identity`, `set_external_cancel_flag`, `message_history`
+- [x] File reference enforcement with retry logic (up to 2 retries)
+
+### Pending
+- [ ] **UI integration for cancellation**: Expose cancel button per running `spawn_agent` block
+- [ ] **Parallel execution**: Update `manage_tool_execution()` to run multiple `spawn_agent` calls concurrently
+- [ ] **Permission attribution**: Show permission requests as originating from sub-agent context (inline or popover)
+- [ ] **Terminal UI rendering**: Update terminal tool block to show streaming sub-agent activity
+- [ ] **GPUI rendering**: Update GPUI tool widget for sub-agent progress display
+- [ ] **Integration tests**: Add tests for isolation, parallelism, cancellation, and permission routing
+
+### Notes
+- The cancellation infrastructure is in place (`SubAgentCancellationRegistry`, `cancel` method, `cancel_sub_agent` helper) but the UI hooks to trigger cancellation are not yet implemented.
+- The `sub_agent_cancellation_registry` field in `ToolContext` is available for future use when implementing tool-level cancellation from UI.
+
+---
+
 ## Goal
 
 Add a new tool, `spawn_agent`, that launches a sub-agent to execute a task with **isolated context/history**, returning only the **final output** back to the main agent as the tool result.
