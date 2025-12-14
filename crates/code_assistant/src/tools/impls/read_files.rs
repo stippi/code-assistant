@@ -138,6 +138,8 @@ impl Tool for ReadFilesTool {
                 ToolScope::McpServer,
                 ToolScope::Agent,
                 ToolScope::AgentWithDiffBlocks,
+                ToolScope::SubAgentReadOnly,
+                ToolScope::SubAgentDefault,
             ],
             hidden: false,
             title_template: Some("Reading {paths}"),

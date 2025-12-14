@@ -89,10 +89,13 @@ impl Tool for GlobFilesTool {
             annotations: Some(json!({
                 "readOnlyHint": true
             })),
+
             supported_scopes: &[
                 ToolScope::McpServer,
                 ToolScope::Agent,
                 ToolScope::AgentWithDiffBlocks,
+                ToolScope::SubAgentReadOnly,
+                ToolScope::SubAgentDefault,
             ],
             hidden: false,
             title_template: Some("Finding files matching '{pattern}'"),

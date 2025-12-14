@@ -334,10 +334,13 @@ impl Tool for SearchFilesTool {
             annotations: Some(json!({
                 "readOnlyHint": true
             })),
+
             supported_scopes: &[
                 ToolScope::McpServer,
                 ToolScope::Agent,
                 ToolScope::AgentWithDiffBlocks,
+                ToolScope::SubAgentReadOnly,
+                ToolScope::SubAgentDefault,
             ],
             hidden: false,
             title_template: Some("Searching for '{regex}'"),

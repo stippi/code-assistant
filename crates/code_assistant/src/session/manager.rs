@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
 
-use crate::agent::{Agent, AgentComponents};
+use crate::agent::{Agent, AgentComponents, DefaultSubAgentRunner, SubAgentCancellationRegistry};
 use crate::config::ProjectManager;
 use crate::permissions::PermissionMediator;
 use crate::persistence::{
@@ -315,8 +315,25 @@ impl SessionManager {
 
         let sandboxed_project_manager = Box::new(crate::config::SandboxAwareProjectManager::new(
             project_manager,
-            sandbox_context_clone,
+            sandbox_context_clone.clone(),
         ));
+
+        // Create sub-agent runner and cancellation registry
+        let sub_agent_cancellation_registry = Arc::new(SubAgentCancellationRegistry::default());
+        let model_name_for_subagent = session_state
+            .model_config
+            .as_ref()
+            .map(|c| c.model_name.clone())
+            .unwrap_or_else(|| self.default_model_name.clone());
+        let sub_agent_runner: Arc<dyn crate::agent::SubAgentRunner> =
+            Arc::new(DefaultSubAgentRunner::new(
+                model_name_for_subagent,
+                session_config.clone(),
+                sandbox_context_clone,
+                sub_agent_cancellation_registry.clone(),
+                proxy_ui.clone(),
+                permission_handler.clone(),
+            ));
 
         let components = AgentComponents {
             llm_provider,
@@ -325,6 +342,8 @@ impl SessionManager {
             ui: proxy_ui,
             state_persistence: state_storage,
             permission_handler,
+            sub_agent_runner: Some(sub_agent_runner),
+            sub_agent_cancellation_registry: Some(sub_agent_cancellation_registry),
         };
 
         let mut agent = Agent::new(components, session_config.clone());

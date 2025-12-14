@@ -269,6 +269,8 @@ impl MessageHandler {
                 ui: None,
                 tool_id: None,
                 permission_handler: None,
+                sub_agent_runner: None,
+                sub_agent_cancellation_registry: None,
             };
 
             // Invoke the tool

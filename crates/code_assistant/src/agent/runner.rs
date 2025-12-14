@@ -30,6 +30,10 @@ pub struct AgentComponents {
     pub ui: Arc<dyn UserInterface>,
     pub state_persistence: Box<dyn AgentStatePersistence>,
     pub permission_handler: Option<Arc<dyn PermissionMediator>>,
+    /// Optional sub-agent runner used by the `spawn_agent` tool.
+    pub sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
+    /// Shared cancellation registry so the UI/back-end can cancel running sub-agents by tool id.
+    pub sub_agent_cancellation_registry: Option<Arc<crate::agent::SubAgentCancellationRegistry>>,
 }
 
 use super::ToolSyntax;
@@ -54,6 +58,8 @@ pub struct Agent {
     ui: Arc<dyn UserInterface>,
     state_persistence: Box<dyn AgentStatePersistence>,
     permission_handler: Option<Arc<dyn PermissionMediator>>,
+    sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
+    sub_agent_cancellation_registry: Option<Arc<crate::agent::SubAgentCancellationRegistry>>,
     // Store all messages exchanged
     message_history: Vec<Message>,
     // Store the history of tool executions
@@ -111,6 +117,8 @@ impl Agent {
             ui,
             state_persistence,
             permission_handler,
+            sub_agent_runner,
+            sub_agent_cancellation_registry,
         } = components;
 
         let mut this = Self {
@@ -123,6 +131,8 @@ impl Agent {
             command_executor,
             state_persistence,
             permission_handler,
+            sub_agent_runner,
+            sub_agent_cancellation_registry,
             message_history: Vec::new(),
             tool_executions: Vec::new(),
             cached_system_prompts: HashMap::new(),
@@ -175,6 +185,34 @@ impl Agent {
             self.model_hint = normalized;
             self.invalidate_system_message_cache();
         }
+    }
+
+    /// Set the tool scope for this agent
+    pub fn set_tool_scope(&mut self, scope: ToolScope) {
+        self.tool_scope = scope;
+    }
+
+    /// Set the session model configuration
+    pub fn set_session_model_config(&mut self, config: SessionModelConfig) {
+        self.session_model_config = Some(config);
+    }
+
+    /// Set the session identity (id and name) for this agent
+    pub fn set_session_identity(&mut self, session_id: String, session_name: String) {
+        self.session_id = Some(session_id);
+        self.session_name = session_name;
+    }
+
+    /// Set an external cancellation flag that can interrupt streaming
+    pub fn set_external_cancel_flag(&mut self, _flag: Arc<std::sync::atomic::AtomicBool>) {
+        // Note: The LLM streaming checks the UI's should_streaming_continue() method.
+        // For sub-agents, the SubAgentUiAdapter already checks the cancellation flag.
+        // This method is a placeholder for future direct cancellation integration.
+    }
+
+    /// Get a reference to the message history
+    pub fn message_history(&self) -> &[Message] {
+        &self.message_history
     }
 
     /// Disable naming reminders (used for tests)
@@ -1416,6 +1454,8 @@ impl Agent {
             ui: Some(self.ui.as_ref()),
             tool_id: Some(tool_request.id.clone()),
             permission_handler: self.permission_handler.as_deref(),
+            sub_agent_runner: self.sub_agent_runner.as_deref(),
+            sub_agent_cancellation_registry: self.sub_agent_cancellation_registry.as_deref(),
         };
 
         // Execute the tool - could fail with ParseError or other errors
