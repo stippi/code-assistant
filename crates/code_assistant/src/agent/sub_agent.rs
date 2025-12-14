@@ -105,7 +105,7 @@ impl DefaultSubAgentRunner {
         parent_ui: Arc<dyn UserInterface>,
         parent_tool_id: String,
         cancelled: Arc<AtomicBool>,
-    ) -> Arc<dyn UserInterface> {
+    ) -> Arc<SubAgentUiAdapter> {
         Arc::new(SubAgentUiAdapter::new(parent_ui, parent_tool_id, cancelled))
     }
 
@@ -196,10 +196,13 @@ impl SubAgentRunner for DefaultSubAgentRunner {
             cancelled.clone(),
         );
 
+        // Keep a clone of the adapter so we can set the final response
+        let sub_ui_adapter = sub_ui.clone();
+
         let mut agent = self
             .build_agent(
                 parent_tool_id,
-                sub_ui,
+                sub_ui as Arc<dyn UserInterface>,
                 cancelled.clone(),
                 self.permission_handler.clone(),
             )
@@ -245,14 +248,19 @@ impl SubAgentRunner for DefaultSubAgentRunner {
 
         self.cancellation_registry.unregister(parent_tool_id);
 
-        // Ensure the parent tool block shows completion.
+        // Set the final response in the adapter and send the complete JSON output
+        // This preserves the tools list along with the final response for rendering
+        sub_ui_adapter.set_response(last_answer.clone());
+        let final_json = sub_ui_adapter.get_final_output();
+
+        // Update the parent tool block with the complete output (tools + response)
         let _ = self
             .ui
             .send_event(UiEvent::UpdateToolStatus {
                 tool_id: parent_tool_id.to_string(),
                 status: ToolStatus::Success,
                 message: Some("Sub-agent finished".to_string()),
-                output: None,
+                output: Some(final_json),
             })
             .await;
 
@@ -336,6 +344,9 @@ pub struct SubAgentOutput {
     pub cancelled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Final response from the sub-agent (set when completed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response: Option<String>,
 }
 
 impl SubAgentOutput {
@@ -345,6 +356,7 @@ impl SubAgentOutput {
             activity: Some(SubAgentActivity::WaitingForLlm),
             cancelled: None,
             error: None,
+            response: None,
         }
     }
 
@@ -390,10 +402,17 @@ impl SubAgentUiAdapter {
     }
 
     async fn send_output_update(&self) {
-        let json = {
+        let (json, tool_count, activity) = {
             let output = self.output.lock().unwrap();
-            output.to_json()
+            (output.to_json(), output.tools.len(), output.activity)
         };
+
+        tracing::debug!(
+            "SubAgentUiAdapter: Sending output update - {} tools, activity={:?}, json_len={}",
+            tool_count,
+            activity,
+            json.len()
+        );
 
         let _ = self
             .parent
@@ -410,6 +429,16 @@ impl SubAgentUiAdapter {
         let mut output = self.output.lock().unwrap();
         let mut id_map = self.tool_id_to_index.lock().unwrap();
 
+        // Check if tool already exists (avoid duplicates)
+        if id_map.contains_key(id) {
+            tracing::debug!(
+                "SubAgentUiAdapter: Tool already exists, skipping add: {} ({})",
+                name,
+                id
+            );
+            return;
+        }
+
         // Add new tool as running
         let index = output.tools.len();
         output.tools.push(SubAgentToolCall {
@@ -418,23 +447,45 @@ impl SubAgentUiAdapter {
             message: None,
         });
         id_map.insert(id.to_string(), index);
+        tracing::debug!(
+            "SubAgentUiAdapter: Added tool {} ({}) at index {}, total tools: {}",
+            name,
+            id,
+            index,
+            output.tools.len()
+        );
     }
 
     fn update_tool_status(&self, tool_id: &str, status: ToolStatus, message: Option<String>) {
         let mut output = self.output.lock().unwrap();
-        let id_map = self.tool_id_to_index.lock().unwrap();
+        let mut id_map = self.tool_id_to_index.lock().unwrap();
 
         // Find tool by id and update its status
         if let Some(&index) = id_map.get(tool_id) {
             if let Some(tool) = output.tools.get_mut(index) {
+                tracing::debug!(
+                    "SubAgentUiAdapter: Updating tool {} status to {:?}",
+                    tool.name,
+                    status
+                );
                 tool.status = status.into();
                 tool.message = message;
             }
         } else {
+            // Tool not found - this can happen if UpdateToolStatus arrives before ToolName
+            // In this case, we should add the tool
             tracing::warn!(
-                "SubAgentUiAdapter: UpdateToolStatus for unknown tool_id={}",
-                tool_id
+                "SubAgentUiAdapter: UpdateToolStatus for unknown tool_id={}, status={:?}. Adding placeholder.",
+                tool_id,
+                status
             );
+            let index = output.tools.len();
+            output.tools.push(SubAgentToolCall {
+                name: format!("tool_{}", tool_id.chars().take(8).collect::<String>()),
+                status: status.into(),
+                message,
+            });
+            id_map.insert(tool_id.to_string(), index);
         }
     }
 
@@ -452,6 +503,18 @@ impl SubAgentUiAdapter {
     fn set_activity(&self, activity: SubAgentActivity) {
         let mut output = self.output.lock().unwrap();
         output.activity = Some(activity);
+    }
+
+    fn set_response(&self, response: String) {
+        let mut output = self.output.lock().unwrap();
+        output.response = Some(response);
+        output.activity = Some(SubAgentActivity::Completed);
+    }
+
+    /// Get the final JSON output including response
+    fn get_final_output(&self) -> String {
+        let output = self.output.lock().unwrap();
+        output.to_json()
     }
 }
 

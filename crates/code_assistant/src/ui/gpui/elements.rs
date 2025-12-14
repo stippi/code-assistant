@@ -242,18 +242,15 @@ impl MessageContainer {
                 if let Some(tool) = view.block.as_tool_mut() {
                     if tool.id == tool_id {
                         let was_generating = view.is_generating;
-                        let had_streaming_output =
-                            tool.output.as_ref().map(|o| !o.is_empty()).unwrap_or(false);
 
                         tool.status = status;
                         tool.status_message = message.clone();
 
-                        // Set output if provided and we don't already have streaming output
+                        // Update output if provided
+                        // Note: UpdateToolStatus always replaces output (used by spawn_agent for JSON updates)
+                        // AppendToolOutput is used for streaming append behavior
                         if let Some(ref new_output) = output {
-                            if !had_streaming_output {
-                                tool.output = Some(new_output.clone());
-                            }
-                            // If we had streaming output, keep it (don't overwrite)
+                            tool.output = Some(new_output.clone());
                         }
 
                         // Update generating state based on tool completion
@@ -1355,15 +1352,20 @@ impl Render for BlockView {
                                                                         block.state == ToolBlockState::Expanded
                                                                     };
 
+
                                                                     if should_show_output {
                                                                         // Try custom tool output renderer first
+                                                                        // Clone theme to avoid borrow conflict with cx
+                                                                        let theme = cx.theme().clone();
                                                                         let custom_output = crate::ui::gpui::tool_output_renderers::ToolOutputRendererRegistry::global()
                                                                             .and_then(|registry| {
                                                                                 registry.render_output(
                                                                                     &block.name,
                                                                                     output_content,
                                                                                     &block.status,
-                                                                                    cx.theme(),
+                                                                                    &theme,
+                                                                                    window,
+                                                                                    cx,
                                                                                 )
                                                                             });
 

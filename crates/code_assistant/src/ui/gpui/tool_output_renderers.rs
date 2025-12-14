@@ -1,9 +1,10 @@
 use crate::agent::sub_agent::{SubAgentActivity, SubAgentOutput, SubAgentToolStatus};
 use crate::ui::ToolStatus;
 use gpui::{
-    bounce, div, ease_in_out, percentage, px, svg, Animation, AnimationExt, Element, ParentElement,
-    SharedString, Styled, Transformation,
+    bounce, div, ease_in_out, percentage, px, svg, Animation, AnimationExt, Context, Element,
+    ParentElement, SharedString, Styled, Transformation, Window,
 };
+use gpui_component::text::TextView;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -25,6 +26,8 @@ pub trait ToolOutputRenderer: Send + Sync {
         output: &str,
         status: &ToolStatus,
         theme: &gpui_component::theme::Theme,
+        window: &mut Window,
+        cx: &mut Context<crate::ui::gpui::elements::BlockView>,
     ) -> Option<gpui::AnyElement>;
 }
 
@@ -92,10 +95,12 @@ impl ToolOutputRendererRegistry {
         output: &str,
         status: &ToolStatus,
         theme: &gpui_component::theme::Theme,
+        window: &mut Window,
+        cx: &mut Context<crate::ui::gpui::elements::BlockView>,
     ) -> Option<gpui::AnyElement> {
         self.renderers
             .get(tool_name)
-            .and_then(|renderer| renderer.render(tool_name, output, status, theme))
+            .and_then(|renderer| renderer.render(tool_name, output, status, theme, window, cx))
     }
 }
 
@@ -106,7 +111,7 @@ impl Default for ToolOutputRendererRegistry {
 }
 
 /// Renderer for spawn_agent tool output
-/// Displays sub-agent tool calls in a compact, Zed-like style
+/// Displays sub-agent tool calls in a compact, Zed-like style with markdown response
 pub struct SpawnAgentOutputRenderer;
 
 impl SpawnAgentOutputRenderer {
@@ -116,26 +121,7 @@ impl SpawnAgentOutputRenderer {
         file_icons::get().get_tool_icon(tool_name)
     }
 
-    /// Get a display title for a tool (like Zed's ACP mode)
-    fn get_tool_title(tool_name: &str) -> String {
-        match tool_name {
-            "read_files" => "Reading".to_string(),
-            "search_files" => "Searching".to_string(),
-            "list_files" => "Listing".to_string(),
-            "glob_files" => "Finding files".to_string(),
-            "write_file" => "Writing".to_string(),
-            "edit" => "Editing".to_string(),
-            "replace_in_file" => "Replacing".to_string(),
-            "delete_files" => "Deleting".to_string(),
-            "execute_command" => "Executing".to_string(),
-            "web_fetch" => "Fetching".to_string(),
-            "web_search" => "Searching web".to_string(),
-            "perplexity_ask" => "Asking Perplexity".to_string(),
-            _ => tool_name.replace('_', " "),
-        }
-    }
-
-    /// Render a single compact tool line from structured data
+    /// Render a single compact tool line showing tool status message (one-liner)
     fn render_tool_line(
         tool: &crate::agent::sub_agent::SubAgentToolCall,
         theme: &gpui_component::theme::Theme,
@@ -143,7 +129,6 @@ impl SpawnAgentOutputRenderer {
         use super::file_icons;
 
         let icon = Self::get_tool_icon(&tool.name);
-        let title = Self::get_tool_title(&tool.name);
 
         // Status-based colors
         let (icon_color, text_color) = match tool.status {
@@ -152,16 +137,14 @@ impl SpawnAgentOutputRenderer {
             SubAgentToolStatus::Error => (theme.danger, theme.danger),
         };
 
-        // Build the display text
-        let display_text = if let Some(msg) = &tool.message {
-            if msg.is_empty() {
-                title
-            } else {
-                format!("{title} — {msg}")
-            }
-        } else {
-            title
-        };
+        // Use the status message if available (this is the tool's status() output)
+        // Otherwise fall back to just the tool name
+        let display_text = tool
+            .message
+            .as_ref()
+            .filter(|m| !m.is_empty())
+            .cloned()
+            .unwrap_or_else(|| tool.name.replace('_', " "));
 
         div()
             .flex()
@@ -172,7 +155,7 @@ impl SpawnAgentOutputRenderer {
             .children(vec![
                 // Icon
                 file_icons::render_icon_container(&icon, 14.0, icon_color, "🔧").into_any(),
-                // Title text
+                // Status text (one-liner from tool)
                 div()
                     .text_size(px(13.))
                     .text_color(text_color)
@@ -188,10 +171,8 @@ impl SpawnAgentOutputRenderer {
         theme: &gpui_component::theme::Theme,
     ) -> Option<gpui::AnyElement> {
         let (text, color, show_spinner) = match activity {
-            SubAgentActivity::WaitingForLlm => {
-                ("Waiting for response...", theme.muted_foreground, true)
-            }
-            SubAgentActivity::Streaming => ("Thinking...", theme.info, true),
+            SubAgentActivity::WaitingForLlm => ("Waiting...", theme.muted_foreground, true),
+            SubAgentActivity::Streaming => ("Responding...", theme.info, true),
             SubAgentActivity::ExecutingTools => ("Executing tools...", theme.info, true),
             SubAgentActivity::Completed => return None, // Don't show for completed
             SubAgentActivity::Cancelled => ("Cancelled", theme.warning, false),
@@ -284,6 +265,28 @@ impl SpawnAgentOutputRenderer {
 
         None
     }
+
+    /// Render the final response as markdown
+    fn render_response(
+        response: &str,
+        theme: &gpui_component::theme::Theme,
+        window: &mut Window,
+        cx: &mut Context<crate::ui::gpui::elements::BlockView>,
+    ) -> gpui::AnyElement {
+        div()
+            .mt_2()
+            .pt_2()
+            .border_t_1()
+            .border_color(theme.border)
+            .text_color(theme.foreground)
+            .child(TextView::markdown(
+                "sub-agent-response",
+                response.to_string(),
+                window,
+                cx,
+            ))
+            .into_any()
+    }
 }
 
 impl ToolOutputRenderer for SpawnAgentOutputRenderer {
@@ -297,6 +300,8 @@ impl ToolOutputRenderer for SpawnAgentOutputRenderer {
         output: &str,
         _status: &ToolStatus,
         theme: &gpui_component::theme::Theme,
+        window: &mut Window,
+        cx: &mut Context<crate::ui::gpui::elements::BlockView>,
     ) -> Option<gpui::AnyElement> {
         if output.is_empty() {
             return None;
@@ -312,33 +317,43 @@ impl ToolOutputRenderer for SpawnAgentOutputRenderer {
             }
         };
 
-        // Always render if we have activity state, even if no tools yet
+        // Always render if we have activity state, response, or tools
         let has_activity = parsed.activity.is_some();
+        let has_response = parsed.response.is_some();
         if parsed.tools.is_empty()
             && parsed.cancelled.is_none()
             && parsed.error.is_none()
             && !has_activity
+            && !has_response
         {
             return None;
         }
 
         let mut elements: Vec<gpui::AnyElement> = Vec::new();
 
-        // Add activity line first (shows current state with spinner)
+        // Render compact list of tool calls first (history of what was done)
+        for tool in &parsed.tools {
+            elements.push(Self::render_tool_line(tool, theme));
+        }
+
+        // Add activity line below tools (shows current state with spinner)
+        // This is where new output will appear
         if let Some(activity) = parsed.activity {
             if let Some(activity_line) = Self::render_activity_line(activity, theme) {
                 elements.push(activity_line);
             }
         }
 
-        // Render compact list of tool calls
-        for tool in &parsed.tools {
-            elements.push(Self::render_tool_line(tool, theme));
-        }
-
         // Add error/cancelled status line if present
         if let Some(status_line) = Self::render_status_line(&parsed, theme) {
             elements.push(status_line);
+        }
+
+        // Add the final response rendered as markdown (after completion)
+        if let Some(ref response) = parsed.response {
+            if !response.is_empty() {
+                elements.push(Self::render_response(response, theme, window, cx));
+            }
         }
 
         if elements.is_empty() {
@@ -424,5 +439,22 @@ mod tests {
     fn test_invalid_json_returns_none() {
         let invalid = "### Sub-agent activity\n- Calling tool read_files";
         assert!(SubAgentOutput::from_json(invalid).is_none());
+    }
+
+    #[test]
+    fn test_parse_json_with_response() {
+        let json = r#"{"tools":[{"name":"read_files","status":"success","message":"Successfully loaded 2 file(s)"}],"activity":"completed","response":"Here is the answer based on the files I read."}"#;
+
+        let parsed = SubAgentOutput::from_json(json).unwrap();
+        assert_eq!(parsed.tools.len(), 1);
+        assert_eq!(
+            parsed.tools[0].message.as_deref(),
+            Some("Successfully loaded 2 file(s)")
+        );
+        assert_eq!(parsed.activity, Some(SubAgentActivity::Completed));
+        assert_eq!(
+            parsed.response.as_deref(),
+            Some("Here is the answer based on the files I read.")
+        );
     }
 }
