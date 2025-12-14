@@ -308,10 +308,30 @@ impl From<ToolStatus> for SubAgentToolStatus {
     }
 }
 
+/// Current activity state of the sub-agent
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubAgentActivity {
+    /// Waiting for LLM to start streaming
+    WaitingForLlm,
+    /// LLM is streaming response
+    Streaming,
+    /// Executing tools
+    ExecutingTools,
+    /// Completed successfully
+    Completed,
+    /// Was cancelled
+    Cancelled,
+    /// Encountered an error
+    Failed,
+}
+
 /// Structured output for spawn_agent tool, serialized as JSON
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SubAgentOutput {
     pub tools: Vec<SubAgentToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<SubAgentActivity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cancelled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -322,6 +342,7 @@ impl SubAgentOutput {
     pub fn new() -> Self {
         Self {
             tools: Vec::new(),
+            activity: Some(SubAgentActivity::WaitingForLlm),
             cancelled: None,
             error: None,
         }
@@ -425,6 +446,12 @@ impl SubAgentUiAdapter {
     fn set_error(&self, error: String) {
         let mut output = self.output.lock().unwrap();
         output.error = Some(error);
+        output.activity = Some(SubAgentActivity::Failed);
+    }
+
+    fn set_activity(&self, activity: SubAgentActivity) {
+        let mut output = self.output.lock().unwrap();
+        output.activity = Some(activity);
     }
 }
 
@@ -443,6 +470,7 @@ impl UserInterface for SubAgentUiAdapter {
                 self.add_tool_start(name, id);
                 self.send_output_update().await;
             }
+
             UiEvent::UpdateToolStatus {
                 tool_id,
                 status,
@@ -455,6 +483,16 @@ impl UserInterface for SubAgentUiAdapter {
                     status
                 );
                 self.update_tool_status(tool_id, *status, message.clone());
+                // If a tool is running, we're executing tools
+                if *status == ToolStatus::Running {
+                    self.set_activity(SubAgentActivity::ExecutingTools);
+                }
+                self.send_output_update().await;
+            }
+
+            UiEvent::StreamingStarted(_) => {
+                tracing::debug!("SubAgentUiAdapter: StreamingStarted");
+                self.set_activity(SubAgentActivity::Streaming);
                 self.send_output_update().await;
             }
             UiEvent::StreamingStopped {
@@ -467,9 +505,13 @@ impl UserInterface for SubAgentUiAdapter {
                 );
                 if *cancelled {
                     self.set_cancelled();
-                }
-                if let Some(err) = error {
+                    self.set_activity(SubAgentActivity::Cancelled);
+                } else if let Some(err) = error {
                     self.set_error(err.clone());
+                    // activity already set to Failed in set_error
+                } else {
+                    // Streaming stopped normally - will likely execute tools or complete
+                    // The activity will be updated by tool execution or completion
                 }
                 self.send_output_update().await;
             }

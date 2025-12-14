@@ -1,8 +1,12 @@
-use crate::agent::sub_agent::{SubAgentOutput, SubAgentToolStatus};
+use crate::agent::sub_agent::{SubAgentActivity, SubAgentOutput, SubAgentToolStatus};
 use crate::ui::ToolStatus;
-use gpui::{div, px, Element, ParentElement, SharedString, Styled};
+use gpui::{
+    bounce, div, ease_in_out, percentage, px, svg, Animation, AnimationExt, Element, ParentElement,
+    SharedString, Styled, Transformation,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 use tracing::warn;
 
 /// A unique key for tool name
@@ -178,6 +182,65 @@ impl SpawnAgentOutputRenderer {
             .into_any()
     }
 
+    /// Render the current activity status line with spinning indicator
+    fn render_activity_line(
+        activity: SubAgentActivity,
+        theme: &gpui_component::theme::Theme,
+    ) -> Option<gpui::AnyElement> {
+        let (text, color, show_spinner) = match activity {
+            SubAgentActivity::WaitingForLlm => {
+                ("Waiting for response...", theme.muted_foreground, true)
+            }
+            SubAgentActivity::Streaming => ("Thinking...", theme.info, true),
+            SubAgentActivity::ExecutingTools => ("Executing tools...", theme.info, true),
+            SubAgentActivity::Completed => return None, // Don't show for completed
+            SubAgentActivity::Cancelled => ("Cancelled", theme.warning, false),
+            SubAgentActivity::Failed => return None, // Error shown separately
+        };
+
+        let mut children: Vec<gpui::AnyElement> = Vec::new();
+
+        // Add spinning arrow if active
+        if show_spinner {
+            children.push(
+                svg()
+                    .size(px(14.))
+                    .path(SharedString::from("icons/arrow_circle.svg"))
+                    .text_color(color)
+                    .with_animation(
+                        "sub_agent_spinner",
+                        Animation::new(Duration::from_secs(2))
+                            .repeat()
+                            .with_easing(bounce(ease_in_out)),
+                        |svg, delta| {
+                            svg.with_transformation(Transformation::rotate(percentage(delta)))
+                        },
+                    )
+                    .into_any(),
+            );
+        }
+
+        // Add status text
+        children.push(
+            div()
+                .text_size(px(13.))
+                .text_color(color)
+                .child(text)
+                .into_any(),
+        );
+
+        Some(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .py(px(2.))
+                .children(children)
+                .into_any(),
+        )
+    }
+
     /// Render error/cancelled status if present
     fn render_status_line(
         output: &SubAgentOutput,
@@ -249,20 +312,37 @@ impl ToolOutputRenderer for SpawnAgentOutputRenderer {
             }
         };
 
-        if parsed.tools.is_empty() && parsed.cancelled.is_none() && parsed.error.is_none() {
+        // Always render if we have activity state, even if no tools yet
+        let has_activity = parsed.activity.is_some();
+        if parsed.tools.is_empty()
+            && parsed.cancelled.is_none()
+            && parsed.error.is_none()
+            && !has_activity
+        {
             return None;
         }
 
-        // Render compact list of tool calls
-        let mut elements: Vec<gpui::AnyElement> = parsed
-            .tools
-            .iter()
-            .map(|tool| Self::render_tool_line(tool, theme))
-            .collect();
+        let mut elements: Vec<gpui::AnyElement> = Vec::new();
 
-        // Add status line if present
+        // Add activity line first (shows current state with spinner)
+        if let Some(activity) = parsed.activity {
+            if let Some(activity_line) = Self::render_activity_line(activity, theme) {
+                elements.push(activity_line);
+            }
+        }
+
+        // Render compact list of tool calls
+        for tool in &parsed.tools {
+            elements.push(Self::render_tool_line(tool, theme));
+        }
+
+        // Add error/cancelled status line if present
         if let Some(status_line) = Self::render_status_line(&parsed, theme) {
             elements.push(status_line);
+        }
+
+        if elements.is_empty() {
+            return None;
         }
 
         Some(
