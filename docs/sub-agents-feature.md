@@ -34,15 +34,27 @@
   - `test_can_run_in_parallel_logic` - parallel execution eligibility logic
 
 
+
 ### Completed (phase 4)
+- [x] **Structured output format**: Sub-agent activity is now captured as structured JSON
+  - Added `SubAgentOutput`, `SubAgentToolCall`, `SubAgentToolStatus` types in `sub_agent.rs`
+  - JSON format is persisted with the session and can be restored/re-rendered
+  - Format: `{"tools": [{"name": "read_files", "status": "success", "message": null}], "cancelled": null, "error": null}`
+- [x] **SubAgentUiAdapter refactored**: Emits structured JSON instead of markdown
+  - Tracks current tool state and updates status properly
+  - Handles cancellation and error states
 - [x] **GPUI rendering**: Custom tool output renderer for sub-agent progress display
   - Added `ToolOutputRendererRegistry` pattern (similar to `ParameterRendererRegistry`)
-  - Implemented `SpawnAgentOutputRenderer` that parses sub-agent activity markdown
+  - Implemented `SpawnAgentOutputRenderer` that parses JSON sub-agent output
   - Renders sub-tool calls in compact Zed-like style with icons and status colors
+  - Falls back to plain text rendering for backwards compatibility
   - Located in `crates/code_assistant/src/ui/gpui/tool_output_renderers.rs`
+- [x] **Terminal UI rendering**: Updated to parse JSON format
+  - Renders sub-tool calls with status symbols and colors
+  - Falls back to plain text for backwards compatibility
 - [x] **ACP mode support**: Sub-agent activity streams through existing tool output mechanisms
   - Added `spawn_agent` icon mapping in `file_icons.rs` (uses `rerun.svg`)
-  - Output flows as `ToolCallUpdate` content for display in Zed's ACP panel
+  - JSON output flows as `ToolCallUpdate` content for display in Zed's ACP panel
 
 ### Pending
 - [ ] **UI integration for cancellation**: Expose cancel button per running `spawn_agent` block

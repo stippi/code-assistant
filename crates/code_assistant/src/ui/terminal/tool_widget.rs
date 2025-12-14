@@ -235,48 +235,110 @@ impl<'a> Widget for ToolWidget<'a> {
         // Tool output (used by spawn_agent for streaming sub-agent activity)
         if let Some(ref output) = self.tool_block.output {
             if current_y < area.y + area.height && !output.is_empty() {
-                // Render each line of the output
-                for line in output.lines() {
-                    if current_y >= area.y + area.height {
-                        break;
+                // Try to parse as JSON (new structured format)
+                if let Some(sub_agent_output) =
+                    crate::agent::sub_agent::SubAgentOutput::from_json(output)
+                {
+                    // Render structured sub-agent tools
+                    for tool in &sub_agent_output.tools {
+                        if current_y >= area.y + area.height {
+                            break;
+                        }
+
+                        let (status_symbol, color) = match tool.status {
+                            crate::agent::sub_agent::SubAgentToolStatus::Running => {
+                                ("●", Color::Blue)
+                            }
+                            crate::agent::sub_agent::SubAgentToolStatus::Success => {
+                                ("●", Color::Green)
+                            }
+                            crate::agent::sub_agent::SubAgentToolStatus::Error => ("●", Color::Red),
+                        };
+
+                        let tool_title = match tool.name.as_str() {
+                            "read_files" => "Reading",
+                            "search_files" => "Searching",
+                            "list_files" => "Listing",
+                            "glob_files" => "Finding files",
+                            "write_file" => "Writing",
+                            "edit" => "Editing",
+                            "execute_command" => "Executing",
+                            "web_fetch" => "Fetching",
+                            "web_search" => "Searching web",
+                            _ => &tool.name,
+                        };
+
+                        let display_text = if let Some(msg) = &tool.message {
+                            format!("{status_symbol} {tool_title} — {msg}")
+                        } else {
+                            format!("{status_symbol} {tool_title}")
+                        };
+
+                        let truncated =
+                            if display_text.len() > (area.width.saturating_sub(4)) as usize {
+                                format!(
+                                    "{}...",
+                                    &display_text[..(area.width.saturating_sub(7)) as usize]
+                                )
+                            } else {
+                                display_text
+                            };
+
+                        buf.set_string(
+                            area.x + 2,
+                            current_y,
+                            &truncated,
+                            Style::default().fg(color),
+                        );
+                        current_y += 1;
                     }
 
-                    // Determine line style based on content
-                    let (prefix, color) = if line.starts_with("### ") {
-                        // Header line (e.g. "### Sub-agent activity")
-                        ("", Color::Cyan)
-                    } else if line.starts_with("- Calling tool") {
-                        // Tool call line
-                        ("", Color::Yellow)
-                    } else if line.starts_with("- Tool status:") {
-                        // Tool status line
-                        ("", Color::Gray)
-                    } else if line.starts_with("- ") {
-                        // Other list items
-                        ("", Color::White)
-                    } else {
-                        // Regular text
-                        ("", Color::Gray)
-                    };
-
-                    let display_line = format!("{prefix}{line}");
-                    let truncated = if display_line.len() > (area.width.saturating_sub(4)) as usize
+                    // Render cancelled/error status
+                    if sub_agent_output.cancelled == Some(true) && current_y < area.y + area.height
                     {
-                        format!(
-                            "{}...",
-                            &display_line[..(area.width.saturating_sub(7)) as usize]
-                        )
-                    } else {
-                        display_line
-                    };
+                        buf.set_string(
+                            area.x + 2,
+                            current_y,
+                            "Sub-agent cancelled",
+                            Style::default().fg(Color::Yellow),
+                        );
+                        current_y += 1;
+                    }
 
-                    buf.set_string(
-                        area.x + 2,
-                        current_y,
-                        &truncated,
-                        Style::default().fg(color),
-                    );
-                    current_y += 1;
+                    if let Some(error) = &sub_agent_output.error {
+                        if current_y < area.y + area.height {
+                            let error_text = format!("Error: {error}");
+                            buf.set_string(
+                                area.x + 2,
+                                current_y,
+                                &error_text,
+                                Style::default().fg(Color::Red),
+                            );
+                            // current_y is not incremented after this as it's the last possible item
+                        }
+                    }
+                } else {
+                    // Fallback: render as plain text (for backwards compatibility)
+                    for line in output.lines() {
+                        if current_y >= area.y + area.height {
+                            break;
+                        }
+
+                        let color = Color::Gray;
+                        let truncated = if line.len() > (area.width.saturating_sub(4)) as usize {
+                            format!("{}...", &line[..(area.width.saturating_sub(7)) as usize])
+                        } else {
+                            line.to_string()
+                        };
+
+                        buf.set_string(
+                            area.x + 2,
+                            current_y,
+                            &truncated,
+                            Style::default().fg(color),
+                        );
+                        current_y += 1;
+                    }
                 }
             }
         }

@@ -1,3 +1,4 @@
+use crate::agent::sub_agent::{SubAgentOutput, SubAgentToolStatus};
 use crate::ui::ToolStatus;
 use gpui::{div, px, Element, ParentElement, SharedString, Styled};
 use std::collections::HashMap;
@@ -74,6 +75,7 @@ impl ToolOutputRendererRegistry {
     }
 
     /// Check if a custom renderer exists for a tool
+    #[allow(dead_code)]
     pub fn has_renderer(&self, tool_name: &str) -> bool {
         self.renderers.contains_key(tool_name)
     }
@@ -97,191 +99,6 @@ impl Default for ToolOutputRendererRegistry {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Parsed sub-agent activity line
-#[derive(Debug, Clone)]
-pub enum SubAgentActivityLine {
-    /// Tool call: "Calling tool `tool_name`"
-    ToolCall { tool_name: String },
-    /// Tool status: "Tool status: Success" or "Tool status: Running — message"
-    ToolStatus {
-        status: SubAgentToolStatus,
-        message: Option<String>,
-    },
-    /// LLM streaming cancelled
-    Cancelled,
-    /// LLM error
-    Error { message: String },
-    /// Unknown/unparsed line
-    Other { text: String },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SubAgentToolStatus {
-    Pending,
-    Running,
-    Success,
-    Error,
-}
-
-impl SubAgentActivityLine {
-    /// Parse a single line from sub-agent output
-    fn parse(line: &str) -> Self {
-        let line = line.trim();
-
-        // Remove leading "- " if present
-        let line = line.strip_prefix("- ").unwrap_or(line);
-
-        // Check for tool call
-        if let Some(rest) = line.strip_prefix("Calling tool `") {
-            if let Some(tool_name) = rest.strip_suffix('`') {
-                return Self::ToolCall {
-                    tool_name: tool_name.to_string(),
-                };
-            }
-        }
-
-        // Check for tool status
-        if let Some(rest) = line.strip_prefix("Tool status: ") {
-            // Format: "Status" or "Status — message"
-            let (status_str, message) = if let Some(idx) = rest.find(" — ") {
-                (&rest[..idx], Some(rest[idx + " — ".len()..].to_string()))
-            } else {
-                (rest, None)
-            };
-
-            let status = match status_str {
-                "Pending" => SubAgentToolStatus::Pending,
-                "Running" => SubAgentToolStatus::Running,
-                "Success" => SubAgentToolStatus::Success,
-                "Error" => SubAgentToolStatus::Error,
-                _ => SubAgentToolStatus::Running, // Default to running for unknown
-            };
-
-            return Self::ToolStatus { status, message };
-        }
-
-        // Check for LLM events
-        if line == "LLM streaming cancelled" {
-            return Self::Cancelled;
-        }
-
-        if let Some(rest) = line.strip_prefix("LLM error: ") {
-            return Self::Error {
-                message: rest.to_string(),
-            };
-        }
-
-        // Fallback
-        Self::Other {
-            text: line.to_string(),
-        }
-    }
-}
-
-/// Parsed sub-agent output with activity lines
-#[derive(Debug, Clone)]
-pub struct ParsedSubAgentOutput {
-    pub activities: Vec<SubAgentActivityLine>,
-}
-
-impl ParsedSubAgentOutput {
-    /// Parse the full sub-agent output
-    pub fn parse(output: &str) -> Self {
-        let mut activities = Vec::new();
-
-        for line in output.lines() {
-            let line = line.trim();
-
-            // Skip the header
-            if line == "### Sub-agent activity" || line.is_empty() {
-                continue;
-            }
-
-            activities.push(SubAgentActivityLine::parse(line));
-        }
-
-        Self { activities }
-    }
-
-    /// Get the most recent tool call that is still "active" (last call without a success/error)
-    pub fn get_active_tool(&self) -> Option<&str> {
-        let mut last_tool: Option<&str> = None;
-
-        for activity in &self.activities {
-            match activity {
-                SubAgentActivityLine::ToolCall { tool_name } => {
-                    last_tool = Some(tool_name.as_str());
-                }
-                SubAgentActivityLine::ToolStatus { status, .. }
-                    if *status == SubAgentToolStatus::Success
-                        || *status == SubAgentToolStatus::Error =>
-                {
-                    last_tool = None; // Tool completed
-                }
-                _ => {}
-            }
-        }
-
-        last_tool
-    }
-
-    /// Get a summary of completed tools for compact display
-    pub fn get_tool_summary(&self) -> Vec<CompactToolInfo> {
-        let mut tools: Vec<CompactToolInfo> = Vec::new();
-        let mut current_tool: Option<String> = None;
-
-        for activity in &self.activities {
-            match activity {
-                SubAgentActivityLine::ToolCall { tool_name } => {
-                    current_tool = Some(tool_name.clone());
-                }
-                SubAgentActivityLine::ToolStatus { status, message } => {
-                    if let Some(tool_name) = current_tool.take() {
-                        let tool_status = match status {
-                            SubAgentToolStatus::Success => CompactToolStatus::Success,
-                            SubAgentToolStatus::Error => CompactToolStatus::Error,
-                            SubAgentToolStatus::Running => CompactToolStatus::Running,
-                            SubAgentToolStatus::Pending => CompactToolStatus::Pending,
-                        };
-                        tools.push(CompactToolInfo {
-                            name: tool_name,
-                            status: tool_status,
-                            message: message.clone(),
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // If there's still a current tool without status, it's running
-        if let Some(tool_name) = current_tool {
-            tools.push(CompactToolInfo {
-                name: tool_name,
-                status: CompactToolStatus::Running,
-                message: None,
-            });
-        }
-
-        tools
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct CompactToolInfo {
-    pub name: String,
-    pub status: CompactToolStatus,
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum CompactToolStatus {
-    Pending,
-    Running,
-    Success,
-    Error,
 }
 
 /// Renderer for spawn_agent tool output
@@ -314,9 +131,9 @@ impl SpawnAgentOutputRenderer {
         }
     }
 
-    /// Render a single compact tool line
+    /// Render a single compact tool line from structured data
     fn render_tool_line(
-        tool: &CompactToolInfo,
+        tool: &crate::agent::sub_agent::SubAgentToolCall,
         theme: &gpui_component::theme::Theme,
     ) -> gpui::AnyElement {
         use super::file_icons;
@@ -326,10 +143,9 @@ impl SpawnAgentOutputRenderer {
 
         // Status-based colors
         let (icon_color, text_color) = match tool.status {
-            CompactToolStatus::Running => (theme.info, theme.muted_foreground),
-            CompactToolStatus::Success => (theme.success, theme.muted_foreground),
-            CompactToolStatus::Error => (theme.danger, theme.danger),
-            CompactToolStatus::Pending => (theme.muted_foreground, theme.muted_foreground),
+            SubAgentToolStatus::Running => (theme.info, theme.muted_foreground),
+            SubAgentToolStatus::Success => (theme.success, theme.muted_foreground),
+            SubAgentToolStatus::Error => (theme.danger, theme.danger),
         };
 
         // Build the display text
@@ -337,7 +153,7 @@ impl SpawnAgentOutputRenderer {
             if msg.is_empty() {
                 title
             } else {
-                format!("{} {}", title, msg)
+                format!("{title} — {msg}")
             }
         } else {
             title
@@ -361,6 +177,50 @@ impl SpawnAgentOutputRenderer {
             ])
             .into_any()
     }
+
+    /// Render error/cancelled status if present
+    fn render_status_line(
+        output: &SubAgentOutput,
+        theme: &gpui_component::theme::Theme,
+    ) -> Option<gpui::AnyElement> {
+        if output.cancelled == Some(true) {
+            return Some(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .py(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(theme.warning)
+                            .child("Sub-agent cancelled"),
+                    )
+                    .into_any(),
+            );
+        }
+
+        if let Some(error) = &output.error {
+            return Some(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .py(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(theme.danger)
+                            .child(format!("Error: {error}")),
+                    )
+                    .into_any(),
+            );
+        }
+
+        None
+    }
 }
 
 impl ToolOutputRenderer for SpawnAgentOutputRenderer {
@@ -379,18 +239,31 @@ impl ToolOutputRenderer for SpawnAgentOutputRenderer {
             return None;
         }
 
-        let parsed = ParsedSubAgentOutput::parse(output);
-        let tools = parsed.get_tool_summary();
+        // Parse JSON output
+        let parsed = match SubAgentOutput::from_json(output) {
+            Some(p) => p,
+            None => {
+                // If not valid JSON, return None to use default text rendering
+                // This handles backwards compatibility with any old markdown format
+                return None;
+            }
+        };
 
-        if tools.is_empty() {
+        if parsed.tools.is_empty() && parsed.cancelled.is_none() && parsed.error.is_none() {
             return None;
         }
 
         // Render compact list of tool calls
-        let tool_elements: Vec<gpui::AnyElement> = tools
+        let mut elements: Vec<gpui::AnyElement> = parsed
+            .tools
             .iter()
             .map(|tool| Self::render_tool_line(tool, theme))
             .collect();
+
+        // Add status line if present
+        if let Some(status_line) = Self::render_status_line(&parsed, theme) {
+            elements.push(status_line);
+        }
 
         Some(
             div()
@@ -398,7 +271,7 @@ impl ToolOutputRenderer for SpawnAgentOutputRenderer {
                 .flex_col()
                 .gap_0()
                 .mt_1()
-                .children(tool_elements)
+                .children(elements)
                 .into_any(),
         )
     }
@@ -409,99 +282,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_sub_agent_output() {
-        let output = r#"### Sub-agent activity
+    fn test_parse_json_output() {
+        let json = r#"{"tools":[{"name":"read_files","status":"success"},{"name":"search_files","status":"running","message":"Searching..."}]}"#;
 
-- Calling tool `read_files`
-- Tool status: Success
-- Calling tool `search_files`
-- Tool status: Running — Searching for pattern
-"#;
-
-        let parsed = ParsedSubAgentOutput::parse(output);
-        assert_eq!(parsed.activities.len(), 4);
-
-        // First activity: tool call
-        match &parsed.activities[0] {
-            SubAgentActivityLine::ToolCall { tool_name } => {
-                assert_eq!(tool_name, "read_files");
-            }
-            _ => panic!("Expected ToolCall"),
-        }
-
-        // Second activity: status
-        match &parsed.activities[1] {
-            SubAgentActivityLine::ToolStatus { status, message } => {
-                assert_eq!(*status, SubAgentToolStatus::Success);
-                assert!(message.is_none());
-            }
-            _ => panic!("Expected ToolStatus"),
-        }
-
-        // Fourth activity: status with message
-        match &parsed.activities[3] {
-            SubAgentActivityLine::ToolStatus { status, message } => {
-                assert_eq!(*status, SubAgentToolStatus::Running);
-                assert_eq!(message.as_deref(), Some("Searching for pattern"));
-            }
-            _ => panic!("Expected ToolStatus"),
-        }
+        let parsed = SubAgentOutput::from_json(json).unwrap();
+        assert_eq!(parsed.tools.len(), 2);
+        assert_eq!(parsed.tools[0].name, "read_files");
+        assert_eq!(parsed.tools[0].status, SubAgentToolStatus::Success);
+        assert_eq!(parsed.tools[1].name, "search_files");
+        assert_eq!(parsed.tools[1].status, SubAgentToolStatus::Running);
+        assert_eq!(parsed.tools[1].message.as_deref(), Some("Searching..."));
     }
 
     #[test]
-    fn test_get_tool_summary() {
-        let output = r#"### Sub-agent activity
+    fn test_parse_json_with_cancelled() {
+        let json = r#"{"tools":[{"name":"read_files","status":"success"}],"cancelled":true}"#;
 
-- Calling tool `read_files`
-- Tool status: Success
-- Calling tool `search_files`
-"#;
-
-        let parsed = ParsedSubAgentOutput::parse(output);
-        let tools = parsed.get_tool_summary();
-
-        assert_eq!(tools.len(), 2);
-        assert_eq!(tools[0].name, "read_files");
-        assert_eq!(tools[0].status, CompactToolStatus::Success);
-        assert_eq!(tools[1].name, "search_files");
-        assert_eq!(tools[1].status, CompactToolStatus::Running);
+        let parsed = SubAgentOutput::from_json(json).unwrap();
+        assert_eq!(parsed.tools.len(), 1);
+        assert_eq!(parsed.cancelled, Some(true));
     }
 
     #[test]
-    fn test_get_active_tool() {
-        let output = r#"### Sub-agent activity
+    fn test_parse_json_with_error() {
+        let json = r#"{"tools":[],"error":"Connection failed"}"#;
 
-- Calling tool `read_files`
-- Tool status: Success
-- Calling tool `search_files`
-"#;
-
-        let parsed = ParsedSubAgentOutput::parse(output);
-        assert_eq!(parsed.get_active_tool(), Some("search_files"));
+        let parsed = SubAgentOutput::from_json(json).unwrap();
+        assert_eq!(parsed.error.as_deref(), Some("Connection failed"));
     }
 
     #[test]
-    fn test_parse_error_and_cancel() {
-        let output = r#"### Sub-agent activity
+    fn test_roundtrip() {
+        let mut output = SubAgentOutput::new();
+        output
+            .tools
+            .push(crate::agent::sub_agent::SubAgentToolCall {
+                name: "read_files".to_string(),
+                status: SubAgentToolStatus::Success,
+                message: None,
+            });
+        output
+            .tools
+            .push(crate::agent::sub_agent::SubAgentToolCall {
+                name: "search_files".to_string(),
+                status: SubAgentToolStatus::Running,
+                message: Some("Searching for pattern".to_string()),
+            });
 
-- Calling tool `read_files`
-- LLM streaming cancelled
-- LLM error: Connection failed
-"#;
+        let json = output.to_json();
+        let parsed = SubAgentOutput::from_json(&json).unwrap();
 
-        let parsed = ParsedSubAgentOutput::parse(output);
-        assert_eq!(parsed.activities.len(), 3);
+        assert_eq!(parsed.tools.len(), 2);
+        assert_eq!(parsed.tools[0].name, "read_files");
+        assert_eq!(
+            parsed.tools[1].message.as_deref(),
+            Some("Searching for pattern")
+        );
+    }
 
-        match &parsed.activities[1] {
-            SubAgentActivityLine::Cancelled => {}
-            _ => panic!("Expected Cancelled"),
-        }
-
-        match &parsed.activities[2] {
-            SubAgentActivityLine::Error { message } => {
-                assert_eq!(message, "Connection failed");
-            }
-            _ => panic!("Expected Error"),
-        }
+    #[test]
+    fn test_invalid_json_returns_none() {
+        let invalid = "### Sub-agent activity\n- Calling tool read_files";
+        assert!(SubAgentOutput::from_json(invalid).is_none());
     }
 }

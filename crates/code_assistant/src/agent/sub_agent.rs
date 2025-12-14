@@ -279,13 +279,78 @@ fn has_file_references_with_line_ranges(text: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// A minimal UI adapter that turns sub-agent activity into a compact markdown log and streams it
+/// Structured representation of a sub-agent tool call for UI display and persistence.
+/// This is serialized to JSON as the spawn_agent tool output.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SubAgentToolCall {
+    pub name: String,
+    pub status: SubAgentToolStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Status of a sub-agent tool call
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubAgentToolStatus {
+    Running,
+    Success,
+    Error,
+}
+
+impl From<ToolStatus> for SubAgentToolStatus {
+    fn from(status: ToolStatus) -> Self {
+        match status {
+            ToolStatus::Pending | ToolStatus::Running => SubAgentToolStatus::Running,
+            ToolStatus::Success => SubAgentToolStatus::Success,
+            ToolStatus::Error => SubAgentToolStatus::Error,
+        }
+    }
+}
+
+/// Structured output for spawn_agent tool, serialized as JSON
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SubAgentOutput {
+    pub tools: Vec<SubAgentToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancelled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl SubAgentOutput {
+    pub fn new() -> Self {
+        Self {
+            tools: Vec::new(),
+            cancelled: None,
+            error: None,
+        }
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    pub fn from_json(json: &str) -> Option<Self> {
+        serde_json::from_str(json).ok()
+    }
+}
+
+impl Default for SubAgentOutput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A minimal UI adapter that captures sub-agent activity as structured data and streams it
 /// into the parent `spawn_agent` tool block.
 struct SubAgentUiAdapter {
     parent: Arc<dyn UserInterface>,
     parent_tool_id: String,
     cancelled: Arc<AtomicBool>,
-    lines: Mutex<Vec<String>>,
+    output: Mutex<SubAgentOutput>,
+    /// Map from tool_id to index in output.tools for fast lookup
+    tool_id_to_index: Mutex<std::collections::HashMap<String, usize>>,
 }
 
 impl SubAgentUiAdapter {
@@ -298,30 +363,16 @@ impl SubAgentUiAdapter {
             parent,
             parent_tool_id,
             cancelled,
-            lines: Mutex::new(Vec::new()),
+            output: Mutex::new(SubAgentOutput::new()),
+            tool_id_to_index: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
-    async fn push_line(&self, line: String) {
-        // Build the output string while holding the lock, then drop it before await
-        let output = {
-            let mut lines = self.lines.lock().unwrap();
-            if lines.len() > 50 {
-                // Drop oldest lines to keep UI compact.
-                let drain = (lines.len() - 50) + 1;
-                lines.drain(0..drain);
-            }
-            lines.push(line);
-
-            format!(
-                "### Sub-agent activity\n\n{}\n",
-                lines
-                    .iter()
-                    .map(|l| format!("- {l}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
-        }; // MutexGuard is dropped here
+    async fn send_output_update(&self) {
+        let json = {
+            let output = self.output.lock().unwrap();
+            output.to_json()
+        };
 
         let _ = self
             .parent
@@ -329,38 +380,98 @@ impl SubAgentUiAdapter {
                 tool_id: self.parent_tool_id.clone(),
                 status: ToolStatus::Running,
                 message: Some("Sub-agent running".to_string()),
-                output: Some(output),
+                output: Some(json),
             })
             .await;
+    }
+
+    fn add_tool_start(&self, name: &str, id: &str) {
+        let mut output = self.output.lock().unwrap();
+        let mut id_map = self.tool_id_to_index.lock().unwrap();
+
+        // Add new tool as running
+        let index = output.tools.len();
+        output.tools.push(SubAgentToolCall {
+            name: name.to_string(),
+            status: SubAgentToolStatus::Running,
+            message: None,
+        });
+        id_map.insert(id.to_string(), index);
+    }
+
+    fn update_tool_status(&self, tool_id: &str, status: ToolStatus, message: Option<String>) {
+        let mut output = self.output.lock().unwrap();
+        let id_map = self.tool_id_to_index.lock().unwrap();
+
+        // Find tool by id and update its status
+        if let Some(&index) = id_map.get(tool_id) {
+            if let Some(tool) = output.tools.get_mut(index) {
+                tool.status = status.into();
+                tool.message = message;
+            }
+        } else {
+            tracing::warn!(
+                "SubAgentUiAdapter: UpdateToolStatus for unknown tool_id={}",
+                tool_id
+            );
+        }
+    }
+
+    fn set_cancelled(&self) {
+        let mut output = self.output.lock().unwrap();
+        output.cancelled = Some(true);
+    }
+
+    fn set_error(&self, error: String) {
+        let mut output = self.output.lock().unwrap();
+        output.error = Some(error);
     }
 }
 
 #[async_trait::async_trait]
 impl UserInterface for SubAgentUiAdapter {
     async fn send_event(&self, event: UiEvent) -> Result<(), crate::ui::UIError> {
-        match event {
-            UiEvent::StartTool { name, .. } => {
-                self.push_line(format!("Calling tool `{name}`")).await;
+        match &event {
+            UiEvent::StartTool { name, id } => {
+                // This event is typically not sent directly (GPUI creates it from DisplayFragment)
+                // but handle it for completeness in case other UIs send it
+                tracing::debug!(
+                    "SubAgentUiAdapter: StartTool event received: {} ({})",
+                    name,
+                    id
+                );
+                self.add_tool_start(name, id);
+                self.send_output_update().await;
             }
             UiEvent::UpdateToolStatus {
-                status, message, ..
+                tool_id,
+                status,
+                message,
+                ..
             } => {
-                if let Some(message) = message {
-                    self.push_line(format!("Tool status: {status:?} — {message}"))
-                        .await;
-                } else {
-                    self.push_line(format!("Tool status: {status:?}")).await;
-                }
+                tracing::debug!(
+                    "SubAgentUiAdapter: UpdateToolStatus event - tool_id={}, status={:?}",
+                    tool_id,
+                    status
+                );
+                self.update_tool_status(tool_id, *status, message.clone());
+                self.send_output_update().await;
             }
             UiEvent::StreamingStopped {
                 cancelled, error, ..
             } => {
-                if cancelled {
-                    self.push_line("LLM streaming cancelled".to_string()).await;
+                tracing::debug!(
+                    "SubAgentUiAdapter: StreamingStopped - cancelled={}, error={:?}",
+                    cancelled,
+                    error
+                );
+                if *cancelled {
+                    self.set_cancelled();
                 }
                 if let Some(err) = error {
-                    self.push_line(format!("LLM error: {err}")).await;
+                    self.set_error(err.clone());
                 }
+                self.send_output_update().await;
             }
             _ => {
                 // Ignore other events; they belong to the sub-agent's isolated transcript.
@@ -372,8 +483,30 @@ impl UserInterface for SubAgentUiAdapter {
 
     fn display_fragment(
         &self,
-        _fragment: &crate::ui::DisplayFragment,
+        fragment: &crate::ui::DisplayFragment,
     ) -> Result<(), crate::ui::UIError> {
+        use crate::ui::DisplayFragment;
+
+        match fragment {
+            DisplayFragment::ToolName { name, id } => {
+                // A sub-agent tool is starting - capture it
+                // Note: This is called during LLM streaming when the tool name is parsed
+                // The UpdateToolStatus event with Running status comes later when execution starts
+                tracing::debug!(
+                    "SubAgentUiAdapter: ToolName fragment received: {} ({})",
+                    name,
+                    id
+                );
+                self.add_tool_start(name, id);
+                // We can't send async update here, but the subsequent UpdateToolStatus
+                // event will trigger send_output_update()
+            }
+            _ => {
+                // Ignore other fragments (text, parameters, etc.)
+                // They belong to the sub-agent's isolated transcript
+            }
+        }
+
         Ok(())
     }
 
