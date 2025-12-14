@@ -1,11 +1,9 @@
 use clap::ValueEnum;
 use command_executor::build_format_command;
-use fs_explorer::FileTreeEntry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use web::{WebPage, WebSearchResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Project {
@@ -47,33 +45,6 @@ impl Project {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum LoadedResource {
-    File(String), // File content
-    WebSearch {
-        query: String,
-        results: Vec<WebSearchResult>,
-    },
-    WebPage(WebPage),
-}
-
-/// Represents the agent's working memory during execution
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct WorkingMemory {
-    /// Current task description
-    pub current_task: String,
-    /// Currently loaded resources (files, web search results, web pages)
-    /// Key format: "project_name::path" to make it JSON-serializable
-    #[serde(with = "tuple_key_map")]
-    pub loaded_resources: HashMap<(String, PathBuf), LoadedResource>,
-    /// File trees for each project
-    pub file_trees: HashMap<String, FileTreeEntry>,
-    /// Expanded directories per project
-    pub expanded_directories: HashMap<String, Vec<PathBuf>>,
-    /// Available project names
-    pub available_projects: Vec<String>,
-}
-
 /// Priority levels for plan items
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -113,69 +84,6 @@ pub struct PlanState {
     pub entries: Vec<PlanItem>,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "_meta")]
     pub meta: Option<JsonValue>,
-}
-
-/// Custom serialization for HashMap with tuple keys
-mod tuple_key_map {
-    use super::*;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::HashMap;
-
-    pub fn serialize<S, V>(
-        map: &HashMap<(String, PathBuf), V>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-        V: Serialize,
-    {
-        let string_map: HashMap<String, &V> = map
-            .iter()
-            .map(|((project, path), value)| (format!("{}::{}", project, path.display()), value))
-            .collect();
-        string_map.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D, V>(
-        deserializer: D,
-    ) -> Result<HashMap<(String, PathBuf), V>, D::Error>
-    where
-        D: Deserializer<'de>,
-        V: Deserialize<'de>,
-    {
-        let string_map: HashMap<String, V> = HashMap::deserialize(deserializer)?;
-        let result = string_map
-            .into_iter()
-            .filter_map(|(key, value)| {
-                if let Some((project, path_str)) = key.split_once("::") {
-                    Some(((project.to_string(), PathBuf::from(path_str)), value))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        Ok(result)
-    }
-}
-
-impl std::fmt::Display for LoadedResource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LoadedResource::File(content) => write!(f, "{content}"),
-            LoadedResource::WebSearch { query, results } => {
-                writeln!(f, "Web search results for: '{query}'")?;
-                for result in results {
-                    writeln!(f, "- {} ({})", result.title, result.url)?;
-                    writeln!(f, "  {}", result.snippet)?;
-                }
-                Ok(())
-            }
-            LoadedResource::WebPage(page) => {
-                writeln!(f, "Content from: {}", page.url)?;
-                write!(f, "{}", page.content)
-            }
-        }
-    }
 }
 
 /// Tool description for LLM

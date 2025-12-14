@@ -273,19 +273,11 @@ impl Agent {
         );
 
         if let Some(session_id) = &self.session_id {
-            // Create a WorkingMemory for backward-compatible persistence
-            // File trees are regenerated on load, so we only persist available_projects
-            let working_memory = WorkingMemory {
-                available_projects: self.available_projects.clone(),
-                ..Default::default()
-            };
-
             let session_state = crate::session::SessionState {
                 session_id: session_id.clone(),
                 name: self.session_name.clone(),
                 messages: self.message_history.clone(),
                 tool_executions: self.tool_executions.clone(),
-                working_memory,
                 plan: self.plan.clone(),
                 config: self.session_config.clone(),
                 next_request_id: Some(self.next_request_id),
@@ -464,11 +456,7 @@ impl Agent {
                 + 1
         });
 
-        // Restore available projects from persisted working memory
-        // (backward compatibility with existing sessions)
-        self.available_projects = session_state.working_memory.available_projects.clone();
-
-        // Refresh project information from project manager (regenerates file trees)
+        // Refresh project information from project manager (regenerates file trees and available_projects)
         self.init_projects()?;
 
         let _ = self
