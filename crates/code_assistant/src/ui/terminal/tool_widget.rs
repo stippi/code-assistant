@@ -228,6 +228,56 @@ impl<'a> Widget for ToolWidget<'a> {
                     display_text,
                     Style::default().fg(Color::LightRed),
                 );
+                current_y += 1;
+            }
+        }
+
+        // Tool output (used by spawn_agent for streaming sub-agent activity)
+        if let Some(ref output) = self.tool_block.output {
+            if current_y < area.y + area.height && !output.is_empty() {
+                // Render each line of the output
+                for line in output.lines() {
+                    if current_y >= area.y + area.height {
+                        break;
+                    }
+
+                    // Determine line style based on content
+                    let (prefix, color) = if line.starts_with("### ") {
+                        // Header line (e.g. "### Sub-agent activity")
+                        ("", Color::Cyan)
+                    } else if line.starts_with("- Calling tool") {
+                        // Tool call line
+                        ("", Color::Yellow)
+                    } else if line.starts_with("- Tool status:") {
+                        // Tool status line
+                        ("", Color::Gray)
+                    } else if line.starts_with("- ") {
+                        // Other list items
+                        ("", Color::White)
+                    } else {
+                        // Regular text
+                        ("", Color::Gray)
+                    };
+
+                    let display_line = format!("{prefix}{line}");
+                    let truncated = if display_line.len() > (area.width.saturating_sub(4)) as usize
+                    {
+                        format!(
+                            "{}...",
+                            &display_line[..(area.width.saturating_sub(7)) as usize]
+                        )
+                    } else {
+                        display_line
+                    };
+
+                    buf.set_string(
+                        area.x + 2,
+                        current_y,
+                        &truncated,
+                        Style::default().fg(color),
+                    );
+                    current_y += 1;
+                }
             }
         }
     }

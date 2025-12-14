@@ -17,6 +17,7 @@ mod root;
 pub mod sandbox_selector;
 pub mod simple_renderers;
 pub mod theme;
+pub mod tool_output_renderers;
 
 use crate::persistence::{ChatMetadata, DraftStorage};
 use crate::types::PlanState;
@@ -27,6 +28,7 @@ use crate::ui::gpui::{
     elements::MessageRole,
     parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
     simple_renderers::SimpleParameterRenderer,
+    tool_output_renderers::{SpawnAgentOutputRenderer, ToolOutputRendererRegistry},
 };
 use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
 use assets::Assets;
@@ -240,6 +242,11 @@ impl Gpui {
 
         // Set the global registry
         ParameterRendererRegistry::set_global(parameter_renderers.clone());
+
+        // Initialize tool output renderers registry
+        let mut tool_output_registry = ToolOutputRendererRegistry::new();
+        tool_output_registry.register_renderer(Box::new(SpawnAgentOutputRenderer));
+        ToolOutputRendererRegistry::set_global(Arc::new(tool_output_registry));
 
         // Create a channel to send and receive UiEvents
         let (tx, rx) = async_channel::unbounded::<UiEvent>();

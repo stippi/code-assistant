@@ -1356,24 +1356,48 @@ impl Render for BlockView {
                                                                     };
 
                                                                     if should_show_output {
-                                                                        let output_color =
-                                                                            if block.status == crate::ui::ToolStatus::Error {
-                                                                                cx.theme().danger
-                                                                            } else {
-                                                                                cx.theme().foreground
-                                                                            };
+                                                                        // Try custom tool output renderer first
+                                                                        let custom_output = crate::ui::gpui::tool_output_renderers::ToolOutputRendererRegistry::global()
+                                                                            .and_then(|registry| {
+                                                                                registry.render_output(
+                                                                                    &block.name,
+                                                                                    output_content,
+                                                                                    &block.status,
+                                                                                    cx.theme(),
+                                                                                )
+                                                                            });
 
-                                                                        expandable_elements.push(
-                                                                            div()
-                                                                                .p_2()
-                                                                                .mt_1()
-                                                                                .w_full()
-                                                                                .text_color(output_color)
-                                                                                .text_size(px(13.))
-                                                                                .whitespace_normal()
-                                                                                .child(output_content.clone())
-                                                                                .into_any(),
-                                                                        );
+                                                                        if let Some(custom_element) = custom_output {
+                                                                            // Use custom renderer output
+                                                                            expandable_elements.push(
+                                                                                div()
+                                                                                    .px_2()
+                                                                                    .mt_1()
+                                                                                    .w_full()
+                                                                                    .child(custom_element)
+                                                                                    .into_any(),
+                                                                            );
+                                                                        } else {
+                                                                            // Default output rendering
+                                                                            let output_color =
+                                                                                if block.status == crate::ui::ToolStatus::Error {
+                                                                                    cx.theme().danger
+                                                                                } else {
+                                                                                    cx.theme().foreground
+                                                                                };
+
+                                                                            expandable_elements.push(
+                                                                                div()
+                                                                                    .p_2()
+                                                                                    .mt_1()
+                                                                                    .w_full()
+                                                                                    .text_color(output_color)
+                                                                                    .text_size(px(13.))
+                                                                                    .whitespace_normal()
+                                                                                    .child(output_content.clone())
+                                                                                    .into_any(),
+                                                                            );
+                                                                        }
                                                                     }
                                                                 }
                                                             }

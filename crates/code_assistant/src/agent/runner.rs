@@ -5,7 +5,7 @@ use crate::permissions::PermissionMediator;
 use crate::persistence::{ChatMetadata, SessionModelConfig};
 use crate::session::instance::SessionActivityState;
 use crate::session::SessionConfig;
-use crate::tools::core::{ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
+use crate::tools::core::{Render, ResourcesTracker, ToolContext, ToolRegistry, ToolScope};
 use crate::tools::{generate_system_message, ParserRegistry, ToolRequest};
 use crate::types::*;
 use crate::ui::{DisplayFragment, UiEvent, UserInterface};
@@ -667,44 +667,280 @@ impl Agent {
 
     /// Executes a list of tool requests.
     /// Handles the "complete_task" action and appends tool results to message history.
+    /// Multiple `spawn_agent` read-only calls are executed concurrently for efficiency.
     async fn manage_tool_execution(&mut self, tool_requests: &[ToolRequest]) -> Result<LoopFlow> {
-        let mut content_blocks = Vec::new();
-
-        for tool_request in tool_requests {
-            if tool_request.name == "complete_task" {
-                debug!("Task completed");
-                return Ok(LoopFlow::Break);
-            }
-
-            let start_time = Some(SystemTime::now());
-            let result_block = match self.execute_tool(tool_request).await {
-                Ok(success) => ContentBlock::ToolResult {
-                    tool_use_id: tool_request.id.clone(),
-                    content: String::new(), // Will be filled dynamically in prepare_messages
-                    is_error: if success { None } else { Some(true) },
-                    start_time,
-                    end_time: Some(SystemTime::now()),
-                },
-                Err(e) => {
-                    let error_text = Self::format_error_for_user(&e);
-                    ContentBlock::ToolResult {
-                        tool_use_id: tool_request.id.clone(),
-                        content: error_text,
-                        is_error: Some(true),
-                        start_time,
-                        end_time: Some(SystemTime::now()),
-                    }
-                }
-            };
-            content_blocks.push(result_block);
+        // Check for complete_task first
+        if tool_requests.iter().any(|r| r.name == "complete_task") {
+            debug!("Task completed");
+            return Ok(LoopFlow::Break);
         }
 
-        // Only add message if there were actual tool executions (not just complete_task)
-        if !content_blocks.is_empty() {
-            let result_message = Message::new_user_content(content_blocks);
+        // Partition into spawn_agent (read_only) and other tools, preserving indices
+
+        let (parallel_indices, _sequential_indices): (Vec<_>, Vec<_>) = tool_requests
+            .iter()
+            .enumerate()
+            .partition(|(_, req)| self.can_run_in_parallel(req));
+
+        // Execute parallel spawn_agent tools concurrently if we have multiple
+        let parallel_results = if parallel_indices.len() > 1 {
+            debug!(
+                "Running {} spawn_agent tools in parallel",
+                parallel_indices.len()
+            );
+            self.execute_tools_in_parallel(
+                parallel_indices
+                    .iter()
+                    .map(|(i, _)| &tool_requests[*i])
+                    .collect(),
+            )
+            .await
+        } else {
+            Vec::new()
+        };
+
+        // Build content blocks in original order
+        let mut content_blocks: Vec<Option<ContentBlock>> = vec![None; tool_requests.len()];
+        let mut parallel_result_iter = parallel_results.into_iter();
+
+        // Process results in original order
+        for (idx, tool_request) in tool_requests.iter().enumerate() {
+            let result_block =
+                if parallel_indices.len() > 1 && parallel_indices.iter().any(|(i, _)| *i == idx) {
+                    // This was a parallel spawn_agent - get result from parallel execution
+                    parallel_result_iter.next().unwrap_or_else(|| {
+                        let start_time = Some(SystemTime::now());
+                        ContentBlock::ToolResult {
+                            tool_use_id: tool_request.id.clone(),
+                            content: "Internal error: missing parallel result".to_string(),
+                            is_error: Some(true),
+                            start_time,
+                            end_time: Some(SystemTime::now()),
+                        }
+                    })
+                } else {
+                    // Sequential execution
+                    let start_time = Some(SystemTime::now());
+                    match self.execute_tool(tool_request).await {
+                        Ok(success) => ContentBlock::ToolResult {
+                            tool_use_id: tool_request.id.clone(),
+                            content: String::new(),
+                            is_error: if success { None } else { Some(true) },
+                            start_time,
+                            end_time: Some(SystemTime::now()),
+                        },
+                        Err(e) => {
+                            let error_text = Self::format_error_for_user(&e);
+                            ContentBlock::ToolResult {
+                                tool_use_id: tool_request.id.clone(),
+                                content: error_text,
+                                is_error: Some(true),
+                                start_time,
+                                end_time: Some(SystemTime::now()),
+                            }
+                        }
+                    }
+                };
+            content_blocks[idx] = Some(result_block);
+        }
+
+        // Flatten and add message
+        let final_blocks: Vec<_> = content_blocks.into_iter().flatten().collect();
+        if !final_blocks.is_empty() {
+            let result_message = Message::new_user_content(final_blocks);
             self.append_message(result_message)?;
         }
         Ok(LoopFlow::Continue)
+    }
+
+    /// Check if a tool request can be run in parallel with others.
+    /// Currently only spawn_agent with read_only mode is parallelizable.
+    fn can_run_in_parallel(&self, tool_request: &ToolRequest) -> bool {
+        if tool_request.name != "spawn_agent" {
+            return false;
+        }
+        // Check if mode is read_only (default if not specified)
+        let mode = tool_request.input["mode"].as_str().unwrap_or("read_only");
+        mode == "read_only"
+    }
+
+    /// Execute multiple spawn_agent tools in parallel.
+    /// Returns ContentBlocks in the same order as input.
+    async fn execute_tools_in_parallel(
+        &mut self,
+        tool_requests: Vec<&ToolRequest>,
+    ) -> Vec<ContentBlock> {
+        use futures::future::join_all;
+
+        // Prepare context components that can be shared across parallel executions
+        let sub_agent_runner = self.sub_agent_runner.clone();
+        let ui = self.ui.clone();
+
+        // Create futures for each spawn_agent tool
+        let futures: Vec<_> = tool_requests
+            .iter()
+            .map(|tool_request| {
+                let tool_id = tool_request.id.clone();
+                let input = tool_request.input.clone();
+                let runner = sub_agent_runner.clone();
+                let ui_clone = ui.clone();
+
+                async move {
+                    let start_time = Some(SystemTime::now());
+
+                    // Execute spawn_agent directly without going through execute_tool
+                    let result = Self::execute_spawn_agent_parallel(
+                        runner.as_deref(),
+                        &tool_id,
+                        input,
+                        ui_clone.as_ref(),
+                    )
+                    .await;
+
+                    let (is_success, tool_execution) = result;
+                    let end_time = Some(SystemTime::now());
+
+                    (
+                        tool_id.clone(),
+                        ContentBlock::ToolResult {
+                            tool_use_id: tool_id,
+                            content: String::new(),
+                            is_error: if is_success { None } else { Some(true) },
+                            start_time,
+                            end_time,
+                        },
+                        tool_execution,
+                    )
+                }
+            })
+            .collect();
+
+        // Execute all in parallel
+        let results = join_all(futures).await;
+
+        // Collect results and tool executions
+        let mut content_blocks = Vec::new();
+        for (tool_id, content_block, tool_execution) in results {
+            debug!("Parallel spawn_agent {} completed", tool_id);
+            self.tool_executions.push(tool_execution);
+            content_blocks.push(content_block);
+        }
+
+        content_blocks
+    }
+
+    /// Execute a spawn_agent tool in parallel without requiring &mut self.
+    async fn execute_spawn_agent_parallel(
+        sub_agent_runner: Option<&dyn crate::agent::SubAgentRunner>,
+        tool_id: &str,
+        input: serde_json::Value,
+        ui: &dyn UserInterface,
+    ) -> (bool, ToolExecution) {
+        use crate::tools::core::Tool;
+
+        use crate::tools::core::ToolResult;
+        use crate::tools::impls::spawn_agent::{SpawnAgentInput, SpawnAgentTool};
+
+        // Update UI to show running status
+        let _ = ui
+            .send_event(UiEvent::UpdateToolStatus {
+                tool_id: tool_id.to_string(),
+                status: crate::ui::ToolStatus::Running,
+                message: None,
+                output: None,
+            })
+            .await;
+
+        // Parse input
+        let parsed_input: Result<SpawnAgentInput, _> = serde_json::from_value(input.clone());
+        let mut parsed_input = match parsed_input {
+            Ok(input) => input,
+            Err(e) => {
+                let error_msg = format!("Failed to parse spawn_agent input: {e}");
+                let _ = ui
+                    .send_event(UiEvent::UpdateToolStatus {
+                        tool_id: tool_id.to_string(),
+                        status: crate::ui::ToolStatus::Error,
+                        message: Some(error_msg.clone()),
+                        output: Some(error_msg.clone()),
+                    })
+                    .await;
+                return (
+                    false,
+                    ToolExecution::create_parse_error(tool_id.to_string(), error_msg),
+                );
+            }
+        };
+
+        // Create a minimal context for spawn_agent (it only needs sub_agent_runner and tool_id)
+        // We use a dummy project manager and command executor since spawn_agent doesn't use them
+        let dummy_project_manager = crate::config::DefaultProjectManager::new();
+        let dummy_command_executor = command_executor::DefaultCommandExecutor;
+
+        let mut context = ToolContext {
+            project_manager: &dummy_project_manager,
+            command_executor: &dummy_command_executor,
+            plan: None, // spawn_agent doesn't use plan
+            ui: Some(ui),
+            tool_id: Some(tool_id.to_string()),
+            permission_handler: None, // Will be handled by sub-agent runner
+            sub_agent_runner,
+            sub_agent_cancellation_registry: None,
+        };
+
+        let tool = SpawnAgentTool;
+        match tool.execute(&mut context, &mut parsed_input).await {
+            Ok(output) => {
+                let success = output.is_success();
+                let status = if success {
+                    crate::ui::ToolStatus::Success
+                } else {
+                    crate::ui::ToolStatus::Error
+                };
+
+                let status_msg = output.status();
+                let mut resources_tracker = ResourcesTracker::new();
+                let output_text = output.render(&mut resources_tracker);
+
+                let _ = ui
+                    .send_event(UiEvent::UpdateToolStatus {
+                        tool_id: tool_id.to_string(),
+                        status,
+                        message: Some(status_msg),
+                        output: Some(output_text),
+                    })
+                    .await;
+
+                let tool_execution = ToolExecution {
+                    tool_request: ToolRequest {
+                        id: tool_id.to_string(),
+                        name: "spawn_agent".to_string(),
+                        input,
+                        start_offset: None,
+                        end_offset: None,
+                    },
+                    result: Box::new(output),
+                };
+
+                (success, tool_execution)
+            }
+            Err(e) => {
+                let error_msg = format!("spawn_agent failed: {e}");
+                let _ = ui
+                    .send_event(UiEvent::UpdateToolStatus {
+                        tool_id: tool_id.to_string(),
+                        status: crate::ui::ToolStatus::Error,
+                        message: Some(error_msg.clone()),
+                        output: Some(error_msg.clone()),
+                    })
+                    .await;
+
+                (
+                    false,
+                    ToolExecution::create_parse_error(tool_id.to_string(), error_msg),
+                )
+            }
+        }
     }
 
     /// Start a new agent task

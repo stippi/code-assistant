@@ -14,13 +14,39 @@
 - [x] Added required `Agent` methods: `set_tool_scope`, `set_session_model_config`, `set_session_identity`, `set_external_cancel_flag`, `message_history`
 - [x] File reference enforcement with retry logic (up to 2 retries)
 
+### Completed (phase 2)
+- [x] **Terminal UI rendering**: Update terminal tool block to show streaming sub-agent activity
+  - Added output rendering in `ToolWidget` with color coding for activity lines
+  - Updated height calculation to account for multi-line output
+- [x] **Parallel execution**: Update `manage_tool_execution()` to run multiple `spawn_agent` calls concurrently
+  - Multiple `spawn_agent` read-only tools now run in parallel using `futures::join_all`
+  - Results are collected in deterministic order matching original tool request ordering
+  - Only `read_only` mode spawn_agents are parallelized for safety
+
+### Completed (phase 3)
+- [x] **Integration tests**: Added tests in `tests/sub_agent_tests.rs`:
+  - `test_spawn_agent_output_render` - output rendering for success/cancel/error
+  - `test_spawn_agent_input_parsing` - input parsing with defaults
+  - `test_cancellation_registry` - cancellation registration and triggering
+  - `test_mock_sub_agent_runner` - basic mock runner execution
+  - `test_parallel_sub_agent_execution` - verifies concurrent execution
+  - `test_tool_scope_for_sub_agent` - verifies tool availability per scope
+  - `test_can_run_in_parallel_logic` - parallel execution eligibility logic
+
+
+### Completed (phase 4)
+- [x] **GPUI rendering**: Custom tool output renderer for sub-agent progress display
+  - Added `ToolOutputRendererRegistry` pattern (similar to `ParameterRendererRegistry`)
+  - Implemented `SpawnAgentOutputRenderer` that parses sub-agent activity markdown
+  - Renders sub-tool calls in compact Zed-like style with icons and status colors
+  - Located in `crates/code_assistant/src/ui/gpui/tool_output_renderers.rs`
+- [x] **ACP mode support**: Sub-agent activity streams through existing tool output mechanisms
+  - Added `spawn_agent` icon mapping in `file_icons.rs` (uses `rerun.svg`)
+  - Output flows as `ToolCallUpdate` content for display in Zed's ACP panel
+
 ### Pending
 - [ ] **UI integration for cancellation**: Expose cancel button per running `spawn_agent` block
-- [ ] **Parallel execution**: Update `manage_tool_execution()` to run multiple `spawn_agent` calls concurrently
 - [ ] **Permission attribution**: Show permission requests as originating from sub-agent context (inline or popover)
-- [ ] **Terminal UI rendering**: Update terminal tool block to show streaming sub-agent activity
-- [ ] **GPUI rendering**: Update GPUI tool widget for sub-agent progress display
-- [ ] **Integration tests**: Add tests for isolation, parallelism, cancellation, and permission routing
 
 ### Notes
 - The cancellation infrastructure is in place (`SubAgentCancellationRegistry`, `cancel` method, `cancel_sub_agent` helper) but the UI hooks to trigger cancellation are not yet implemented.

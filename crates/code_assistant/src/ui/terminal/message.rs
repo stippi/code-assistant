@@ -161,9 +161,11 @@ impl MessageBlock {
                     height += 1;
                 }
 
-                // Output
-                if block.output.is_some() && block.status == ToolStatus::Success {
-                    height += 1;
+                // Output (used by spawn_agent for streaming sub-agent activity)
+                if let Some(ref output) = block.output {
+                    if !output.is_empty() {
+                        height += output.lines().count() as u16;
+                    }
                 }
 
                 height
