@@ -524,18 +524,6 @@ impl SubAgentUiAdapter {
 impl UserInterface for SubAgentUiAdapter {
     async fn send_event(&self, event: UiEvent) -> Result<(), crate::ui::UIError> {
         match &event {
-            UiEvent::StartTool { name, id } => {
-                // This event is typically not sent directly (GPUI creates it from DisplayFragment)
-                // but handle it for completeness in case other UIs send it
-                tracing::debug!(
-                    "SubAgentUiAdapter: StartTool event received: {} ({})",
-                    name,
-                    id
-                );
-                self.add_tool_start(name, id);
-                self.send_output_update().await;
-            }
-
             UiEvent::UpdateToolStatus {
                 tool_id,
                 status,
@@ -596,17 +584,20 @@ impl UserInterface for SubAgentUiAdapter {
 
         match fragment {
             DisplayFragment::ToolName { name, id } => {
-                // A sub-agent tool is starting - capture it
-                // Note: This is called during LLM streaming when the tool name is parsed
-                // The UpdateToolStatus event with Running status comes later when execution starts
+                // A sub-agent tool is starting - capture it in our internal state.
+                // This is called during LLM streaming when the tool name is parsed.
+                //
+                // Note: We don't notify the parent UI here because display_fragment() is
+                // synchronous. The parent UI will be notified when runner.rs sends
+                // UiEvent::UpdateToolStatus with Running status just before tool execution
+                // starts. At that point, send_event() calls send_output_update() which
+                // forwards our accumulated state (including this tool) to the parent.
                 tracing::debug!(
                     "SubAgentUiAdapter: ToolName fragment received: {} ({})",
                     name,
                     id
                 );
                 self.add_tool_start(name, id);
-                // We can't send async update here, but the subsequent UpdateToolStatus
-                // event will trigger send_output_update()
             }
             _ => {
                 // Ignore other fragments (text, parameters, etc.)

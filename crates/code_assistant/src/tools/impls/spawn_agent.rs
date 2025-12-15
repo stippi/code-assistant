@@ -33,8 +33,8 @@ pub struct SpawnAgentOutput {
     pub error: Option<String>,
     /// JSON output for UI display (includes tools list + response for custom renderer).
     /// This is separate from `answer` because the UI needs structured data while
-    /// the LLM needs plain text.
-    #[serde(skip)]
+    /// the LLM needs plain text. Persisted so sessions can restore the custom UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_output: Option<String>,
 }
 

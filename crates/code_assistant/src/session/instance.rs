@@ -398,7 +398,11 @@ impl SessionInstance {
             };
 
             let short_output = execution.result.as_render().status();
-            let output = execution.result.as_render().render(&mut resources_tracker);
+            // Use render_for_ui() to get the UI-specific output (e.g., JSON for spawn_agent)
+            let output = execution
+                .result
+                .as_render()
+                .render_for_ui(&mut resources_tracker);
 
             tool_results.push(crate::ui::ui_events::ToolResultData {
                 tool_id: execution.tool_request.id,
