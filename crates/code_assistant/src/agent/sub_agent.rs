@@ -275,7 +275,28 @@ fn extract_last_assistant_text(messages: &[Message]) -> Option<String> {
         .iter()
         .rev()
         .find(|m| matches!(m.role, llm::MessageRole::Assistant))
-        .map(|m| m.to_string())
+        .map(|m| extract_text_from_message(m))
+}
+
+/// Extract just the text content from a message, ignoring tool calls and other blocks
+fn extract_text_from_message(message: &Message) -> String {
+    match &message.content {
+        llm::MessageContent::Text(text) => text.clone(),
+        llm::MessageContent::Structured(blocks) => {
+            let mut text_parts = Vec::new();
+            for block in blocks {
+                match block {
+                    llm::ContentBlock::Text { text, .. } => {
+                        text_parts.push(text.as_str());
+                    }
+                    _ => {
+                        // Skip tool uses, thinking, tool results, images, etc.
+                    }
+                }
+            }
+            text_parts.join("\n\n")
+        }
+    }
 }
 
 fn has_file_references_with_line_ranges(text: &str) -> bool {
