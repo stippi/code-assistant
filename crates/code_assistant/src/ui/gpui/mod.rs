@@ -16,6 +16,7 @@ mod plan_banner;
 mod root;
 pub mod sandbox_selector;
 pub mod simple_renderers;
+pub mod spawn_agent_renderer;
 pub mod theme;
 pub mod tool_output_renderers;
 
@@ -28,6 +29,7 @@ use crate::ui::gpui::{
     elements::MessageRole,
     parameter_renderers::{DefaultParameterRenderer, ParameterRendererRegistry},
     simple_renderers::SimpleParameterRenderer,
+    spawn_agent_renderer::SpawnAgentInstructionsRenderer,
     tool_output_renderers::{SpawnAgentOutputRenderer, ToolOutputRendererRegistry},
 };
 use crate::ui::{async_trait, DisplayFragment, UIError, UiEvent, UserInterface};
@@ -236,6 +238,9 @@ impl Gpui {
             ],
             false, // These are not full-width
         )));
+
+        // Register spawn_agent instructions renderer (full-width markdown)
+        registry.register_renderer(Box::new(SpawnAgentInstructionsRenderer));
 
         // Wrap the registry in Arc for sharing
         let parameter_renderers = Arc::new(registry);

@@ -121,7 +121,7 @@ impl SpawnAgentOutputRenderer {
         file_icons::get().get_tool_icon(tool_name)
     }
 
-    /// Render a single compact tool line showing tool status message (one-liner)
+    /// Render a single compact tool line showing tool title (one-liner)
     fn render_tool_line(
         tool: &crate::agent::sub_agent::SubAgentToolCall,
         theme: &gpui_component::theme::Theme,
@@ -137,13 +137,14 @@ impl SpawnAgentOutputRenderer {
             SubAgentToolStatus::Error => (theme.danger, theme.danger),
         };
 
-        // Use the status message if available (this is the tool's status() output)
-        // Otherwise fall back to just the tool name
+        // Use title (generated from template) if available,
+        // otherwise fall back to status message, then tool name
         let display_text = tool
-            .message
+            .title
             .as_ref()
-            .filter(|m| !m.is_empty())
+            .filter(|t| !t.is_empty())
             .cloned()
+            .or_else(|| tool.message.as_ref().filter(|m| !m.is_empty()).cloned())
             .unwrap_or_else(|| tool.name.replace('_', " "));
 
         div()
@@ -155,7 +156,7 @@ impl SpawnAgentOutputRenderer {
             .children(vec![
                 // Icon
                 file_icons::render_icon_container(&icon, 14.0, icon_color, "🔧").into_any(),
-                // Status text (one-liner from tool)
+                // Title text (one-liner from template or fallback)
                 div()
                     .text_size(px(13.))
                     .text_color(text_color)
@@ -414,14 +415,18 @@ mod tests {
             .push(crate::agent::sub_agent::SubAgentToolCall {
                 name: "read_files".to_string(),
                 status: SubAgentToolStatus::Success,
+                title: None,
                 message: None,
+                parameters: std::collections::HashMap::new(),
             });
         output
             .tools
             .push(crate::agent::sub_agent::SubAgentToolCall {
                 name: "search_files".to_string(),
                 status: SubAgentToolStatus::Running,
+                title: Some("Searching for 'pattern'".to_string()),
                 message: Some("Searching for pattern".to_string()),
+                parameters: std::collections::HashMap::new(),
             });
 
         let json = output.to_json();
@@ -432,6 +437,10 @@ mod tests {
         assert_eq!(
             parsed.tools[1].message.as_deref(),
             Some("Searching for pattern")
+        );
+        assert_eq!(
+            parsed.tools[1].title.as_deref(),
+            Some("Searching for 'pattern'")
         );
     }
 

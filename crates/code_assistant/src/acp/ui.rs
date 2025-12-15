@@ -9,7 +9,6 @@ use tokio::sync::{mpsc, oneshot};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::acp::types::{fragment_to_content_block, map_tool_kind, map_tool_status};
-use crate::tools::core::registry::ToolRegistry;
 use crate::ui::{DisplayFragment, UIError, UiEvent, UserInterface};
 
 /// UserInterface implementation that sends session/update notifications via ACP
@@ -104,82 +103,16 @@ impl ToolCallState {
     }
 
     fn update_title_from_template(&mut self, tool_name: &str) {
-        let registry = ToolRegistry::global();
-        if let Some(tool) = registry.get(tool_name) {
-            let spec = tool.spec();
-            if let Some(template) = spec.title_template {
-                if let Some(new_title) = self.generate_title_from_template(template) {
-                    self.title = Some(new_title);
-                }
-            }
+        // Convert parameters to HashMap<String, String> for shared title function
+        let params: std::collections::HashMap<String, String> = self
+            .parameters
+            .iter()
+            .map(|(k, v)| (k.clone(), v.value.clone()))
+            .collect();
+
+        if let Some(new_title) = crate::tools::core::generate_tool_title(tool_name, &params) {
+            self.title = Some(new_title);
         }
-    }
-
-    fn generate_title_from_template(&self, template: &str) -> Option<String> {
-        let mut result = template.to_string();
-        let mut has_substitution = false;
-
-        // Find all {parameter_name} patterns and replace them
-        let re = regex::Regex::new(r"\{([^}]+)\}").ok()?;
-
-        result = re
-            .replace_all(&result, |caps: &regex::Captures| {
-                let param_name = &caps[1];
-                if let Some(param_value) = self.parameters.get(param_name) {
-                    let formatted_value = self.format_parameter_for_title(&param_value.value);
-                    if !formatted_value.trim().is_empty() {
-                        has_substitution = true;
-                        formatted_value
-                    } else {
-                        caps[0].to_string() // Keep placeholder if value is empty
-                    }
-                } else {
-                    caps[0].to_string() // Keep placeholder if parameter not found
-                }
-            })
-            .to_string();
-
-        // Only return the new title if we actually made substitutions
-        if has_substitution {
-            Some(result)
-        } else {
-            None
-        }
-    }
-
-    fn format_parameter_for_title(&self, value: &str) -> String {
-        const MAX_TITLE_LENGTH: usize = 50;
-
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return String::new();
-        }
-
-        // Try to parse as JSON and extract meaningful parts
-        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            match json_val {
-                serde_json::Value::Array(arr) if !arr.is_empty() => {
-                    let first = arr[0].as_str().unwrap_or("...").to_string();
-                    if arr.len() > 1 {
-                        format!("{} and {} more", first, arr.len() - 1)
-                    } else {
-                        first
-                    }
-                }
-                serde_json::Value::String(s) => s,
-                _ => trimmed.to_string(),
-            }
-        } else {
-            trimmed.to_string()
-        }
-        .chars()
-        .take(MAX_TITLE_LENGTH)
-        .collect::<String>()
-            + if trimmed.len() > MAX_TITLE_LENGTH {
-                "..."
-            } else {
-                ""
-            }
     }
 
     fn update_status(

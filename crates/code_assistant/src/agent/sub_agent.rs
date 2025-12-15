@@ -316,8 +316,15 @@ fn has_file_references_with_line_ranges(text: &str) -> bool {
 pub struct SubAgentToolCall {
     pub name: String,
     pub status: SubAgentToolStatus,
+    /// Human-readable title generated from tool's title_template and parameters
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Status message (e.g., "Successfully loaded 2 file(s)")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Parameters collected during streaming (used to generate title)
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub parameters: std::collections::HashMap<String, String>,
 }
 
 /// Status of a sub-agent tool call
@@ -467,7 +474,9 @@ impl SubAgentUiAdapter {
         output.tools.push(SubAgentToolCall {
             name: name.to_string(),
             status: SubAgentToolStatus::Running,
+            title: None,
             message: None,
+            parameters: std::collections::HashMap::new(),
         });
         id_map.insert(id.to_string(), index);
         tracing::debug!(
@@ -477,6 +486,26 @@ impl SubAgentUiAdapter {
             index,
             output.tools.len()
         );
+    }
+
+    fn add_tool_parameter(&self, tool_id: &str, name: &str, value: &str) {
+        let mut output = self.output.lock().unwrap();
+        let id_map = self.tool_id_to_index.lock().unwrap();
+
+        if let Some(&index) = id_map.get(tool_id) {
+            if let Some(tool) = output.tools.get_mut(index) {
+                // Append to existing parameter value (streaming may send chunks)
+                let entry = tool.parameters.entry(name.to_string()).or_default();
+                entry.push_str(value);
+
+                // Update title from template using collected parameters
+                if let Some(new_title) =
+                    crate::tools::core::generate_tool_title(&tool.name, &tool.parameters)
+                {
+                    tool.title = Some(new_title);
+                }
+            }
+        }
     }
 
     fn update_tool_status(&self, tool_id: &str, status: ToolStatus, message: Option<String>) {
@@ -506,7 +535,9 @@ impl SubAgentUiAdapter {
             output.tools.push(SubAgentToolCall {
                 name: format!("tool_{}", tool_id.chars().take(8).collect::<String>()),
                 status: status.into(),
+                title: None,
                 message,
+                parameters: std::collections::HashMap::new(),
             });
             id_map.insert(tool_id.to_string(), index);
         }
@@ -620,8 +651,16 @@ impl UserInterface for SubAgentUiAdapter {
                 );
                 self.add_tool_start(name, id);
             }
+            DisplayFragment::ToolParameter {
+                name,
+                value,
+                tool_id,
+            } => {
+                // Capture parameters to generate tool titles
+                self.add_tool_parameter(tool_id, name, value);
+            }
             _ => {
-                // Ignore other fragments (text, parameters, etc.)
+                // Ignore other fragments (text, etc.)
                 // They belong to the sub-agent's isolated transcript
             }
         }

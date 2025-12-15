@@ -11,11 +11,19 @@ pub struct SpawnAgentInput {
     /// The instructions to give to the sub-agent.
     pub instructions: String,
     /// If true, instruct the sub-agent to include file references with line ranges.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub require_file_references: bool,
     /// The mode for the sub-agent: "read_only" or "default".
-    #[serde(default = "default_mode")]
+    #[serde(default = "default_mode", skip_serializing_if = "is_default_mode")]
     pub mode: String,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
+}
+
+fn is_default_mode(mode: &str) -> bool {
+    mode == "read_only"
 }
 
 fn default_mode() -> String {
