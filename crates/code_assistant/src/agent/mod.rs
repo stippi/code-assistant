@@ -9,5 +9,7 @@ pub mod types;
 pub use crate::types::ToolSyntax;
 // pub use persistence::FileStatePersistence;
 pub use runner::{Agent, AgentComponents};
-pub use sub_agent::{DefaultSubAgentRunner, SubAgentCancellationRegistry, SubAgentRunner};
+pub use sub_agent::{
+    DefaultSubAgentRunner, SubAgentCancellationRegistry, SubAgentResult, SubAgentRunner,
+};
 pub use types::ToolExecution;

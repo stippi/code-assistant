@@ -1,6 +1,6 @@
 //! Tests for the sub-agent feature (spawn_agent tool).
 
-use crate::agent::sub_agent::SubAgentRunner;
+use crate::agent::sub_agent::{SubAgentResult, SubAgentRunner};
 use crate::agent::SubAgentCancellationRegistry;
 use crate::tools::core::ToolScope;
 use crate::tools::impls::spawn_agent::{SpawnAgentInput, SpawnAgentOutput};
@@ -45,7 +45,7 @@ impl SubAgentRunner for MockSubAgentRunner {
         _instructions: String,
         _tool_scope: ToolScope,
         _require_file_references: bool,
-    ) -> Result<String> {
+    ) -> Result<SubAgentResult> {
         // Track concurrent executions
         let current = self.concurrent_count.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -73,7 +73,10 @@ impl SubAgentRunner for MockSubAgentRunner {
         // Track completion
         self.concurrent_count.fetch_sub(1, Ordering::SeqCst);
 
-        Ok(self.response.clone())
+        Ok(SubAgentResult {
+            answer: self.response.clone(),
+            ui_output: format!(r#"{{"tools":[],"response":"{}"}}"#, self.response),
+        })
     }
 }
 
@@ -86,6 +89,7 @@ fn test_spawn_agent_output_render() {
         answer: "The answer is 42.".to_string(),
         cancelled: false,
         error: None,
+        ui_output: None,
     };
 
     let mut tracker = ResourcesTracker::new();
@@ -98,6 +102,7 @@ fn test_spawn_agent_output_render() {
         answer: String::new(),
         cancelled: true,
         error: None,
+        ui_output: None,
     };
 
     let rendered = output.render(&mut tracker);
@@ -109,11 +114,41 @@ fn test_spawn_agent_output_render() {
         answer: String::new(),
         cancelled: false,
         error: Some("Connection failed".to_string()),
+        ui_output: None,
     };
 
     let rendered = output.render(&mut tracker);
     assert_eq!(rendered, "Sub-agent failed: Connection failed");
     assert!(output.status().contains("Connection failed"));
+
+    // Test render_for_ui with ui_output set
+    let output_with_ui = SpawnAgentOutput {
+        answer: "Plain text answer".to_string(),
+        cancelled: false,
+        error: None,
+        ui_output: Some(r#"{"tools":[],"response":"Markdown response"}"#.to_string()),
+    };
+
+    let mut tracker = ResourcesTracker::new();
+    // render() returns plain text for LLM
+    assert_eq!(output_with_ui.render(&mut tracker), "Plain text answer");
+    // render_for_ui() returns JSON for UI
+    assert_eq!(
+        output_with_ui.render_for_ui(&mut tracker),
+        r#"{"tools":[],"response":"Markdown response"}"#
+    );
+
+    // Test render_for_ui falls back to render() when ui_output is None
+    let output_without_ui = SpawnAgentOutput {
+        answer: "Just the answer".to_string(),
+        cancelled: false,
+        error: None,
+        ui_output: None,
+    };
+    assert_eq!(
+        output_without_ui.render_for_ui(&mut tracker),
+        "Just the answer"
+    );
 }
 
 #[test]
@@ -181,7 +216,7 @@ async fn test_mock_sub_agent_runner() {
         .await;
 
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), "Test response");
+    assert_eq!(result.unwrap().answer, "Test response");
     assert_eq!(runner.call_count(), 1);
 }
 
@@ -214,7 +249,7 @@ async fn test_parallel_sub_agent_execution() {
     assert_eq!(results.len(), 4);
     for result in results {
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "Parallel result");
+        assert_eq!(result.unwrap().answer, "Parallel result");
     }
 
     // Verify they ran in parallel (max concurrent should be > 1)

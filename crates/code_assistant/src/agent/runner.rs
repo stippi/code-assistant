@@ -900,14 +900,15 @@ impl Agent {
 
                 let status_msg = output.status();
                 let mut resources_tracker = ResourcesTracker::new();
-                let output_text = output.render(&mut resources_tracker);
+                // Use render_for_ui() which returns JSON for spawn_agent (for custom renderer)
+                let ui_output = output.render_for_ui(&mut resources_tracker);
 
                 let _ = ui
                     .send_event(UiEvent::UpdateToolStatus {
                         tool_id: tool_id.to_string(),
                         status,
                         message: Some(status_msg),
-                        output: Some(output_text),
+                        output: Some(ui_output),
                     })
                     .await;
 
@@ -1714,9 +1715,9 @@ impl Agent {
                 // Generate status string from result
                 let short_output = result.as_render().status();
 
-                // Generate isolated output from result
+                // Generate output for UI display (may differ from LLM output for some tools)
                 let mut resources_tracker = ResourcesTracker::new();
-                let output = result.as_render().render(&mut resources_tracker);
+                let ui_output = result.as_render().render_for_ui(&mut resources_tracker);
 
                 // Update tool status with result (skip for hidden tools)
                 if !is_hidden {
@@ -1725,7 +1726,7 @@ impl Agent {
                             tool_id: tool_request.id.clone(),
                             status,
                             message: Some(short_output),
-                            output: Some(output),
+                            output: Some(ui_output),
                         })
                         .await?;
                 }

@@ -25,12 +25,17 @@ fn default_mode() -> String {
 /// Output from the spawn_agent tool.
 #[derive(Serialize, Deserialize)]
 pub struct SpawnAgentOutput {
-    /// The final answer from the sub-agent.
+    /// The final answer from the sub-agent (plain text for LLM context).
     pub answer: String,
     /// Whether the sub-agent was cancelled.
     pub cancelled: bool,
     /// Error message if the sub-agent failed.
     pub error: Option<String>,
+    /// JSON output for UI display (includes tools list + response for custom renderer).
+    /// This is separate from `answer` because the UI needs structured data while
+    /// the LLM needs plain text.
+    #[serde(skip)]
+    pub ui_output: Option<String>,
 }
 
 impl Render for SpawnAgentOutput {
@@ -44,6 +49,7 @@ impl Render for SpawnAgentOutput {
         }
     }
 
+    /// Returns plain text for LLM context
     fn render(&self, _tracker: &mut ResourcesTracker) -> String {
         if let Some(e) = &self.error {
             return format!("Sub-agent failed: {e}");
@@ -52,6 +58,14 @@ impl Render for SpawnAgentOutput {
             return "Sub-agent cancelled by user.".to_string();
         }
         self.answer.clone()
+    }
+
+    /// Returns JSON for UI display (custom renderer)
+    fn render_for_ui(&self, tracker: &mut ResourcesTracker) -> String {
+        // Use structured JSON output if available, otherwise fall back to plain text
+        self.ui_output
+            .clone()
+            .unwrap_or_else(|| self.render(tracker))
     }
 }
 
@@ -154,18 +168,20 @@ impl Tool for SpawnAgentTool {
             .await;
 
         match result {
-            Ok(answer) => {
-                let cancelled = answer == "Sub-agent cancelled by user.";
+            Ok(sub_result) => {
+                let cancelled = sub_result.answer == "Sub-agent cancelled by user.";
                 Ok(SpawnAgentOutput {
-                    answer,
+                    answer: sub_result.answer,
                     cancelled,
                     error: None,
+                    ui_output: Some(sub_result.ui_output),
                 })
             }
             Err(e) => Ok(SpawnAgentOutput {
                 answer: String::new(),
                 cancelled: false,
                 error: Some(e.to_string()),
+                ui_output: None,
             }),
         }
     }

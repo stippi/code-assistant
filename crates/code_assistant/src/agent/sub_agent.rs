@@ -53,8 +53,15 @@ impl AgentStatePersistence for NoOpStatePersistence {
     }
 }
 
-/// Runs sub-agents with isolated history and streams a compact progress view into the parent tool UI.
-#[async_trait::async_trait]
+/// Result from a sub-agent run, containing both the answer and UI output
+#[derive(Debug, Clone)]
+pub struct SubAgentResult {
+    /// The plain text answer for LLM context
+    pub answer: String,
+    /// The JSON output for UI display (tools list + response)
+    pub ui_output: String,
+}
+
 /// Runs sub-agents with isolated history and streams a compact progress view into the parent tool UI.
 #[async_trait::async_trait]
 pub trait SubAgentRunner: Send + Sync {
@@ -64,7 +71,7 @@ pub trait SubAgentRunner: Send + Sync {
         instructions: String,
         tool_scope: ToolScope,
         require_file_references: bool,
-    ) -> Result<String>;
+    ) -> Result<SubAgentResult>;
 }
 
 pub struct DefaultSubAgentRunner {
@@ -186,7 +193,7 @@ impl SubAgentRunner for DefaultSubAgentRunner {
         instructions: String,
         tool_scope: ToolScope,
         require_file_references: bool,
-    ) -> Result<String> {
+    ) -> Result<SubAgentResult> {
         let cancelled = self
             .cancellation_registry
             .register(parent_tool_id.to_string());
@@ -248,23 +255,18 @@ impl SubAgentRunner for DefaultSubAgentRunner {
 
         self.cancellation_registry.unregister(parent_tool_id);
 
-        // Set the final response in the adapter and send the complete JSON output
+        // Set the final response in the adapter and get the complete JSON output
         // This preserves the tools list along with the final response for rendering
         sub_ui_adapter.set_response(last_answer.clone());
         let final_json = sub_ui_adapter.get_final_output();
 
-        // Update the parent tool block with the complete output (tools + response)
-        let _ = self
-            .ui
-            .send_event(UiEvent::UpdateToolStatus {
-                tool_id: parent_tool_id.to_string(),
-                status: ToolStatus::Success,
-                message: Some("Sub-agent finished".to_string()),
-                output: Some(final_json),
-            })
-            .await;
+        // Note: We don't send UpdateToolStatus here - the caller (runner.rs) will do that
+        // using render_for_ui() which returns our JSON output
 
-        Ok(last_answer)
+        Ok(SubAgentResult {
+            answer: last_answer,
+            ui_output: final_json,
+        })
     }
 }
 
