@@ -199,7 +199,6 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
         tool_id: None,
         permission_handler: None,
         sub_agent_runner: None,
-        sub_agent_cancellation_registry: None,
     };
 
     // Test editing: search is formatted (matches file), replacement is unformatted
@@ -274,7 +273,6 @@ async fn test_write_file_with_format_on_save() -> Result<()> {
         tool_id: None,
         permission_handler: None,
         sub_agent_runner: None,
-        sub_agent_cancellation_registry: None,
     };
 
     // Test writing a Rust file
@@ -348,7 +346,6 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
         tool_id: None,
         permission_handler: None,
         sub_agent_runner: None,
-        sub_agent_cancellation_registry: None,
     };
 
     // Diff has two SEARCH/REPLACE blocks; replacements are unformatted (missing spaces around '=')
@@ -424,7 +421,6 @@ async fn test_no_format_when_pattern_doesnt_match() -> Result<()> {
         tool_id: None,
         permission_handler: None,
         sub_agent_runner: None,
-        sub_agent_cancellation_registry: None,
     };
 
     // Test editing a .txt file (should not be formatted)
@@ -502,7 +498,6 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
         tool_id: None,
         permission_handler: None,
         sub_agent_runner: None,
-        sub_agent_cancellation_registry: None,
     };
 
     // Test editing JS file
@@ -600,7 +595,6 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
         tool_id: None,
         permission_handler: None,
         sub_agent_runner: None,
-        sub_agent_cancellation_registry: None,
     };
 
     let tool = EditTool;
@@ -691,7 +685,6 @@ async fn test_format_on_save_with_conflicting_matches() -> Result<()> {
         tool_id: None,
         permission_handler: None,
         sub_agent_runner: None,
-        sub_agent_cancellation_registry: None,
     };
 
     // Test that the tool handles potential conflicts gracefully

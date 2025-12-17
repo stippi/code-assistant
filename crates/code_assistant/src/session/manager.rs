@@ -349,7 +349,6 @@ impl SessionManager {
             state_persistence: state_storage,
             permission_handler,
             sub_agent_runner: Some(sub_agent_runner),
-            sub_agent_cancellation_registry: Some(sub_agent_cancellation_registry),
         };
 
         let mut agent = Agent::new(components, session_config.clone());

@@ -30,10 +30,9 @@ pub struct AgentComponents {
     pub ui: Arc<dyn UserInterface>,
     pub state_persistence: Box<dyn AgentStatePersistence>,
     pub permission_handler: Option<Arc<dyn PermissionMediator>>,
+
     /// Optional sub-agent runner used by the `spawn_agent` tool.
     pub sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
-    /// Shared cancellation registry so the UI/back-end can cancel running sub-agents by tool id.
-    pub sub_agent_cancellation_registry: Option<Arc<crate::agent::SubAgentCancellationRegistry>>,
 }
 
 use super::ToolSyntax;
@@ -57,9 +56,9 @@ pub struct Agent {
     command_executor: Box<dyn CommandExecutor>,
     ui: Arc<dyn UserInterface>,
     state_persistence: Box<dyn AgentStatePersistence>,
+
     permission_handler: Option<Arc<dyn PermissionMediator>>,
     sub_agent_runner: Option<Arc<dyn crate::agent::SubAgentRunner>>,
-    sub_agent_cancellation_registry: Option<Arc<crate::agent::SubAgentCancellationRegistry>>,
     // Store all messages exchanged
     message_history: Vec<Message>,
     // Store the history of tool executions
@@ -118,7 +117,6 @@ impl Agent {
             state_persistence,
             permission_handler,
             sub_agent_runner,
-            sub_agent_cancellation_registry,
         } = components;
 
         let mut this = Self {
@@ -132,7 +130,6 @@ impl Agent {
             state_persistence,
             permission_handler,
             sub_agent_runner,
-            sub_agent_cancellation_registry,
             message_history: Vec::new(),
             tool_executions: Vec::new(),
             cached_system_prompts: HashMap::new(),
@@ -878,7 +875,6 @@ impl Agent {
             tool_id: Some(tool_id.to_string()),
             permission_handler: None, // Will be handled by sub-agent runner
             sub_agent_runner,
-            sub_agent_cancellation_registry: None,
         };
 
         let tool = SpawnAgentTool;
@@ -1683,9 +1679,9 @@ impl Agent {
             plan: Some(&mut self.plan),
             ui: Some(self.ui.as_ref()),
             tool_id: Some(tool_request.id.clone()),
+
             permission_handler: self.permission_handler.as_deref(),
             sub_agent_runner: self.sub_agent_runner.as_deref(),
-            sub_agent_cancellation_registry: self.sub_agent_cancellation_registry.as_deref(),
         };
 
         // Execute the tool - could fail with ParseError or other errors

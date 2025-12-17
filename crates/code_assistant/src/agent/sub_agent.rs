@@ -154,7 +154,6 @@ impl DefaultSubAgentRunner {
             state_persistence: Box::new(NoOpStatePersistence),
             permission_handler,
             sub_agent_runner: None,
-            sub_agent_cancellation_registry: Some(self.cancellation_registry.clone()),
         };
 
         let mut agent = Agent::new(components, self.session_config.clone());
