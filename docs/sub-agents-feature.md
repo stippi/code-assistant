@@ -11,7 +11,7 @@
 - [x] `spawn_agent` tool implementation (`spawn_agent.rs`)
 - [x] Tool registration in `mod.rs` and `registry.rs`
 - [x] Session manager wiring of `DefaultSubAgentRunner` with UI and permission handler
-- [x] Added required `Agent` methods: `set_tool_scope`, `set_session_model_config`, `set_session_identity`, `set_external_cancel_flag`, `message_history`
+- [x] Added required `Agent` methods: `set_tool_scope`, `set_session_model_config`, `set_session_identity`, `message_history`
 - [x] File reference enforcement with retry logic (up to 2 retries)
 
 ### Completed (phase 2)

@@ -203,13 +203,6 @@ impl Agent {
         self.session_name = session_name;
     }
 
-    /// Set an external cancellation flag that can interrupt streaming
-    pub fn set_external_cancel_flag(&mut self, _flag: Arc<std::sync::atomic::AtomicBool>) {
-        // Note: The LLM streaming checks the UI's should_streaming_continue() method.
-        // For sub-agents, the SubAgentUiAdapter already checks the cancellation flag.
-        // This method is a placeholder for future direct cancellation integration.
-    }
-
     /// Get a reference to the message history
     pub fn message_history(&self) -> &[Message] {
         &self.message_history

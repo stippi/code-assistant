@@ -119,7 +119,6 @@ impl DefaultSubAgentRunner {
         &self,
         parent_tool_id: &str,
         ui: Arc<dyn UserInterface>,
-        cancelled: Arc<AtomicBool>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
     ) -> Result<Agent> {
         // Create a fresh LLM provider (avoid requiring Clone).
@@ -172,9 +171,6 @@ impl DefaultSubAgentRunner {
         // Initialize project trees, etc.
         agent.init_project_context()?;
 
-        // Ensure sub-agent cancellation can interrupt streaming.
-        agent.set_external_cancel_flag(cancelled);
-
         Ok(agent)
     }
 }
@@ -209,7 +205,6 @@ impl SubAgentRunner for DefaultSubAgentRunner {
             .build_agent(
                 parent_tool_id,
                 sub_ui as Arc<dyn UserInterface>,
-                cancelled.clone(),
                 self.permission_handler.clone(),
             )
             .await?;
