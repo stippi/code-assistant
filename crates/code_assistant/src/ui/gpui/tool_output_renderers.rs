@@ -1,8 +1,9 @@
 use crate::agent::sub_agent::{SubAgentActivity, SubAgentOutput, SubAgentToolStatus};
 use crate::ui::ToolStatus;
 use gpui::{
-    bounce, div, ease_in_out, percentage, px, svg, Animation, AnimationExt, Context, Element,
-    ParentElement, SharedString, Styled, Transformation, Window,
+    bounce, div, ease_in_out, percentage, px, svg, Animation, AnimationExt, ClickEvent, Context,
+    Element, InteractiveElement, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    Transformation, Window,
 };
 use gpui_component::text::TextView;
 use std::collections::HashMap;
@@ -22,7 +23,7 @@ pub trait ToolOutputRenderer: Send + Sync {
     /// Returns None if the default rendering should be used
     fn render(
         &self,
-        tool_name: &str,
+        tool_id: &str,
         output: &str,
         status: &ToolStatus,
         theme: &gpui_component::theme::Theme,
@@ -89,9 +90,11 @@ impl ToolOutputRendererRegistry {
 
     /// Render tool output using the appropriate renderer
     /// Returns None if no custom renderer is registered (use default rendering)
+    #[allow(clippy::too_many_arguments)]
     pub fn render_output(
         &self,
         tool_name: &str,
+        tool_id: &str,
         output: &str,
         status: &ToolStatus,
         theme: &gpui_component::theme::Theme,
@@ -100,7 +103,7 @@ impl ToolOutputRendererRegistry {
     ) -> Option<gpui::AnyElement> {
         self.renderers
             .get(tool_name)
-            .and_then(|renderer| renderer.render(tool_name, output, status, theme, window, cx))
+            .and_then(|renderer| renderer.render(tool_id, output, status, theme, window, cx))
     }
 }
 
@@ -166,17 +169,19 @@ impl SpawnAgentOutputRenderer {
             .into_any()
     }
 
-    /// Render the current activity status line with spinning indicator
-    fn render_activity_line(
+    /// Render activity line with a cancel button for running sub-agents
+    fn render_activity_with_cancel(
         activity: SubAgentActivity,
+        tool_id: &str,
         theme: &gpui_component::theme::Theme,
+        cx: &mut Context<crate::ui::gpui::elements::BlockView>,
     ) -> Option<gpui::AnyElement> {
-        let (text, color, show_spinner) = match activity {
-            SubAgentActivity::WaitingForLlm => ("Waiting...", theme.muted_foreground, true),
-            SubAgentActivity::Streaming => ("Responding...", theme.info, true),
-            SubAgentActivity::ExecutingTools => ("Executing tools...", theme.info, true),
+        let (text, color, show_spinner, is_cancellable) = match activity {
+            SubAgentActivity::WaitingForLlm => ("Waiting...", theme.muted_foreground, true, true),
+            SubAgentActivity::Streaming => ("Responding...", theme.info, true, true),
+            SubAgentActivity::ExecutingTools => ("Executing tools...", theme.info, true, true),
             SubAgentActivity::Completed => return None, // Don't show for completed
-            SubAgentActivity::Cancelled => ("Cancelled", theme.warning, false),
+            SubAgentActivity::Cancelled => ("Cancelled", theme.warning, false, false),
             SubAgentActivity::Failed => return None, // Error shown separately
         };
 
@@ -210,6 +215,39 @@ impl SpawnAgentOutputRenderer {
                 .child(text)
                 .into_any(),
         );
+
+        // Add cancel button for active sub-agents
+        if is_cancellable {
+            let tool_id_owned = tool_id.to_string();
+            let cancel_color = theme.muted_foreground;
+            let cancel_hover_color = theme.danger;
+
+            children.push(
+                div()
+                    .id(SharedString::from(format!("cancel-{}", tool_id)))
+                    .ml_2()
+                    .px_2()
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .text_size(px(11.))
+                    .text_color(cancel_color)
+                    .cursor_pointer()
+                    .hover(|s| {
+                        s.bg(cancel_hover_color.opacity(0.15))
+                            .text_color(cancel_hover_color)
+                    })
+                    .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
+                        // Send cancel event through the UI event system
+                        if let Some(sender) = cx.try_global::<crate::ui::gpui::UiEventSender>() {
+                            let _ = sender.0.try_send(crate::ui::UiEvent::CancelSubAgent {
+                                tool_id: tool_id_owned.clone(),
+                            });
+                        }
+                    }))
+                    .child("Cancel")
+                    .into_any(),
+            );
+        }
 
         Some(
             div()
@@ -297,7 +335,7 @@ impl ToolOutputRenderer for SpawnAgentOutputRenderer {
 
     fn render(
         &self,
-        _tool_name: &str,
+        tool_id: &str,
         output: &str,
         _status: &ToolStatus,
         theme: &gpui_component::theme::Theme,
@@ -337,11 +375,13 @@ impl ToolOutputRenderer for SpawnAgentOutputRenderer {
             elements.push(Self::render_tool_line(tool, theme));
         }
 
-        // Add activity line below tools (shows current state with spinner)
+        // Add activity line with cancel button (shows current state with spinner)
         // This is where new output will appear
         if let Some(activity) = parsed.activity {
-            if let Some(activity_line) = Self::render_activity_line(activity, theme) {
-                elements.push(activity_line);
+            if let Some(activity_element) =
+                Self::render_activity_with_cancel(activity, tool_id, theme, cx)
+            {
+                elements.push(activity_element);
             }
         }
 

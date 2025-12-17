@@ -648,7 +648,8 @@ impl UserInterface for ACPUserUI {
             | UiEvent::UpdatePendingMessage { .. }
             | UiEvent::ClearError
             | UiEvent::UpdateCurrentModel { .. }
-            | UiEvent::UpdateSandboxPolicy { .. } => {
+            | UiEvent::UpdateSandboxPolicy { .. }
+            | UiEvent::CancelSubAgent { .. } => {
                 // These are UI management events, not relevant for ACP
             }
             UiEvent::DisplayError { message } => {

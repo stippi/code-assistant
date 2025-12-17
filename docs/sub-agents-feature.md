@@ -56,13 +56,21 @@
   - Added `spawn_agent` icon mapping in `file_icons.rs` (uses `rerun.svg`)
   - JSON output flows as `ToolCallUpdate` content for display in Zed's ACP panel
 
+
+### Completed (phase 5)
+- [x] **UI integration for cancellation**: Cancel button per running `spawn_agent` block
+  - Added `CancelSubAgent` event to `UiEvent` enum (`ui_events.rs`)
+  - Added `CancelSubAgent` backend event and handler (`backend.rs`)
+  - Added `sub_agent_cancellation_registry` field to `SessionInstance` for tracking active registries
+  - Added `cancel_sub_agent` method to `SessionManager` to trigger cancellation
+  - Added cancel button in `SpawnAgentOutputRenderer` that appears during active sub-agent execution
+  - Button triggers `CancelSubAgent` event which flows through backend to the registry
+
 ### Pending
-- [ ] **UI integration for cancellation**: Expose cancel button per running `spawn_agent` block
 - [ ] **Permission attribution**: Show permission requests as originating from sub-agent context (inline or popover)
 
 ### Notes
-- The cancellation infrastructure is in place (`SubAgentCancellationRegistry`, `cancel` method, `cancel_sub_agent` helper) but the UI hooks to trigger cancellation are not yet implemented.
-- The `sub_agent_cancellation_registry` field in `ToolContext` is available for future use when implementing tool-level cancellation from UI.
+- The `sub_agent_cancellation_registry` field in `ToolContext` is reserved for future tool implementations that may need to cancel sub-agents programmatically.
 
 ---
 

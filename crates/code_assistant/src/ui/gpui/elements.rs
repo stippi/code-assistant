@@ -1361,6 +1361,7 @@ impl Render for BlockView {
                                                                             .and_then(|registry| {
                                                                                 registry.render_output(
                                                                                     &block.name,
+                                                                                    &block.id,
                                                                                     output_content,
                                                                                     &block.status,
                                                                                     &theme,

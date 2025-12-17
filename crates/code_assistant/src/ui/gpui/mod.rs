@@ -1013,6 +1013,20 @@ impl Gpui {
                     path.display()
                 );
             }
+            UiEvent::CancelSubAgent { tool_id } => {
+                debug!("UI: CancelSubAgent event for tool_id: {}", tool_id);
+                // Forward to backend with current session ID
+                if let Some(session_id) = self.current_session_id.lock().unwrap().clone() {
+                    if let Some(sender) = self.backend_event_sender.lock().unwrap().as_ref() {
+                        let _ = sender.try_send(BackendEvent::CancelSubAgent {
+                            session_id,
+                            tool_id,
+                        });
+                    }
+                } else {
+                    warn!("UI: CancelSubAgent requested but no active session");
+                }
+            }
         }
     }
 
@@ -1335,6 +1349,7 @@ impl Gpui {
                     );
                 }
             }
+
             BackendResponse::SandboxPolicyChanged { session_id, policy } => {
                 let current_session_id = self.current_session_id.lock().unwrap().clone();
                 if current_session_id.as_deref() == Some(session_id.as_str()) {
@@ -1349,6 +1364,17 @@ impl Gpui {
                         session_id, current_session_id
                     );
                 }
+            }
+            BackendResponse::SubAgentCancelled {
+                session_id,
+                tool_id,
+            } => {
+                debug!(
+                    "Received BackendResponse::SubAgentCancelled for tool {} in session {}",
+                    tool_id, session_id
+                );
+                // The sub-agent will update its own UI state via the normal tool output mechanism
+                // No additional UI update needed here
             }
         }
     }

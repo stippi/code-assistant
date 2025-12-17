@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 
 // Agent instances are created on-demand, no need to import
+use crate::agent::SubAgentCancellationRegistry;
 use crate::persistence::{ChatMetadata, ChatSession};
 use crate::ui::gpui::elements::MessageRole;
 use crate::ui::streaming::create_stream_processor;
@@ -53,6 +54,9 @@ pub struct SessionInstance {
 
     /// Tracks sandbox-approved roots for this session
     pub sandbox_context: Arc<SandboxContext>,
+
+    /// Cancellation registry for sub-agents running in agent tasks
+    pub sub_agent_cancellation_registry: Arc<SubAgentCancellationRegistry>,
 }
 
 impl SessionInstance {
@@ -71,7 +75,14 @@ impl SessionInstance {
             activity_state: Arc::new(Mutex::new(SessionActivityState::Idle)),
             pending_message: Arc::new(Mutex::new(None)),
             sandbox_context,
+            sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
         }
+    }
+
+    /// Cancel a running sub-agent by its tool ID
+    /// Returns true if a sub-agent was found and cancelled, false otherwise
+    pub fn cancel_sub_agent(&self, tool_id: &str) -> bool {
+        self.sub_agent_cancellation_registry.cancel(tool_id)
     }
 
     /// Get the current activity state

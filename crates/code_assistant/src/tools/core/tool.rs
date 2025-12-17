@@ -21,9 +21,12 @@ pub struct ToolContext<'a> {
     pub tool_id: Option<String>,
     /// Optional permission handler for potentially sensitive operations
     pub permission_handler: Option<&'a dyn PermissionMediator>,
+
     /// Optional sub-agent runner used by the `spawn_agent` tool.
     pub sub_agent_runner: Option<&'a dyn crate::agent::SubAgentRunner>,
-    /// Optional cancellation registry used for sub-agent cancellation.
+    /// Optional cancellation registry for sub-agent cancellation.
+    /// Reserved for future tool implementations that may need to cancel sub-agents.
+    #[allow(dead_code)]
     pub sub_agent_cancellation_registry: Option<&'a crate::agent::SubAgentCancellationRegistry>,
 }
 

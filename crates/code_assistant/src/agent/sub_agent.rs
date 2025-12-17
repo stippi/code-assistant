@@ -12,7 +12,6 @@ use llm::Message;
 use sandbox::{SandboxContext, SandboxPolicy};
 use std::collections::HashMap;
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex};
-use std::time::SystemTime;
 
 /// Cancellation registry keyed by the parent `spawn_agent` tool id.
 #[derive(Default)]
@@ -275,7 +274,7 @@ fn extract_last_assistant_text(messages: &[Message]) -> Option<String> {
         .iter()
         .rev()
         .find(|m| matches!(m.role, llm::MessageRole::Assistant))
-        .map(|m| extract_text_from_message(m))
+        .map(extract_text_from_message)
 }
 
 /// Extract just the text content from a message, ignoring tool calls and other blocks
@@ -679,14 +678,4 @@ impl UserInterface for SubAgentUiAdapter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
-}
-
-/// Helper for tool implementations to mark a tool id as cancelled.
-pub fn cancel_sub_agent(registry: &SubAgentCancellationRegistry, tool_id: &str) -> bool {
-    registry.cancel(tool_id)
-}
-
-/// Helper for tool implementations to create an initial visible tool result block.
-pub fn sub_agent_tool_result_timestamps() -> (Option<SystemTime>, Option<SystemTime>) {
-    (Some(SystemTime::now()), None)
 }

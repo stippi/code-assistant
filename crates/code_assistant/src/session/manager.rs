@@ -318,8 +318,14 @@ impl SessionManager {
             sandbox_context_clone.clone(),
         ));
 
-        // Create sub-agent runner and cancellation registry
-        let sub_agent_cancellation_registry = Arc::new(SubAgentCancellationRegistry::default());
+        // Get the cancellation registry from the session instance
+        let sub_agent_cancellation_registry = self
+            .active_sessions
+            .get(session_id)
+            .map(|s| s.sub_agent_cancellation_registry.clone())
+            .unwrap_or_else(|| Arc::new(SubAgentCancellationRegistry::default()));
+
+        // Create sub-agent runner
         let model_name_for_subagent = session_state
             .model_config
             .as_ref()
@@ -454,6 +460,17 @@ impl SessionManager {
         self.persistence.delete_chat_session(session_id)?;
 
         Ok(())
+    }
+
+    /// Cancel a running sub-agent by its tool ID
+    /// Returns Ok(true) if the sub-agent was found and cancelled,
+    /// Ok(false) if the sub-agent was not found (may have already completed)
+    pub fn cancel_sub_agent(&self, session_id: &str, tool_id: &str) -> Result<bool> {
+        if let Some(session_instance) = self.active_sessions.get(session_id) {
+            Ok(session_instance.cancel_sub_agent(tool_id))
+        } else {
+            Err(anyhow::anyhow!("Session not found: {}", session_id))
+        }
     }
 
     /// Get a session instance by ID
