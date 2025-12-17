@@ -255,34 +255,27 @@ impl<'a> Widget for ToolWidget<'a> {
                             crate::agent::sub_agent::SubAgentToolStatus::Error => ("●", Color::Red),
                         };
 
-                        let tool_title = match tool.name.as_str() {
-                            "read_files" => "Reading",
-                            "search_files" => "Searching",
-                            "list_files" => "Listing",
-                            "glob_files" => "Finding files",
-                            "write_file" => "Writing",
-                            "edit" => "Editing",
-                            "execute_command" => "Executing",
-                            "web_fetch" => "Fetching",
-                            "web_search" => "Searching web",
-                            _ => &tool.name,
-                        };
+                        // Use title (generated from template) if available,
+                        // otherwise fall back to status message, then tool name
+                        let display_text = tool
+                            .title
+                            .as_ref()
+                            .filter(|t| !t.is_empty())
+                            .cloned()
+                            .or_else(|| tool.message.as_ref().filter(|m| !m.is_empty()).cloned())
+                            .unwrap_or_else(|| tool.name.replace('_', " "));
 
-                        let display_text = if let Some(msg) = &tool.message {
-                            format!("{status_symbol} {tool_title} — {msg}")
+                        let full_text = format!("{status_symbol} {display_text}");
+
+                        let truncated = if full_text.len() > (area.width.saturating_sub(4)) as usize
+                        {
+                            format!(
+                                "{}...",
+                                &full_text[..(area.width.saturating_sub(7)) as usize]
+                            )
                         } else {
-                            format!("{status_symbol} {tool_title}")
+                            full_text
                         };
-
-                        let truncated =
-                            if display_text.len() > (area.width.saturating_sub(4)) as usize {
-                                format!(
-                                    "{}...",
-                                    &display_text[..(area.width.saturating_sub(7)) as usize]
-                                )
-                            } else {
-                                display_text
-                            };
 
                         buf.set_string(
                             area.x + 2,
