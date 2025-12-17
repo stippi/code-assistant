@@ -220,13 +220,23 @@ impl SubAgentRunner for DefaultSubAgentRunner {
 
         // Run 1+ iterations if we need to enforce file references.
         let mut last_answer = String::new();
+        let mut was_cancelled = false;
+
         for attempt in 0..=2 {
+            // Check for cancellation before starting iteration
             if cancelled.load(Ordering::SeqCst) {
-                last_answer = "Sub-agent cancelled by user.".to_string();
+                was_cancelled = true;
                 break;
             }
 
             agent.run_single_iteration().await?;
+
+            // Check for cancellation after iteration completes
+            // (cancellation may have occurred during streaming/tool execution)
+            if cancelled.load(Ordering::SeqCst) {
+                was_cancelled = true;
+                break;
+            }
 
             last_answer = extract_last_assistant_text(agent.message_history()).unwrap_or_default();
 
@@ -254,13 +264,16 @@ impl SubAgentRunner for DefaultSubAgentRunner {
 
         self.cancellation_registry.unregister(parent_tool_id);
 
+        // Handle cancellation: return error
+        if was_cancelled {
+            sub_ui_adapter.set_cancelled();
+            return Err(anyhow::anyhow!("Cancelled by user"));
+        }
+
         // Set the final response in the adapter and get the complete JSON output
         // This preserves the tools list along with the final response for rendering
         sub_ui_adapter.set_response(last_answer.clone());
         let final_json = sub_ui_adapter.get_final_output();
-
-        // Note: We don't send UpdateToolStatus here - the caller (runner.rs) will do that
-        // using render_for_ui() which returns our JSON output
 
         Ok(SubAgentResult {
             answer: last_answer,

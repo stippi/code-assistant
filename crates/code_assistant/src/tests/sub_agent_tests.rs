@@ -87,7 +87,6 @@ fn test_spawn_agent_output_render() {
     // Test successful output
     let output = SpawnAgentOutput {
         answer: "The answer is 42.".to_string(),
-        cancelled: false,
         error: None,
         ui_output: None,
     };
@@ -97,34 +96,31 @@ fn test_spawn_agent_output_render() {
     assert_eq!(rendered, "The answer is 42.");
     assert_eq!(output.status(), "Sub-agent completed");
 
-    // Test cancelled output
+    // Test cancelled output (cancellation is now just an error)
     let output = SpawnAgentOutput {
         answer: String::new(),
-        cancelled: true,
-        error: None,
+        error: Some("Cancelled by user".to_string()),
         ui_output: None,
     };
 
     let rendered = output.render(&mut tracker);
-    assert_eq!(rendered, "Sub-agent cancelled by user.");
-    assert_eq!(output.status(), "Sub-agent cancelled by user");
+    assert_eq!(rendered, "Sub-agent error: Cancelled by user");
+    assert!(output.status().contains("Cancelled by user"));
 
     // Test error output
     let output = SpawnAgentOutput {
         answer: String::new(),
-        cancelled: false,
         error: Some("Connection failed".to_string()),
         ui_output: None,
     };
 
     let rendered = output.render(&mut tracker);
-    assert_eq!(rendered, "Sub-agent failed: Connection failed");
+    assert_eq!(rendered, "Sub-agent error: Connection failed");
     assert!(output.status().contains("Connection failed"));
 
     // Test render_for_ui with ui_output set
     let output_with_ui = SpawnAgentOutput {
         answer: "Plain text answer".to_string(),
-        cancelled: false,
         error: None,
         ui_output: Some(r#"{"tools":[],"response":"Markdown response"}"#.to_string()),
     };
@@ -141,7 +137,6 @@ fn test_spawn_agent_output_render() {
     // Test render_for_ui falls back to render() when ui_output is None
     let output_without_ui = SpawnAgentOutput {
         answer: "Just the answer".to_string(),
-        cancelled: false,
         error: None,
         ui_output: None,
     };
