@@ -66,6 +66,13 @@
   - Added cancel button in `SpawnAgentOutputRenderer` that appears during active sub-agent execution
   - Button triggers `CancelSubAgent` event which flows through backend to the registry
 
+### Completed (phase 6)
+- [x] **ACP spawn_agent markdown rendering**: Convert SubAgentOutput JSON to markdown for Zed display
+  - Added `render_sub_agent_output_as_markdown()` helper function in `acp/ui.rs`
+  - Renders tool calls with status symbols (⟳/✓/✗), activity state, errors, and final response
+  - Falls back to raw output if JSON parsing fails
+  - Located in `build_content()` method, triggered when tool_name is "spawn_agent"
+
 ### Pending
 - [ ] **Permission attribution**: Show permission requests as originating from sub-agent context (inline or popover)
 

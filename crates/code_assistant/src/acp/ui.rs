@@ -235,7 +235,16 @@ impl ToolCallState {
             // For all other tools, put the full output as the primary content
             if let Some(output) = self.output_text() {
                 if !output.is_empty() {
-                    content.push(text_content(output));
+                    // For spawn_agent, try to render as markdown
+                    if self.tool_name.as_deref() == Some("spawn_agent") {
+                        if let Some(markdown) = render_sub_agent_output_as_markdown(&output) {
+                            content.push(text_content(markdown));
+                        } else {
+                            content.push(text_content(output));
+                        }
+                    } else {
+                        content.push(text_content(output));
+                    }
                 }
             }
         }
@@ -340,6 +349,57 @@ fn text_content(text: String) -> acp::ToolCallContent {
             text,
             meta: None,
         }),
+    }
+}
+
+/// Render SubAgentOutput JSON as markdown for ACP display.
+/// Returns None if the JSON is not valid SubAgentOutput.
+fn render_sub_agent_output_as_markdown(json_str: &str) -> Option<String> {
+    use crate::agent::sub_agent::{SubAgentOutput, SubAgentToolStatus};
+
+    let output: SubAgentOutput = serde_json::from_str(json_str).ok()?;
+
+    let mut lines = Vec::new();
+    // Render tool calls as a bullet list
+    if !output.tools.is_empty() {
+        for tool in &output.tools {
+            // Use title if available, otherwise tool name
+            let display_text = tool
+                .title
+                .as_ref()
+                .filter(|t| !t.is_empty())
+                .cloned()
+                .or_else(|| tool.message.as_ref().filter(|m| !m.is_empty()).cloned())
+                .unwrap_or_else(|| tool.name.replace('_', " "));
+
+            let suffix = match tool.status {
+                SubAgentToolStatus::Error => " (failed)",
+                _ => "",
+            };
+
+            lines.push(format!("- {display_text}{suffix}"));
+        }
+    }
+
+    // Render error if present
+    if let Some(error) = &output.error {
+        lines.push(format!("**Error:** {error}"));
+    }
+
+    // Render final response
+    if let Some(response) = &output.response {
+        if !response.is_empty() {
+            if !lines.is_empty() {
+                lines.push(String::new()); // Blank line before response
+            }
+            lines.push(response.clone());
+        }
+    }
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
     }
 }
 
